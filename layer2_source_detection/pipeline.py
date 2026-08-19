@@ -217,7 +217,8 @@ class Layer2Pipeline:
             window.session_id, window.stream_epoch, window.decision_sample, observations,
             window_id=window.window_id, doa_start_sample=window.doa_start_sample,
             doa_end_sample=window.doa_end_sample, kalman_enabled=direction_kalman_enabled,
-            q_scale=direction_kalman_q_scale, r_scale=direction_kalman_r_scale)
+            q_scale=direction_kalman_q_scale, r_scale=direction_kalman_r_scale,
+            allow_births=True if diagnostics is None else diagnostics.births_allowed)
         self.last_id_tracking_error = self.last_kalman_error = None
         candidates = tuple(CandidateDirection(
             item.session_id, item.stream_epoch, item.window_id, item.decision_sample,

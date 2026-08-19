@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QComboBox,
     QPushButton,
     QSlider,
     QScrollArea,
@@ -75,6 +76,34 @@ class SrpThresholdControl(QWidget):
         threshold = slider_value / 100.0
         self.value_label.setText(f"{threshold:.2f}")
         self.threshold_changed.emit(threshold)
+
+
+class MusicOrderLimitControl(QWidget):
+    order_changed = Signal(int)
+
+    def __init__(self, value: int, parent: QWidget | None = None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 6, 3)
+        self.label = QLabel("MUSIC阶数上限")
+        self.combo = QComboBox()
+        self.combo.addItems(("1", "2", "3"))
+        self.combo.setToolTip("实际MUSIC阶数 = min(MDL诊断阶数, 手动上限)")
+        layout.addWidget(self.label)
+        layout.addWidget(self.combo, 1)
+        self.set_value(value)
+        self.combo.currentIndexChanged.connect(
+            lambda _index: self.order_changed.emit(self.value)
+        )
+
+    @property
+    def value(self) -> int:
+        return int(self.combo.currentText())
+
+    def set_value(self, value: int) -> None:
+        if type(value) is not int or value not in {1, 2, 3}:
+            raise ValueError("MUSIC order limit must be 1, 2, or 3")
+        self.combo.setCurrentText(str(value))
 
 
 class _RuntimeSwitchControl(QPushButton):

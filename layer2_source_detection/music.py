@@ -63,6 +63,9 @@ class MusicDiagnostics:
     eligible_peak_count: int = 0
     candidate_limit: int = 3
     candidate_limit_applied: bool = False
+    effective_model_order: int | None = None
+    mdl_saturated: bool = False
+    births_allowed: bool = True
     covariance_update_ms: float = 0.0
     eigensolve_ms: float = 0.0
     spectrum_ms: float = 0.0
@@ -75,16 +78,25 @@ class MusicDiagnostics:
             "ready", "degraded", "failed",
         }:
             raise ValueError("invalid MUSIC covariance diagnostics")
+        effective_model_order = (
+            min(self.model_order.estimated_sources, 3)
+            if self.effective_model_order is None else self.effective_model_order
+        )
+        if not 0 <= effective_model_order <= 3:
+            raise ValueError("effective MUSIC order must be 0..3")
+        if type(self.mdl_saturated) is not bool or type(self.births_allowed) is not bool:
+            raise TypeError("MUSIC saturation/birth flags must be bool")
         timings = (self.covariance_update_ms, self.eigensolve_ms, self.spectrum_ms, self.total_ms)
         if not all(np.isfinite(value) and value >= 0.0 for value in timings):
             raise ValueError("invalid MUSIC timing diagnostics")
+        object.__setattr__(self, "effective_model_order", effective_model_order)
         object.__setattr__(self, "evidence", tuple(self.evidence))
 
 
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_mdl_v1"
+    algorithm_version = "frequency_normalized_music_mdl_cap_v2"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -280,10 +292,13 @@ class RollingNormMusicScanner:
             )
         model_order = self._last_model_order
         assert model_order is not None
-        if model_order.estimated_sources == 0:
+        diagnostic_order = model_order.estimated_sources
+        effective_order = min(diagnostic_order, config.effective_order_limit)
+        mdl_saturated = diagnostic_order > config.max_candidates
+        if effective_order == 0:
             raw = np.zeros(360, dtype=np.float64)
         else:
-            noise = eigenvectors[:, :, : 7 - model_order.estimated_sources]
+            noise = eigenvectors[:, :, : 7 - effective_order]
             projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
             denominator = np.sum(np.abs(projection) ** 2, axis=2)
             per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
@@ -310,7 +325,7 @@ class RollingNormMusicScanner:
             key=lambda index: (-float(normalized[index]), index),
         )
         chosen: list[int] = []
-        limit = min(config.max_candidates, model_order.estimated_sources)
+        limit = effective_order
         for index in ranked:
             if normalized[index] < config.direction_threshold:
                 continue
@@ -343,9 +358,14 @@ class RollingNormMusicScanner:
             "frequency_normalized_music", self.algorithm_version, config_revision,
             model_order, self.last_state_diagnostic, int(valid.sum()),
             "ready" if model_order.status == "ready" else "degraded",
+            stop_reason="mdl_saturated" if mdl_saturated else "model_order_applied",
+            fallback_reason="diagnostic_order_exceeds_output_limit" if mdl_saturated else None,
             evidence=evidence,
             eligible_peak_count=len(ranked), candidate_limit=limit or 3,
             candidate_limit_applied=bool(limit and len(candidates) == limit and len(ranked) > limit),
+            effective_model_order=effective_order,
+            mdl_saturated=mdl_saturated,
+            births_allowed=not mdl_saturated,
             covariance_update_ms=(covariance_updated - started) * 1_000.0,
             eigensolve_ms=(eigensolved - covariance_updated) * 1_000.0,
             spectrum_ms=(spectrum_built - eigensolved) * 1_000.0,

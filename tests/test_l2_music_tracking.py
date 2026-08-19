@@ -149,6 +149,29 @@ def test_music_two_sources_are_45_degree_nms_separated() -> None:
     assert response.raw_scores.shape == (360,)
 
 
+@pytest.mark.parametrize("manual_limit", (1, 2, 3))
+def test_manual_music_order_limit_caps_diagnostic_mdl_without_hiding_it(
+    monkeypatch, manual_limit: int,
+) -> None:
+    monkeypatch.setattr(
+        RollingNormMusicScanner,
+        "_mdl_order",
+        staticmethod(lambda _eigenvalues, _snapshots: (5, 1.0)),
+    )
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        effective_order_limit=manual_limit,
+    )
+    _, _, diagnostics = RollingNormMusicScanner().scan_detailed(
+        _window(_audio((73.0,), seed=47)), physical_6plus1_geometry(), config,
+    )
+    assert diagnostics.model_order.estimated_sources == 5
+    assert diagnostics.effective_model_order == manual_limit
+    assert diagnostics.mdl_saturated
+    assert not diagnostics.births_allowed
+    assert diagnostics.stop_reason == "mdl_saturated"
+
+
 def test_music_rolling_p95_is_below_hard_20ms_budget() -> None:
     scan = DirectionScanConfig.from_project(load_config(CONFIG, environ={}))
     audio = _audio((80.0,), seed=17, samples=15_360 + 30 * 960)
@@ -190,6 +213,16 @@ def test_birth_coast_reacquire_ttl_and_session_scoped_monotonic_ids() -> None:
         window_id=26, doa_start_sample=23_040, doa_end_sample=24_960,
     )[0][0]
     assert epoch_track.track_id > replacement[0].track_id
+
+
+def test_tracker_blocks_birth_for_saturated_mdl_window() -> None:
+    tracker = _tracker()
+    directions, active = tracker.update(
+        "track", 0, 15_360, (_candidate(15_360, 30.0),),
+        window_id=16, doa_start_sample=13_440, doa_end_sample=15_360,
+        allow_births=False,
+    )
+    assert directions == active == ()
 
 
 def test_kalman_toggle_changes_only_angle_not_id_or_lifecycle() -> None:

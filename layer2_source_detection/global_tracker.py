@@ -217,6 +217,7 @@ class GlobalDirectionTracker:
         kalman_enabled: bool = False,
         q_scale: float = 1.0,
         r_scale: float = 1.0,
+        allow_births: bool = True,
     ) -> tuple[tuple[TrackedDirection, ...], tuple[TrackedDirection, ...]]:
         self.prepare_stream(session_id, stream_epoch)
         if self._last_sample is not None and decision_sample <= self._last_sample:
@@ -293,7 +294,11 @@ class GlobalDirectionTracker:
                     assigned[index] = noise_id
                     used_noise_ids.add(noise_id)
 
-        birth_indices = [index for index in range(len(candidates)) if index not in assigned]
+        birth_indices = [
+            index for index in range(len(candidates))
+            if index not in assigned
+            and allow_births
+        ]
         required_slots = max(
             0, len(self._tracks) + len(birth_indices) - self.max_active_tracks
         )

@@ -821,6 +821,20 @@ class ApplicationRuntime:
         return threshold
 
     @property
+    def music_effective_order_limit(self) -> int:
+        with self._scan_config_lock:
+            return self._scan_config.effective_order_limit
+
+    def set_music_effective_order_limit(self, value: int) -> int:
+        if type(value) is not int or value not in {1, 2, 3}:
+            raise ValueError("MUSIC effective order limit must be 1, 2, or 3")
+        with self._scan_config_lock:
+            if value != self._scan_config.effective_order_limit:
+                self._scan_config = replace(self._scan_config, effective_order_limit=value)
+                self._scan_config_revision += 1
+        return value
+
+    @property
     def direction_scan_config_revision(self) -> int:
         with self._scan_config_lock:
             return self._scan_config_revision
@@ -1530,6 +1544,24 @@ class ApplicationRuntime:
                     continue
                 if not isinstance(item, WindowWorkItem):
                     continue
+                # Test-UI scan controls are live operator settings. Resolve
+                # them when L2 actually starts, not when a window entered a
+                # potentially backlogged queue, then propagate the exact
+                # applied snapshot to L3/L4, UI, and recording.
+                with self._scan_config_lock:
+                    live_scan_config = self._scan_config
+                    live_scan_revision = self._scan_config_revision
+                values = dict(item.config.values)
+                values["scan_config"] = asdict(live_scan_config)
+                values["scan_config_revision"] = live_scan_revision
+                values["music_config_revision"] = live_scan_revision
+                gate_revision = int(values["gate_config_revision"])
+                l3_revision = int(values["l3_config_revision"])
+                item = replace(item, config=replace(
+                    item.config,
+                    revision=(gate_revision << 42) | (live_scan_revision << 21) | l3_revision,
+                    values=values,
+                ))
                 values = item.config.values
                 started_ns = monotonic_ns()
                 try:

@@ -27,6 +27,7 @@ class DirectionScanConfig:
     peak_prominence: float
     min_peak_distance_deg: float
     max_candidates: int
+    effective_order_limit: int
 
     @classmethod
     def from_project(cls, config: ProjectConfig) -> "DirectionScanConfig":
@@ -63,6 +64,8 @@ class DirectionScanConfig:
             raise ValueError("prominence或NMS角距无效")
         if self.max_candidates != 3:
             raise ValueError("Layer 2 max_candidates is fixed at 3")
+        if self.effective_order_limit not in {1, 2, 3}:
+            raise ValueError("effective MUSIC order limit must be 1, 2, or 3")
         if not 0 <= self.covariance_shrinkage < 1 or self.diagonal_loading <= 0:
             raise ValueError("MUSIC covariance regularization is invalid")
         if self.eigenvalue_floor <= 0 or not 1 <= self.mdl_max_age_ms <= 100:

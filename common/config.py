@@ -192,6 +192,7 @@ class Layer2Config(StrictModel):
     peak_prominence: float
     min_peak_distance_deg: Literal[45.0]
     max_candidates: Literal[3]
+    effective_order_limit: Literal[1, 2, 3]
 
     @model_validator(mode="after")
     def validate_direction_postprocessing(self) -> "Layer2Config":

@@ -9,8 +9,8 @@ import tempfile
 class DevUiSettings:
     """Atomic persistent store for operator-tuned Development Test UI values."""
 
-    SCHEMA_VERSION = "dev_test_ui_settings_v8"
-    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v7"
+    SCHEMA_VERSION = "dev_test_ui_settings_v9"
+    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v8"
     OLDER_SCHEMA_VERSION = "dev_test_ui_settings_v2"
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
     OBSOLETE_KEYS = {
@@ -27,6 +27,7 @@ class DevUiSettings:
             if payload.get("schema_version") not in {
                 self.SCHEMA_VERSION,
                 self.PREVIOUS_SCHEMA_VERSION,
+                "dev_test_ui_settings_v7",
                 "dev_test_ui_settings_v5",
                 "dev_test_ui_settings_v4",
                 "dev_test_ui_settings_v3",
@@ -71,6 +72,20 @@ class DevUiSettings:
         threshold = self._validate_threshold(value)
         self._save_update(layer2_direction_threshold=threshold)
         return threshold
+
+    def load_music_effective_order_limit(self, default: int = 3) -> int:
+        fallback = self._validate_music_order_limit(default)
+        try:
+            return self._validate_music_order_limit(
+                self._load_payload()["layer2_music_effective_order_limit"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_music_effective_order_limit(self, value: int) -> int:
+        limit = self._validate_music_order_limit(value)
+        self._save_update(layer2_music_effective_order_limit=limit)
+        return limit
 
     def load_direction_kalman_enabled(self, default: bool = False) -> bool:
         fallback = self._validate_bool(default)
@@ -149,6 +164,12 @@ class DevUiSettings:
     def _validate_bool(value: bool) -> bool:
         if type(value) is not bool:
             raise ValueError("switch setting must be bool")
+        return value
+
+    @staticmethod
+    def _validate_music_order_limit(value: int) -> int:
+        if type(value) is not int or value not in {1, 2, 3}:
+            raise ValueError("MUSIC effective order limit must be 1, 2, or 3")
         return value
 
     @staticmethod

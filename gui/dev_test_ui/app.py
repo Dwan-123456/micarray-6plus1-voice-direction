@@ -129,6 +129,7 @@ def build_window(
         GateProbabilityThresholdControl,
         DirectionKalmanControl,
         KalmanNoiseScaleControl,
+        MusicOrderLimitControl,
         ProbabilityGateReadout,
         SrpThresholdControl,
     )
@@ -188,6 +189,9 @@ def build_window(
     ui_settings = DevUiSettings(config_path.parent.parent)
     persisted_threshold = ui_settings.load_direction_threshold(config.layer2.direction_threshold)
     runtime.set_direction_threshold(persisted_threshold)
+    runtime.set_music_effective_order_limit(ui_settings.load_music_effective_order_limit(
+        config.layer2.effective_order_limit
+    ))
     persisted_kalman = ui_settings.load_direction_kalman_enabled(
         config.layer2.direction_kalman.enabled
     )
@@ -422,6 +426,7 @@ def build_window(
                 runtime.gate_probability_threshold
             )
             self.srp_threshold = SrpThresholdControl(runtime.direction_threshold)
+            self.music_order_limit = MusicOrderLimitControl(runtime.music_effective_order_limit)
             self.srp_kalman = DirectionKalmanControl(runtime.direction_kalman_enabled)
             self.srp_kalman_q = KalmanNoiseScaleControl("Q倍率", runtime.direction_kalman_q_scale)
             self.srp_kalman_r = KalmanNoiseScaleControl("R倍率", runtime.direction_kalman_r_scale)
@@ -435,6 +440,7 @@ def build_window(
             right_layout.addWidget(self.srp_kalman_q)
             right_layout.addWidget(self.srp_kalman_r)
             right_layout.addWidget(self.gate_readout)
+            right_layout.addWidget(self.music_order_limit)
             right_layout.addWidget(self.srp_threshold)
             right_layout.addWidget(self.direction_table, 1)
             splitter.addWidget(self.srp_polar)
@@ -443,6 +449,7 @@ def build_window(
             layout.addWidget(splitter, 1)
             self.srp_polar.candidate_selected.connect(self._select_candidate)
             self.srp_threshold.threshold_changed.connect(self._set_srp_threshold)
+            self.music_order_limit.order_changed.connect(self._set_music_order_limit)
             self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
             self.srp_kalman.enabled_changed.connect(self._set_direction_kalman)
             self.srp_kalman_q.apply_requested.connect(self._apply_kalman_q_scale)
@@ -492,6 +499,20 @@ def build_window(
                 )
             except Exception as exc:
                 self.statusBar().showMessage(f"保存L2 threshold失败: {exc}", 8000)
+
+        def _set_music_order_limit(self, value: int):
+            previous = runtime.music_effective_order_limit
+            try:
+                value = ui_settings.save_music_effective_order_limit(value)
+                runtime.set_music_effective_order_limit(value)
+                self.statusBar().showMessage(
+                    f"MUSIC实际阶数改为 min(MDL, {value})；下一窗口生效", 3500
+                )
+            except Exception as exc:
+                runtime.set_music_effective_order_limit(previous)
+                with QSignalBlocker(self.music_order_limit.combo):
+                    self.music_order_limit.set_value(previous)
+                self.statusBar().showMessage(f"设置MUSIC阶数上限失败: {exc}", 8000)
 
         def _set_direction_kalman(self, enabled: bool):
             previous = runtime.direction_kalman_enabled
@@ -1096,6 +1117,10 @@ def build_window(
                     getattr(frame, "active_tracks", ()),
                     frame.spatial_published_monotonic,
                     probabilities,
+                    effective_order=(
+                        None if frame.search_diagnostics is None
+                        else frame.search_diagnostics.effective_model_order
+                    ),
                 )
                 window_key = (
                     frame.spatial_response.session_id,
@@ -1107,12 +1132,13 @@ def build_window(
                     self.direction_table.set_snapshot(snapshot)
                     self._last_rendered_window = window_key
                 search_suffix = ""
-                diagnostics = getattr(frame, "music_diagnostics", None)
+                diagnostics = frame.search_diagnostics
                 if diagnostics is not None:
                     search_suffix = (
-                        f" | model order {diagnostics.model_order}"
+                        f" | MDL {diagnostics.model_order.estimated_sources}"
+                        f" / MUSIC {diagnostics.effective_model_order}"
                         f" | valid bins {diagnostics.valid_frequency_bins}"
-                        f" | {diagnostics.numerical_status.upper()}"
+                        f" | {diagnostics.covariance_quality.upper()}"
                     )
                 self._set_text(self.srp_header,
                     f"LIVE | session {frame.spatial_response.session_id[:8]} | epoch {frame.spatial_response.stream_epoch} | "

@@ -22,6 +22,7 @@ class MusicPanelSnapshot:
     active_tracks: tuple[TrackedDirection, ...]
     published_monotonic: float
     l4_probability_by_track: Mapping[int, float] = MappingProxyType({})
+    effective_order: int | None = None
 
     def __post_init__(self) -> None:
         directions = tuple(self.directions)
@@ -36,6 +37,8 @@ class MusicPanelSnapshot:
             raise ValueError("published_monotonic must be finite")
         if len(directions) > 3:
             raise ValueError("MUSIC directions are limited to three")
+        if self.effective_order is not None and self.effective_order not in {0, 1, 2, 3}:
+            raise ValueError("effective MUSIC order must be 0..3 or None")
         if any((item.session_id, item.stream_epoch, item.window_id, item.decision_sample) != identity for item in directions):
             raise ValueError("MUSIC response and directions must belong to one window")
         if any((item.session_id, item.stream_epoch) != identity[:2] for item in active):
@@ -148,7 +151,8 @@ if QWidget is not None:
             painter.drawText(
                 16,
                 self.height() - 18,
-                f"order={model.estimated_sources}  valid={snapshot.response.valid_frequency_bins}  "
+                f"MDL={model.estimated_sources}  MUSIC={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
+                f"valid={snapshot.response.valid_frequency_bins}  "
                 f"status={snapshot.response.numerical_status}  {state}",
             )
 

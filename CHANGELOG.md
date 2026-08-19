@@ -22,6 +22,22 @@
 
 ---
 
+## 2026-08-19 — 增加Test UI可选MUSIC实际阶数上限
+
+- **版本/标签**：`v1.1.1`发布后的L2诊断试验控制；不创建或移动版本标签。
+- **类型**：L2 MUSIC诊断/执行阶数分离、Test UI运行时控制、ID出生保护、配置、文档和回归测试。
+- **涉及文件**：`common/config.py`、`config/config.yaml`、`layer2_source_detection/configuration.py`、`music.py`、`global_tracker.py`、`pipeline.py`，Development Test UI的`app.py`、`panels.py`、`settings.py`、`srp_panel.py`及对应测试和架构说明。
+- MDL继续完整估计并记录`0～6`阶空间模态；新增只允许`1/2/3`的`effective_order_limit`，实际MUSIC阶数严格为`min(MDL诊断阶数, 手动上限)`，默认上限3。设置通过Test UI下拉框持久化到本地设置；L2在每个窗口真正开始计算时读取最新值，即使队列已有积压也会在下一次L2计算实时生效，并把实际revision继续传给L3/L4、UI和录音，不覆盖MDL诊断值。
+- 极图和L2标题分别显示`MDL`诊断阶数与实际`MUSIC`阶数。算法版本更新为`frequency_normalized_music_mdl_cap_v2`，配置revision随手动上限变化递增。
+- MDL诊断阶数大于公共三候选上限时标记`mdl_saturated/model_mismatch`；该窗不创建新方向ID，但仍允许已有ID通过原匈牙利关联继续更新或进入coasting，避免高阶模型失配进一步制造新ID。
+- **明确未加入**：没有实现逐频真实局部峰支持、SPP/SNR权重、特征值间隙权重或任何新的可靠性门禁；NormMUSIC仍为原有逐频最大值归一化后等权融合，candidate threshold、45° NMS、2次确认、匈牙利代价和Kalman均未改变。
+- **实录短回放**：截图对应32.12秒单声源录音的第799窗在MDL=3时，上限1输出`86°`，上限2输出`87°/191°`，上限3复现`13°/89°/179°`；该结果用于证明手动阶数上限确实作用于MUSIC，并不构成真实角度精度验收。
+- **其他模块**：L1/IMCRA与预降噪、L3、L4、Runtime队列策略、正式录音/数据管理、Production UI、独立Log UI、模型和音频资产均无变化。Development Test UI同文件中既有未提交试听/显示修改不属于本条算法范围。
+- **验证**：L2/配置/Test UI/Runtime重点回归`111 passed`；截图对应实录只做单窗短回放，按用户要求未运行10分钟负载。完整测试和Ruff将在提交前继续执行。
+- **Git LFS资产**：无变化；未修改或新增音频、模型和阵列表资产。
+
+---
+
 ## 2026-08-19 — 修复L3多声源BF丢窗级联并扩容阶段队列
 
 - **版本/标签**：`v1.1.1`发布后的L3性能修复；不创建或移动版本标签。

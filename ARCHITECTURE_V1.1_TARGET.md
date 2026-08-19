@@ -44,7 +44,9 @@ WindowAssembler：每20 ms发布一次、包含最近320 ms的DecisionWindow
 L2：Probability Gate
     → 7麦多帧STFT与频点协方差
     → 宽带frequency-normalized MUSIC 0～359°空间谱
-    → MDL/跨频一致性估计0～6阶空间模态，候选仍限制为0～3个方向
+    → MDL/跨频一致性估计0～6阶空间模态
+    → effective_order=min(MDL诊断阶数, Test UI手动上限1/2/3)
+    → 候选仍限制为0～3个方向
     → 圆周峰值与45° NMS
     → 永久在线全局分配方向ID
     → 可选按ID圆周Kalman
@@ -150,7 +152,8 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 ### 7.3 声源数与候选
 
-- 使用 MDL 估计 `0～6` 阶信号子空间维度，并用跨频一致性、有效频点数、Gate 状态和数值质量约束结果；MDL阶数是空间模态诊断，不直接扩大公共候选的`0～3`上限。
+- 使用 MDL 估计 `0～6` 阶信号子空间维度；MDL诊断值不被Test UI覆盖。实际MUSIC阶数取`min(MDL诊断阶数, 手动上限)`，手动上限只能为1、2、3且默认3。诊断阶数大于3时标记`saturated/model_mismatch`并禁止该窗创建新ID，只允许已有ID继续关联或coasting。
+- 本阶段不加入逐频真实峰支持、SPP/SNR权重或特征值可靠性门禁；NormMUSIC仍保持逐频归一化后等权融合，避免把手动阶数试验与另一套候选筛选同时引入。
 - 首版最多输出 3 个候选，圆周 NMS 最小间隔继续为 45°。
 - 峰值选择必须原生处理数组首尾相邻，`359°` 和 `0°` 属于相邻角度。
 - 无足够有效频点、协方差退化或模型阶数不可信时，返回可诊断的 blocked/degraded/failed 状态，不得静默复用上一窗伪谱冒充新观测。
@@ -217,7 +220,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 - 删除 “Iterative Multiple Peak” 开关、ID 追踪开关、相关持久化设置和运行时 setter。
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。
-- 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始 360 点 MUSIC 伪谱、模型阶数和数值状态。
+- 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始360点MUSIC伪谱，分别显示MDL诊断阶数与实际MUSIC阶数，并提供1/2/3手动阶数上限；设置持久化到Test UI本地设置，L2在每次实际计算前读取最新值，避免排队窗口延迟控制生效。
 - 候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed、L4 probability`；观测和预测样式可以不同，但颜色稳定绑定权威 ID。
 - 左下试听继续保留 Center Mic 原音参考、20 ms 稳定 hop 拼接、可恢复真实音频补洞、过旧缺口补等时静音、交叉淡化、至少 2 秒显示、3 秒等待、有界分段和三档 L3 模式隔离。
 - 方向音频只按 `(session_id, stream_epoch, track_id)` 拼接。删除 `_formal_aliases`、`_resolve_formal_track_id`、按角度贪心重关联和 ID 换号合并；UI 不再修补 L2 身份错误。

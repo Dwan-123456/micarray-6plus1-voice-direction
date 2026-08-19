@@ -12,6 +12,7 @@ DecisionWindow + 两个对齐的20 ms概率
          20 ms增量加入/移除STFT协方差帧
          每频点7×7加载/收缩协方差 + Hermitian eigh
          MDL与跨频一致性估计0～6阶空间模态
+         实际阶数=min(MDL诊断阶数, 手动上限1/2/3)
          NormMUSIC逐频归一化后跨频融合
          最多3峰 + 45°圆周NMS
     → 永久开启的全局方向轨迹分配
@@ -32,7 +33,7 @@ L4按权威`track_id`异步回传该窗口的人声概率与判定，L2在下一
 
 比较历史固定包含160/240/320 ms，当前运行配置选择240 ms；`DecisionWindow`仍提供最多320 ms原始历史。连续窗口只计算新增的两个50%重叠STFT帧，并移出超出历史的两个旧帧；sample跳跃、epoch或session变化时从当前窗口重建。导向张量按阵列几何、频率轴和配置revision缓存。伪谱与轨迹每20 ms更新，MDL缓存最多100 ms。
 
-`MusicDiagnostics`记录模型阶数、有效频点、协方差质量、增量状态和协方差更新/eigh/谱融合/总耗时。目标机门禁为稳态p95不高于15 ms，单窗硬门限20 ms。
+`MusicDiagnostics`分别记录0～6的MDL诊断阶数、实际MUSIC阶数、手动上限导致的限制、高阶模型失配、有效频点、协方差质量、增量状态和协方差更新/eigh/谱融合/总耗时。Test UI可把手动上限设为1、2或3，下一窗口生效；该控制不覆盖MDL诊断值。MDL诊断大于3时标记模型失配并禁止该窗创建新ID，已有ID仍可关联或coasting。当前版本明确不实现逐频真实峰支持和可靠性加权门禁。目标机门禁为稳态p95不高于15 ms，单窗硬门限20 ms。
 
 ## 兼容和删除边界
 
@@ -45,4 +46,4 @@ L4按权威`track_id`异步回传该窗口的人声概率与判定，L2在下一
 
 实现依据Schmidt MUSIC、Wax/Kailath MDL以及Pyroomacoustics MUSIC/NormMUSIC的公开算法表达；Pyroomacoustics为MIT许可。本项目没有复制或声称存在“Israel Cohen MUSIC开源实现”，Israel Cohen资料只用于项目另行记录的噪声估计与鲁棒性背景。
 
-自动测试覆盖MDL 0～6阶、最多3个候选、跨0°、rank交换、新生/短漏检/TTL、Gate关闭、sample跳跃、epoch/session、确定性关联、Kalman切换、HardwareMix隔离、滚动增量等价性和实时性能。
+自动测试覆盖MDL 0～6阶、手动1/2/3阶上限、高阶窗禁止新ID、最多3个候选、跨0°、rank交换、新生/短漏检/TTL、Gate关闭、sample跳跃、epoch/session、确定性关联、Kalman切换、HardwareMix隔离、滚动增量等价性和实时性能。

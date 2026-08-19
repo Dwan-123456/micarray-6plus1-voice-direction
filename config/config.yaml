@@ -140,6 +140,9 @@ layer2:
   # L2候选间的最小圆周角距；低于该角距的较低分峰会被NMS抑制。
   min_peak_distance_deg: 45.0
   max_candidates: 3
+  # Test UI may change this runtime ceiling to 1, 2, or 3. The diagnostic MDL
+  # result remains 0..6 and the scanner uses min(diagnostic, this limit).
+  effective_order_limit: 3
 
 stft:
   n_fft: 1024

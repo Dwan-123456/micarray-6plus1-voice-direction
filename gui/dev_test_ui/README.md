@@ -23,6 +23,8 @@
 
 L2 Gate滑条范围`0.00～1.00`、建议步长`0.01`。拖动后在下一完整DecisionWindow生效并显示新的`config_revision`，默认不写回`config.yaml`。L4阈值滑条只重判缓存的CNN概率。两个滑条必须用“L2声源Gate”和“L4人声判断”清晰区分。
 
+L2面板的“MUSIC阶数上限”只能选择1、2、3。实际阶数始终为`min(MDL实际诊断阶数, 手动上限)`；极图底部同时显示`MDL`和`MUSIC`，便于直接比较。该设置写入Test UI本地设置；L2每次真正开始计算前读取最新值，因此即使处理队列已有积压也会在下一次L2计算实时应用。它不修改MDL 0～6诊断结果，也不启用逐频支持或可靠性加权门禁。
+
 所有算法信息按session、epoch、window和sample endpoint对齐。缺少任一20 ms IMCRA概率、跨epoch或尚未预热时，右上明确显示`WARMING_UP/UNAVAILABLE`，不能拼接旧数据或显示假SRP结果。
 
 L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和Kalman应用状态。右上MUSIC面板只据此绘制；左下试听按同一公共ID拼接L3音频，不执行第二套角度关联或换号补救。这些显示逻辑不能改变L2轨迹、L3/L4结果或正式录音。
