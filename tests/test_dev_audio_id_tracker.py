@@ -166,6 +166,34 @@ def test_ended_track_with_three_seconds_continuous_silence_is_deleted(tmp_path):
     assert tracker.snapshots() == ()
 
 
+def test_coasting_timeline_silence_does_not_delete_playable_observed_audio(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    first_decision = 15_360
+    observed = _direction(15, first_decision, 120.0)
+    tracker.update(
+        _window(first_decision),
+        (observed,),
+        (_preview(15, first_decision, 120.0),),
+        active_tracks=(observed,),
+    )
+    for index in range(1, 201):
+        decision = first_decision + index * 960
+        coast = _direction(
+            15, decision, 120.0,
+            measured=None, state="coasting", observed=False,
+        )
+        tracker.update(_window(decision), (), (), active_tracks=(coast,))
+    tracker.update(_window(first_decision + 201 * 960), (), (), active_tracks=())
+
+    rows = tracker.snapshots()
+    assert len(rows) == 1
+    assert rows[0].track_id == 15
+    assert rows[0].audio_sample_count == 201 * 960
+    cache = tracker.audio_cache_path(15)
+    assert cache is not None
+    assert cache.stat().st_size == 201 * 960 * np.dtype(np.float32).itemsize
+
+
 def test_mode_change_seals_and_isolates_cache_partitions(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     first = _direction(1, 15_360, 30.0)
