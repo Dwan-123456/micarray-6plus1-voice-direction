@@ -30,7 +30,8 @@ def process_signals() -> None:
 def wizard_input() -> WizardInput:
     return WizardInput(
         "dataset", "room", "quiet", "pose", 1, "granted", ("research",),
-        recording_name="阵列原始输入",
+        recording_name="阵列原始输入", source_categories=("人声",),
+        source_movements=("静止",), noise_source="无",
     )
 
 

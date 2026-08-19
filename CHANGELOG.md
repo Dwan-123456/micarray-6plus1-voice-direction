@@ -21,6 +21,30 @@
 
 ---
 
+## 2026-08-19 — 录制向导改为结构化环境与逐声源信息
+
+- **版本/标签**：`1.0.0`之后的录音元数据界面更新；未创建新发布标签。
+- **类型**：Production UI、录音元数据契约与测试。
+- **涉及文件**：`gui/production_ui/app.py`、`gui/production_ui/README.md`、`data_management/wizard.py`、`data_management/contracts.py`、`data_management/dedicated_recording.py`、`data_management/corpus_store.py`及相关测试。
+
+### L1、L2、L3、L4与Development Test UI
+
+- 无算法、实时处理或Test UI行为变化；不影响正在独立开发的L2三候选输出。
+
+### 音频录制与数据管理
+
+- 测试录制向导不再要求填写音频名称和自由备注，改为填写环境、数字声源数量、每个声源各自的类型与移动方式，以及噪音来源。
+- 声源数量变化时动态生成或移除逐声源输入行；声源数量为0时可用于只录制环境噪音。
+- 列表与模拟输入显示名称由环境、声源数量和录制时间自动生成。
+- `labels.json`升级为`test_recording_labels_v3`，manifest同步保存环境、逐声源类型、逐声源移动方式和噪音来源。
+
+### 验证
+
+- 增加动态逐声源表单、字段映射、结构化labels/manifest及校验回归测试。
+- 未进行真实麦克风实机录制验收；Git LFS资产无变化。
+
+---
+
 ## 2026-08-19 — 建立统一变更日志与强制维护门禁
 
 - **版本/标签**：`1.0.0`之后的仓库管理提交；未创建新发布标签。

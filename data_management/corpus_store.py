@@ -187,9 +187,23 @@ class CorpusStore:
         labels_path = atomic_json(
             root / "labels.json",
             {
-                "schema_version": "test_recording_labels_v2",
+                "schema_version": "test_recording_labels_v3",
                 "recording_name": meta.get("display_name", ""),
-                "notes": meta.get("notes", ""),
+                "environment": meta["environment_id"],
+                "source_count": int(meta["source_count"]),
+                "sources": [
+                    {
+                        "index": index + 1,
+                        "type": str(meta.get("source_categories", ())[index]),
+                        "movement": (
+                            str(meta.get("source_movements", ())[index])
+                            if index < len(meta.get("source_movements", ()))
+                            else ""
+                        ),
+                    }
+                    for index in range(min(int(meta["source_count"]), len(meta.get("source_categories", ()))))
+                ],
+                "noise_source": meta.get("noise_source", ""),
                 "duration_seconds": duration_samples / 48_000,
                 "recorded_intervals": list(lineage.get("recorded_intervals", ())),
             },
@@ -215,8 +229,9 @@ class CorpusStore:
             "array_pose_id": meta["array_pose_id"],
             "source_count": meta["source_count"],
             "source_categories": list(meta["source_categories"]),
+            "source_movements": list(meta.get("source_movements", ())),
+            "noise_source": meta.get("noise_source", ""),
             "rights": meta["rights"],
-            "notes": meta.get("notes", ""),
             "quality_status": "pending",
             "split": "unset",
             "assets": assets,

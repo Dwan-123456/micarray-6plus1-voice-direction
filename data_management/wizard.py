@@ -21,6 +21,8 @@ class WizardInput:
     expires_at_utc: str | None = None
     notes: str = ""
     recording_name: str = ""
+    source_movements: tuple[str, ...] = ()
+    noise_source: str = ""
 
 
 def validate_wizard(data: WizardInput) -> list[str]:
@@ -38,6 +40,16 @@ def validate_wizard(data: WizardInput) -> list[str]:
         errors.append("至少选择一种允许用途")
     if data.source_count < 0:
         errors.append("声源数量不能小于0")
+    if data.source_movements and len(data.source_movements) != data.source_count:
+        errors.append("声源移动方式的数量必须与声源数量一致")
+    if data.source_movements and len(data.source_categories) != data.source_count:
+        errors.append("声源类型的数量必须与声源数量一致")
+    if any(not value.strip() for value in data.source_categories):
+        errors.append("声源类型不能为空")
+    if any(not value.strip() for value in data.source_movements):
+        errors.append("声源移动方式不能为空")
+    if len(data.noise_source) > 200 or any(ord(char) < 32 for char in data.noise_source):
+        errors.append("噪音来源必须在200个字符以内且不能包含控制字符")
     if data.theta_degrees and len(data.theta_degrees) != data.source_count:
         errors.append("真实角度的数量必须与声源数量一致")
     if data.distance_m and len(data.distance_m) != data.source_count:

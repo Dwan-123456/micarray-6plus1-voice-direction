@@ -30,6 +30,7 @@ try:
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QSpinBox,
         QTableWidget,
         QTableWidgetItem,
         QTabWidget,
@@ -381,7 +382,7 @@ class AudioDataManager(QMainWindow):
                 color: #ffffff;
                 border-color: #22d3ee;
             }
-            QLineEdit, QComboBox, QTextEdit {
+            QLineEdit, QComboBox, QSpinBox, QTextEdit {
                 background-color: #0d2949;
                 color: #ffffff;
                 selection-background-color: #0891b2;
@@ -390,7 +391,7 @@ class AudioDataManager(QMainWindow):
                 border-radius: 5px;
                 padding: 8px;
             }
-            QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus {
                 border: 2px solid #38bdf8;
             }
             QLineEdit::placeholder {
@@ -724,14 +725,32 @@ class AudioDataManager(QMainWindow):
         formbox = QGroupBox("录制信息")
         form = QFormLayout(formbox)
         self.wizard_fields = {}
-        for key, label, placeholder in (
-            ("recording_name", "音频名称 *", "输入你希望显示的录音名称"),
-            ("notes", "备注（选填）", "手工填写本次录音备注"),
-        ):
-            edit = QLineEdit()
-            edit.setPlaceholderText(placeholder)
-            self.wizard_fields[key] = edit
-            form.addRow(label, edit)
+        environment = QLineEdit()
+        environment.setPlaceholderText("例如：诊室、会议室、室外走廊")
+        self.wizard_fields["environment"] = environment
+        form.addRow("环境 *", environment)
+
+        self.wizard_source_count = QSpinBox()
+        self.wizard_source_count.setRange(0, 20)
+        self.wizard_source_count.setValue(1)
+        self.wizard_source_count.setToolTip("只录制环境噪音时可以填写0")
+        form.addRow("声源数量 *", self.wizard_source_count)
+
+        self.wizard_sources_widget = QWidget()
+        self.wizard_sources_layout = QGridLayout(self.wizard_sources_widget)
+        self.wizard_sources_layout.setContentsMargins(0, 0, 0, 0)
+        self.wizard_sources_layout.addWidget(QLabel("声源"), 0, 0)
+        self.wizard_sources_layout.addWidget(QLabel("类型"), 0, 1)
+        self.wizard_sources_layout.addWidget(QLabel("移动方式"), 0, 2)
+        self.wizard_source_rows: list[tuple[QLabel, QLineEdit, QLineEdit]] = []
+        form.addRow("各声源信息 *", self.wizard_sources_widget)
+        self.wizard_source_count.valueChanged.connect(self._sync_wizard_source_rows)
+        self._sync_wizard_source_rows(self.wizard_source_count.value())
+
+        noise_source = QLineEdit()
+        noise_source.setPlaceholderText("例如：空调、风扇、走廊人声；没有请填写“无”")
+        self.wizard_fields["noise_source"] = noise_source
+        form.addRow("噪音来源 *", noise_source)
         self.wizard_start = QPushButton("开始录制")
         self.wizard_start.clicked.connect(self._start_wizard)
         self.wizard_start.setToolTip("如麦克风尚未连接，程序会先自动连接再开始录制")
@@ -764,6 +783,24 @@ class AudioDataManager(QMainWindow):
         steps_layout.addStretch()
         outer.addWidget(steps_box, 1)
         self.tabs.addTab(page, "测试录制向导")
+
+    def _sync_wizard_source_rows(self, source_count: int) -> None:
+        while len(self.wizard_source_rows) > source_count:
+            row = self.wizard_source_rows.pop()
+            for widget in row:
+                self.wizard_sources_layout.removeWidget(widget)
+                widget.deleteLater()
+        while len(self.wizard_source_rows) < source_count:
+            source_index = len(self.wizard_source_rows) + 1
+            label = QLabel(f"声源 {source_index}")
+            source_type = QLineEdit()
+            source_type.setPlaceholderText("例如：人声、音箱、设备")
+            movement = QLineEdit()
+            movement.setPlaceholderText("例如：静止、走动、环绕移动")
+            self.wizard_sources_layout.addWidget(label, source_index, 0)
+            self.wizard_sources_layout.addWidget(source_type, source_index, 1)
+            self.wizard_sources_layout.addWidget(movement, source_index, 2)
+            self.wizard_source_rows.append((label, source_type, movement))
 
     def _qa_tab(self):
         page = QWidget()
@@ -1127,19 +1164,35 @@ class AudioDataManager(QMainWindow):
         self.statusBar().showMessage("维护操作完成", 5000)
 
     def _wizard_input(self) -> WizardInput:
-        recording_name = self.wizard_fields["recording_name"].text().strip()
-        if not recording_name:
-            raise ValueError("请填写音频名称")
+        environment = self.wizard_fields["environment"].text().strip()
+        if not environment:
+            raise ValueError("请填写环境")
+        source_count = self.wizard_source_count.value()
+        source_categories = tuple(row[1].text().strip() for row in self.wizard_source_rows)
+        source_movements = tuple(row[2].text().strip() for row in self.wizard_source_rows)
+        for index, (source_type, movement) in enumerate(
+            zip(source_categories, source_movements, strict=True), 1
+        ):
+            if not source_type:
+                raise ValueError(f"请填写声源 {index} 的类型")
+            if not movement:
+                raise ValueError(f"请填写声源 {index} 的移动方式")
+        noise_source = self.wizard_fields["noise_source"].text().strip()
+        if not noise_source:
+            raise ValueError("请填写噪音来源；没有噪音时请填写“无”")
+        recording_name = f"{environment} · {source_count}个声源 · {datetime.now():%Y%m%d-%H%M%S}"
         return WizardInput(
             dataset_id="test-recordings",
             room_id="unspecified",
-            environment_id="unspecified",
+            environment_id=environment,
             array_pose_id="r6plus1-default",
-            source_count=0,
+            source_count=source_count,
             consent_status="not_applicable",
             allowed_uses=("internal_research",),
-            notes=self.wizard_fields["notes"].text().strip(),
             recording_name=recording_name,
+            source_categories=source_categories,
+            source_movements=source_movements,
+            noise_source=noise_source,
         )
 
     def _validate_wizard(self):
@@ -1198,7 +1251,7 @@ class AudioDataManager(QMainWindow):
         self._job(self.service.wizard.finalize, self._wizard_complete)
 
     def _wizard_complete(self, recording_id):
-        name = self.wizard_fields["recording_name"].text().strip()
+        name = self.service.wizard.input.recording_name if self.service.wizard.input is not None else recording_id
         self.wizard_status.setText(f"当前阶段：完成 · {name}")
         self.wizard_start.setEnabled(True)
         self.wizard_pause.setEnabled(False)

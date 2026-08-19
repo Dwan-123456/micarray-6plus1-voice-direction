@@ -324,6 +324,8 @@ class DedicatedRecordingController:
             language_tags=data.language_tags,
             notes=data.notes,
             display_name=data.recording_name.strip(),
+            source_movements=data.source_movements,
+            noise_source=data.noise_source.strip(),
         )
         store = CorpusStore(self.data_root, catalog=self.catalog)
         self._recording_id = store.register_raw_recording(

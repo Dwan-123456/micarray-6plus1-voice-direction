@@ -836,7 +836,8 @@ def test_dedicated_recording_streams_complete_raw_input_with_pause_resume(tmp_pa
     dataset = str(uuid.uuid4())
     controller.begin(WizardInput(
         dataset, "room", "quiet", "pose", 1, "granted", ("research",),
-        (30.0,), (1.0,), recording_name="手工命名录音",
+        (30.0,), (1.0,), recording_name="诊室 · 1个声源 · 20260819-120000",
+        source_categories=("人声",), source_movements=("静止",), noise_source="空调",
     ))
     rng = np.random.default_rng(42)
     session = str(uuid.uuid4())
@@ -864,9 +865,18 @@ def test_dedicated_recording_streams_complete_raw_input_with_pause_resume(tmp_pa
     assert len(hotmaps) == 30
     assert hotmaps[20]["playback_sample"] == 20 * 960
     manifest = json.loads((root / "recording_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["display_name"] == "手工命名录音"
+    assert manifest["display_name"] == "诊室 · 1个声源 · 20260819-120000"
+    assert manifest["environment_id"] == "quiet"
+    assert manifest["source_count"] == 1
+    assert manifest["source_categories"] == ["人声"]
+    assert manifest["source_movements"] == ["静止"]
+    assert manifest["noise_source"] == "空调"
     assert {item["kind"] for item in manifest["assets"]} == {"native_8ch", "cdc_hotmaps", "labels"}
     labels = json.loads((root / "labels.json").read_text(encoding="utf-8"))
+    assert labels["schema_version"] == "test_recording_labels_v3"
+    assert labels["environment"] == "quiet"
+    assert labels["sources"] == [{"index": 1, "type": "人声", "movement": "静止"}]
+    assert labels["noise_source"] == "空调"
     assert labels["duration_seconds"] == 30 * 960 / 48_000
     assert len(labels["recorded_intervals"]) == 2
 

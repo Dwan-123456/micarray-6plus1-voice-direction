@@ -34,6 +34,8 @@ class RecordingMetadata:
     snr_db: float | None = None
     notes: str = ""
     display_name: str = ""
+    source_movements: tuple[str, ...] = ()
+    noise_source: str = ""
 
 
 @dataclass(frozen=True, slots=True)

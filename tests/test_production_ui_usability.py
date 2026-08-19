@@ -79,10 +79,35 @@ def test_annotation_form_uses_seconds_and_chinese_type_choices(tmp_path):
 def test_wizard_uses_chinese_allowed_use_choices(tmp_path):
     app_instance()
     window = AudioDataManager(tmp_path)
-    assert set(window.wizard_fields) == {"recording_name", "notes"}
+    assert set(window.wizard_fields) == {"environment", "noise_source"}
+    assert window.wizard_source_count.value() == 1
+    assert len(window.wizard_source_rows) == 1
     assert window.wizard_start.text() == "开始录制"
     assert window.wizard_pause.text() == "暂停录制"
     assert window.wizard_stop.text() == "结束并保存"
+    window.close()
+
+
+def test_wizard_builds_one_type_and_movement_row_per_source(tmp_path):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    window.wizard_fields["environment"].setText("诊室")
+    window.wizard_fields["noise_source"].setText("空调")
+    window.wizard_source_count.setValue(2)
+    assert len(window.wizard_source_rows) == 2
+    window.wizard_source_rows[0][1].setText("医生人声")
+    window.wizard_source_rows[0][2].setText("静止")
+    window.wizard_source_rows[1][1].setText("患者人声")
+    window.wizard_source_rows[1][2].setText("左右走动")
+
+    data = window._wizard_input()
+
+    assert data.environment_id == "诊室"
+    assert data.source_count == 2
+    assert data.source_categories == ("医生人声", "患者人声")
+    assert data.source_movements == ("静止", "左右走动")
+    assert data.noise_source == "空调"
+    assert data.recording_name.startswith("诊室 · 2个声源 · ")
     window.close()
 
 
@@ -93,6 +118,7 @@ def test_wizard_start_shows_validation_errors_instead_of_starting(tmp_path, monk
     monkeypatch.setattr(QMessageBox, "warning", lambda _parent, _title, text: messages.append(text))
     window._start_wizard()
     assert messages
+    assert messages == ["请填写环境"]
     assert window.service.wizard.phase.value == "idle"
     window.close()
 
