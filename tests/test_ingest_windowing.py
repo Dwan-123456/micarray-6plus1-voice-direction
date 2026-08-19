@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
-from common.data_types import IngestedAudioBlock
+from common.data_types import CalibrationMetadata, IngestedAudioBlock
 from ingest import IngestCoordinator
 from layer1_input.interface import DecodedAudio, InputHealthEvent
 from layer1_input.calibration import ChannelCalibrator
@@ -52,6 +54,38 @@ def test_arbitrary_chunking_produces_identical_windows():
         assert np.array_equal(left.samples, right.samples)
 
 
+def test_window_exposes_only_calibrated_physical_history_for_music():
+    samples = np.zeros((15_360, 8), np.float32)
+    samples[:, :7] = np.arange(7, dtype=np.float32)[None, :]
+    samples[:, 7] = 10_000.0
+    config = CalibrationConfig((2.0,) * 7, (1,) * 7, (0,) * 7)
+    calibrated = ChannelCalibrator(config).process(DecodedAudio(samples, 48_000, 0, 0.0))
+    block = IngestCoordinator(session_id="music-input").ingest(calibrated)
+    window = WindowAssembler().add(block)[0]
+
+    assert window.samples.shape == (15_360, 8)
+    assert window.physical_samples.shape == (15_360, 7)
+    assert np.all(window.hardware_mix == 10_000.0)
+    assert not np.any(window.physical_samples == 10_000.0)
+    assert window.available_history_samples == 15_360
+    for context_ms, count in ((160, 7_680), (240, 11_520), (320, 15_360)):
+        history = window.physical_history(context_ms)
+        assert history.shape == (count, 7)
+        assert window.physical_history_start_sample(context_ms) == window.decision_sample - count
+        assert not history.flags.writeable
+    with pytest.raises(ValueError, match="160/240/320"):
+        window.physical_history(200)
+
+
+def test_rolling_window_contract_uses_session_epoch_and_absolute_sample():
+    first, second = run_chunks([960] * 17)
+    assert second.is_contiguous_successor_of(first)
+    assert first.rolling_state_key == ("test", 0, 15_360)
+    assert second.rolling_update_start_sample == 15_360
+    assert np.array_equal(second.physical_samples[-960:, 0], np.arange(15_360, 16_320))
+    assert not hasattr(second, "track_id")
+
+
 def test_health_event_and_sequence_gap_increment_epoch_only_once():
     coordinator = IngestCoordinator(session_id="test")
     first = coordinator.ingest(frame(0, 0, 960))
@@ -92,6 +126,30 @@ def test_epoch_change_clears_window_history_and_keeps_window_ids_monotonic():
         (0, 0, 15_360),
         (1, 1, 15_360),
     ]
+
+
+def test_calibration_version_hash_change_restarts_epoch_and_window_history():
+    coordinator = IngestCoordinator(session_id="calibration-boundary")
+    first_config = CalibrationConfig((1.0,) * 7, (1,) * 7, (0,) * 7)
+    second_config = CalibrationConfig((1.1,) * 7, (1,) * 7, (0,) * 7)
+    raw_a = DecodedAudio(np.zeros((960, 8), np.float32), 48_000, 0, 0.0)
+    raw_b = DecodedAudio(np.zeros((960, 8), np.float32), 48_000, 1, 0.02)
+    first = coordinator.ingest(ChannelCalibrator(first_config).process(raw_a))
+    second = coordinator.ingest(ChannelCalibrator(second_config).process(raw_b))
+    assert first.calibration.calibration_hash != second.calibration.calibration_hash
+    assert (first.stream_epoch, second.stream_epoch, second.start_sample) == (0, 1, 0)
+    assert coordinator.discontinuities[-1].reason == "calibration_change"
+
+
+def test_window_rejects_calibration_change_inside_one_epoch():
+    assembler = WindowAssembler()
+    first = IngestedAudioBlock("s", 0, 0, 960, 48_000, 0, 0.0, np.zeros((960, 8), np.float32))
+    other = CalibrationMetadata(
+        "verified", "other-v1", "a" * 64, "gain_polarity_integer_delay_v1", "b" * 64
+    )
+    assembler.add(first)
+    with pytest.raises(ValueError, match="calibration boundary"):
+        assembler.add(replace(first, start_sample=960, end_sample=1920, sequence_id=1, calibration=other))
 
 
 def test_guard_and_coordinator_share_continuity_decision():

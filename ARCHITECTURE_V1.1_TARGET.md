@@ -1,6 +1,6 @@
 # 6+1 麦克风阵列项目 1.1.0：MUSIC 与公开方向 ID 目标架构
 
-状态：**规划已确认；当前分支已完成L2 Rolling NormMUSIC、公共方向ID及配套跨层/记录接口迁移，但项目1.1.0尚未发布，真实阵列验收仍待完成。已发布版本仍为1.0.1。**
+状态：**规划已确认；当前整合分支已完成L1 + Windowing输入准备、L2 Rolling NormMUSIC、公共方向ID及配套跨层/记录接口迁移，但正式发布与真实阵列验收仍待完成。已发布版本仍为1.0.1。**
 
 目标版本：项目 `1.1.0`，完成全部代码、测试与验收后才允许创建新标签 `v1.1.0`。不得移动、覆盖或重写已经发布的 `v1.0.1`。
 
@@ -111,10 +111,13 @@ kalman_applied
 
 L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预降噪保持。为 MUSIC 增加以下保证：
 
+- IMCRA对7个物理麦分别统计并发布0～8000 Hz噪声PSD/SPP，Wiener预降噪同样作用于0～8000 Hz；L2 Gate概率证据带保持500～4000 Hz，HardwareMix不参与统计或降噪。
 - L2 必须获得连续的48 kHz、7个物理麦校准音频，并可访问DecisionWindow内最多320 ms历史；MUSIC实际使用的滚动历史长度由独立配置和目标机基准确定。HardwareMix仍不得进入协方差、导向矢量或MUSIC伪谱。
 - 校准元数据必须能区分 `verified / unverified`。Development Test UI 对未验证校准明确警告；Production 在完成实机标定后应支持要求 verified calibration 才启动正式定位。
 - 当前增益、极性和整数 sample delay 校准继续兼容；MUSIC 实机误差若表明需要亚采样或频率相关补偿，应新增版本化的频域校准资产，不得静默改写旧 calibration hash。
 - L1 不创建、不保存、不解释 `track_id`。
+
+本分支已经冻结以下输入边界：`CalibrationMetadata`随`IngestedAudioBlock`和`DecisionWindow`传播，包含`status、version、calibration_hash、correction_model、report_hash`以及可选的亚采样/频率响应资产身份。资产身份只保存`uri、version、sha256`；当前整数延迟校准器遇到非空未来资产会显式拒绝，避免静默忽略。校准配置的规范化SHA-256发生变化时必须形成新的epoch；同一epoch内更换校准会被拒绝。未提供正式校准身份的兼容输入被显式标记为`unverified`，Development Test UI显示警告。
 
 ## 6. Windowing 改动
 
@@ -123,6 +126,8 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
 - Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有活动ID时，Gate关闭会跳过新的MUSIC观测。当前窗口开始时只要存在任意未删除ID，低于门限的正式概率判决即强制放行MUSIC；最后一个ID删除后立即恢复概率门限。ID继续按3秒绝对sample TTL推进到coasting/超时；预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
+
+本分支已经实现Windowing侧的滚动输入契约：`DecisionWindow.physical_samples`和`physical_history(160|240|320)`只返回7个物理麦，`HardwareMix`只能通过独立属性访问；`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/240/320三档之一、比较集合固定为三档且历史上限为320 ms。WindowAssembler仍只组装窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
 
 ## 7. Layer 2：MUSIC 定位
 

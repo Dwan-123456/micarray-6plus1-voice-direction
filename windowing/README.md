@@ -1,10 +1,14 @@
-# WindowAssembler：v0.3目标窗口契约
+# WindowAssembler：1.1.0滚动输入准备契约
 
-> 项目1.1.0待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#6-windowing-改动)：窗口大小与20 ms节拍保持不变，320 ms只是可用历史上限；L2 MUSIC按新增/移出STFT帧增量更新，并在目标机比较160/240/320 ms有效历史。Gate阻断时既有轨迹仍按绝对sample进入coasting/超时。下文描述当前1.0.1实现。
+> 项目1.1.0的Windowing输入准备已按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#6-windowing-改动)迁移。窗口大小与20 ms节拍保持不变，320 ms只是可用历史上限；真正的滚动STFT、协方差、MUSIC和轨迹coasting仍由后续L2分支实现。
 
 权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。8通道窗口和IMCRA hop对齐已完成迁移。
 
-本层把连续`IngestedAudioBlock [N,8]`组装为每20 ms一个只读`DecisionWindow [15360,8]`。每个窗口保留320 ms完整上下文，末尾40 ms供L2 SRP，完整窗口供L3增强和L4分类。
+本层把连续`IngestedAudioBlock [N,8]`组装为每20 ms一个只读`DecisionWindow [15360,8]`。每个窗口保留320 ms完整上下文；`physical_samples`固定为`[15360,7]`，`physical_history(160|240|320)`为L2提供只含物理麦的有效历史，HardwareMix不得进入MUSIC。完整8通道窗口继续供现有下游和记录契约使用。
+
+`rolling_state_key=(session_id, stream_epoch, decision_sample)`标识L2滚动状态的时间位置；`rolling_update_start_sample`固定指向最近20 ms的起点，连续后继检查要求同session、同epoch且decision sample增加960。epoch变化立即重置assembler；校准hash变化由IngestCoordinator形成新epoch，同一epoch内校准身份变化被拒绝。
+
+配置`layer2.music.context_ms`只允许160、240或320 ms，`comparison_context_ms`固定覆盖三档，`max_history_ms`固定为320 ms。这些字段冻结输入选择，不表示WindowAssembler实现或缓存MUSIC状态，也不生成任何方向ID。
 
 每个窗口对齐末尾40 ms覆盖的两个20 ms IMCRA结果；L2 Probability Gate据此计算：
 

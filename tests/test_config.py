@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from common.config import config_hash, load_config
+from common.config import calibration_config_hash, config_hash, load_config
 from layer1_input.configuration import AudioConfig, CalibrationConfig, CdcConfig
 
 
@@ -17,6 +17,9 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.max_candidates == 3
     assert config.layer2.probability_gate.backend == "mean_2x20ms_v1"
     assert config.layer2.probability_gate.threshold == 0.60
+    assert config.layer2.music.context_ms == 240
+    assert config.layer2.music.comparison_context_ms == (160, 240, 320)
+    assert config.layer2.music.max_history_ms == 320
     assert config.layer2.direction_kalman.backend == "damped_circular_kalman_v2"
     assert config.layer2.scanner_backend == "frequency_normalized_music"
     assert config.layer2.direction_id_tracking.backend == "global_assignment_v1"
@@ -35,12 +38,17 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert AudioConfig.from_project(config).block_size == 960
     assert AudioConfig.from_project(config).handoff_blocks == 500
     assert CdcConfig.from_project(config).required is False
-    assert CalibrationConfig.from_project(config).delay_samples == (0,) * 7
+    calibration = CalibrationConfig.from_project(config)
+    assert calibration.delay_samples == (0,) * 7
+    assert calibration.version == "gain_polarity_integer_delay_v1"
+    assert calibration.status == "unverified"
+    assert calibration.calibration_hash == calibration_config_hash(config.calibration)
     assert len(config_hash(config)) == 64
-    assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v1"
+    assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v2"
+    assert config.layer1_imcra.output_frequency_min_hz == 0.0
     assert config.layer1_imcra.hop_samples == 960
     assert config.layer1_pre_denoise.enabled is False
-    assert config.layer1_pre_denoise.algorithm_version == "imcra_wiener_wola_v1"
+    assert config.layer1_pre_denoise.algorithm_version == "imcra_wiener_wola_v2"
     assert config.layer1_pre_denoise.frame_samples == 1920
     assert config.layer1_pre_denoise.hop_samples == 960
     assert config.layer1_pre_denoise.minimum_gain_db == -18.0
@@ -73,6 +81,22 @@ def test_only_allowed_deployment_variables_override():
 def test_unknown_config_field_is_rejected(tmp_path):
     text = CONFIG.read_text(encoding="utf-8") + "\nunknown_section: true\n"
     candidate = tmp_path / "bad.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+@pytest.mark.parametrize("context_ms", (160, 240, 320))
+def test_music_history_comparison_context_is_configurable(tmp_path, context_ms):
+    text = CONFIG.read_text(encoding="utf-8").replace("context_ms: 240", f"context_ms: {context_ms}", 1)
+    candidate = tmp_path / f"music-{context_ms}.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    assert load_config(candidate, environ={}).layer2.music.context_ms == context_ms
+
+
+def test_music_history_rejects_values_outside_comparison_set(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace("context_ms: 240", "context_ms: 200", 1)
+    candidate = tmp_path / "music-invalid.yaml"
     candidate.write_text(text, encoding="utf-8")
     with pytest.raises(ValidationError):
         load_config(candidate, environ={})

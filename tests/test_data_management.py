@@ -267,10 +267,10 @@ def test_runtime_records_l1_imcra_exact_fields_without_invented_statistics(tmp_p
     session = str(uuid.uuid4())
     source = block(session, 0)
     frequencies = np.fft.rfftfreq(2048, 1 / 48000).astype(np.float32)
-    frequencies = frequencies[(frequencies >= 80.0) & (frequencies <= 8_000.0)]
+    frequencies = frequencies[frequencies <= 8_000.0]
     spectral = (7, frequencies.size)
     hop = ImcraHopSnapshot(
-        session, 0, 0, 960, (0,), "cohen_imcra_2003_l1_v1", "ready",
+        session, 0, 0, 960, (0,), "cohen_imcra_2003_l1_v2", "ready",
         frequencies,
         np.ones(spectral, np.float32),
         np.ones(spectral, np.float32) * 2,
@@ -297,8 +297,8 @@ def test_runtime_records_l1_imcra_exact_fields_without_invented_statistics(tmp_p
     with np.load(root / asset["path"]) as values:
         assert values["start_samples"].tolist() == [0]
         assert values["end_samples"].tolist() == [960]
-        assert values["frequencies_hz"].shape == (338,)
-        assert values["noise_psd"].shape == (1, 7, 338)
+        assert values["frequencies_hz"].shape == (342,)
+        assert values["noise_psd"].shape == (1, 7, 342)
         assert values["noise_level_db"].shape == (1, 7)
         assert values["source_probability_per_mic"].shape == (1, 7)
         assert values["array_source_probability_20ms"].tolist() == [np.float32(0.4)]
@@ -317,7 +317,7 @@ def test_chunk_streams_large_float_noise_and_imcra_arrays_with_constant_ram_buff
     session = str(uuid.uuid4())
     imcra_frequencies = np.fft.rfftfreq(2048, 1 / 48000).astype(np.float32)
     imcra_frequencies = imcra_frequencies[
-        (imcra_frequencies >= 80.0) & (imcra_frequencies <= 8_000.0)
+        imcra_frequencies <= 8_000.0
     ]
     spectral = np.ones((7, imcra_frequencies.size), np.float32)
     noise_frequencies = np.fft.rfftfreq(64, 1 / 48000).astype(np.float32)
@@ -350,7 +350,7 @@ def test_chunk_streams_large_float_noise_and_imcra_arrays_with_constant_ram_buff
             start,
             start + 960,
             (start // 960,),
-            "cohen_imcra_2003_l1_v1",
+            "cohen_imcra_2003_l1_v2",
             "ready",
             imcra_frequencies,
             spectral,
@@ -400,7 +400,7 @@ def test_imcra_streaming_closes_under_long_windows_session_path(tmp_path: Path):
 
     session = str(uuid.uuid4())
     frequencies = np.fft.rfftfreq(2048, 1 / 48_000).astype(np.float32)
-    frequencies = frequencies[(frequencies >= 80.0) & (frequencies <= 8_000.0)]
+    frequencies = frequencies[frequencies <= 8_000.0]
     spectral = np.ones((7, frequencies.size), np.float32)
     hop = ImcraHopSnapshot(
         session_id=session,
@@ -408,7 +408,7 @@ def test_imcra_streaming_closes_under_long_windows_session_path(tmp_path: Path):
         start_sample=0,
         end_sample=960,
         source_sequence_ids=(0,),
-        algorithm_version="cohen_imcra_2003_l1_v1",
+        algorithm_version="cohen_imcra_2003_l1_v2",
         state="ready",
         frequencies_hz=frequencies,
         noise_psd=spectral,

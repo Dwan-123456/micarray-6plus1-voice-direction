@@ -188,8 +188,8 @@ def test_standalone_capture_records_formal_l1_imcra_sidecar(tmp_path):
     imcra = next(item for item in manifest["chunks"][0]["assets"] if item["kind"] == "imcra")
     with np.load(manifest_path.parent / imcra["path"]) as values:
         assert values["start_samples"].tolist() == [0, 960, 1920]
-        assert values["noise_psd"].shape == (3, 7, 338)
-        assert values["spp"].shape == (3, 7, 338)
+        assert values["noise_psd"].shape == (3, 7, 342)
+        assert values["spp"].shape == (3, 7, 342)
     service.catalog.close()
 
 

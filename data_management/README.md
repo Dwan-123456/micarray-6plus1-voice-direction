@@ -11,13 +11,13 @@ RecordingStore旁路订阅IngestCoordinator的唯一时间轴，不参与实时�
 - native Host 8ch：`CH0..CH5、HardwareMix、Center`原始顺序；
 - logical 8ch：`MIC0..MIC5、Center、HardwareMix`算法顺序；
 - 可选physical 7ch派生视图；
-- 每20 ms IMCRA：算法版本`cohen_imcra_2003_l1_v1`、状态、338点频率轴，以及形状为`[record,7,338]`的噪声PSD、两轮平滑谱、两轮最小值、`q_hat`、SPP和先验/后验SNR；另存`noise_features[record,7,4]`、每麦概率、500～4000 Hz阵列聚合概率与来源sequence；
+- 每20 ms IMCRA：算法版本`cohen_imcra_2003_l1_v2`、状态、342点频率轴，以及形状为`[record,7,342]`的噪声PSD、两轮平滑谱、两轮最小值、`q_hat`、SPP和先验/后验SNR；另存`noise_features[record,7,4]`、每麦概率、500～4000 Hz阵列聚合概率与来源sequence；
 - 每40 ms Gate：两个来源hop、平均概率、阈值、revision和Gate结果；
 - MUSIC/NormMUSIC 360点空间谱、model order、有效频点及协方差质量；公共方向的`track_id`、观测角、输出角、轨迹状态、`active_tracks`和Kalman应用状态；L3逐ID 48 kHz增强音频；L4逐ID概率与判断。
 
-所有sidecar均以session、epoch及绝对sample区间关联，不能按写入时间猜测对应关系。manifest必须记录80～8000 Hz IMCRA频带、500～4000 Hz Gate/SRP频带、方向平滑器版本/配置/hash、官方MIC/I²S关系、Host/logical映射和几何版本。HardwareMix没有物理坐标。离线复现平滑角必须从同一epoch起点顺序重放，不能随机单窗推导内部状态。
+所有sidecar均以session、epoch及绝对sample区间关联，不能按写入时间猜测对应关系。manifest必须记录0～8000 Hz IMCRA频带、500～4000 Hz Gate证据带、方向算法版本/配置/hash、官方MIC/I²S关系、Host/logical映射和几何版本。HardwareMix没有物理坐标。离线复现有状态算法必须从同一epoch起点顺序重放，不能随机单窗推导内部状态。
 
-IMCRA NPZ字段固定为`start_samples、end_samples、source_sequence_ids、algorithm_versions、states、frequencies_hz、noise_psd、smoothed_psd、conditional_smoothed_psd、minimum_psd、conditional_minimum_psd、spp、speech_absence_probability、posterior_snr、prior_snr、noise_features、noise_level_db、source_probability_per_mic、array_source_probability_20ms`。manifest中的`frequency_bin_count`必须从实际频率轴写入，当前版本为338，不能沿用完整RFFT的1025。
+IMCRA NPZ字段固定为`start_samples、end_samples、source_sequence_ids、algorithm_versions、states、frequencies_hz、noise_psd、smoothed_psd、conditional_smoothed_psd、minimum_psd、conditional_minimum_psd、spp、speech_absence_probability、posterior_snr、prior_snr、noise_features、noise_level_db、source_probability_per_mic、array_source_probability_20ms`。manifest中的`frequency_bin_count`必须从实际频率轴写入，当前版本为342，不能沿用完整RFFT的1025。
 
 写盘使用独立有界音频/结果队列；故障、队列溢出或磁盘不足不得反压采集。Runtime对已有序合并的每个窗口调用`append_result_with_watermark`：结果与同窗水位以一条队列命令原子接纳，满队列时两者均不入队、生产者水位不前进，并在manifest记录`result_overflow`缺口。兼容的分开`append_result/advance_result_watermark`接口仍存在，但当前ApplicationRuntime不使用它们完成正式提交。
 
