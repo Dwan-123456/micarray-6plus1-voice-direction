@@ -1,5 +1,7 @@
 # Layer 3：逐方向音频增强
 
+> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#9-layer-3-改动)：L3 改为消费 `TrackedDirection`，所有方向输入、增强批次和音频输出按 `(WindowKey, track_id)` 精确对齐，且不自行创建或修补 ID。下文描述当前 1.0.1 实现。
+
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。本目录现已实现L3音频中心公共契约；内部复数STFT仅用于波束形成，不再跨层输出。
 
 ## 公共契约

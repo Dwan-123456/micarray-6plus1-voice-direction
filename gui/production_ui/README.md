@@ -1,5 +1,7 @@
 # 麦克风阵列录音与数据管理
 
+> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#13-recordingstore数据管理与-production-ui)：运行录音详情增加逐 ID 时间线、状态、L4 概率和增强音频试听；L1-only 测试录音明确不含算法 ID。下文描述当前 1.0.1 实现。
+
 权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。专用测试录音使用`raw_microphone_recording_v1`：录制时直接流式保存主机收到的原始8通道PCM16与每一帧CDC热力图，不在内存累计整段录音，也不为新录音生成7通道派生音频。
 
 目标界面继续管理Runtime Sessions、Test Corpus、录制向导、质量与标注、系统维护及实验快照。新增内容包括：native/logical 8ch通道说明、HardwareMix标识、IMCRA/Gate时间线、原始SRP空间响应、L2平滑候选、逐方向L3音频和L4结果。内部追踪ID不显示、不检索也不写入资产。

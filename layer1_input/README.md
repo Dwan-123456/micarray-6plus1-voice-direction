@@ -1,5 +1,7 @@
 # Layer 1：八通道输入、物理映射与IMCRA
 
+> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#5-layer-1-改动)：为滚动MUSIC保证连续、校准后的7麦输入和最多320 ms可用历史，增加verified/unverified校准状态与可版本化的亚采样/频域校准边界；L1不创建ID。下文描述当前1.0.1实现。
+
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1的逻辑8通道、麦克风面坐标和20 ms IMCRA迁移已完成。
 
 ## 目标职责

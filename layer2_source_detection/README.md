@@ -1,5 +1,7 @@
 # Layer 2 1.1：Probability Gate、SRP-PHAT与内部方向平滑
 
+> **项目 1.1.0 待实现目标**见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#7-layer-2music-定位)及其永久 ID 章节：用宽带 NormMUSIC/MDL 替换 SRP-PHAT，删除 iterative multiple peak，ID 全局一对一关联永久开启并公开给下游，Kalman 独立可选。下文仅描述项目 1.0.1 / Layer 2 1.1 的当前实现。
+
 权威契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。Probability Gate、SRP-PHAT及内部方向平滑均已实现。
 
 ## 目标主链

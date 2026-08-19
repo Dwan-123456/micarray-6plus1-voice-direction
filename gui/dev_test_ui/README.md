@@ -1,5 +1,7 @@
 # Development Test UI：项目1.0.1 / Layer 2 1.1
 
+> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)：删除 iterative 和 ID 开关，保留独立 Kalman 开关，显示 MUSIC 伪谱/公共 ID，并只按 L2 权威 `(session_id, stream_epoch, track_id)` 拼接试听。下文描述当前 1.0.1 界面。
+
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**本README描述当前已迁移界面。**
 
 当前回归状态：L1预降噪及界面相关自动化门禁已通过。L1区域已增加持久化的“IMCRA预降噪”开关；开启后Runtime等待对应20 ms降噪块完成，再将替换后的7路音频送入后续层。

@@ -1,5 +1,7 @@
 # ApplicationRuntime：唯一时间轴与分阶段流水
 
+> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#11-runtime时间线与并行管理)：保留 WindowKey、有界分层流水与有序 Joiner，新增跨层 ID 对齐、MUSIC 配置快照和 DecisionRecord v4，并删除 angle-only L4 feedback 与私有 ID 投影。下文描述当前 1.0.1 实现。
+
 权威架构见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)，详细计划见[`L2_INTERNAL_DIRECTION_SMOOTHER_PLAN.md`](../L2_INTERNAL_DIRECTION_SMOOTHER_PLAN.md)。**本页描述已实施的Runtime边界。**
 
 Runtime负责唯一L1→Ingest→Window装配，以及L2、L3、L4分阶段流水调度。每个`DecisionWindow`只生成一次不可变`WindowWorkItem`，正式身份固定为`WindowKey(session_id, stream_epoch, window_id, decision_sample)`；入队时冻结该窗口使用的Gate/SRP/方向平滑、L3模式、L4阈值、几何与config hash。所有StageResult必须继承完全相同的键。

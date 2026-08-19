@@ -1,5 +1,7 @@
 # 项目文件分类
 
+> 当前文件分类继续对应项目 1.0.1。项目 1.1.0 的目标文件职责和迁移顺序以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为准；其中 L2 将由 MUSIC 和永久公共方向 ID 取代当前 SRP/私有可选 ID 路径，完成迁移后再更新本清单为已实现状态。
+
 > 当前源码已迁移到v0.3主链，权威接口见[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)。ApplicationRuntime采用唯一WindowKey、L2/L3/L4逐层有界latest-wins、有界completion/backlog/commit以及有序ResultJoiner；同窗严格L2→L3→L4、稳态跨窗并行。实机标定和production入口的未完成项仍以权威架构文档为准。
 
 本工作区分为“当前新项目”和“旧项目/外部参考资料”两类。运行、测试、打包和开发入口只能依赖当前新项目；`legacy_reference_only/`不得加入Python导入路径，也不得作为运行时数据源。

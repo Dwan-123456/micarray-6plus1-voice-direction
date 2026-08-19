@@ -1,5 +1,7 @@
 # Layer 4：48 kHz音频到人声概率
 
+> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#10-layer-4-改动)：音频段、检测和阶段结果贯通 `track_id`，删除按角度向 L2 回送正式化/续租证据的路径。下文描述当前 1.0.1 实现。
+
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L4已迁移为独立48 kHz波形输入契约；L3自身的公共契约迁移不属于本层完成范围。
 
 L4对每个候选接收L3输出的48 kHz、320 ms单声道增强音频`float32[15360]`，以及与该窗口严格对齐的16个IMCRA `array_source_probability_20ms`。L4先创建独立音频副本，以20 ms为单位执行`imcra_probability_rms_v1`响度补偿，再由模型适配器降采样到16 kHz并执行CNN前处理，输出一个`[0,1]` Voice / Non-Voice概率。L3原始波形、试听和录音始终使用未补偿版本。

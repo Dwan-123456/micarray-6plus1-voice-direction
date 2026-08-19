@@ -1,5 +1,7 @@
 # Audio Data Manager：v0.3存储契约
 
+> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#13-recordingstore数据管理与-production-ui)：DecisionRecord 升级为 v4，MUSIC、公共 `track_id`、逐 ID 增强资产和时间线进入正式存储，旧 v3 保持只读兼容。下文描述当前 1.0.1 存储契约。
+
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1 IMCRA sidecar已按v0.3迁移；其余资产的状态以目标架构和当前代码为准。
 
 RecordingStore旁路订阅IngestCoordinator的唯一时间轴，不参与实时算法控制，也不自行推导sample。Runtime Sessions与Test Corpus继续严格隔离，通过manifest、SHA-256、SQLite WAL Catalog和lineage索引。
