@@ -6,7 +6,7 @@
 
 Runtime负责唯一L1→Ingest→Window装配，以及L2、L3、L4分阶段流水调度。每个`DecisionWindow`只生成一次不可变`WindowWorkItem`，正式身份固定为`WindowKey(session_id, stream_epoch, window_id, decision_sample)`；入队时冻结该窗口使用的Gate、MUSIC历史/STFT/频点、MDL、关联生命周期、Kalman revision、L3模式、L4阈值、几何与config hash。配置快照不再包含iterative或ID-enable语义。所有StageResult必须继承完全相同的键。
 
-L2、L3、L4各有独立单worker和有界latest-wins等待队列。同一窗口仍严格按L2→L3→L4传递；稳态时允许L2(n)、L3(n-1)、L4(n-2)并行。默认三层等待队列各为10000窗，`max_inflight_windows=30003`覆盖三层全部等待位和每层1个正在执行的窗口，因此Joiner不会以旧的16窗门限提前遮蔽队列配置；completion主队列和后备backlog仍分别为8。按50窗/s计算，单层满队列约代表200秒等待工作，端到端累计等待可能更长。该设置不会预分配窗口内存，但窗口数上限对应的原始8通道float32音频下限已约13.7 GiB，IMCRA快照、StageResult和对象开销还会继续增加；ResultJoiner的独立字节上限可能更早拒绝接纳。运行时必须观察队列深度、高水位和进程内存。新任务遇到本层满队列时只替换尚未被worker取走的最旧任务，已开始计算不取消。L2队列丢弃使三阶段全部`DROPPED`；L3队列丢弃保留L2、标记L3/L4 `DROPPED`；L4队列丢弃保留L2/L3、标记L4 `DROPPED`。L2 worker独占滚动MUSIC/方向轨迹状态和预计算导向缓存；连续窗口增量推进，sample跳跃或revision变化时安全重建并发布诊断。
+L2、L3、L4各有独立单worker和有界latest-wins等待队列。同一窗口仍严格按L2→L3→L4传递；稳态时允许L2(n)、L3(n-1)、L4(n-2)并行。三层等待队列容量均固定为1，`max_inflight_windows=6`覆盖三层各1个等待窗口和各1个正在执行的窗口；completion主队列和后备backlog仍分别为8。新任务遇到本层满队列时替换尚未被worker取走的旧窗口，已开始计算不取消，因此持续过载表现为可审计丢窗而不是不断增长的排队延迟。L2队列丢弃使三阶段全部`DROPPED`；L3队列丢弃保留L2、标记L3/L4 `DROPPED`；L4队列丢弃保留L2/L3、标记L4 `DROPPED`。L2 worker独占滚动MUSIC/方向轨迹状态和预计算导向缓存；连续窗口增量推进，sample跳跃或revision变化时安全重建并发布诊断。
 
 `ResultJoiner`接收乱序完成的L2/L3/L4终态，只在同一WindowKey完整后生成一个`JoinedWindowResult`。每层`StageResult`携带有序公共`(track_id, theta_deg)`信息；Joiner逐项校验L2 directions、L3 enhanced与L4 detections的ID集合、顺序、角度及WindowKey。commit阶段按全局window ID有序调用RecordingStore的原子`append_result_with_watermark`，之后再做Test UI投影；stage worker不得绕过Joiner直接发布正式结果。Gate阻断产生L3/L4 `SKIPPED`；任一阶段`FAILED/TIMED_OUT/DROPPED/CANCELLED`都产生唯一`error` DecisionRecord v4；仅完整成功但使用声明回退的结果为`degraded`。旧DecisionRecord v3仅支持只读，不原地改写。
 
