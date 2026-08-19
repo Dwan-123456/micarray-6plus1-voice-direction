@@ -338,6 +338,7 @@ class DedicatedRecordingController:
             },
             assets=assets,
             duration_samples=self._total_samples,
+            run_quality_check=False,
         )
         self.phase = WizardPhase.COMPLETE
         return self._recording_id
@@ -374,8 +375,8 @@ class DedicatedRecordingController:
             WizardPhase.IDLE: "等待填写信息并开始录音",
             WizardPhase.RECORDING: f"正在录音 · 已录 {duration:.1f} 秒",
             WizardPhase.PAUSED: f"录音已暂停 · 已录 {duration:.1f} 秒",
-            WizardPhase.FINALIZING: f"录音结束 · 正在保存 {duration:.1f} 秒音频并自动检查",
-            WizardPhase.COMPLETE: f"保存和自动质量检查完成 · 共 {duration:.1f} 秒",
+            WizardPhase.FINALIZING: f"录音结束 · 正在保存 {duration:.1f} 秒音频",
+            WizardPhase.COMPLETE: f"保存完成 · 共 {duration:.1f} 秒（尚未检查质量）",
             WizardPhase.ERROR: self._error_reason or "录制失败，请重新开始",
         }
         return WizardStatus(self.phase, self._total_samples, 0, messages[self.phase], self._recording_id)

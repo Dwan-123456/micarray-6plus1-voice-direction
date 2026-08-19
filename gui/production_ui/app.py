@@ -56,6 +56,7 @@ class _Signals(QObject):
 class _Job(QRunnable):
     def __init__(self, fn: Callable[[], Any]):
         super().__init__()
+        self.setAutoDelete(False)
         self.fn = fn
         self.signals = _Signals()
 
@@ -251,6 +252,7 @@ class AudioDataManager(QMainWindow):
         super().__init__()
         self.service = DataManagerService(data_root)
         self.pool = QThreadPool.globalInstance()
+        self._jobs: set[_Job] = set()
         self.capture_connected = False
         self._pending_wizard_input: WizardInput | None = None
         self._closing = False
@@ -584,7 +586,7 @@ class AudioDataManager(QMainWindow):
         cards.addWidget(
             self._task_card(
                 "采集带角度真值的测试样本",
-                "按向导记录房间、角度、授权信息，完成通道检查、前后环境噪声和自动质量检查。",
+                "按向导填写环境和声源信息，边录边保存原始8通道音频与热力图；质量检查可稍后手动执行。",
                 "开始测试录制向导",
                 "wizard",
             ),
@@ -839,7 +841,7 @@ class AudioDataManager(QMainWindow):
             "③ 录制期间可以暂停和继续，暂停部分不会写入数据集\n\n"
             "④ 点击“结束并保存”，程序自动统计实际录制时长\n\n"
             "⑤ 系统边录边保存麦克风传入电脑的原始8通道音频和热力图\n\n"
-            "检查未通过的样本不会丢失，会进入“待处理区”。"
+            "保存完成后录音会直接进入测试语料库；需要时可在“质量与标注”页面手动检查。"
         )
         steps.setWordWrap(True)
         steps_layout.addWidget(steps)
@@ -1042,8 +1044,24 @@ class AudioDataManager(QMainWindow):
         if self._closing:
             return
         job = _Job(fn)
-        job.signals.done.connect(lambda value: None if self._closing else done(value))
-        job.signals.failed.connect(lambda text: None if self._closing else QMessageBox.critical(self, "操作失败", text))
+        self._jobs.add(job)
+
+        def completed(value: Any) -> None:
+            try:
+                if not self._closing:
+                    done(value)
+            finally:
+                self._jobs.discard(job)
+
+        def failed(text: str) -> None:
+            try:
+                if not self._closing:
+                    QMessageBox.critical(self, "操作失败", text)
+            finally:
+                self._jobs.discard(job)
+
+        job.signals.done.connect(completed)
+        job.signals.failed.connect(failed)
         self.pool.start(job)
 
     def refresh_all(self):

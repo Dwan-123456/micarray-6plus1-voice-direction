@@ -872,7 +872,8 @@ def test_dedicated_recording_streams_complete_raw_input_with_pause_resume(tmp_pa
     assert controller.phase == WizardPhase.FINALIZING
     recording_id = controller.finalize()
     root = tmp_path / "test_corpus" / dataset / "recordings" / recording_id
-    assert controller.phase == WizardPhase.COMPLETE and (root / "qa_report.json").exists()
+    assert controller.phase == WizardPhase.COMPLETE
+    assert not (root / "qa_report.json").exists()
     with wave.open(str(root / "native_8ch.wav"), "rb") as recorded:
         assert recorded.getnchannels() == 8
         assert recorded.getnframes() == 30 * 960
@@ -880,6 +881,7 @@ def test_dedicated_recording_streams_complete_raw_input_with_pause_resume(tmp_pa
     assert len(hotmaps) == 30
     assert hotmaps[20]["playback_sample"] == 20 * 960
     manifest = json.loads((root / "recording_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["quality_status"] == "pending"
     assert manifest["display_name"] == "诊室 · 1个声源 · 20260819-120000"
     assert manifest["environment_id"] == "quiet"
     assert manifest["source_count"] == 1

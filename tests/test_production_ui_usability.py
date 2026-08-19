@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 import wave
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -14,6 +16,18 @@ from gui.production_ui.channel_player import NativeChannelPlayer
 
 def app_instance() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def process_events_until(predicate, timeout: float = 3.0) -> bool:
+    app = app_instance()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    app.processEvents()
+    return bool(predicate())
 
 
 def test_manager_uses_six_chinese_task_pages_and_clear_disconnected_state(tmp_path):
@@ -30,6 +44,27 @@ def test_manager_uses_six_chinese_task_pages_and_clear_disconnected_state(tmp_pa
     assert not window.mode_select.isEnabled()
     assert window.wizard_start.isEnabled()
     assert "未连接" in window.connection_badge.text()
+    window.close()
+
+
+def test_background_job_is_retained_until_its_ui_callback_finishes(tmp_path):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    results = []
+
+    def work():
+        started.set()
+        assert release.wait(3.0)
+        return "loaded"
+
+    window._job(work, results.append)
+    assert started.wait(1.0)
+    assert window._jobs
+    release.set()
+    assert process_events_until(lambda: results == ["loaded"])
+    assert not window._jobs
     window.close()
 
 

@@ -169,6 +169,7 @@ class CorpusStore:
         lineage: dict,
         assets: list[dict],
         duration_samples: int,
+        run_quality_check: bool = True,
     ) -> str:
         """Register an already-streamed, lossless microphone-input recording."""
 
@@ -250,9 +251,10 @@ class CorpusStore:
         }
         append_audit(root, "raw_recording_created", {"display_name": manifest["display_name"]})
         write_manifest(root / "recording_manifest.json", manifest)
-        report = qa_recording(root)
-        manifest["quality_status"] = report["status"] if report["status"] == "passed" else "quarantine"
-        write_manifest(root / "recording_manifest.json", manifest)
+        if run_quality_check:
+            report = qa_recording(root)
+            manifest["quality_status"] = report["status"] if report["status"] == "passed" else "quarantine"
+            write_manifest(root / "recording_manifest.json", manifest)
         dataset_root = root.parents[1]
         self.catalog.upsert_dataset(meta["dataset_id"], dataset_root)
         self.catalog.upsert_recording(manifest, root)
