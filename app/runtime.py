@@ -2321,7 +2321,11 @@ class ApplicationRuntime:
 
     def set_light(self, enabled: bool) -> None:
         packet = led_command(enabled)
-        count = self.serial_device.write(packet)
+        try:
+            count = self.serial_device.write(packet)
+        except Exception:
+            self.light_state = "error"
+            raise
         if count != len(packet):
             self.light_state = "error"
             raise OSError(f"灯控命令未完整写入：{count}/{len(packet)}")
@@ -2434,6 +2438,16 @@ class ApplicationRuntime:
                 "cannot close RecordingStore while processing workers are still alive"
             )
         close_error: BaseException | None = None
+        # A light command can lazily open CDC before capture starts.  In that
+        # state InputPipeline does not own an active hotmap lifecycle, so its
+        # stop() has nothing to close; runtime shutdown must still release the
+        # independently opened control port.
+        stop_serial = getattr(self.serial_device, "stop", None)
+        if callable(stop_serial):
+            try:
+                stop_serial()
+            except BaseException as exc:
+                close_error = exc
         try:
             self.scratch.shutdown(delete_files=delete_dev_test_ui_audio)
         except BaseException as exc:

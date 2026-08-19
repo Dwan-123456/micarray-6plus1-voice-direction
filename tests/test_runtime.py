@@ -295,8 +295,26 @@ def test_runtime_light_control_uses_official_commands(tmp_path):
         serial_device=serial,
     )
     runtime.set_light(True)
+    assert runtime.light_state == "on"
     runtime.set_light(False)
     assert serial.packets == [b"E", b"e"]
+    assert runtime.light_state == "off"
+
+
+def test_runtime_light_control_reports_write_failure_while_stopped(tmp_path):
+    class FailingSerial:
+        def write(self, _packet):
+            raise OSError("control port unavailable")
+
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}),
+        project_root=tmp_path,
+        pipeline=StubPipeline([]),
+        serial_device=FailingSerial(),
+    )
+    with pytest.raises(OSError, match="control port unavailable"):
+        runtime.set_light(True)
+    assert runtime.light_state == "error"
 
 
 def test_runtime_can_stop_and_start_a_new_capture_session(tmp_path):

@@ -600,6 +600,8 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
                     self._enter_stopped_state()
                 self.statusBar().showMessage(f"{name}已完成", 3000)
             except Exception as exc:
+                if name in {"灯光开", "灯光关"}:
+                    self.light_label.setText("状态: Error")
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -642,7 +644,15 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
 
         def _light_command(self, enabled: bool):
             self.light_label.setText("状态: Pending")
-            self._submit_command("灯光开" if enabled else "灯光关", lambda: runtime.set_light(enabled))
+            def completed(_result):
+                state = "On" if enabled else "Off"
+                self.light_label.setText(f"状态: {state} (commanded)")
+
+            self._submit_command(
+                "灯光开" if enabled else "灯光关",
+                lambda: runtime.set_light(enabled),
+                completed,
+            )
 
         def _start_capture(self):
             # Release a possibly mapped cache snapshot before tracker.reset()
@@ -686,11 +696,12 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
 
         def _update_control_states(self):
             busy = self._pending_command is not None
-            running = runtime.running
             self.start_button.setEnabled(not runtime.active and not busy)
             self.stop_button.setEnabled(runtime.active and not busy)
-            self.light_on.setEnabled(running and not busy)
-            self.light_off.setEnabled(running and not busy)
+            # SerialDevice.write() opens the CDC control port on demand, so
+            # lighting is intentionally independent of audio capture state.
+            self.light_on.setEnabled(not busy)
+            self.light_off.setEnabled(not busy)
             self._set_record_buttons(runtime.scratch.state)
             self.srp_kalman.setEnabled(runtime.direction_id_tracking_enabled)
 
