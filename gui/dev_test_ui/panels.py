@@ -279,7 +279,7 @@ class BeamformPanel(QGroupBox):
         preview_controls.addWidget(self.preview_play)
         preview_controls.addWidget(self.preview_stop)
         layout.addLayout(preview_controls)
-        self.help = QLabel("下方仅记录L2已确认的正式ID音频；临时ID不写入试听缓存。候选消失后等待3秒。")
+        self.help = QLabel("下方记录已进入卡尔曼持续跟踪的临时ID及正式ID音频；首次出现的小点不缓存。候选消失后等待3秒。")
         layout.addWidget(self.help)
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
@@ -439,7 +439,7 @@ class BeamformPanel(QGroupBox):
             self.track_layout.insertWidget(index, row)
         if tracks or self._track_rows:
             self.help.setText(
-                "首行为Center Mic原始输入对照；其余仅显示L2正式ID并按缓存时长从长到短排列。"
+                "首行为Center Mic原始输入对照；其余显示已进入卡尔曼持续跟踪的临时/正式ID，并按缓存时长从长到短排列。"
                 "正式ID音频：ACTIVE实时追加，"
                 "COASTING等待恢复，ENDED停止追加；"
                 f"仅显示≥{self._minimum_listening_track_seconds:.1f}s音频，"

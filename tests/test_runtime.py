@@ -366,8 +366,8 @@ def test_runtime_connects_l1_l2_formal_recording_and_ui_control(tmp_path):
     assert len(roots) == 1
     manifest = json.loads((roots[0] / "session_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
-    assert manifest["algorithm_versions"]["layer2_direction_kalman"] == "circular_kalman_v1"
-    assert manifest["algorithm_versions"]["layer2_direction_id_tracking"] == "circular_id_tracker_v4"
+    assert manifest["algorithm_versions"]["layer2_direction_kalman"] == "damped_circular_kalman_v2"
+    assert manifest["algorithm_versions"]["layer2_direction_id_tracking"] == "confidence_id_tracker_v2"
     assert manifest["recorded_intervals"]
     assert manifest["chunks"][0]["result_count"] >= 1
     results_asset = next(x for x in manifest["chunks"][0]["assets"] if x["kind"] == "results")

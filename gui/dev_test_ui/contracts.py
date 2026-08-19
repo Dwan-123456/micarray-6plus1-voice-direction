@@ -221,6 +221,10 @@ class DevUiFrame:
             raise TypeError("L2候选预测/正式标志必须为bool")
         if any(formal and track_id is None for formal, track_id in zip(formal_flags, track_ids)):
             raise ValueError("正式L2候选必须携带ID")
+        if any(prediction and track_id is None for prediction, track_id in zip(prediction_flags, track_ids)):
+            raise ValueError("预测L2候选必须携带ID")
+        if any(prediction and is_new for prediction, is_new in zip(prediction_flags, new_flags)):
+            raise ValueError("首次出现的L2候选不能同时标记为预测")
         object.__setattr__(self, "candidate_track_ids", track_ids)
         object.__setattr__(self, "candidate_is_prediction", prediction_flags)
         object.__setattr__(self, "candidate_track_is_formal", formal_flags)
@@ -241,8 +245,8 @@ class DevUiFrame:
             raise ValueError("DevUiFrame L1 snapshot must match the pipeline stream")
         if self.spatial_response is None and self.candidates:
             raise ValueError("没有SpatialResponse时不能携带候选")
-        if len(self.candidates) > 2:
-            raise ValueError("DevUiFrame cannot publish more than 2 Layer 2 candidates")
+        if len(self.candidates) > 3:
+            raise ValueError("DevUiFrame cannot publish more than 3 Layer 2 candidates")
         if self.spatial_response is None and self.previews:
             raise ValueError("DevUiFrame cannot publish L3 previews without an SRP response")
         if self.spatial_response is None and self.search_diagnostics is not None:

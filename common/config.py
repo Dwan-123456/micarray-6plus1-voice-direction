@@ -112,22 +112,25 @@ class Layer2ProbabilityGateConfig(StrictModel):
 
 class Layer2DirectionKalmanConfig(StrictModel):
     enabled: bool = False
-    backend: Literal["circular_kalman_v1"]
+    backend: Literal["circular_kalman_v1", "damped_circular_kalman_v2"]
     process_noise_scale: float = Field(ge=0.02, le=10.0)
     measurement_noise_scale: float = Field(ge=0.02, le=10.0)
     process_angle_std_deg: float = Field(gt=0)
     process_velocity_std_dps: float = Field(gt=0)
     measurement_std_deg: float = Field(gt=0)
     max_missed_windows: int = Field(ge=0)
+    velocity_half_life_seconds: float = Field(default=0.5, gt=0)
+    max_velocity_dps: float = Field(default=60.0, gt=0, le=360)
+    prediction_freeze_std_deg: float = Field(default=float("inf"), gt=0)
 
 
 class Layer2DirectionIdTrackingConfig(StrictModel):
     enabled: bool = False
-    backend: Literal["circular_id_tracker_v4"]
+    backend: Literal["circular_id_tracker_v4", "confidence_id_tracker_v2"]
     association_gate_deg: float = Field(gt=0, le=180)
     prediction_association_gate_deg: float = Field(gt=0, le=180)
     max_missed_windows: int = Field(ge=0)
-    confirmation_min_age_windows: Literal[150]
+    confirmation_min_age_windows: Literal[100]
     confirmation_min_matches: Literal[5]
     prediction_hold_windows: Literal[150]
 
@@ -151,7 +154,7 @@ class Layer2Config(StrictModel):
     direction_threshold: float
     peak_prominence: float
     min_peak_distance_deg: Literal[45.0]
-    max_candidates: Literal[2]
+    max_candidates: Literal[3]
     iterative_peak_search_enabled: bool
     iterative_max_sources: Literal[2]
     iterative_suppression_strength: float = Field(gt=0, lt=1)
@@ -276,7 +279,7 @@ class RuntimeConfig(StrictModel):
     mode: Literal["development", "production"]
     preferred_device: str
     allow_cpu_fallback: bool
-    max_candidate_batch: Literal[2]
+    max_candidate_batch: Literal[3]
     capture_handoff_blocks: int = Field(gt=0)
     # Kept for configuration compatibility.  The staged runtime uses the
     # per-stage capacities below rather than one shared serial queue.

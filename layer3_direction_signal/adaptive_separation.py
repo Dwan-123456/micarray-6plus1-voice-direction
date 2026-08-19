@@ -138,8 +138,8 @@ def adaptive_separation_weights(
     static: AdaptiveStaticData | None = None,
 ) -> AdaptiveWeightResult:
     candidate_count, frequency_count, channel_count = steering_mfc.shape
-    if candidate_count not in {1, 2} or channel_count != 7:
-        raise ValueError("adaptive separation requires one or two 7-channel steering vectors")
+    if candidate_count not in {1, 2, 3} or channel_count != 7:
+        raise ValueError("adaptive separation requires one, two, or three 7-channel steering vectors")
     das = das_weights(steering_mfc)
     output = das.clone()
     valid = torch.zeros((candidate_count, frequency_count), dtype=torch.bool, device=steering_mfc.device)
@@ -152,7 +152,7 @@ def adaptive_separation_weights(
     ):
         raise ValueError("adaptive static cache shapes do not match the current solve")
     valid[:, ~speech_band] = True
-    if candidate_count == 1:
+    if candidate_count in {1, 3}:
         rho = torch.ones(frequency_count, dtype=torch.float32, device=steering_mfc.device)
     elif spatial_p_f is None:
         raise ValueError("two-candidate adaptive separation requires precomputed spatial p lookup values")
@@ -161,7 +161,7 @@ def adaptive_separation_weights(
     if rho.shape != (frequency_count,) or not torch.isfinite(rho).all() or bool(((rho < 0) | (rho > 1)).any()):
         raise ValueError("spatial p must be finite [frequency] values in [0,1]")
     rho = rho.to(device=steering_mfc.device, dtype=torch.float32)
-    if candidate_count == 1:
+    if candidate_count in {1, 3}:
         lcmv_mask = torch.zeros_like(speech_band)
         soft_mask = torch.zeros_like(speech_band)
         mvdr_mask = speech_band

@@ -34,8 +34,8 @@ class CandidateSearchDiagnostics:
             raise ValueError("candidate search revision/iteration is invalid")
         if not 0.0 <= self.remaining_weight_ratio <= 1.0:
             raise ValueError("remaining weight ratio must be in [0,1]")
-        if self.eligible_peak_count < 0 or self.candidate_limit != 2:
-            raise ValueError("Layer 2 candidate diagnostics require the fixed limit of 2")
+        if self.eligible_peak_count < 0 or self.candidate_limit not in {2, 3}:
+            raise ValueError("Layer 2 candidate diagnostics require a limit of 2 or 3")
         if self.candidate_limit_applied and self.eligible_peak_count < self.candidate_limit:
             raise ValueError("candidate limit cannot be applied below the limit")
         object.__setattr__(self, "evidence", tuple(self.evidence))

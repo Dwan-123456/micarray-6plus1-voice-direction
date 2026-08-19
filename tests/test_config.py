@@ -14,23 +14,25 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     config = load_config(CONFIG, environ={})
     assert config.device.physical_channel_map == (0, 1, 2, 3, 4, 5, 7)
     assert config.device.logical_channel_map == (0, 1, 2, 3, 4, 5, 7, 6)
-    assert config.layer2.max_candidates == 2
+    assert config.layer2.max_candidates == 3
     assert config.layer2.probability_gate.backend == "mean_2x20ms_v1"
     assert config.layer2.probability_gate.threshold == 0.60
-    assert config.layer2.direction_kalman.backend == "circular_kalman_v1"
+    assert config.layer2.direction_kalman.backend == "damped_circular_kalman_v2"
+    assert config.layer2.direction_id_tracking.backend == "confidence_id_tracker_v2"
+    assert config.layer2.direction_kalman.velocity_half_life_seconds == 0.5
+    assert config.layer2.direction_kalman.max_velocity_dps == 60.0
     assert config.layer2.direction_kalman.enabled is False
-    assert config.layer2.direction_id_tracking.backend == "circular_id_tracker_v4"
     assert config.layer2.direction_id_tracking.enabled is False
     assert config.layer2.direction_id_tracking.association_gate_deg == 20.0
     assert config.layer2.direction_id_tracking.prediction_association_gate_deg == 30.0
-    assert config.layer2.direction_id_tracking.confirmation_min_age_windows == 150
+    assert config.layer2.direction_id_tracking.confirmation_min_age_windows == 100
     assert config.layer2.direction_id_tracking.confirmation_min_matches == 5
     assert config.layer2.direction_id_tracking.prediction_hold_windows == 150
     assert config.layer2.direction_kalman.max_missed_windows == 150
     assert config.layer2.direction_kalman.process_noise_scale == 1.0
     assert config.layer2.direction_kalman.measurement_noise_scale == 1.0
     assert config.layer2.min_peak_distance_deg == 45.0
-    assert config.runtime.max_candidate_batch == 2
+    assert config.runtime.max_candidate_batch == 3
     assert AudioConfig.from_project(config).block_size == 960
     assert CdcConfig.from_project(config).required is False
     assert CalibrationConfig.from_project(config).delay_samples == (0,) * 7
@@ -76,8 +78,8 @@ def test_unknown_config_field_is_rejected(tmp_path):
         load_config(candidate, environ={})
 
 
-def test_candidate_limit_is_fixed_to_two(tmp_path):
-    text = CONFIG.read_text(encoding="utf-8").replace("max_candidates: 2", "max_candidates: 3")
+def test_candidate_limit_is_fixed_to_three(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace("max_candidates: 3", "max_candidates: 4")
     candidate = tmp_path / "bad-candidate-limit.yaml"
     candidate.write_text(text, encoding="utf-8")
     with pytest.raises(ValidationError):
@@ -125,7 +127,7 @@ def test_probability_gate_threshold_must_be_in_unit_interval(tmp_path):
 @pytest.mark.parametrize(
     ("source", "replacement"),
     (
-        ("backend: circular_kalman_v1", "backend: unknown_tracker_v9"),
+        ("backend: damped_circular_kalman_v2", "backend: unknown_tracker_v9"),
         ("association_gate_deg: 20.0", "association_gate_deg: 181.0"),
         ("measurement_std_deg: 5.0", "measurement_std_deg: 0.0"),
         ("process_noise_scale: 1.00", "process_noise_scale: 0.03"),

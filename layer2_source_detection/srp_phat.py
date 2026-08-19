@@ -341,7 +341,9 @@ class SrpPhatScanner:
         diagnostics = CandidateSearchDiagnostics(
             "iterative_rank1_projection_v1", "iterative_rank1_projection_v1", revision,
             iterations, reason, remaining, evidence=tuple(evidence),
-            eligible_peak_count=len(selected), candidate_limit_applied=len(selected) == config.max_candidates,
+            eligible_peak_count=len(selected),
+            candidate_limit=config.iterative_max_sources,
+            candidate_limit_applied=len(selected) == config.iterative_max_sources,
         )
         return response, self._candidates(window, selected, raw0, norm0), diagnostics
 
@@ -356,6 +358,7 @@ class SrpPhatScanner:
                 "single_pass", "srp_phat_single_pass_v1", config_revision, 1,
                 "candidate_limit_reached" if eligible_count > config.max_candidates else "single_pass",
                 1.0, eligible_peak_count=eligible_count,
+                candidate_limit=config.max_candidates,
                 candidate_limit_applied=eligible_count > config.max_candidates,
             )
         try:
@@ -366,6 +369,7 @@ class SrpPhatScanner:
                 "iterative_rank1_projection_v1", "iterative_rank1_projection_v1", config_revision,
                 1, "legacy_fallback", 1.0, fallback_reason=f"{type(exc).__name__}: {exc}",
                 eligible_peak_count=eligible_count,
+                candidate_limit=config.max_candidates,
                 candidate_limit_applied=eligible_count > config.max_candidates,
             )
 

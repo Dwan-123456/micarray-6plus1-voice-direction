@@ -31,21 +31,21 @@ Layer 1：解码、校准、逻辑重排、连续性guard
                     ↓
         末尾40 ms的两个IMCRA概率取算术平均
                     ↓
-Layer 2：
+Layer 2 1.1：
     【已完成】500～4000 Hz Probability Gate（mean_2x20ms_v1，默认0.60，可动态调整）
         ├──关闭：跳过SRP、候选为空
-        └──开启：7物理麦在2000～4000 Hz执行SRP-PHAT 360°扫描 → Robust-Z+Sigmoid → 45°圆周NMS → 原始Top-2
+        └──开启：7物理麦在2000～4000 Hz执行SRP-PHAT 360°扫描 → Robust-Z+Sigmoid → 45°圆周NMS → 原始Top-3
                     ↓
-    【已完成】可选circular_id_tracker_v4私有ID追踪与L4人声租约（默认关）
+    【L2 1.1】可选confidence_id_tracker_v2私有ID追踪（内部最多4轨，公开最多3角度；V1后端可回退）
         ├──逐候选私有元数据：ID、预测/观测、临时/正式、首次分配
                     ↓
-    【已完成】可选circular_kalman_v1圆周角/角速度滤波（默认关，依赖ID追踪）
+    【L2 1.1】可选damped_circular_kalman_v2阻尼圆周滤波（默认关，依赖ID追踪；V1后端可回退）
         ├──Q/R倍率初始1.00，可在Test UI运行时调整并持久化
         ├──真实候选保留rank/时间/分数，仅theta_deg替换为后验平滑角
-        ├──首个3秒累计自然Gate匹配≥5次且L4同窗人声≥1次后正式化；默认租约3秒，仅后续唯一匹配的L4人声可续命
+        ├──首个2秒累计自然Gate匹配≥5次且L4同窗人声≥1次后正式化；默认租约3秒，仅后续唯一匹配的L4人声可续命
         ├──正式ID存活时可在有效低概率窗口保持Gate开启；预热/缺失/无效概率仍安全阻断
         ├──L4只反馈流身份、时间、角度与人声结论，经容量256有界队列送回L2；不传公开ID
-        └──真实候选优先，预测仅补足Top-2并继续满足45°圆周间距
+        └──真实候选优先，预测仅补足Top-3并继续满足任意两点45°圆周间距
     ID不进入公共CandidateDirection、L3/L4、录音或数据集；仅投影到本机Test UI诊断界面，不参与正式算法
     Raw SpatialResponse保持未平滑360°响应
     Gate关闭或当前没有Raw SpatialResponse时不预测
@@ -77,9 +77,9 @@ Layer 4：48 kHz EnhancedAudio独立副本 + 16个对齐IMCRA概率 → 响度�
 配套：
     【已完成】ApplicationRuntime：唯一WindowKey与冻结配置；有界L2/L3/L4 latest-wins、completion/backlog/commit硬限和ResultJoiner有序提交
     Development Test UI：8路电平、IMCRA/Gate、Raw SRP与平滑候选；L3三档实时切换；显示各阶段队列/worker/缓存
-        ├──【已完成】SRP候选身份显示：临时点灰色；正式ID红/绿交替；观测点大、预测点小
+        ├──【已完成】SRP候选身份显示：首次出现灰色小点；临时ID灰色；正式ID三色；观测大、预测小
         └──【已完成】试听sidecar：Center Mic原音参考 + L2私有ID优先关联 + 20 ms绝对时间轴缓存
-                ├──仅正式ID开始缓存，累计≥2秒后显示；消失后等待3秒，跳窗按时长补音频或静音
+                ├──Kalman-ready临时ID即开始缓存并在转正式后沿用；累计≥2秒后显示；消失后等待3秒
                 ├──ID换号仅在20°内唯一匹配时续接；同时出现的近角双ID绝不合并
                 └──模式切换清缓存；临时文件有界且关闭删除；试听归一化不修改正式音频
     【已完成】RecordingStore v0.3 sidecar：原子result+watermark、逐chunk释放、有界event pre-roll、hotmap流写入与enhanced partial+journal恢复
@@ -412,7 +412,7 @@ class ResultWatermark:
 
 ---
 
-# 6. Layer 2：SRP-PHAT候选方向
+# 6. Layer 2 1.1：SRP-PHAT候选方向
 
 ## 6.1 Probability Gate架构
 
@@ -440,15 +440,15 @@ class DirectionScanner(Protocol):
              config: DirectionScanConfig) -> tuple[SpatialResponse, tuple[CandidateDirection, ...]]: ...
 ```
 
-扫描器输入为`window.samples[-1920:,:]`并输出0～2个原始候选。L2 Pipeline先进行可选私有ID分配，再进行可选的按ID圆周卡尔曼滤波。两个模块默认关闭；卡尔曼只能在ID追踪开启时运行，关闭ID会同步关闭卡尔曼。卡尔曼状态跟随私有ID而非rank，公共接口不产生或消费`track_id/source_id`。
+扫描器输入为`window.samples[-1920:,:]`并输出0～3个原始候选。L2 Pipeline先进行可选私有ID分配，再进行可选的按ID圆周卡尔曼滤波。两个模块默认关闭；卡尔曼只能在ID追踪开启时运行，关闭ID会同步关闭卡尔曼。卡尔曼状态跟随私有ID而非rank，公共接口不产生或消费`track_id/source_id`。
 
-当两个模块同时开启时，临时ID从首次建立起按48 kHz绝对sample观察3秒，并在这首个3秒内累计归并至少5次自然Gate窗口候选且至少1个同窗角度被L4识别为人声后正式化。临时阶段的人声反馈只满足确认条件，不提前续命；正式化时获得3秒语音租约。角度匹配、卡尔曼校正、预测和ID强制Gate均不续命。L4只向L2发送最终判为人声的session/epoch/decision sample/角度，L2按同窗历史和20°圆周门限自动匹配；正式化后唯一匹配到仍存活正式ID时，才把截止sample滑动到该人声点之后3秒。无历史、歧义、错流、非人声或已过期均不续命，迟到反馈不得复活。低P强制窗口可更新已有正式ID位置且预测后首次重匹配使用2倍测量可信度，但不能创建或晋升新ID。租约到期后在Gate判断和关联前删除ID及其卡尔曼状态，最后一个ID删除后恢复按P判断。公共候选DTO保持不变，只输出角度及原有Raw/Norm。
+当两个模块同时开启时，临时ID从首次建立起按48 kHz绝对sample观察2秒，并在这首个2秒内累计归并至少5次自然Gate窗口候选且至少1个同窗角度被L4识别为人声后正式化。临时阶段的人声反馈只满足确认条件，不提前续命；正式化时获得3秒语音租约。角度匹配、卡尔曼校正、预测和ID强制Gate均不续命。L4向L2发送人声与非人声的session/epoch/decision sample/角度/概率；L2按同窗历史和20°圆周门限自动匹配。非人声结果只降低内部语义可信度，绝不隐藏L2角度；任何匹配的人声结果清除该ID此前的负面语义证据。正式化后唯一匹配到仍存活正式ID的人声结果，才把截止sample滑动到该人声点之后3秒。无历史、歧义、错流、非人声或已过期均不续命，迟到反馈不得复活。低P强制窗口可更新已有正式ID位置且预测后首次重匹配使用2倍测量可信度，但不能创建或晋升新ID。租约到期后在Gate判断和关联前删除ID及其卡尔曼状态，最后一个ID删除后恢复按P判断。公共候选DTO保持不变，只输出角度及原有Raw/Norm。
 
 卡尔曼Q、R通过两个无量纲运行时倍率调整：Q倍率缩放基础过程噪声矩阵，R倍率缩放基础测量噪声方差。配置文件必须显式给出初始1.00；允许范围0.02～10.00，调节步长为0.1，0.02作为最小端点。Test UI分别提供当前值、减、加、应用控件；应用后保存并从下一完整窗口生效，不得重建ID或重置卡尔曼状态。
 
 ### 6.2.1 内部DirectionSmoother固定语义
 
-`SpatialResponse`保持原始360°响应。内部ID只存在于L2实例内；Gate阻断或当前没有`SpatialResponse`时公共候选为空。对真实候选，平滑器不得删除、重排候选或改写时间/rank/score；成熟ID在已有当前响应但没有可归并候选时，可以按前述规则补充预测候选，Raw/Norm从当前响应在预测角处读取。平滑后不得重跑threshold、prominence、NMS、Top-2或排序，最终仍须满足Top-2与45°间距。session/epoch切换立即重置；追踪异常时本窗口回退原始候选并清空状态。完整规则以[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)为准。
+`SpatialResponse`保持原始360°响应。内部ID只存在于L2实例内；Gate阻断或当前没有`SpatialResponse`时公共候选为空。对真实候选，平滑器不得删除、重排候选或改写时间/rank/score；成熟ID在已有当前响应但没有可归并候选时，可以按前述规则补充预测候选，Raw/Norm从当前响应在预测角处读取。平滑后不得重跑threshold、prominence、NMS、Top-3或排序，最终仍须满足Top-3与45°间距。session/epoch切换立即重置；追踪异常时本窗口回退原始候选并清空状态。完整规则以[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)为准。
 
 ## 6.3 默认SRP-PHAT实现
 
@@ -474,7 +474,7 @@ layer2:
   direction_threshold: 0.35
   peak_prominence: 0.05
   min_peak_distance_deg: 45.0
-  max_candidates: 2
+  max_candidates: 3
 ```
 
 数学符号固定如下。对目标方向：
@@ -519,7 +519,7 @@ logit = np.clip(1.0 * (z - 2.0), -80.0, 80.0)
 normalized = 1.0 / (1.0 + np.exp(-logit))
 ```
 
-候选顺序固定为：圆周局部峰 → `normalized>=0.35` → circular prominence `>=0.05` → 45°圆周NMS → 分数降序 → Top-2。分数相同时按较小`theta_deg`排序。0°/359°必须相邻处理。45°专指同一窗口内两个声源点之间的最小圆周角差，不约束单个ID的位置稳定性或移动速度。圆周距离小于45°的较低分峰被抑制，恰好45°的峰允许共存。限制前有效峰数及是否触发上限必须写入搜索诊断。
+候选顺序固定为：圆周局部峰 → `normalized>=0.35` → circular prominence `>=0.05` → 45°圆周NMS → 分数降序 → Top-3。分数相同时按较小`theta_deg`排序。0°/359°必须相邻处理。45°专指同一窗口内任意两个声源点之间的最小圆周角差，不约束单个ID的位置稳定性或移动速度。圆周距离小于45°的较低分峰被抑制，恰好45°的峰允许共存。限制前有效峰数及是否触发上限必须写入搜索诊断。
 
 圆周prominence必须用同一实现：对360点数组做 `np.tile(scores,3)`，在三倍数组上调用 `scipy.signal.find_peaks(..., prominence=0.05, plateau_size=(1,None))`，只保留中间副本索引 `[360,720)`并减360。平台峰使用SciPy返回的中心索引；偶数长度平台按SciPy规则向较小索引取整。之后自行执行圆周NMS，不使用线性`distance`参数。这样0°边界与普通位置具有相同prominence语义。
 
@@ -841,7 +841,7 @@ continuous 30 min:
 
 # 11. 分层开发测试UI / Development Test UI
 
-Test UI显示原始`SpatialResponse`与L2候选，并在右侧提供私有ID追踪与按ID圆周卡尔曼两个运行时开关，二者默认关闭且持久化。ID关闭时卡尔曼按钮不可用；候选点在卡尔曼开启时可能不严格位于原始SRP峰顶。公共候选、L3/L4和正式记录不得携带内部ID；唯一例外是本机Test UI诊断投影可接收与候选逐项对齐的私有ID、预测、正式和首次分配标志。右上SRP面板以灰色表示临时点、红/绿交替表示正式ID，并以大/小点区分当前观测与预测；左下试听sidecar只从正式ID开始缓存已有L3音频并以`ID-nnn`标识。这些状态只用于显示和连续播放，不得反馈改变候选、租约、波束形成或分类，也不得持久化到正式录音和数据集。
+Test UI显示原始`SpatialResponse`与L2最终候选，并在右侧提供私有ID追踪与按ID圆周卡尔曼两个运行时开关。首次出现为灰色小点；临时ID观测为灰色大点、预测为灰色小点；正式ID使用三种稳定颜色，观测大、预测小。试听sidecar从Kalman-ready临时ID开始缓存已有L3音频，转正式后沿用同一`ID-nnn`缓存。这些状态只用于显示和连续播放，不得改变候选、租约、波束形成、分类或正式录音。
 
 该UI是实现期间的独立诊断程序，用于每完成一层就观察真实输出并做实机验收；它不是最终用户GUI，也不是12.8的Audio Data Manager。程序必须支持L1-only、L1+SRP、L1+SRP+BF、完整CNN四种能力级别。未实现、未连接或模型不可用的象限明确显示`NOT IMPLEMENTED / UNAVAILABLE`及原因，不生成Mock视觉结果；若开发者显式启用Mock，整个对应象限必须持续显示醒目的`MOCK`水印，Mock结果不得写入正式测试报告。
 
@@ -1024,7 +1024,7 @@ scratch每个segment的native/physical/float文件范围必须完全一致；若
 - 淡色闭合极坐标曲线显示全部360个`normalized_scores`，半径映射固定为`0.55R + 0.40R*score`，Norm=0/1分别位于0.55R/0.95R；
 - 通过阈值、prominence和NMS后的`CandidateDirection`在外圆上绘制圆点；圆点直径固定映射`8 + 20*normalized_score`像素，颜色由蓝→黄→红表示0→1；
 - 每个候选点旁标注`θ°`与`N=0.xxx`，按候选排序显示编号1～2；标签碰撞时使用引线自动错开，不隐藏角度或数值；
-- 侧表列出Rank、Angle、Raw、Norm和当前阈值，并显示`0～2 candidates`；无候选时明确显示`NO CANDIDATE`；
+- 侧表列出Rank、Angle、Raw、Norm和当前阈值，并显示`0～3 candidates`；无候选时明确显示`NO CANDIDATE`；
 - 原始分数只在侧表/光标悬停显示，圆环半径和颜色只使用Norm值，避免不同窗口raw scale造成误导。
 
 点击候选点会设置全局`selected_candidate(theta, window_id)`，联动左下融合音频/谱图与右下CNN高亮；不重跑SRP、BF或CNN。
@@ -1437,7 +1437,7 @@ UI所有重扫描、hash、统计、波形降采样和导入任务在后台worke
 | sequence/timestamp断裂 | 清空buffer并重新warming_up |
 | MVDR失败 | 该候选DAS回退，结果`degraded` |
 | 启动时CUDA不可用 | 环境自检失败；开发模式按配置允许CPU并显示`degraded/cpu_fallback`，生产验收失败 |
-| 运行中CUDA OOM | 清空本窗口GPU临时状态，最多2个候选的正式batch失败时返回明确错误或按该层规格降级；不得静默丢弃第二候选 |
+| 运行中CUDA OOM | 清空本窗口GPU临时状态，最多3个候选的正式batch失败时返回明确错误或按该层规格降级；不得静默截断候选 |
 | CNN模型/manifest不匹配 | 生产模式`error`，保留候选作诊断但detections/count清空 |
 | 单候选CNN输出非有限 | 整个窗口`error`，detections/count清空，不得阈值化NaN或输出半截正式结果 |
 
@@ -1522,7 +1522,7 @@ layer2:
   direction_threshold: 0.35
   peak_prominence: 0.05
   min_peak_distance_deg: 45.0
-  max_candidates: 2
+  max_candidates: 3
   iterative_peak_search_enabled: false
   iterative_max_sources: 2
   iterative_suppression_strength: 0.75
@@ -1584,7 +1584,7 @@ runtime:
   mode: development
   preferred_device: cuda
   allow_cpu_fallback: true
-  max_candidate_batch: 2
+  max_candidate_batch: 3
   capture_handoff_blocks: 100
   processing_queue_windows: 1  # legacy launch-profile compatibility only
   l2_queue_windows: 4
@@ -1748,7 +1748,7 @@ third_party/NOTICE.md
 
 1. 以第14节逐值创建唯一`config/config.yaml`及拒绝未知字段/交叉约束的schema，完成`pyproject.toml`与hash lock；随后固化 `common` 数据类型、真实几何、IngestCoordinator和WindowAssembler，并把现有Layer 1部署变量接入同一配置加载器。
 2. 实现Development Test UI外壳、四象限、快照聚合器、L1左上象限、灯控、scratch录音状态机；完成L1 UI门禁。
-3. 在已完成的L2几何、40/20 ms、Robust归一化和Top-2之后增加可选私有ID追踪与圆周卡尔曼；公共候选不输出ID，成熟轨迹可按当前`SpatialResponse`合规续报。删除Test UI预测方向L3旁路，保留不改角度、不触发额外波束形成的纯试听ID/cache sidecar，完成新的SRP/平滑UI门禁。
+3. 在已完成的L2几何、40/20 ms、Robust归一化和Top-3之后增加可选私有ID追踪与圆周卡尔曼；公共候选不输出ID，成熟轨迹可按当前`SpatialResponse`合规续报。删除Test UI预测方向L3旁路，保留不改角度、不触发额外波束形成的纯试听ID/cache sidecar，完成新的SRP/平滑UI门禁。
 4. 实现共享STFT、低频DAS、中频WNG约束超指向MVDR、高频自适应MVDR及平滑融合；接入左下融合音频试听。固定`[33,169]`工程FeatureExtractor已经接线，热力图显示仍待完成。
 5. 完成L3 CPU与运行时自动测试；CUDA交叉验证、OOM降级和真实UI门禁仍需补齐。
 6. 固化L4波形公共接口和插件架构，接入带hash的NVIDIA MarbleNet基准artifact、CPU推理、运行时与右下象限。
@@ -1782,7 +1782,7 @@ third_party/NOTICE.md
 - `session_id`、`stream_epoch`、`window_id`、decision/sample边界在全链路完全一致。
 - 第一个窗口endpoint=15360，此后严格每960 samples一个；任意L1块切分产生完全相同窗口。
 - 空候选、1候选、2候选、超过2个有效峰时的明确限额诊断、0°/359°、warming_up、断流和回退路径。
-- L2真实候选平滑前后rank、时间字段和score逐项相同，仅`theta_deg`允许改变；成熟ID预测候选须从当前响应取score，最终仍为0～2个且满足45°间距；不存在公共ID。
+- L2真实候选平滑前后rank、时间字段和score逐项相同，仅`theta_deg`允许改变；成熟ID预测候选须从当前响应取score，最终仍为0～3个且满足45°间距；不存在公共ID。
 - 圆周卡尔曼覆盖0°边界、静止降抖、移动跟随、双候选交叉、漏检/跳窗、Gate阻断、epoch重置和异常原始角回退。
 - config schema与代码默认值一致，无未识别字段。
 - 正式DTO为CPU NumPy而GPU worker不发生逐候选往返；候选rank在L2→BF→Feature→CNN→Result保持不变。
@@ -1849,4 +1849,4 @@ MVDR通过门槛固定为：所有输出finite、fallback率`<=1%`、`delta_mvdr
 
 # 18. 一句话定义
 
-> 每20 ms以真实物理坐标执行SRP-PHAT并产生最多2个原始候选；随后可选分配私有ID，再可选按ID执行圆周卡尔曼。两个模块默认关闭，卡尔曼依赖ID追踪，内部ID不对外输出。
+> 每20 ms以真实物理坐标执行SRP-PHAT并产生最多3个原始候选；随后可选分配私有ID，再可选按ID执行圆周卡尔曼。两个模块默认关闭，卡尔曼依赖ID追踪，内部ID不对外输出。

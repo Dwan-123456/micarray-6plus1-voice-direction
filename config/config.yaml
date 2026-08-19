@@ -85,7 +85,7 @@ layer2:
   # Optional per-private-ID circular angle filter. Requires ID tracking; default OFF.
   direction_kalman:
     enabled: false
-    backend: circular_kalman_v1
+    backend: damped_circular_kalman_v2
     # Required explicit initial multipliers; Test UI persists last applied values.
     process_noise_scale: 1.00
     measurement_noise_scale: 1.00
@@ -93,20 +93,24 @@ layer2:
     process_velocity_std_dps: 25.0
     measurement_std_deg: 5.0
     max_missed_windows: 150
+    velocity_half_life_seconds: 0.5
+    max_velocity_dps: 60.0
+    # +inf keeps uncertainty freezing disabled until it is calibrated.
+    prediction_freeze_std_deg: .inf
   # Assigns private IDs before the optional Kalman filter; default OFF.
   direction_id_tracking:
     enabled: false
-    backend: circular_id_tracker_v4
+    backend: confidence_id_tracker_v2
     association_gate_deg: 20.0
     # When Kalman is active, associate measurements against the forecast at
     # the current decision sample rather than the last measured angle.
     prediction_association_gate_deg: 30.0
     max_missed_windows: 150
-    # A provisional ID must survive its first 150×20 ms (3 s), collect at
+    # A provisional ID must survive its first 100×20 ms (2 s), collect at
     # least 5 natural-Gate candidate matches, and receive at least one matching
     # L4 voice result in that interval. On formalization it receives a 3 s lease. Angle
     # matches only update position; only a matching L4 voice result extends it.
-    confirmation_min_age_windows: 150
+    confirmation_min_age_windows: 100
     confirmation_min_matches: 5
     prediction_hold_windows: 150
   scanner_backend: srp_phat
@@ -126,7 +130,7 @@ layer2:
   peak_prominence: 0.05
   # L2候选间的最小圆周角距；低于该角距的较低分峰会被NMS抑制。
   min_peak_distance_deg: 45.0
-  max_candidates: 2
+  max_candidates: 3
   iterative_peak_search_enabled: false
   iterative_max_sources: 2
   iterative_suppression_strength: 0.75
@@ -204,7 +208,7 @@ runtime:
   mode: development
   preferred_device: cuda
   allow_cpu_fallback: true
-  max_candidate_batch: 2
+  max_candidate_batch: 3
   capture_handoff_blocks: 100
   # Legacy serial-queue field retained for old launch profiles.
   processing_queue_windows: 1

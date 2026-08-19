@@ -71,8 +71,8 @@ class DirectionScanConfig:
             raise ValueError("归一化alpha和方向阈值无效")
         if self.peak_prominence < 0 or self.min_peak_distance_deg != 45.0:
             raise ValueError("prominence或NMS角距无效")
-        if self.max_candidates != 2:
-            raise ValueError("Layer 2 max_candidates is fixed at 2")
+        if self.max_candidates != 3:
+            raise ValueError("Layer 2 max_candidates is fixed at 3")
         if type(self.iterative_peak_search_enabled) is not bool:
             raise ValueError("iterative_peak_search_enabled must be bool")
         if self.iterative_max_sources != 2:

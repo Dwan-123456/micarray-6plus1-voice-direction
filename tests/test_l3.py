@@ -99,12 +99,18 @@ def test_l3_rejects_old_seven_channel_input_contract():
         _window(np.zeros((15_360, 7), np.float32))
 
 
-def test_l3_rejects_three_or_more_candidates():
+def test_l3_accepts_three_candidates_and_rejects_four():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
-    with pytest.raises(RuntimeError, match="0、1或2"):
+    output = processor.process(
+        _window(np.zeros((15_360, 8), np.float32)),
+        (_candidate(0.0), _candidate(90.0), _candidate(180.0)),
+        physical_6plus1_geometry(),
+    )
+    assert len(output.enhanced_audio) == 3
+    with pytest.raises(RuntimeError, match="0、1、2或3"):
         processor.process(
             _window(np.zeros((15_360, 8), np.float32)),
-            (_candidate(0.0), _candidate(90.0), _candidate(180.0)),
+            (_candidate(0.0), _candidate(90.0), _candidate(180.0), _candidate(270.0)),
             physical_6plus1_geometry(),
         )
 

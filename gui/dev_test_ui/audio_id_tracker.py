@@ -38,7 +38,8 @@ class _Track:
 class AudioIdTracker:
     """Test-UI-only greedy IDs and bounded L3 listening caches.
 
-    The input is a completed formal L3 preview batch.  IDs and cached audio
+    The input is a completed L3 preview batch. Kalman-ready temporary IDs and
+    formal IDs own cached audio; first-hit temporary and ID-less points do not.
     exist only for listening in Development Test UI and are never fed back to
     L2, L3, L4, or RecordingStore.
     """
@@ -503,29 +504,39 @@ class AudioIdTracker:
         track_ids=(),
         prediction_flags=(),
         formal_flags=(),
+        kalman_ready_flags=(),
     ) -> tuple[TrackedAudioSnapshot, ...]:
-        """Append L3 audio only after L2 marks the corresponding ID formal."""
+        """Append L3 audio for formal or Kalman-ready temporary L2 IDs."""
         candidates, previews = tuple(candidates), tuple(previews)
         if len(candidates) != len(previews):
             raise ValueError("Test UI tracker requires one L3 preview per formal candidate")
         track_ids = tuple(track_ids)
         prediction_flags = tuple(prediction_flags)
         formal_flags = tuple(formal_flags)
+        kalman_ready_flags = tuple(kalman_ready_flags)
         if not track_ids:
             track_ids = (None,) * len(previews)
         if not prediction_flags:
             prediction_flags = (False,) * len(previews)
         if formal_flags and len(formal_flags) != len(previews):
             raise ValueError("Test UI formal-ID flags must align with L3 previews")
+        if kalman_ready_flags and len(kalman_ready_flags) != len(previews):
+            raise ValueError("Test UI Kalman-ready flags must align with L3 previews")
         if len(track_ids) != len(previews) or len(prediction_flags) != len(previews):
             raise ValueError("Test UI tracker metadata must align with L3 previews")
-        # Runtime always supplies formal_flags.  The empty default only keeps
-        # direct legacy/test callers compatible; normal UI operation cannot
-        # cache provisional or ID-less candidates.
-        if formal_flags:
+        # Runtime supplies both flags. A first-hit temporary ID is excluded;
+        # its cache begins exactly when L2 declares the per-ID Kalman state
+        # ready, and continues seamlessly if that same ID becomes formal.
+        if formal_flags or kalman_ready_flags:
+            if not formal_flags:
+                formal_flags = (False,) * len(previews)
+            if not kalman_ready_flags:
+                kalman_ready_flags = (False,) * len(previews)
             accepted_indices = tuple(
-                index for index, is_formal in enumerate(formal_flags)
-                if bool(is_formal) and track_ids[index] is not None
+                index for index, (is_formal, is_ready) in enumerate(
+                    zip(formal_flags, kalman_ready_flags, strict=True)
+                )
+                if (bool(is_formal) or bool(is_ready)) and track_ids[index] is not None
             )
             candidates = tuple(candidates[index] for index in accepted_indices)
             previews = tuple(previews[index] for index in accepted_indices)

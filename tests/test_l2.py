@@ -87,7 +87,7 @@ def test_config_is_taken_from_the_unique_project_config(scan_config: DirectionSc
     assert scan_config.gcc_interpolation == 16
     assert (scan_config.frequency_min_hz, scan_config.frequency_max_hz) == (2_000.0, 4_000.0)
     assert scan_config.min_peak_distance_deg == 45.0
-    assert scan_config.max_candidates == 2
+    assert scan_config.max_candidates == 3
 
 
 def test_every_degree_has_no_mirror_reverse_or_fixed_rotation(scan_config: DirectionScanConfig) -> None:
@@ -107,7 +107,7 @@ def test_spatial_response_contract_and_input_immutability(scan_config: Direction
     for values in (response.theta_degrees, response.raw_scores, response.normalized_scores):
         assert values.dtype == np.float32 and values.flags.c_contiguous and not values.flags.writeable
     assert np.array_equal(window.samples, before)
-    assert len(candidates) <= 2
+    assert len(candidates) <= 3
     assert all(candidate.window_id == window.window_id for candidate in candidates)
 
 
@@ -221,7 +221,7 @@ def test_robust_z_sigmoid_matches_specification(scan_config: DirectionScanConfig
     assert np.allclose(normalized, expected.astype(np.float32))
 
 
-def test_circular_peak_boundary_nms_ties_and_top_two(scan_config: DirectionScanConfig) -> None:
+def test_circular_peak_boundary_nms_ties_and_top_three(scan_config: DirectionScanConfig) -> None:
     config = replace(scan_config, direction_threshold=.35, peak_prominence=.05)
     scores = np.full(360, .1, dtype=np.float32)
     for index, value in ((359, .99), (2, .95), (20, .9), (40, .9), (60, .89), (80, .88),
@@ -230,8 +230,8 @@ def test_circular_peak_boundary_nms_ties_and_top_two(scan_config: DirectionScanC
     selected = select_candidate_indices(scores, config)
     assert selected[0] == 359
     assert 2 not in selected
-    assert len(selected) == 2
-    assert selected == (359, 60)
+    assert len(selected) == 3
+    assert selected == (359, 60, 120)
     assert circular_distance_deg(359.0, 2.0) == 3.0
 
 
@@ -393,7 +393,7 @@ def test_probability_gate_then_srp_preserves_existing_scan(scan_config: Directio
     assert result.search_diagnostics == expected_diagnostics
 
 
-def test_layer2_result_and_ui_reject_more_than_two_formal_candidates(
+def test_layer2_result_and_ui_accept_three_and_reject_four_candidates(
     scan_config: DirectionScanConfig,
 ) -> None:
     window = decision_window(plane_wave(73, seed=91))
@@ -414,17 +414,23 @@ def test_layer2_result_and_ui_reject_more_than_two_formal_candidates(
         gate_threshold=0.60, gate_config_revision=0,
     )
     base = result.candidates[0]
-    invalid_candidates = (
+    three_candidates = (
         replace(base, theta_deg=10.0),
         replace(base, theta_deg=120.0),
         replace(base, theta_deg=240.0),
     )
-    with pytest.raises(ValueError, match="more than 2"):
+    Layer2PipelineResult(
+        result.state, result.gate_decision, result.spatial_response,
+        three_candidates, result.search_diagnostics,
+    )
+    SrpPanelSnapshot(result.spatial_response, three_candidates, 1.0)
+    invalid_candidates = (*three_candidates, replace(base, theta_deg=300.0))
+    with pytest.raises(ValueError, match="more than 3"):
         Layer2PipelineResult(
             result.state, result.gate_decision, result.spatial_response,
             invalid_candidates, result.search_diagnostics,
         )
-    with pytest.raises(ValueError, match="最多显示2"):
+    with pytest.raises(ValueError, match="最多显示3"):
         SrpPanelSnapshot(result.spatial_response, invalid_candidates, 1.0)
     circularly_too_close = (
         replace(base, theta_deg=359.0),

@@ -912,6 +912,9 @@ def test_srp_candidate_style_encodes_identity_and_current_observation(monkeypatc
     pending_colour, pending_size = SrpPolarPanel._candidate_style(
         7, is_prediction=False, is_formal=False, is_new=False
     )
+    pending_prediction_colour, pending_prediction_size = SrpPolarPanel._candidate_style(
+        7, is_prediction=True, is_formal=False, is_new=False
+    )
     red_live, red_live_size = SrpPolarPanel._candidate_style(
         1, is_prediction=False, is_formal=True, formal_color_slot=0
     )
@@ -921,10 +924,16 @@ def test_srp_candidate_style_encodes_identity_and_current_observation(monkeypatc
     green_live, green_live_size = SrpPolarPanel._candidate_style(
         3, is_prediction=False, is_formal=True, formal_color_slot=1
     )
+    amber_live, amber_live_size = SrpPolarPanel._candidate_style(
+        5, is_prediction=False, is_formal=True, formal_color_slot=2
+    )
 
-    assert new_colour.name() == pending_colour.name() == "#929daa"
+    assert new_colour.name() == pending_colour.name() == pending_prediction_colour.name() == "#929daa"
     assert new_size < pending_size
+    assert pending_prediction_size == new_size
     assert red_live.name() == red_predicted.name() == "#ff3b30"
     assert red_predicted_size == new_size < red_live_size
     assert green_live.name() == "#2ecc71"
     assert green_live_size == red_live_size
+    assert amber_live.name() == "#ffb000"
+    assert amber_live_size == red_live_size

@@ -1537,8 +1537,8 @@ class ApplicationRuntime:
                         direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                         direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     )
-                    if len(output.candidates) > 2:
-                        raise RuntimeError("Layer 2 contract violation: more than 2 candidates")
+                    if len(output.candidates) > 3:
+                        raise RuntimeError("Layer 2 contract violation: more than 3 candidates")
                     diagnostics = self._l2_diagnostics(output, values)
                     stage = L2StageResult.completed(
                         item.key, output, started_monotonic_ns=started_ns,
@@ -1688,20 +1688,28 @@ class ApplicationRuntime:
                     self._validate_direction_outputs(
                         "L4", item.l2.output.candidates, output.detections
                     )
+                    submit_classification_feedback = getattr(
+                        self._layer2, "submit_classification_feedback", None
+                    )
                     submit_voice_feedback = getattr(
                         self._layer2, "submit_voice_feedback", None
                     )
                     if (
-                        submit_voice_feedback is not None
+                        (submit_classification_feedback is not None
+                         or submit_voice_feedback is not None)
                         and bool(item.work_item.config.values["direction_id_tracking_enabled"])
                     ):
                         for detection in output.detections:
-                            if detection.is_voice:
+                            if submit_classification_feedback is not None:
+                                submit_classification_feedback(
+                                    detection.session_id, detection.stream_epoch,
+                                    detection.decision_sample, detection.theta_deg,
+                                    detection.probability, detection.is_voice,
+                                )
+                            elif detection.is_voice:
                                 submit_voice_feedback(
-                                    detection.session_id,
-                                    detection.stream_epoch,
-                                    detection.decision_sample,
-                                    detection.theta_deg,
+                                    detection.session_id, detection.stream_epoch,
+                                    detection.decision_sample, detection.theta_deg,
                                 )
                     stage = L4StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
@@ -2110,6 +2118,9 @@ class ApplicationRuntime:
                         track_ids=getattr(l2_output, "candidate_track_ids", ()),
                         prediction_flags=getattr(l2_output, "candidate_is_prediction", ()),
                         formal_flags=getattr(l2_output, "candidate_track_is_formal", ()),
+                        kalman_ready_flags=getattr(
+                            l2_output, "candidate_track_is_kalman_ready", ()
+                        ),
                     )
                 elif l2_output is not None and not candidates:
                     # A formal empty L2 result advances the listening tracks

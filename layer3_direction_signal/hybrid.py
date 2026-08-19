@@ -447,7 +447,7 @@ class ImcraSpatialSeparationBeamformer:
                     (
                         "backend=imcra_spatial_separation",
                         f"imcra={prepared.noise_algorithm_version}:16x20ms",
-                        f"spatial_p={'single_candidate' if spatial_p is None else P_TABLE_VERSION}",
+                        f"spatial_p={('independent_loaded_mvdr' if len(candidates) == 3 else 'single_candidate') if spatial_p is None else P_TABLE_VERSION}",
                         f"rho_thresholds={prepared.config.rho_lcmv_max:.3f}/"
                         f"{prepared.config.rho_soft_null_max:.3f}",
                         f"rho_range={float(solved.rho_f.min().item()):.4f}.."
@@ -606,7 +606,7 @@ class ImcraSpatialSeparationBeamformer:
                 (
                     "backend=imcra_spatial_separation",
                     f"imcra={noise_context.algorithm_version}:16x20ms",
-                    f"spatial_p={'single_candidate' if spatial_p is None else P_TABLE_VERSION}",
+                    f"spatial_p={('independent_loaded_mvdr' if len(candidates) == 3 else 'single_candidate') if spatial_p is None else P_TABLE_VERSION}",
                     f"rho_thresholds={config.rho_lcmv_max:.3f}/{config.rho_soft_null_max:.3f}",
                     f"rho_range={float(solved.rho_f.min().item()):.4f}..{float(solved.rho_f.max().item()):.4f}",
                     f"cache:stft_reused={stft_reused_frames},"
@@ -657,8 +657,8 @@ class ImcraSpatialSeparationBeamformer:
     def _validate_candidates(
         window: DecisionWindow, candidates: tuple[CandidateDirection, ...],
     ) -> None:
-        if len(candidates) > 2:
-            raise Layer3Error("L3只接受0、1或2个候选方向")
+        if len(candidates) > 3:
+            raise Layer3Error("L3只接受0、1、2或3个候选方向")
         identity = (window.session_id, window.stream_epoch, window.window_id, window.decision_sample)
         if any(
             (item.session_id, item.stream_epoch, item.window_id, item.decision_sample) != identity
@@ -678,8 +678,8 @@ class ImcraSpatialSeparationBeamformer:
         prepared: PreparedL3Context,
         candidates: tuple[CandidateDirection, ...],
     ) -> None:
-        if len(candidates) > 2:
-            raise Layer3Error("L3只接受0、1或2个候选方向")
+        if len(candidates) > 3:
+            raise Layer3Error("L3只接受0、1、2或3个候选方向")
         if any(
             (
                 item.session_id,

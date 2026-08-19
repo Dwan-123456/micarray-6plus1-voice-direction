@@ -25,6 +25,26 @@ def robust_z_sigmoid(raw_scores: np.ndarray, config: DirectionScanConfig) -> np.
 
 
 def rank_candidate_indices(normalized_scores: np.ndarray, config: DirectionScanConfig) -> tuple[int, ...]:
+    ranked = rank_observation_indices(normalized_scores, config)
+    selected: list[int] = []
+    for index in ranked:
+        if any(circular_distance_deg(index, other) < config.min_peak_distance_deg for other in selected):
+            continue
+        selected.append(index)
+    return tuple(selected)
+
+
+def rank_observation_indices(
+    normalized_scores: np.ndarray, config: DirectionScanConfig
+) -> tuple[int, ...]:
+    """Return every valid circular local peak before final NMS/Top-K.
+
+    This is the bounded observation interface for the experimental v2 private
+    tracker.  It deliberately keeps nearby peaks so ID confidence and L4
+    semantics, rather than the public 45-degree NMS, can decide which tracks
+    survive.  The public v1 candidate path remains unchanged.
+    """
+
     scores = np.asarray(normalized_scores)
     if scores.shape != (360,) or not np.isfinite(scores).all():
         raise ValueError("normalized_scores必须为finite [360]")
@@ -39,13 +59,7 @@ def rank_candidate_indices(normalized_scores: np.ndarray, config: DirectionScanC
         for index in peaks
         if 360 <= index < 720 and scores[index - 360] >= config.direction_threshold
     }
-    ranked = sorted(local, key=lambda index: (-float(scores[index]), index))
-    selected: list[int] = []
-    for index in ranked:
-        if any(circular_distance_deg(index, other) < config.min_peak_distance_deg for other in selected):
-            continue
-        selected.append(index)
-    return tuple(selected)
+    return tuple(sorted(local, key=lambda index: (-float(scores[index]), index)))
 
 
 def select_candidate_indices(normalized_scores: np.ndarray, config: DirectionScanConfig) -> tuple[int, ...]:

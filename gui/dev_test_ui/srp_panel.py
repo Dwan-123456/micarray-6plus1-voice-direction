@@ -32,14 +32,18 @@ class SrpPanelSnapshot:
             raise ValueError("SRP候选身份显示信息必须与候选逐项对齐")
         if any(formal and track_id is None for formal, track_id in zip(formal_flags, track_ids)):
             raise ValueError("正式SRP候选必须携带ID")
+        if any(prediction and track_id is None for prediction, track_id in zip(prediction_flags, track_ids)):
+            raise ValueError("预测SRP候选必须携带ID")
+        if any(prediction and is_new for prediction, is_new in zip(prediction_flags, new_flags)):
+            raise ValueError("首次出现的SRP候选不能同时标记为预测")
         object.__setattr__(self, "candidate_track_ids", track_ids)
         object.__setattr__(self, "candidate_is_prediction", prediction_flags)
         object.__setattr__(self, "candidate_track_is_formal", formal_flags)
         object.__setattr__(self, "candidate_track_is_new", new_flags)
         if not np.isfinite(self.published_monotonic):
             raise ValueError("published_monotonic必须finite")
-        if len(self.candidates) > 2:
-            raise ValueError("SRP面板最多显示2个L2正式候选")
+        if len(self.candidates) > 3:
+            raise ValueError("SRP面板最多显示3个L2候选")
         identity = (
             self.response.session_id,
             self.response.stream_epoch,
@@ -49,7 +53,6 @@ class SrpPanelSnapshot:
             self.response.doa_end_sample,
         )
         seen: set[float] = set()
-        previous_score = float("inf")
         for candidate in self.candidates:
             if (
                 candidate.session_id,
@@ -60,10 +63,9 @@ class SrpPanelSnapshot:
                 candidate.doa_end_sample,
             ) != identity:
                 raise ValueError("SRP响应与候选不属于同一window")
-            if candidate.theta_deg in seen or candidate.normalized_score > previous_score:
-                raise ValueError("候选必须角度唯一并保持Layer 2 rank顺序")
+            if candidate.theta_deg in seen:
+                raise ValueError("候选角度必须唯一")
             seen.add(candidate.theta_deg)
-            previous_score = candidate.normalized_score
 
     @property
     def age_ms(self) -> float:
@@ -131,21 +133,23 @@ if QWidget is not None:
         ) -> tuple[QColor, float]:
             """Return identity colour and evidence size for one L2 point.
 
-            Colour describes identity: unassigned/pending is grey and formal
-            IDs alternate deterministically between red and green.  Size
-            describes current evidence: a formal Kalman-only prediction is
-            small, while a currently observed formal ID is large.
+            Colour describes identity: new/pending IDs are grey and formal
+            IDs use one of three stable colours. Size describes evidence:
+            a new point or Kalman-only prediction is small; a current
+            observation of an existing ID is large.
             """
 
             small_diameter, large_diameter = 10.0, 24.0
             if not is_formal:
-                return QColor("#929daa"), small_diameter if track_id is None or is_new else large_diameter
-            slot = (int(track_id) - 1) % 2 if formal_color_slot is None else formal_color_slot
-            colour = QColor("#ff3b30") if slot == 0 else QColor("#2ecc71")
+                return QColor("#929daa"), (
+                    small_diameter if track_id is None or is_new or is_prediction else large_diameter
+                )
+            slot = (int(track_id) - 1) % 3 if formal_color_slot is None else formal_color_slot
+            colour = QColor(("#ff3b30", "#2ecc71", "#ffb000")[slot % 3])
             return colour, small_diameter if is_prediction else large_diameter
 
         def _reserve_formal_color_slots(self, snapshot: SrpPanelSnapshot) -> None:
-            """Keep identity colours stable and distinct for the two live formal IDs."""
+            """Keep identity colours stable and distinct for up to three formal IDs."""
 
             current_ids = tuple(dict.fromkeys(
                 int(track_id)
@@ -160,12 +164,12 @@ if QWidget is not None:
             unresolved: list[int] = []
             for track_id in current_ids:
                 previous = self._formal_color_slots.get(track_id)
-                if previous in {0, 1} and previous not in used:
+                if previous in {0, 1, 2} and previous not in used:
                     used.add(previous)
                 else:
                     unresolved.append(track_id)
             for track_id in unresolved:
-                slot = next((item for item in (0, 1) if item not in used), 0)
+                slot = next((item for item in (0, 1, 2) if item not in used), 0)
                 self._formal_color_slots[track_id] = slot
                 used.add(slot)
 

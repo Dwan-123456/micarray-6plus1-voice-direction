@@ -383,7 +383,7 @@ def test_ended_listening_tracks_are_not_pruned_while_ui_session_is_open(tmp_path
     tracker.close()
 
 
-def test_provisional_l2_id_is_ignored_until_it_becomes_formal(tmp_path):
+def test_provisional_l2_id_starts_cache_when_kalman_ready(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     candidate = SimpleNamespace(theta_deg=45.0, normalized_score=0.8)
 
@@ -397,19 +397,22 @@ def test_provisional_l2_id_is_ignored_until_it_becomes_formal(tmp_path):
     provisional = tracker.update(
         SimpleNamespace(session_id="session", stream_epoch=0, decision_sample=first),
         (candidate,), (preview(first),), track_ids=(4,), formal_flags=(False,),
+        kalman_ready_flags=(False,),
     )
-    first_formal = tracker.update(
+    first_ready = tracker.update(
         SimpleNamespace(session_id="session", stream_epoch=0, decision_sample=first + 960),
-        (candidate,), (preview(first + 960),), track_ids=(4,), formal_flags=(True,),
+        (candidate,), (preview(first + 960),), track_ids=(4,), formal_flags=(False,),
+        kalman_ready_flags=(True,),
     )
     continued = tracker.update(
         SimpleNamespace(session_id="session", stream_epoch=0, decision_sample=first + 1_920),
         (candidate,), (preview(first + 1_920),), track_ids=(4,), formal_flags=(True,),
+        kalman_ready_flags=(True,),
     )
 
     assert provisional == ()
-    assert tuple(item.track_id for item in first_formal) == (4,)
-    assert first_formal[0].audio_sample_count == 0
+    assert tuple(item.track_id for item in first_ready) == (4,)
+    assert first_ready[0].audio_sample_count == 0
     assert continued[0].audio_sample_count == 960
     assert (tmp_path / "cache/track_004/segment_000000.f32").stat().st_size == 960 * 4
     tracker.close()
