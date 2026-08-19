@@ -161,6 +161,22 @@ def test_l3_preview_player_releases_synthesized_audio_on_close(tmp_path):
     assert player._playing is False
 
 
+def test_preview_player_reports_sample_accurate_progress_and_resets_on_stop():
+    player = PreviewPlayer(sample_rate=48_000, volume=1.0, loop_gap_ms=0, autoplay=False)
+    player.load(np.arange(100, dtype=np.float32))
+    player._playing = True
+    output = np.zeros((25, 1), dtype=np.float32)
+
+    player._callback(output, 25, None, None)
+    assert player.playback_progress == pytest.approx(0.25)
+
+    player.pause()
+    assert player.playback_progress == pytest.approx(0.25)
+    player.stop()
+    assert player.playback_progress == 0.0
+    player.close()
+
+
 def test_track_preview_uses_one_bounded_gain_for_the_complete_file(tmp_path):
     player = PreviewPlayer(
         sample_rate=48_000, volume=1.0, loop_gap_ms=80, autoplay=False,

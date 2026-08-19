@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -781,6 +782,7 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert window.stop_button.text() == "停止采集"
         assert window.start_button.isEnabled() and not window.stop_button.isEnabled()
         assert window.light_on.isEnabled() and window.light_off.isEnabled()
+        assert not hasattr(window, "calibration_label")
         assert window.srp_threshold.parentWidget() is not window.srp_polar
         right_layout = window.srp_threshold.parentWidget().layout()
         assert right_layout.indexOf(window.gate_threshold) == 0
@@ -848,6 +850,16 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         assert "Center Mic" in window.bf_panel._track_rows[0].label.text()
         assert "≥2.0s" in window.bf_panel.help.text()
 
+        window.bf_panel.set_track_playback_progress(3, 0.4)
+        assert window.bf_panel._track_rows[3].waveform._playback_progress == pytest.approx(0.4)
+        assert window.bf_panel._track_rows[0].waveform._playback_progress is None
+        assert window.bf_panel._track_rows[2].waveform._playback_progress is None
+        window.bf_panel.clear_track_playback_progress()
+        assert all(
+            row.waveform._playback_progress is None
+            for row in window.bf_panel._track_rows.values()
+        )
+
         window.bf_panel.set_tracks(())
         app.processEvents()
         assert set(window.bf_panel._track_rows) == {0, 2, 3}
@@ -884,6 +896,7 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
+    import gui.dev_test_ui.srp_panel as music_panel
     from gui.dev_test_ui.srp_panel import DirectionTrackTable, MusicPanelSnapshot, MusicPolarPanel
 
     app = QApplication.instance() or QApplication([])
@@ -904,6 +917,9 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     snapshot = MusicPanelSnapshot(response, (track,), (track,), time.monotonic(), {7: 0.91})
     panel = MusicPolarPanel()
     table = DirectionTrackTable()
+    now = [100.0]
+    monkeypatch.setattr(music_panel, "monotonic", lambda: now[0])
+    first_item = table.item(0, 0)
     panel.set_snapshot(snapshot)
     table.set_snapshot(snapshot)
     assert panel._snapshot.active_tracks[0].track_id == 7
@@ -911,4 +927,50 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     assert table.item(0, 1).text() == "30.0°"
     assert table.item(0, 2).text() == "31.0°"
     assert table.item(0, 4).text() == "confirmed"
+    assert table.item(0, 7).text() == "—"
+    assert table.rowCount() == 3
+    assert not table.alternatingRowColors()
+    assert table.item(0, 0) is first_item
+    assert table.item(1, 0).text() == table.item(2, 0).text() == ""
+
+    now[0] = 100.5
+    response2 = replace(response, window_id=1, decision_sample=16_320,
+                        doa_start_sample=14_400, doa_end_sample=16_320)
+    track2 = replace(track, window_id=1, decision_sample=16_320,
+                     doa_start_sample=14_400, doa_end_sample=16_320,
+                     first_seen_sample=14_400, last_observed_sample=16_320)
+    table.set_snapshot(MusicPanelSnapshot(
+        response2, (track2,), (track2,), now[0], {7: 0.40},
+    ))
+    assert table.item(0, 7).text() == "—"
+
+    now[0] = 101.1
+    response3 = replace(response2, window_id=2, decision_sample=17_280,
+                        doa_start_sample=15_360, doa_end_sample=17_280)
+    track3 = replace(track2, window_id=2, decision_sample=17_280,
+                     doa_start_sample=15_360, doa_end_sample=17_280,
+                     last_observed_sample=17_280)
+    table.set_snapshot(MusicPanelSnapshot(
+        response3, (track3,), (track3,), now[0], {7: 0.40},
+    ))
     assert table.item(0, 7).text() == "0.910"
+
+    now[0] = 102.2
+    response4 = replace(response3, window_id=3, decision_sample=18_240,
+                        doa_start_sample=16_320, doa_end_sample=18_240)
+    track4 = replace(track3, window_id=3, decision_sample=18_240,
+                     doa_start_sample=16_320, doa_end_sample=18_240,
+                     last_observed_sample=18_240)
+    table.set_snapshot(MusicPanelSnapshot(
+        response4, (track4,), (track4,), now[0], {7: 0.25},
+    ))
+    assert table.item(0, 7).text() == "0.400"
+
+    table.set_snapshot(None)
+    assert table.rowCount() == 3
+    assert table.item(0, 0) is first_item
+    assert all(
+        table.item(row, column).text() == ""
+        for row in range(3)
+        for column in range(table.columnCount())
+    )
