@@ -270,6 +270,30 @@ def test_application_runtime_owns_single_chain_and_emits_window(tmp_path):
     assert pipeline.started == 1 and pipeline.stopped >= 1
 
 
+def test_stop_waits_for_forced_commit_exit_and_reports_success(tmp_path):
+    base = load_config(CONFIG, environ={})
+    runtime_config = base.runtime.model_copy(update={
+        "graceful_shutdown_timeout_seconds": 0.05,
+    })
+    runtime = ApplicationRuntime(
+        base.model_copy(update={"runtime": runtime_config}),
+        project_root=tmp_path,
+        pipeline=StubPipeline([]),
+        serial_device=StubSerial(),
+    )
+    commit = threading.Thread(target=lambda: time.sleep(0.08), daemon=True)
+    runtime._processing_threads = {"commit": commit}
+    runtime._processing_thread = commit
+    commit.start()
+
+    runtime.stop()
+
+    assert not commit.is_alive()
+    assert runtime.last_error is None
+    assert runtime.active is False
+    assert runtime.processing_queue_depths == {"l2": 0, "l3": 0, "l4": 0, "completion": 0}
+
+
 def test_runtime_pre_denoise_replaces_audio_before_window_and_preserves_timeline(tmp_path):
     base = load_config(CONFIG, environ={})
     config = base.model_copy(update={

@@ -557,6 +557,10 @@ def build_window(
                 if name == "启动采集":
                     self._enter_starting_state()
                 elif name == "停止采集":
+                    if runtime.active:
+                        raise RuntimeError(
+                            runtime.last_error or "Runtime仍有线程或录音会话未停止"
+                        )
                     self._enter_stopped_state()
                 self.statusBar().showMessage(f"{name}已完成", 3000)
             except Exception as exc:
@@ -863,6 +867,12 @@ def build_window(
                         self._replay_reset_pending = False
                 elif self._replay_reset_pending and latest.l1 is not None:
                     self._replay_reset_pending = False
+            # A completed stop may leave one diagnostic frame in the latest-
+            # only mailboxes.  Keep the already-rendered final snapshot, but
+            # never repaint that residual frame as LIVE after Runtime is idle.
+            if not runtime.active:
+                latest = None
+                latest_l4 = None
             if latest is not None:
                 self._frame = latest
                 self._last_l1_seen = monotonic()

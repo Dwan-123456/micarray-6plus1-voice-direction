@@ -803,6 +803,14 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         window._refresh()
         assert window.srp_header.text() == stopped_header
         assert "age —" in stopped_header and "STALE" not in stopped_header
+        rendered_after_stop = []
+        original_render = window._render_frame
+        window._render_frame = lambda *args, **kwargs: rendered_after_stop.append((args, kwargs))
+        window._runtime.latest_dev_ui.put_nowait(object())
+        window._refresh()
+        window._render_frame = original_render
+        assert rendered_after_stop == []
+        assert window.srp_header.text() == stopped_header
 
         window.resize(1920, 1080)
         app.processEvents()
@@ -818,6 +826,28 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         # A one-pixel difference is the intentional grid separator/odd-pixel remainder.
         assert abs(before[0][2] - before[1][2]) <= 1
         assert abs(before[0][3] - before[2][3]) <= 1
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_stop_command_is_not_reported_complete_while_runtime_remains_active(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    try:
+        window._runtime._recording_session_started = True
+        window._submit_command("停止采集", lambda: None)
+        deadline = time.monotonic() + 1.0
+        while window._pending_command is not None and time.monotonic() < deadline:
+            window._poll_command()
+            app.processEvents()
+        assert "停止采集失败" in window.statusBar().currentMessage()
+        assert window.stop_button.isEnabled()
+        assert "STOPPED | capture closed" not in window.l1_header.text()
+        window._runtime._recording_session_started = False
     finally:
         window.close()
         app.processEvents()

@@ -2443,16 +2443,23 @@ class ApplicationRuntime:
                 except Exception as exc:
                     self._set_stage_error("commit", exc)
             self._wake_processing_workers()
-            for worker in workers.values():
-                if worker is not threading.current_thread() and worker.is_alive():
-                    worker.join(timeout=1.0)
+            # A large bounded offline queue can leave hundreds of joined
+            # terminal records for commit.  Give forced cancellation one
+            # complete configured shutdown interval instead of a fixed one
+            # second, then report failure only if a worker is still alive.
+            forced_deadline = monotonic() + timeout
+            for name in ("l2", "l3", "l4", "commit"):
+                worker = workers.get(name)
+                if worker is not None and worker is not threading.current_thread() and worker.is_alive():
+                    worker.join(timeout=max(0.0, forced_deadline - monotonic()))
             alive = {
                 name: worker for name, worker in workers.items() if worker.is_alive()
             }
-            self.last_error = (
-                "processing workers did not drain within "
-                f"{timeout:.1f}s: {','.join(sorted(alive))}"
-            )
+            if alive:
+                self.last_error = (
+                    "processing workers did not stop after graceful drain and forced cancellation: "
+                    f"{','.join(sorted(alive))}"
+                )
         input_alive = thread is not None and thread.is_alive()
         with self._lifecycle_lock:
             if input_alive:
@@ -2462,6 +2469,21 @@ class ApplicationRuntime:
             if not alive:
                 self._processing_threads = {}
                 self._processing_thread = None
+        if not alive and not input_alive:
+            # Workers own these queues.  Once every worker has exited, stale
+            # work/EOS markers can be released safely so STOP telemetry reads
+            # zero and retained 320 ms windows do not occupy memory.
+            for mailbox in (
+                self._l2_windows,
+                self._l3_windows,
+                self._l4_windows,
+                self._completion_results,
+            ):
+                while True:
+                    try:
+                        mailbox.get_nowait()
+                    except queue.Empty:
+                        break
         try:
             self.scratch.close()
         except Exception as exc:
