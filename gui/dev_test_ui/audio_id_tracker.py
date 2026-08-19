@@ -14,6 +14,9 @@ from .contracts import BeamformPreview, TrackedAudioSnapshot
 _HOP_SAMPLES = 960
 _CROSSFADE_SAMPLES = 480
 _EDGE_FADE_SAMPLES = 240
+_SOUND_RMS_THRESHOLD = 10.0 ** (-50.0 / 20.0)
+_MIN_SOUND_RATIO = 0.30
+_LONG_SILENCE_HOPS = 150
 
 
 @dataclass(slots=True)
@@ -32,6 +35,10 @@ class _Track:
     fade_in_next: bool = True
     authoritative_id: bool = False
     envelope_peaks: deque[float] = field(default_factory=deque)
+    total_hops: int = 0
+    sound_hops: int = 0
+    consecutive_silent_hops: int = 0
+    longest_silent_hops: int = 0
     stream_key: tuple[str, int] | None = None
     processing_mode: str = "optimized"
 
@@ -129,6 +136,7 @@ class AudioIdTracker:
             if track.state != "ended":
                 self._flush_pending(track, fade_out=True)
                 track.state = "ended"
+        self._remove_quiet_ended_tracks()
         self._stream = stream
         self._processing_mode = None
         if self._reference_track is not None:
@@ -235,6 +243,18 @@ class AudioIdTracker:
         track.envelope_peaks.extend(
             float(item) for item in np.max(np.abs(hops), axis=1)
         )
+        rms_values = np.sqrt(np.mean(np.square(hops, dtype=np.float64), axis=1))
+        for rms in rms_values:
+            track.total_hops += 1
+            if float(rms) >= _SOUND_RMS_THRESHOLD:
+                track.sound_hops += 1
+                track.consecutive_silent_hops = 0
+            else:
+                track.consecutive_silent_hops += 1
+                track.longest_silent_hops = max(
+                    track.longest_silent_hops,
+                    track.consecutive_silent_hops,
+                )
         if track.track_id == 0:
             return
         maximum = self.retained_segments * self.segment_samples // _HOP_SAMPLES
@@ -411,6 +431,32 @@ class AudioIdTracker:
     def _cached_samples(track: _Track) -> int:
         return sum(path.stat().st_size // np.dtype(np.float32).itemsize for path in track.segments if path.exists())
 
+    @staticmethod
+    def _should_discard_quiet_track(track: _Track) -> bool:
+        if track.track_id == 0 or track.total_hops <= 0:
+            return False
+        return (
+            track.longest_silent_hops >= _LONG_SILENCE_HOPS
+            or track.sound_hops / track.total_hops <= _MIN_SOUND_RATIO
+        )
+
+    def _delete_track_segments(self, track: _Track) -> None:
+        directories = {path.parent.resolve() for path in track.segments}
+        for directory in directories:
+            if self.cache_root not in directory.parents:
+                raise ValueError("Test UI track cache escaped cache_root")
+            if directory.exists():
+                shutil.rmtree(directory)
+        track.segments.clear()
+        track.segment_samples = 0
+        track.envelope_peaks.clear()
+
+    def _remove_quiet_ended_tracks(self) -> None:
+        for track_id, track in tuple(self._tracks.items()):
+            if track.state == "ended" and self._should_discard_quiet_track(track):
+                self._delete_track_segments(track)
+                del self._tracks[track_id]
+
     def _reference_cached_samples(self) -> int:
         track = self._reference_track
         if track is None:
@@ -517,6 +563,7 @@ class AudioIdTracker:
                 if track_id not in active_by_id and track.state != "ended":
                     self._flush_pending(track, fade_out=True)
                     track.state = "ended"
+            self._remove_quiet_ended_tracks()
 
             # A visible row must remain playable for the complete capture
             # session.  Do not prune ENDED tracks behind the UI; reset()/close()
@@ -529,6 +576,7 @@ class AudioIdTracker:
             for track in self._tracks.values():
                 self._flush_pending(track, fade_out=True)
                 track.state = "ended"
+            self._remove_quiet_ended_tracks()
             if self._tracks:
                 self._sealed_tracks.append(self._tracks)
                 self._tracks = {}

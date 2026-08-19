@@ -40,6 +40,14 @@ def _preview(track_id: int, decision: int, theta: float, *, backend: str = "ds_b
     )
 
 
+def _silent_preview(track_id: int, decision: int, theta: float) -> BeamformPreview:
+    return BeamformPreview(
+        "session", 0, decision // 960, decision, theta,
+        np.zeros(15_360, dtype=np.float32), "ds_baseline",
+        track_id=track_id, track_state="confirmed",
+    )
+
+
 def _window(decision: int):
     return SimpleNamespace(session_id="session", stream_epoch=0, decision_sample=decision)
 
@@ -113,6 +121,49 @@ def test_unrecoverable_gap_preserves_duration_and_uses_newest_full_320ms(tmp_pat
     tracker.update(_window(later_decision), (later,), (_preview(1, later_decision, 30.0),), active_tracks=(later,))
     tracker.update(_window(later_decision + 960), (), (), active_tracks=())
     assert tracker.snapshots()[0].audio_sample_count == 21 * 960
+
+
+def test_ended_track_at_or_below_thirty_percent_sound_is_deleted(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    for index in range(10):
+        decision = 15_360 + index * 960
+        direction = _direction(12, decision, 80.0)
+        preview = (
+            _preview(12, decision, 80.0)
+            if index < 3 else _silent_preview(12, decision, 80.0)
+        )
+        tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
+    tracker.update(_window(24_960), (), (), active_tracks=())
+    assert tracker.snapshots() == ()
+    assert not tuple((tmp_path / "cache").rglob("track_012/segment_*.f32"))
+
+
+def test_ended_track_above_thirty_percent_sound_is_retained(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    for index in range(10):
+        decision = 15_360 + index * 960
+        direction = _direction(13, decision, 90.0)
+        preview = (
+            _preview(13, decision, 90.0)
+            if index < 4 else _silent_preview(13, decision, 90.0)
+        )
+        tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
+    tracker.update(_window(24_960), (), (), active_tracks=())
+    assert tracker.snapshots()[0].track_id == 13
+
+
+def test_ended_track_with_three_seconds_continuous_silence_is_deleted(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    for index in range(250):
+        decision = 15_360 + index * 960
+        direction = _direction(14, decision, 100.0)
+        preview = (
+            _preview(14, decision, 100.0)
+            if index < 100 else _silent_preview(14, decision, 100.0)
+        )
+        tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
+    tracker.update(_window(15_360 + 250 * 960), (), (), active_tracks=())
+    assert tracker.snapshots() == ()
 
 
 def test_mode_change_seals_and_isolates_cache_partitions(tmp_path):
