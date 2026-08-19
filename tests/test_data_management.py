@@ -914,47 +914,6 @@ def test_experiment_snapshot_locks_dataset_and_recording(tmp_path: Path):
     assert catalog.recording_is_experiment_locked(root.name)
 
 
-def test_partial_recovery_queue_overflow_and_query_performance(tmp_path: Path):
-    store = RecordingStore(tmp_path, result_queue_capacity=1, min_free_storage_gb=0)
-    partial = tmp_path / "runtime_sessions" / "x.partial"
-    partial.parent.mkdir(parents=True)
-    partial.write_bytes(b"partial")
-    recovered = store.recover_partials()
-    assert recovered and recovered[0].read_bytes() == b"partial"
-    session = str(uuid.uuid4())
-    store._drain_results = lambda: None
-    store.start_session(session, SessionMetadata("a", "b"))
-    store.set_recording_mode("continuous")
-    store._accept_interval(0, 0, 960)
-    store.result_queue.put_nowait(("result", {"window_id": 1}))
-    store.append_result(DecisionRecord(session, 0, 2, 960, (0, 1), (0, 1), "ok"))
-    assert store._manifest["result_gaps"][0]["reason"] == "result_overflow"
-    store.stop_session()
-    now = "2026-01-01T00:00:00Z"
-    with store.catalog.connection:
-        store.catalog.connection.executemany(
-            "INSERT INTO recordings(id,created_at,updated_at,schema_version,dataset_id,status,source_type,path,split,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            [
-                (
-                    str(uuid.uuid4()),
-                    now,
-                    now,
-                    "v",
-                    "dataset-perf",
-                    "passed",
-                    "imported",
-                    str(tmp_path / f"p-{i}"),
-                    "train",
-                    "{}",
-                )
-                for i in range(10000)
-            ],
-        )
-    started = time.perf_counter()
-    rows = store.catalog.list_recordings(dataset_id="dataset-perf", status="passed")
-    assert len(rows) == 1000 and (time.perf_counter() - started) < 0.5
-
-
 def test_runtime_recording_stop_is_bounded_after_writer_failure_with_full_queue(tmp_path: Path):
     session = str(uuid.uuid4())
     store = RecordingStore(

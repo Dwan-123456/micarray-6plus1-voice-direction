@@ -128,52 +128,49 @@ def _l4_result(
     )
 
 
-def test_l2_threshold_settings_persist_across_instances(tmp_path):
-    first = DevUiSettings(tmp_path)
-    assert first.load_direction_threshold(.35) == .35
-    assert first.save_direction_threshold(.67) == .67
-    second = DevUiSettings(tmp_path)
-    assert second.load_direction_threshold(.35) == .67
-    assert '"layer2_direction_threshold": 0.67' in second.path.read_text(encoding="utf-8")
-
-
-def test_l2_iterative_switch_persists_without_overwriting_threshold(tmp_path):
+def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     settings = DevUiSettings(tmp_path)
+    assert settings.load_direction_threshold(.35) == .35
     assert settings.load_iterative_peak_search_enabled() is False
+    assert settings.load_direction_kalman_enabled() is False
+    assert settings.load_direction_id_tracking_enabled() is False
+    assert settings.load_gate_probability_threshold(0.60) == 0.60
+    assert settings.load_l1_pre_denoise_enabled(False) is False
+
     settings.save_direction_threshold(.67)
     assert settings.save_iterative_peak_search_enabled(True) is True
     assert settings.load_direction_threshold(.35) == .67
     settings.save_direction_threshold(.42)
-    assert settings.load_iterative_peak_search_enabled() is True
-    payload = settings.path.read_text(encoding="utf-8")
-    assert '"layer2_iterative_peak_search_enabled": true' in payload
-    assert '"layer2_direction_threshold": 0.42' in payload
-
-
-def test_l2_kalman_and_id_switches_persist_independently(tmp_path):
-    settings = DevUiSettings(tmp_path)
-    assert settings.load_direction_kalman_enabled() is False
-    assert settings.load_direction_id_tracking_enabled() is False
     settings.save_direction_kalman_enabled(True)
     settings.save_direction_id_tracking_enabled(True)
-    settings.save_iterative_peak_search_enabled(True)
-    loaded = DevUiSettings(tmp_path)
-    assert loaded.load_direction_kalman_enabled() is True
-    assert loaded.load_direction_id_tracking_enabled() is True
-    assert loaded.load_iterative_peak_search_enabled() is True
-
-
-def test_l2_kalman_q_r_scales_persist_without_overwriting_switches(tmp_path):
-    settings = DevUiSettings(tmp_path)
-    settings.save_direction_kalman_enabled(True)
     assert settings.save_direction_kalman_q_scale(1.2) == 1.2
     assert settings.save_direction_kalman_r_scale(0.8) == 0.8
+    assert settings.save_gate_probability_threshold(0.73) == 0.73
+    assert settings.save_l1_pre_denoise_enabled(True) is True
+
     loaded = DevUiSettings(tmp_path)
+    assert loaded.load_direction_threshold(.35) == .42
+    assert loaded.load_iterative_peak_search_enabled() is True
+    assert loaded.load_direction_kalman_enabled() is True
+    assert loaded.load_direction_id_tracking_enabled() is True
     assert loaded.load_direction_kalman_q_scale(1.0) == 1.2
     assert loaded.load_direction_kalman_r_scale(1.0) == 0.8
-    assert loaded.load_direction_kalman_enabled() is True
+    assert loaded.load_gate_probability_threshold(0.60) == 0.73
+    assert loaded.load_l1_pre_denoise_enabled(False) is True
+
+    payload = loaded.path.read_text(encoding="utf-8")
+    assert '"layer2_direction_threshold": 0.42' in payload
+    assert '"layer2_iterative_peak_search_enabled": true' in payload
+
+
+def test_operator_settings_reject_invalid_values(tmp_path):
+    settings = DevUiSettings(tmp_path)
     with pytest.raises(ValueError):
         settings.save_direction_kalman_q_scale(0.03)
+    with pytest.raises(ValueError, match="Gate probability threshold"):
+        settings.save_gate_probability_threshold(1.01)
+    with pytest.raises(ValueError, match="must be bool"):
+        settings.save_l1_pre_denoise_enabled(1)
 
 
 def test_kalman_q_r_control_stages_with_buttons_and_applies_explicitly(monkeypatch):
@@ -195,24 +192,6 @@ def test_kalman_q_r_control_stages_with_buttons_and_applies_explicitly(monkeypat
     assert "1.10" in control.value_label.text()
     control.deleteLater()
     app.processEvents()
-
-
-def test_gate_probability_threshold_persists_and_validates(tmp_path):
-    settings = DevUiSettings(tmp_path)
-    assert settings.load_gate_probability_threshold(0.60) == 0.60
-    assert settings.save_gate_probability_threshold(0.73) == 0.73
-    assert DevUiSettings(tmp_path).load_gate_probability_threshold(0.60) == 0.73
-    with pytest.raises(ValueError, match="Gate probability threshold"):
-        settings.save_gate_probability_threshold(1.01)
-
-
-def test_l1_pre_denoise_switch_persists_and_is_strict(tmp_path):
-    settings = DevUiSettings(tmp_path)
-    assert settings.load_l1_pre_denoise_enabled(False) is False
-    assert settings.save_l1_pre_denoise_enabled(True) is True
-    assert DevUiSettings(tmp_path).load_l1_pre_denoise_enabled(False) is True
-    with pytest.raises(ValueError, match="must be bool"):
-        settings.save_l1_pre_denoise_enabled(1)
 
 
 def test_performance_tracker_resets_on_epoch_and_observes_rate():

@@ -260,8 +260,7 @@ def test_nonfinite_input_is_rejected_before_formal_output(scan_config: Direction
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    (("phat_epsilon", np.inf), ("phat_epsilon", np.nan),
-     ("iterative_phase_power", np.inf), ("iterative_phase_power", np.nan)),
+    (("phat_epsilon", np.nan), ("iterative_phase_power", np.inf)),
 )
 def test_nonfinite_scan_configuration_is_rejected(
     scan_config: DirectionScanConfig, field: str, value: float

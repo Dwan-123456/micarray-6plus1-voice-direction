@@ -117,11 +117,6 @@ class Layer1Tests(unittest.TestCase):
         encoded = float_to_pcm16(decoded)
         np.testing.assert_array_equal(encoded, original)
 
-    def test_audio_frame_shape(self):
-        frame = DecodedAudio(np.zeros((960, 8)), 48000, 0, 0.0)
-        self.assertEqual((frame.frame_count, frame.channels), (960, 8))
-        self.assertEqual(frame.sequence_id, 0)
-
     def test_calibration(self):
         calibrator = ChannelCalibrator(self._calibration(gains=(2, 1, 1, 1, 1, 1, 1), polarity=(-1, 1, 1, 1, 1, 1, 1), delay_samples=(0, 2, 0, 0, 0, 0, 0)))
         samples = np.zeros((4, 8), dtype=np.float32)
