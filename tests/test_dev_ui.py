@@ -901,6 +901,7 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     snapshot = MusicPanelSnapshot(response, (track,), (track,), time.monotonic(), {7: 0.91})
     panel = MusicPolarPanel()
     table = DirectionTrackTable()
+    first_item = table.item(0, 0)
     panel.set_snapshot(snapshot)
     table.set_snapshot(snapshot)
     assert panel._snapshot.active_tracks[0].track_id == 7
@@ -909,3 +910,14 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     assert table.item(0, 2).text() == "31.0°"
     assert table.item(0, 4).text() == "confirmed"
     assert table.item(0, 7).text() == "0.910"
+    assert table.rowCount() == 3
+    assert table.item(0, 0) is first_item
+    assert table.item(1, 0).text() == table.item(2, 0).text() == ""
+    table.set_snapshot(None)
+    assert table.rowCount() == 3
+    assert table.item(0, 0) is first_item
+    assert all(
+        table.item(row, column).text() == ""
+        for row in range(3)
+        for column in range(table.columnCount())
+    )

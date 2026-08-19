@@ -169,37 +169,50 @@ if QWidget is not None:
 
 
     class DirectionTrackTable(QTableWidget):
+        ROW_COUNT = 3
         HEADERS = ("track_id", "观测角", "输出角", "score", "状态", "新建", "观测", "L4概率")
 
         def __init__(self, parent: QWidget | None = None):
-            super().__init__(0, len(self.HEADERS), parent)
+            super().__init__(self.ROW_COUNT, len(self.HEADERS), parent)
             self.setHorizontalHeaderLabels(self.HEADERS)
             self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             self.horizontalHeader().setStretchLastSection(True)
             self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self.setAlternatingRowColors(True)
+            for row in range(self.ROW_COUNT):
+                for column in range(len(self.HEADERS)):
+                    self.setItem(row, column, QTableWidgetItem(""))
 
         def set_snapshot(self, snapshot: MusicPanelSnapshot | None) -> None:
             tracks = () if snapshot is None else snapshot.active_tracks
-            self.setRowCount(len(tracks))
-            for row, track in enumerate(tracks):
-                probability = None if snapshot is None else snapshot.l4_probability_by_track.get(track.track_id)
-                values = (
-                    str(track.track_id),
-                    "—" if track.measured_theta_deg is None else f"{track.measured_theta_deg:.1f}°",
-                    f"{track.theta_deg:.1f}°",
-                    f"{track.normalized_score:.3f}",
-                    track.track_state,
-                    "是" if track.is_new_track else "否",
-                    "是" if track.is_observed else "否",
-                    "—" if probability is None else f"{probability:.3f}",
-                )
-                colour = QColor(_TRACK_COLOURS[(track.track_id - 1) % len(_TRACK_COLOURS)])
-                for column, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    item.setForeground(colour)
-                    self.setItem(row, column, item)
+            self.setUpdatesEnabled(False)
+            try:
+                for row in range(self.ROW_COUNT):
+                    track = tracks[row] if row < len(tracks) else None
+                    if track is None:
+                        values = ("",) * len(self.HEADERS)
+                        colour = self.palette().text().color()
+                    else:
+                        probability = snapshot.l4_probability_by_track.get(track.track_id)
+                        values = (
+                            str(track.track_id),
+                            "—" if track.measured_theta_deg is None else f"{track.measured_theta_deg:.1f}°",
+                            f"{track.theta_deg:.1f}°",
+                            f"{track.normalized_score:.3f}",
+                            track.track_state,
+                            "是" if track.is_new_track else "否",
+                            "是" if track.is_observed else "否",
+                            "—" if probability is None else f"{probability:.3f}",
+                        )
+                        colour = QColor(_TRACK_COLOURS[(track.track_id - 1) % len(_TRACK_COLOURS)])
+                    for column, value in enumerate(values):
+                        item = self.item(row, column)
+                        item.setText(value)
+                        item.setForeground(colour)
+            finally:
+                self.setUpdatesEnabled(True)
+                self.viewport().update()
 
 else:
 
