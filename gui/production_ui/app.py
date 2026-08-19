@@ -1618,7 +1618,14 @@ class AudioDataManager(QMainWindow):
         )
         if answer != QMessageBox.Yes:
             return
-        self._job(lambda: self.service.trash("recording", recording_id), lambda _: self.refresh_all())
+        self._job(
+            lambda: self.service.trash("recording", recording_id),
+            lambda _: self._trash_complete("测试样本已移到可恢复的回收站。"),
+        )
+
+    def _trash_complete(self, message: str) -> None:
+        self.refresh_all()
+        self.statusBar().showMessage(message, 8000)
 
     def _restore_trash(self):
         operations = self.service.trash_operations()

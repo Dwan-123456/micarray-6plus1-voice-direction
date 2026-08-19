@@ -277,6 +277,45 @@ def test_recording_page_has_only_requested_actions_and_can_listen_to_any_native_
     window.close()
 
 
+def test_selected_recording_moves_to_recoverable_trash_and_disappears(tmp_path, monkeypatch):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    dataset = "test-recordings"
+    recording_id = "sample-to-trash"
+    root = tmp_path / "test_corpus" / dataset / "recordings" / recording_id
+    root.mkdir(parents=True)
+    manifest = {
+        "schema_version": "test_recording_v1",
+        "dataset_id": dataset,
+        "recording_id": recording_id,
+        "display_name": "待删除录音",
+        "source_type": "dedicated",
+        "quality_status": "pending",
+        "split": "unset",
+        "assets": [],
+    }
+    (root / "recording_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    window.service.catalog.upsert_dataset(dataset, root.parents[1])
+    window.service.catalog.upsert_recording(manifest, root)
+    window.corpus_table.load(window.service.recordings())
+    window.corpus_table.selectRow(0)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: QMessageBox.Yes)
+    monkeypatch.setattr(window, "_job", lambda fn, done: done(fn()))
+
+    window._trash_recording()
+
+    assert not root.exists()
+    assert window.corpus_table.rowCount() == 1
+    assert window.corpus_table.selected_id() is None
+    assert "还没有录音" in window.corpus_table.item(0, 0).text()
+    operations = window.service.trash_operations()
+    assert len(operations) == 1
+    window.service.restore(operations[0]["operation_id"])
+    assert root.exists()
+    assert [row["id"] for row in window.service.recordings()] == [recording_id]
+    window.close()
+
+
 def test_selected_database_sample_launches_complete_virtual_array_input(tmp_path, monkeypatch):
     app_instance()
     window = AudioDataManager(tmp_path)

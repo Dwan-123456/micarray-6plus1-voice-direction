@@ -25,6 +25,7 @@ class DataManagerService:
     def __init__(self, data_root: str | Path):
         self.data_root = Path(data_root)
         self.catalog = Catalog(self.data_root / "catalog.sqlite")
+        self._reconcile_trash_catalog()
         self.wizard = DedicatedRecordingController(self.data_root, self.catalog)
         self.experiments_store = ExperimentStore(self.data_root, self.catalog)
 
@@ -141,14 +142,42 @@ class DataManagerService:
         )
 
     def restore(self, operation_id: str) -> Path:
-        return restore_from_trash(self.data_root / "trash" / operation_id)
+        return restore_from_trash(self.data_root / "trash" / operation_id, catalog=self.catalog)
+
+    def _reconcile_trash_catalog(self) -> None:
+        """Hide recordings moved by older builds that left stale Catalog rows."""
+
+        for metadata_path in (self.data_root / "trash").glob("*/trash_metadata.json"):
+            try:
+                item = json.loads(metadata_path.read_text(encoding="utf-8"))
+                entity_type = str(item["entity_type"])
+                entity_id = str(item["entity_id"])
+                original = Path(str(item["original_path"]))
+                payloads = [path for path in metadata_path.parent.iterdir() if path.name != metadata_path.name]
+                required = {"recording": "recording_manifest.json", "session": "session_manifest.json"}.get(entity_type)
+                if original.exists() or required is None or len(payloads) != 1 or not (payloads[0] / required).is_file():
+                    continue
+                self.catalog.mark_trashed(entity_type, entity_id)
+            except (KeyError, OSError, ValueError, json.JSONDecodeError, FileNotFoundError):
+                continue
 
     def trash_operations(self) -> list[dict[str, Any]]:
         result = []
         for path in (self.data_root / "trash").glob("*/trash_metadata.json"):
-            item = json.loads(path.read_text(encoding="utf-8"))
-            item["operation_root"] = str(path.parent)
-            result.append(item)
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+                original = Path(str(item["original_path"]))
+                payloads = [candidate for candidate in path.parent.iterdir() if candidate.name != path.name]
+                required = {
+                    "recording": "recording_manifest.json",
+                    "session": "session_manifest.json",
+                }.get(str(item.get("entity_type")))
+                if original.exists() or required is None or len(payloads) != 1 or not (payloads[0] / required).is_file():
+                    continue
+                item["operation_root"] = str(path.parent)
+                result.append(item)
+            except (KeyError, OSError, ValueError, json.JSONDecodeError):
+                continue
         return result
 
     def export(self, paths: list[str], destination: str) -> Path:

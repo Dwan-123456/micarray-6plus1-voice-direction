@@ -487,7 +487,38 @@ def test_promote_annotations_qa_trash_and_export(tmp_path: Path):
     assert verify_export(archive)
     trash = move_to_trash(tmp_path, root, entity_type="recording", entity_id=rid, catalog=catalog)
     assert not root.exists()
-    assert restore_from_trash(trash.parent) == root
+    assert catalog.list_recordings() == []
+    assert restore_from_trash(trash.parent, catalog=catalog) == root
+    assert [row["id"] for row in catalog.list_recordings()] == [rid]
+
+
+def test_service_reconciles_recordings_trashed_by_older_builds(tmp_path: Path):
+    service = DataManagerService(tmp_path)
+    dataset = str(uuid.uuid4())
+    root = tmp_path / "test_corpus" / dataset / "recordings" / str(uuid.uuid4())
+    root.mkdir(parents=True)
+    manifest = {
+        "schema_version": "test_recording_v1",
+        "dataset_id": dataset,
+        "recording_id": root.name,
+        "source_type": "dedicated",
+        "quality_status": "pending",
+        "split": "unset",
+        "assets": [],
+    }
+    from data_management.manifests import write_manifest
+
+    write_manifest(root / "recording_manifest.json", manifest)
+    service.catalog.upsert_dataset(dataset, root.parents[1])
+    service.catalog.upsert_recording(manifest, root)
+    service.trash("recording", root.name)
+    service.catalog.mark_restored("recording", root.name)  # Reproduce the stale row written by the old implementation.
+    service.close()
+
+    reopened = DataManagerService(tmp_path)
+    assert reopened.recordings() == []
+    assert len(reopened.trash_operations()) == 1
+    reopened.close()
 
 
 def test_leakage_detects_room_session_and_speaker():

@@ -13,7 +13,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
  id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, schema_version TEXT NOT NULL,
  status TEXT NOT NULL, path TEXT NOT NULL UNIQUE, started_at TEXT, ended_at TEXT, mode TEXT, pinned INTEGER NOT NULL DEFAULT 0,
- promoted INTEGER NOT NULL DEFAULT 0, manifest_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+ promoted INTEGER NOT NULL DEFAULT 0, manifest_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', trashed_at TEXT);
 CREATE INDEX IF NOT EXISTS ix_sessions_started ON sessions(started_at DESC);
 CREATE TABLE IF NOT EXISTS datasets (
  id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, schema_version TEXT NOT NULL,
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS recordings (
  id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, schema_version TEXT NOT NULL,
  dataset_id TEXT NOT NULL, status TEXT NOT NULL, source_type TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
  capture_session_id TEXT, room_id TEXT, environment_id TEXT, split TEXT NOT NULL DEFAULT 'unset', duration_samples INTEGER NOT NULL DEFAULT 0,
- manifest_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+ manifest_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', trashed_at TEXT);
 CREATE INDEX IF NOT EXISTS ix_recordings_filter ON recordings(dataset_id,status,split,room_id,environment_id);
 CREATE TABLE IF NOT EXISTS direction_observations (
  session_id TEXT NOT NULL, stream_epoch INTEGER NOT NULL, track_id INTEGER NOT NULL,
@@ -63,6 +63,22 @@ class Catalog:
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.executescript(SCHEMA)
+        self._ensure_trash_columns()
+
+    def _ensure_trash_columns(self) -> None:
+        """Migrate existing local catalogs without rebuilding or losing metadata."""
+
+        with self._lock, self.connection:
+            for table in ("sessions", "recordings"):
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(f"PRAGMA table_info({table})")
+                }
+                if "trashed_at" not in columns:
+                    self.connection.execute(f"ALTER TABLE {table} ADD COLUMN trashed_at TEXT")
+            self.connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(3,datetime('now'))"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -210,12 +226,16 @@ class Catalog:
         with self._lock:
             return [
                 dict(row)
-                for row in self.connection.execute("SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,))
+                for row in self.connection.execute(
+                    "SELECT * FROM sessions WHERE trashed_at IS NULL ORDER BY started_at DESC LIMIT ?", (limit,)
+                )
             ]
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self.connection.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            row = self.connection.execute(
+                "SELECT * FROM sessions WHERE id=? AND trashed_at IS NULL", (session_id,)
+            ).fetchone()
             return None if row is None else dict(row)
 
     def track_timeline(self, session_id: str, stream_epoch: int, track_id: int) -> list[dict[str, Any]]:
@@ -286,7 +306,7 @@ class Catalog:
     def list_recordings(
         self, *, dataset_id: str | None = None, status: str | None = None, split: str | None = None, limit: int = 1000
     ) -> list[dict[str, Any]]:
-        clauses = []
+        clauses = ["trashed_at IS NULL"]
         values: list[Any] = []
         for field, value in (("dataset_id", dataset_id), ("status", status), ("split", split)):
             if value:
@@ -300,6 +320,30 @@ class Catalog:
         values.append(limit)
         with self._lock:
             return [dict(row) for row in self.connection.execute(sql, values)]
+
+    def mark_trashed(self, entity_type: str, entity_id: str) -> None:
+        table = {"session": "sessions", "recording": "recordings"}.get(entity_type)
+        if table is None:
+            raise ValueError(f"不支持的回收站实体类型：{entity_type}")
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                f"UPDATE {table} SET trashed_at=?,updated_at=? WHERE id=?",
+                (utc_now(), utc_now(), entity_id),
+            )
+            if cursor.rowcount != 1:
+                raise FileNotFoundError(entity_id)
+
+    def mark_restored(self, entity_type: str, entity_id: str) -> None:
+        table = {"session": "sessions", "recording": "recordings"}.get(entity_type)
+        if table is None:
+            raise ValueError(f"不支持的回收站实体类型：{entity_type}")
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                f"UPDATE {table} SET trashed_at=NULL,updated_at=? WHERE id=?",
+                (utc_now(), entity_id),
+            )
+            if cursor.rowcount != 1:
+                raise FileNotFoundError(entity_id)
 
     def rebuild(self, data_root: str | Path) -> dict[str, int]:
         root = Path(data_root)

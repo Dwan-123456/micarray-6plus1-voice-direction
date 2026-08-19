@@ -22,6 +22,8 @@ def move_to_trash(
     source = Path(asset_path).resolve()
     if root not in source.parents or source in {root, root / "runtime_sessions", root / "test_corpus"}:
         raise ValueError("Trash目标越界")
+    if not source.is_dir():
+        raise FileNotFoundError(f"待移除的数据目录不存在：{source}")
     operation = str(uuid.uuid4())
     target = root / "trash" / operation / source.name
     target.parent.mkdir(parents=True, exist_ok=False)
@@ -46,20 +48,29 @@ def move_to_trash(
         ),
         encoding="utf-8",
     )
+    catalog.mark_trashed(entity_type, entity_id)
     return target
 
 
-def restore_from_trash(operation_root: str | Path) -> Path:
+def restore_from_trash(operation_root: str | Path, *, catalog: Catalog | None = None) -> Path:
     operation = Path(operation_root)
     meta = json.loads((operation / "trash_metadata.json").read_text(encoding="utf-8"))
     items = [x for x in operation.iterdir() if x.name != "trash_metadata.json"]
     if len(items) != 1:
         raise ValueError("Trash operation内容无效")
+    required_manifest = {
+        "recording": "recording_manifest.json",
+        "session": "session_manifest.json",
+    }.get(str(meta.get("entity_type")))
+    if required_manifest is None or not (items[0] / required_manifest).is_file():
+        raise ValueError("回收站内容不完整，不能恢复为有效录音")
     target = Path(meta["original_path"])
     if target.exists():
         raise FileExistsError("原路径已存在，不能覆盖恢复")
     target.parent.mkdir(parents=True, exist_ok=True)
     items[0].replace(target)
+    if catalog is not None:
+        catalog.mark_restored(str(meta["entity_type"]), str(meta["entity_id"]))
     shutil.rmtree(operation)
     return target
 
