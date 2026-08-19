@@ -123,6 +123,29 @@ def _payload_identities(value: object) -> tuple[WindowKey, ...]:
     return tuple(identities)
 
 
+def _payload_track_ids(value: object) -> tuple[int, ...] | None:
+    """Return the authoritative ordered IDs published by a stage payload.
+
+    ModelPrediction intentionally remains ID-agnostic for compatibility with
+    existing CNN plugins.  IDs live on the L2/L3/L4 public DTOs and their
+    stage result, never inside a model adapter.
+    """
+    for name in ("track_ids", "candidate_track_ids"):
+        if hasattr(value, name):
+            raw = tuple(getattr(value, name))
+            if raw or name == "track_ids":
+                return raw
+    for name in ("directions", "candidates", "enhanced_audio", "detections"):
+        if not hasattr(value, name):
+            continue
+        children = tuple(getattr(value, name))
+        if not children:
+            return ()
+        if all(hasattr(child, "track_id") for child in children):
+            return tuple(child.track_id for child in children)
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class StageResult(Generic[StageOutputT]):
     """Terminal or pending state for one processing stage and one exact window."""
@@ -137,6 +160,7 @@ class StageResult(Generic[StageOutputT]):
     reason: str | None = None
     error: str | None = None
     diagnostics: tuple[str, ...] = ()
+    track_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, WindowKey):
@@ -174,7 +198,23 @@ class StageResult(Generic[StageOutputT]):
         identities = () if self.output is None else _payload_identities(self.output)
         if any(identity != self.key for identity in identities):
             raise ValueError("stage output identity does not match its WindowKey")
+        track_ids = tuple(self.track_ids)
+        if len(track_ids) > 3 or len(track_ids) != len(set(track_ids)) or any(
+            type(track_id) is not int or track_id <= 0 for track_id in track_ids
+        ):
+            raise ValueError("stage track_ids must contain 0..3 unique positive integers")
+        payload_track_ids = None if self.output is None else _payload_track_ids(self.output)
+        if payload_track_ids is not None:
+            if track_ids and payload_track_ids != track_ids:
+                raise ValueError("stage track IDs do not match output ID order")
+            if not track_ids:
+                track_ids = payload_track_ids
+        if len(track_ids) > 3 or len(track_ids) != len(set(track_ids)) or any(
+            type(track_id) is not int or track_id <= 0 for track_id in track_ids
+        ):
+            raise ValueError("stage output track IDs must contain 0..3 unique positive integers")
         object.__setattr__(self, "diagnostics", tuple(str(item) for item in self.diagnostics))
+        object.__setattr__(self, "track_ids", track_ids)
 
     @property
     def is_terminal(self) -> bool:
@@ -199,6 +239,7 @@ class StageResult(Generic[StageOutputT]):
         started_monotonic_ns: int = 0,
         finished_monotonic_ns: int | None = None,
         diagnostics: tuple[str, ...] = (),
+        track_ids: tuple[int, ...] = (),
     ) -> StageResult[StageOutputT]:
         return cls(
             key=key,
@@ -207,6 +248,7 @@ class StageResult(Generic[StageOutputT]):
             started_monotonic_ns=started_monotonic_ns,
             finished_monotonic_ns=time.monotonic_ns() if finished_monotonic_ns is None else finished_monotonic_ns,
             diagnostics=diagnostics,
+            track_ids=track_ids,
         )
 
     @classmethod
@@ -220,6 +262,7 @@ class StageResult(Generic[StageOutputT]):
         finished_monotonic_ns: int | None = None,
         error: str | None = None,
         diagnostics: tuple[str, ...] = (),
+        track_ids: tuple[int, ...] = (),
     ) -> StageResult[StageOutputT]:
         if state in {StageState.PENDING, StageState.COMPLETED}:
             raise ValueError("terminal() requires a non-completed terminal state")
@@ -231,6 +274,7 @@ class StageResult(Generic[StageOutputT]):
             reason=reason,
             error=error,
             diagnostics=diagnostics,
+            track_ids=track_ids,
         )
 
 
@@ -285,6 +329,8 @@ class JoinedWindowResult:
             raise ValueError("joined result requires terminal L2, L3, and L4 results")
         if any(item.key != self.work_item.key for item in results):
             raise ValueError("all joined stages must belong to the same WindowKey")
+        if not (self.l2.track_ids == self.l3.track_ids == self.l4.track_ids):
+            raise ValueError("joined L2/L3/L4 stage track ID order does not match")
         if self.completed_monotonic_ns < 0:
             raise ValueError("completed_monotonic_ns cannot be negative")
         state = _joined_state(results)

@@ -21,52 +21,36 @@
 
 ---
 
-## 2026-08-19 — L3迁移到公开方向ID与严格批次对齐契约
+## 2026-08-19 — L4公共方向ID透传与语义边界
 
-- **版本/标签**：项目`1.1.0`并行迁移的L3分支；未创建发布标签，已发布`v1.0.1`不移动。
-- **类型**：公共DTO、L3接口、Runtime阶段契约、文档与自动测试。
-- **涉及文件**：`common/window_key.py`、`common/data_types.py`、`common/__init__.py`、`app/processing_contracts.py`、`app/runtime.py`、`layer2_source_detection/pipeline.py`、`layer3_direction_signal/{interface,prepared,engine,hybrid,feature}.py`、L3 README及相关测试。
+- **版本/标签**：当前项目版本与`v1.0.1`标签保持不变；未创建、移动或预发布`v1.1.0`标签。
+- **类型**：L4公共契约、Runtime阶段对齐、Test UI/记录消费映射与自动测试。
+- **涉及文件**：`layer4_voice_classifier/contracts.py`、`layer4_voice_classifier/engine.py`、`layer4_voice_classifier/README.md`、`app/processing_contracts.py`、`app/result_joiner.py`、`app/runtime.py`、`gui/dev_test_ui/contracts.py`、`scripts/benchmark_l3_l4.py`、L4/Runtime/Joiner/Test UI相关测试及`CHANGELOG.md`。
 
-### L1与Windowing
+### L1、L2与L3
 
-- 采集、8通道顺序、校准、IMCRA、预降噪、DecisionWindow尺寸和20 ms发布时间轴均无变化。
-
-### L2
-
-- MUSIC/SRP、模型阶数、跟踪算法、Kalman和生命周期实现均无变化；本分支不分配、猜测或修补方向ID。
-- `Layer2PipelineResult`增加公开`directions`与`active_tracks`承接字段及WindowKey/ID唯一性校验，供L2 Tracking分支输出权威`TrackedDirection`；旧私有候选元数据不再被L3用于构造ID。
-
-### L3
-
-- 公共输入由`CandidateDirection`切换为0～3个`TrackedDirection`。新增共享`WindowKey`类型；`DirectionalSignal`、`BeamformedL3Batch`、`SpectrogramFeature`和`EnhancedAudio`携带`track_id`、原始`rank`、`theta_deg`及WindowKey身份。
-- 入口严格校验同窗、类型、数量、ID唯一、rank唯一及处理许可；L3保持输入元组顺序，不按角度排序、分配、合并或修补ID。
-- 观测目标可处理；coasting目标只有在L2明确设置`allow_l3_prediction=True`时才可作为短时预测目标处理。长coasting轨仅留在`active_tracks`时间线，误送入L3时明确失败，不生成增强音频。
-- 波束形成批次和音频合成出口逐项校验WindowKey、ID集合与顺序、rank、角度和数量。错误转为Runtime L3 `FAILED`终态，L4按既有阶段规则跳过。
-- `optimized`、`ds_baseline`和`constant_beamwidth_baseline`算法、数值参数、缓存、输出音频shape与fallback行为无变化；运行时模式切换不改变权威L2 ID。
+- L1采集、通道映射、IMCRA、预降噪、Windowing和时间轴无变化。
+- L2定位/跟踪算法和几何生命周期无变化；L4不再调用L2按角度的语音反馈入口。L2旧反馈API本身由L2迁移分支负责清理，本分支不改写L2算法。
+- L3波束形成、三种模式、增强波形和缓存无变化。L3公共DTO尚未合并时，L3阶段结果携带同一有序ID并在L4入口逐项绑定；未在L4生成或按角度猜测ID。
 
 ### L4
 
-- CNN、重采样、响度补偿、模型和阈值逻辑无变化。L4公开ID契约由独立L4迁移分支负责，本次未提前修改其DTO。
+- `Layer4AudioSegment`、`VoiceDetection`和`Layer4Result`增加/公开`track_id`与有序`track_ids`，限制同窗0～3个唯一正整数ID。
+- L4严格保持输入的WindowKey、ID顺序和`theta_deg`；重新阈值只重算`is_voice`，不改变概率、模型、ID、角度或关联。
+- CNN插件接口保持ID无关的概率向量，兼容旧模型输出；NVIDIA Frame-VAD Multilingual MarbleNet v2.0权重/推理、48→16 kHz多相重采样、连续峰值聚合、IMCRA响度补偿、primary/shadow和0.70分类边界均无变化。
 
-### Development Test UI、录音与数据管理
+### Runtime、Development Test UI与录音数据
 
-- Test UI和Production UI的正式界面行为、试听关联实现、录音schema、Catalog、manifest、恢复和本地数据均无变化；仅更新集成测试夹具以显式提供L2权威ID。
-- 未修改或新增模型、音频、空间表格、录音或其他二进制资产。
+- L2/L3/L4 `StageResult`均携带有序`track_ids`；ResultJoiner在接收时拒绝缺失或错序ID，阶段失败、跳过、丢弃和取消终态继承已知ID并继续推进watermark。
+- Runtime校验候选、L3音频和L4检测的数量、ID顺序与角度，删除L4按角度调用`submit_classification_feedback`/`submit_voice_feedback`的路径。
+- Runtime向DecisionRecord候选、增强音频元数据、L4检测及L4嵌套结果写入同一`track_id`；当前写入映射可供DecisionRecord v4/录音管理分支直接消费，本L4分支不提前改动存储schema版本。
+- Test UI契约校验L2/L4的ID、方向数、顺序和角度逐项一致。Production UI布局、Catalog查询和按ID试听实现无变化，由各自v1.1分支合并。
 
-### 跨层接口与兼容性
+### 测试、资产与验收
 
-- `WindowKey`从Runtime内部定义提升为`common.window_key`公共类型，并由`app.processing_contracts`继续导出，保持原导入路径兼容。
-- L3公共入口不兼容旧无ID`CandidateDirection`；缺失ID、重复ID、跨窗ID和出口顺序损坏均拒绝，而不是静默兼容。
-- 本分支需要与L2 Tracking、L4、Runtime/Recording和UI的其余1.1.0并行分支整合后才能发布，不单独创建`v1.1.0`。
-
-### 测试与验收
-
-- 增加0～3方向、359.5°/0.5°跨0°、非排序输入、重复/缺失ID、跨窗、短预测许可、长coasting拒绝、出口ID篡改、三BF模式一致性、模式切换ID稳定及L3失败终态覆盖。
-- 完整自动测试353项通过；全部改动文件的Ruff检查和`git diff --check`通过。未进行新的真实麦克风、诊室三声源或长时间实机验收。
-
-### Git与Git LFS
-
-- 仅Python、Markdown普通文本发生变化；Git LFS资产无变化，未创建或移动版本标签。
+- 新增ID透传、0～3个方向、空批次、重复/缺失/错序ID、角度错位、重新阈值、阶段失败终态、旧模型输出兼容及Runtime/Record/Test UI同ID消费测试。
+- 相关L4、Runtime、Joiner和Test UI测试84项通过，包含旧Runtime内部调用迁移的相邻集成测试102项通过；完整自动测试355项通过，Ruff和`git diff --check`通过。
+- 模型权重、音频fixture和Git LFS资产无变化；未进行新的麦克风、三声源、远场、长时运行或目标设备实机验收。
 
 ---
 

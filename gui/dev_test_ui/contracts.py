@@ -297,6 +297,20 @@ class DevUiFrame:
                     or detection.decision_sample != self.spatial_response.decision_sample
                 ):
                     raise ValueError("DevUiFrame L4 result must match the SRP window")
+            detection_ids = tuple(item.track_id for item in self.l4_result.detections)
+            if detection_ids != track_ids:
+                raise ValueError("DevUiFrame L2/L4 track ID order must match exactly")
+            if len(self.l4_result.detections) != len(self.candidates):
+                raise ValueError("DevUiFrame requires one L4 detection per L2 direction")
+            for candidate, detection in zip(
+                self.candidates, self.l4_result.detections, strict=True
+            ):
+                delta = abs(
+                    ((float(detection.theta_deg) - float(candidate.theta_deg) + 180.0) % 360.0)
+                    - 180.0
+                )
+                if delta > 1e-6:
+                    raise ValueError("DevUiFrame L2/L4 theta order must match exactly")
         if self.gate_decision is not None:
             gate_identity = (
                 self.gate_decision.session_id,

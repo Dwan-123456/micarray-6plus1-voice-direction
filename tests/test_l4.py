@@ -113,7 +113,7 @@ def test_engine_sends_one_compensated_immutable_copy_to_primary_and_shadow():
             return ModelPrediction(self.model_id, np.asarray((0.5,), np.float32), 0.0, {})
 
     segment = Layer4AudioSegment(
-        "session", 0, 1, 15_360, 10.0, 48_000, source, (0.8,) * 16
+        "session", 0, 1, 15_360, 7, 10.0, 48_000, source, (0.8,) * 16
     )
     result = Layer4Engine(
         _GainObservingPlugin("primary"), (_GainObservingPlugin("shadow"),)
@@ -213,9 +213,10 @@ class _FixedPlugin:
 def test_layer4_public_contract_and_rethreshold_do_not_rerun_model():
     inputs = tuple(
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, theta, 48_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 15_360, track_id, theta, 48_000,
+            np.zeros(15_360, np.float32)
         )
-        for theta in (10.0, 20.0)
+        for track_id, theta in ((31, 10.0), (7, 20.0))
     )
     engine = Layer4Engine(_FixedPlugin(), threshold=0.70)
     result = engine.process(inputs)
@@ -223,16 +224,29 @@ def test_layer4_public_contract_and_rethreshold_do_not_rerun_model():
     adjusted = engine.rethreshold(result, 0.68)
     assert adjusted.predictions is result.predictions
     assert tuple(item.is_voice for item in adjusted.detections) == (True, True)
+    assert adjusted.track_ids == result.track_ids == (31, 7)
+    assert tuple(item.theta_deg for item in adjusted.detections) == (10.0, 20.0)
+    assert tuple(
+        (item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
+         item.track_id, item.theta_deg, item.probability, item.model_id)
+        for item in adjusted.detections
+    ) == tuple(
+        (item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
+         item.track_id, item.theta_deg, item.probability, item.model_id)
+        for item in result.detections
+    )
 
 
 def test_layer4_contract_rejects_old_spectrogram_shape_and_wrong_sample_rate():
     with pytest.raises(ValueError, match="15360"):
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 48_000, np.zeros((33, 169), np.float32)
+            "session", 0, 1, 15_360, 1, 10.0, 48_000,
+            np.zeros((33, 169), np.float32)
         )
     with pytest.raises(ValueError, match="48 kHz"):
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 16_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 15_360, 1, 10.0, 16_000,
+            np.zeros(15_360, np.float32)
         )
 
 
@@ -251,7 +265,8 @@ def test_primary_and_shadow_receive_the_same_immutable_waveform_batch():
 
     inputs = (
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 48_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 15_360, 1, 10.0, 48_000,
+            np.zeros(15_360, np.float32)
         ),
     )
     Layer4Engine(_ObservingPlugin("primary"), (_ObservingPlugin("shadow"),)).process(inputs)
@@ -270,11 +285,60 @@ def test_layer4_rejects_incomplete_model_output():
 
     inputs = (
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 48_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 15_360, 1, 10.0, 48_000,
+            np.zeros(15_360, np.float32)
         ),
     )
     with pytest.raises(RuntimeError, match="one probability per audio input"):
         Layer4Engine(_IncompletePlugin()).process(inputs)
+
+
+class _OrderedPlugin:
+    model_id = "legacy-id-agnostic"
+
+    def predict(self, waveforms):
+        probabilities = np.linspace(0.2, 0.8, len(waveforms), dtype=np.float32)
+        return ModelPrediction(self.model_id, probabilities, 0.0, {})
+
+
+@pytest.mark.parametrize("count", (0, 1, 2, 3))
+def test_layer4_preserves_zero_to_three_tracks_in_exact_order(count):
+    ids = (29, 3, 101)[:count]
+    angles = (350.0, 15.0, 170.0)[:count]
+    inputs = tuple(
+        Layer4AudioSegment(
+            "session", 2, 8, 48_000, track_id, theta, 48_000,
+            np.full(15_360, index / 1000.0, np.float32),
+        )
+        for index, (track_id, theta) in enumerate(zip(ids, angles, strict=True), start=1)
+    )
+    result = Layer4Engine(_OrderedPlugin()).process(inputs)
+    assert result.track_ids == ids
+    assert tuple(item.theta_deg for item in result.detections) == angles
+    assert tuple(item.track_id for item in inputs) == result.track_ids
+
+
+def test_layer4_rejects_duplicate_ids_and_more_than_three_tracks():
+    def segment(track_id, theta):
+        return Layer4AudioSegment(
+            "session", 0, 1, 15_360, track_id, theta, 48_000,
+            np.zeros(15_360, np.float32),
+        )
+
+    with pytest.raises(ValueError, match="track IDs must be unique"):
+        Layer4Engine(_OrderedPlugin()).process((segment(5, 10.0), segment(5, 20.0)))
+    with pytest.raises(ValueError, match="at most three"):
+        Layer4Engine(_OrderedPlugin()).process(tuple(
+            segment(track_id, float(track_id * 10)) for track_id in (1, 2, 3, 4)
+        ))
+
+
+def test_layer4_rejects_missing_or_invalid_public_track_id():
+    with pytest.raises(ValueError, match="identity"):
+        Layer4AudioSegment(
+            "session", 0, 1, 15_360, 0, 10.0, 48_000,
+            np.zeros(15_360, np.float32),
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")

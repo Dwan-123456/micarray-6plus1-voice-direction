@@ -594,6 +594,7 @@ class ApplicationRuntime:
                     "l3_admission_queue_overflow",
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
+                    track_ids=displaced.l2.track_ids,
                 )
                 l4 = L4StageResult.terminal(
                     displaced.work_item.key,
@@ -601,6 +602,7 @@ class ApplicationRuntime:
                     "l3_admission_queue_overflow",
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
+                    track_ids=displaced.l2.track_ids,
                 )
                 self._joiner_submit(lambda: self._result_joiner.submit_l3(l3))
                 self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
@@ -631,6 +633,7 @@ class ApplicationRuntime:
                     "l4_admission_queue_overflow",
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
+                    track_ids=displaced.l3.track_ids,
                 )
                 self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
                 self._stage_completed_counts["l4"] += 1
@@ -1540,10 +1543,12 @@ class ApplicationRuntime:
                     )
                     if len(output.directions) > 3:
                         raise RuntimeError("Layer 2 contract violation: more than 3 tracked directions")
+                    track_ids = self._ordered_l2_track_ids(output)
                     diagnostics = self._l2_diagnostics(output, values)
                     stage = L2StageResult.completed(
                         item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(), diagnostics=diagnostics,
+                        track_ids=track_ids,
                     )
                     self._stage_errors["l2"] = None
                 except Exception as exc:
@@ -1615,11 +1620,12 @@ class ApplicationRuntime:
                             )
                         self._l3_cuda_stream.synchronize()
                     self._validate_direction_outputs(
-                        "L3", directions, output.enhanced_audio
+                        "L3", directions, output.enhanced_audio, item.l2.track_ids
                     )
                     stage = L3StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
+                        track_ids=item.l2.track_ids,
                     )
                     self._stage_errors["l3"] = None
                 except Exception as exc:
@@ -1628,6 +1634,7 @@ class ApplicationRuntime:
                         item.work_item.key, StageState.FAILED, "l3_failed",
                         started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(), error=str(exc),
+                        track_ids=item.l2.track_ids,
                     )
                 self._stage_completed_counts["l3"] += 1
                 try:
@@ -1646,6 +1653,7 @@ class ApplicationRuntime:
                         item.work_item.key, StageState.SKIPPED, "l3_failed",
                         started_monotonic_ns=monotonic_ns(),
                         finished_monotonic_ns=monotonic_ns(),
+                        track_ids=item.l2.track_ids,
                     )
                     self._record_l4_terminal(StageState.SKIPPED)
                     self._joiner_submit(lambda: self._result_joiner.submit_l4(skipped))
@@ -1675,7 +1683,8 @@ class ApplicationRuntime:
                     assert item.l2.output is not None and item.l3.output is not None
                     formal_count = len(item.l2.output.directions)
                     inputs = self._layer4_inputs_from_output(
-                        item.work_item.window, item.l3.output, formal_count
+                        item.work_item.window, item.l3.output, item.l3.track_ids,
+                        formal_count,
                     )
                     if self._l4_cuda_stream is None:
                         output = self._layer4.process(inputs)
@@ -1687,34 +1696,13 @@ class ApplicationRuntime:
                     if output.threshold != frozen_threshold:
                         output = self._layer4.rethreshold(output, frozen_threshold)
                     self._validate_direction_outputs(
-                        "L4", item.l2.output.directions, output.detections
+                        "L4", item.l2.output.directions, output.detections,
+                        item.l3.track_ids,
                     )
-                    submit_classification_feedback = getattr(
-                        self._layer2, "submit_classification_feedback", None
-                    )
-                    submit_voice_feedback = getattr(
-                        self._layer2, "submit_voice_feedback", None
-                    )
-                    if (
-                        (submit_classification_feedback is not None
-                         or submit_voice_feedback is not None)
-                        and bool(item.work_item.config.values["direction_id_tracking_enabled"])
-                    ):
-                        for detection in output.detections:
-                            if submit_classification_feedback is not None:
-                                submit_classification_feedback(
-                                    detection.session_id, detection.stream_epoch,
-                                    detection.decision_sample, detection.theta_deg,
-                                    detection.probability, detection.is_voice,
-                                )
-                            elif detection.is_voice:
-                                submit_voice_feedback(
-                                    detection.session_id, detection.stream_epoch,
-                                    detection.decision_sample, detection.theta_deg,
-                                )
                     stage = L4StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
+                        track_ids=item.l3.track_ids,
                     )
                     self._stage_errors["l4"] = None
                 except Exception as exc:
@@ -1723,6 +1711,7 @@ class ApplicationRuntime:
                         item.work_item.key, StageState.FAILED, "l4_failed",
                         started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(), error=str(exc),
+                        track_ids=item.l3.track_ids,
                     )
                 self._stage_completed_counts["l4"] += 1
                 self._record_l4_terminal(stage.state)
@@ -1959,6 +1948,7 @@ class ApplicationRuntime:
         }
         enhanced_records = tuple(
             {
+                "track_id": track_id,
                 "theta_deg": preview.theta_deg,
                 "backend": preview.runtime_backend,
                 "fallback_reason": preview.fallback_reason,
@@ -1967,7 +1957,11 @@ class ApplicationRuntime:
                 "start_sample": window.context_start_sample,
                 "end_sample": window.context_end_sample,
             }
-            for preview in previews
+            for track_id, preview in zip(
+                joined.l3.track_ids if l3_output is not None else (),
+                previews,
+                strict=True,
+            )
         )
         l4_record = None if l4_result is None else {
             "primary_model_id": l4_result.primary_model_id,
@@ -1980,6 +1974,7 @@ class ApplicationRuntime:
                 for prediction in l4_result.predictions
             ],
             "input_gain_compensation": [asdict(item) for item in l4_result.input_gain_compensation],
+            "track_ids": list(l4_result.track_ids),
         }
         stage_statuses = {
             "l2": joined.l2.state.value, "l3": joined.l3.state.value,
@@ -2043,17 +2038,21 @@ class ApplicationRuntime:
             (window.doa_start_sample, window.doa_end_sample),
             (window.context_start_sample, window.context_end_sample), status,
             candidates=tuple(
-                {"theta_deg": item.theta_deg, "raw_score": item.raw_score,
+                {"track_id": track_id,
+                 "theta_deg": item.theta_deg, "raw_score": item.raw_score,
                  "normalized_score": item.normalized_score,
                  "search_iteration": (
                      search_diagnostics.evidence[index].search_iteration
                      if search_diagnostics is not None and index < len(search_diagnostics.evidence)
                      else 0
                  )}
-                for index, item in enumerate(candidates)
+                for index, (track_id, item) in enumerate(
+                    zip(joined.l2.track_ids, candidates, strict=True)
+                )
             ),
             detections=tuple(
-                {"theta_deg": item.theta_deg, "probability": item.probability,
+                {"track_id": item.track_id,
+                 "theta_deg": item.theta_deg, "probability": item.probability,
                  "is_voice": item.is_voice, "model_id": item.model_id,
                  "threshold": l4_result.threshold}
                 for item in (() if l4_result is None else l4_result.detections)
@@ -2260,22 +2259,28 @@ class ApplicationRuntime:
     @staticmethod
     def _layer4_audio_segments(
         l3_output,
+        track_ids: tuple[int, ...],
         stop: int | None = None,
         probabilities_20ms: tuple[float | None, ...] = (),
     ) -> tuple[Layer4AudioSegment, ...]:
         """Adapt the formal immutable L3 audio batch to L4's audio contract."""
+        outputs = tuple(l3_output.enhanced_audio[:stop])
+        track_ids = tuple(track_ids[:stop])
+        if len(outputs) != len(track_ids):
+            raise RuntimeError("L4 adapter requires one ordered track ID per L3 audio output")
         return tuple(
             Layer4AudioSegment(
                 item.session_id,
                 item.stream_epoch,
                 item.window_id,
                 item.decision_sample,
+                track_id,
                 item.theta_deg,
                 item.sample_rate,
                 item.enhanced_audio,
                 probabilities_20ms,
             )
-            for item in l3_output.enhanced_audio[:stop]
+            for track_id, item in zip(track_ids, outputs, strict=True)
         )
 
     @staticmethod
@@ -2296,32 +2301,46 @@ class ApplicationRuntime:
             raise RuntimeError("L4 requires exactly 16 context-aligned 20 ms probability slots")
         return probabilities
 
-    def _layer4_inputs_from_output(self, window, l3_output, formal_count: int):
+    def _layer4_inputs_from_output(
+        self, window, l3_output, track_ids: tuple[int, ...], formal_count: int
+    ):
         return self._layer4_audio_segments(
-            l3_output, formal_count, self._context_probabilities_20ms(window)
+            l3_output, track_ids, formal_count, self._context_probabilities_20ms(window)
         )
 
     @staticmethod
-    def _validate_direction_outputs(layer: str, candidates, outputs) -> None:
+    def _validate_direction_outputs(
+        layer: str, candidates, outputs, expected_track_ids: tuple[int, ...]
+    ) -> None:
         """Enforce exact, ordered one-output-per-candidate stage contracts."""
 
         candidates = tuple(candidates)
         outputs = tuple(outputs)
+        expected_track_ids = tuple(expected_track_ids)
         if len(outputs) != len(candidates):
             raise RuntimeError(
                 f"{layer} contract violation: expected {len(candidates)} ordered outputs, "
                 f"received {len(outputs)}"
             )
+        if len(expected_track_ids) != len(candidates):
+            raise RuntimeError(
+                f"{layer} contract violation: expected one track ID per candidate"
+            )
+        if len(expected_track_ids) != len(set(expected_track_ids)) or any(
+            type(track_id) is not int or track_id <= 0 for track_id in expected_track_ids
+        ):
+            raise RuntimeError(f"{layer} contract violation: invalid or duplicate track IDs")
         for index, (candidate, output) in enumerate(zip(candidates, outputs, strict=True)):
-            if layer == "L3":
-                if getattr(output, "track_id", None) != candidate.track_id:
-                    raise RuntimeError(
-                        f"L3 contract violation: output {index} track_id does not match input"
-                    )
-                if getattr(output, "rank", None) != candidate.rank:
-                    raise RuntimeError(
-                        f"L3 contract violation: output {index} rank does not match input"
-                    )
+            output_track_id = getattr(output, "track_id", expected_track_ids[index])
+            if output_track_id != expected_track_ids[index]:
+                raise RuntimeError(
+                    f"{layer} contract violation: output {index} track ID "
+                    f"{output_track_id} does not match expected {expected_track_ids[index]}"
+                )
+            if layer == "L3" and getattr(output, "rank", None) != candidate.rank:
+                raise RuntimeError(
+                    f"L3 contract violation: output {index} rank does not match input"
+                )
             delta = abs(
                 ((float(output.theta_deg) - float(candidate.theta_deg) + 180.0) % 360.0)
                 - 180.0
@@ -2332,16 +2351,40 @@ class ApplicationRuntime:
                     f"{output.theta_deg} does not match candidate {candidate.theta_deg}"
                 )
 
-    def _process_l3(self, window, directions):
+    @staticmethod
+    def _ordered_l2_track_ids(output) -> tuple[int, ...]:
+        """Read public L2 IDs without inventing or angle-matching an identity."""
+
+        directions = tuple(output.directions)
+        if all(hasattr(direction, "track_id") for direction in directions):
+            track_ids = tuple(direction.track_id for direction in directions)
+        else:
+            track_ids = tuple(getattr(output, "candidate_track_ids", ()))
+        if len(track_ids) != len(directions):
+            raise RuntimeError("Layer 2 contract violation: one public track ID is required per direction")
+        if len(track_ids) != len(set(track_ids)) or any(
+            type(track_id) is not int or track_id <= 0 for track_id in track_ids
+        ):
+            raise RuntimeError("Layer 2 contract violation: track IDs must be unique positive integers")
+        return track_ids
+
+    def _process_l3(self, window, directions, track_ids: tuple[int, ...] | None = None):
         """Run L3 exactly once for the formal, already-smoothed L2 candidates."""
         directions = tuple(directions)
+        track_ids = tuple(
+            direction.track_id for direction in directions
+        ) if track_ids is None else tuple(track_ids)
         with self._l3_mode_lock:
             mode = self._l3_processing_mode
         l3_output = self._layer3.process(window, directions, self._geometry, mode=mode)
         formal_count = len(directions)
-        self._validate_direction_outputs("L3", directions, l3_output.enhanced_audio)
+        self._validate_direction_outputs(
+            "L3", directions, l3_output.enhanced_audio, track_ids
+        )
         formal_previews = self._beamform_previews(l3_output, 0, formal_count)
-        l4_inputs = self._layer4_inputs_from_output(window, l3_output, formal_count)
+        l4_inputs = self._layer4_inputs_from_output(
+            window, l3_output, track_ids, formal_count
+        )
         return formal_previews, l4_inputs
 
     def set_light(self, enabled: bool) -> None:
