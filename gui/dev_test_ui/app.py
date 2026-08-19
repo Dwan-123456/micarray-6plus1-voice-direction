@@ -780,6 +780,16 @@ def build_window(
             self.preview_player.pause()
 
         def _toggle_track_audio(self, track_id: int):
+            if (
+                self._audio_source_key is not None
+                and self._audio_source_key[0] == "track"
+                and int(self._audio_source_key[1]) == int(track_id)
+            ):
+                if not self.preview_player.play():
+                    error = self.preview_player.take_error() or "unknown audio output error"
+                    self.bf_panel.sync_track_playback_stopped()
+                    self.statusBar().showMessage(f"试听失败：{error}", 5000)
+                return
             cache_path = audio_id_tracker.audio_cache_path(track_id)
             if cache_path is None:
                 label = "Center Mic" if track_id == 0 else f"ID-{track_id:03d}"
@@ -808,6 +818,16 @@ def build_window(
             self.preview_player.validate_output()
             if not self.preview_player.playing:
                 self.bf_panel.sync_track_playback_stopped()
+            if self._audio_source_key is not None and self._audio_source_key[0] == "track":
+                progress = self.preview_player.playback_progress
+                if self.preview_player.playing or progress > 0.0:
+                    self.bf_panel.set_track_playback_progress(
+                        int(self._audio_source_key[1]), progress
+                    )
+                else:
+                    self.bf_panel.clear_track_playback_progress()
+            else:
+                self.bf_panel.clear_track_playback_progress()
             playback_error = self.preview_player.take_error()
             if playback_error:
                 self.statusBar().showMessage(f"试听输出：{playback_error}", 5000)

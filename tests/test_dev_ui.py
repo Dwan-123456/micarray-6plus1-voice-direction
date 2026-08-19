@@ -846,6 +846,16 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         assert "Center Mic" in window.bf_panel._track_rows[0].label.text()
         assert "≥2.0s" in window.bf_panel.help.text()
 
+        window.bf_panel.set_track_playback_progress(3, 0.4)
+        assert window.bf_panel._track_rows[3].waveform._playback_progress == pytest.approx(0.4)
+        assert window.bf_panel._track_rows[0].waveform._playback_progress is None
+        assert window.bf_panel._track_rows[2].waveform._playback_progress is None
+        window.bf_panel.clear_track_playback_progress()
+        assert all(
+            row.waveform._playback_progress is None
+            for row in window.bf_panel._track_rows.values()
+        )
+
         window.bf_panel.set_tracks(())
         app.processEvents()
         assert set(window.bf_panel._track_rows) == {0, 2, 3}
