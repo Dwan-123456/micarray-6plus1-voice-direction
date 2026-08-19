@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=200)
     args = parser.parse_args()
     rng = np.random.default_rng(7)
-    samples = rng.normal(size=(15_360, 7)).astype(np.float32)
+    samples = rng.normal(size=(15_360, 8)).astype(np.float32)
     window = DecisionWindow("benchmark", 0, 0, 15_360, 13_440, 15_360, 0, 15_360, 48_000, samples, (0,))
     project = load_config(Path(__file__).parent / "config" / "config.yaml", environ={})
     config = DirectionScanConfig.from_project(project)

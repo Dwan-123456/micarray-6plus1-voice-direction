@@ -98,7 +98,7 @@
 ### 验证、性能与资产
 
 - 自动测试覆盖0～3源、全角度/跨0°、45°NMS、HardwareMix隔离、滚动增量与全量重建等价、rank交换、birth/miss/短漏检/TTL、Gate关闭、丢窗/sample跳跃、epoch/session、确定性tie-break、Kalman运行切换、跨层ID和DecisionRecord v4。
-- 完整自动测试：`310 passed`。本机Rolling MUSIC性能测试满足稳态p95不高于15 ms且单窗低于20 ms；尚未完成真实麦克风、诊室混响、三声源和长时间目标机实机验收。
+- 完整自动测试：`310 passed`。本机Rolling MUSIC自动性能门禁满足稳态p95不高于15 ms且单窗低于20 ms；独立100窗CPU基准均值`2.131 ms`。基准输入同步升级为逻辑8通道并验证HardwareMix不参与算法。尚未完成真实麦克风、诊室混响、三声源和长时间目标机实机验收。
 - Git LFS资产、CNN模型、精选音频和运行数据无变化；`data/`、录音、Catalog、日志和缓存未纳入提交。
 
 ---
