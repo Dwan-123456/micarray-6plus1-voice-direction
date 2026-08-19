@@ -284,3 +284,58 @@ def test_live_id_forces_closed_probability_gate_open_for_three_second_ttl() -> N
     assert restored.gate_decision.state is ProbabilityGateState.CLOSED
     assert restored.gate_decision.reason == "probability_below_threshold"
     assert restored.spatial_response is None and restored.active_tracks == ()
+
+
+def test_three_seconds_without_voice_marks_nonexclusive_noise_track() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=45.0, max_velocity_dps=60.0,
+        confirmation_observations=2, confirmation_window_samples=9_600,
+        coasting_ttl_samples=200_000, miss_cost=1.0, birth_cost=1.0,
+    ))
+    first_sample = 15_360
+    first, _ = _update(tracker, first_sample, (50.0,))
+    old_id = first[0].track_id
+    for sample in range(first_sample + 960, first_sample + 3 * 48_000, 960):
+        observed, _ = _update(tracker, sample, (50.0,))
+        assert observed[0].track_id == old_id
+
+    boundary = first_sample + 3 * 48_000
+    observed, active = _update(tracker, boundary, (52.0,))
+    assert observed[0].track_id == old_id
+    noise = next(item for item in active if item.track_id == old_id)
+    assert noise.is_noise_interference
+    assert abs(noise.theta_deg - 52.0) < 1e-6
+
+    for offset in range(5):
+        assert tracker.apply_voice_feedback(
+            "track", 0, boundary + offset * 960, old_id, 0.95, True
+        )
+        if offset == 1:
+            assert tracker.apply_voice_feedback(
+                "track", 0, boundary + offset * 960 + 1, old_id, 0.05, False
+            )
+    assert not tracker._tracks[old_id].noise_interference
+
+
+def test_normal_track_moving_near_noise_track_is_not_merged_into_it() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=45.0, max_velocity_dps=60.0,
+        confirmation_observations=2, confirmation_window_samples=9_600,
+        coasting_ttl_samples=200_000, miss_cost=1.0, birth_cost=1.0,
+    ))
+    first_sample = 15_360
+    noise, _ = _update(tracker, first_sample, (50.0,))
+    noise_id = noise[0].track_id
+    tracker._tracks[noise_id].noise_interference = True
+
+    moving, _ = _update(tracker, first_sample + 960, (120.0,))
+    moving_id = moving[0].track_id
+    assert moving_id != noise_id
+    moved, active = _update(tracker, first_sample + 1_920, (85.0,))
+    assert moved[0].track_id == moving_id
+    assert any(item.track_id == noise_id and item.is_noise_interference for item in active)
+    for offset in range(5):
+        assert tracker.apply_voice_feedback(
+            "track", 0, first_sample + 1_920 + offset, noise_id, 0.95, True
+        )
+    assert tracker._tracks[noise_id].noise_interference

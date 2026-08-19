@@ -409,6 +409,7 @@ class TrackedDirection:
     last_observed_sample: int
     missed_samples: int
     kalman_applied: bool
+    is_noise_interference: bool = False
 
     def __post_init__(self) -> None:
         if not self.session_id or min(
@@ -440,6 +441,8 @@ class TrackedDirection:
             raise ValueError("TrackedDirection observation cannot be in the future")
         if self.missed_samples != self.decision_sample - self.last_observed_sample:
             raise ValueError("TrackedDirection missed_samples must use absolute samples")
+        if type(self.is_noise_interference) is not bool:
+            raise TypeError("TrackedDirection noise-interference flag must be bool")
 
 
 @dataclass(frozen=True, slots=True)

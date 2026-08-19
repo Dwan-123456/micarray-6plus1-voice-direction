@@ -1708,6 +1708,20 @@ class ApplicationRuntime:
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
                     )
+                    submit_voice_feedback = getattr(
+                        self._layer2, "submit_voice_feedback", None
+                    )
+                    if callable(submit_voice_feedback):
+                        for detection in output.detections:
+                            if detection.track_id is not None:
+                                submit_voice_feedback(
+                                    detection.session_id,
+                                    detection.stream_epoch,
+                                    detection.decision_sample,
+                                    detection.track_id,
+                                    detection.probability,
+                                    detection.is_voice,
+                                )
                     self._stage_errors["l4"] = None
                 except Exception as exc:
                     self._set_stage_error("l4", exc)
