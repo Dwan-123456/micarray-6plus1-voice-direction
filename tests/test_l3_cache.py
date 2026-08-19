@@ -8,8 +8,9 @@ import pytest
 import torch
 
 from common.config import load_config
-from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapshot
+from common.data_types import DecisionWindow, ImcraHopSnapshot, TrackedDirection
 from common.geometry import physical_6plus1_geometry
+from common.window_key import WindowKey
 from layer3_direction_signal import Layer3Processor, PreparedL3Context
 from layer3_direction_signal.configuration import StftSettings
 from layer3_direction_signal.shared_stft import RollingStftCache, shared_stft
@@ -78,20 +79,30 @@ def _window(
     )
 
 
-def _candidates(window: DecisionWindow) -> tuple[CandidateDirection, ...]:
+def _candidates(window: DecisionWindow) -> tuple[TrackedDirection, ...]:
     return tuple(
-        CandidateDirection(
+        TrackedDirection(
             window.session_id,
             window.stream_epoch,
             window.window_id,
             window.decision_sample,
             window.doa_start_sample,
             window.doa_end_sample,
+            index + 1,
+            index + 1,
+            theta,
             theta,
             1.0,
             0.8,
+            "confirmed",
+            True,
+            False,
+            window.context_start_sample,
+            window.decision_sample,
+            0,
+            False,
         )
-        for theta in (20.0, 120.0)
+        for index, theta in enumerate((20.0, 120.0))
     )
 
 
@@ -165,18 +176,28 @@ def test_temporal_and_angle_caches_have_hard_bounded_capacity():
     for index in range(24):
         first = float(index)
         candidates = tuple(
-            CandidateDirection(
+            TrackedDirection(
                 window.session_id,
                 window.stream_epoch,
                 window.window_id,
                 window.decision_sample,
                 window.doa_start_sample,
                 window.doa_end_sample,
+                candidate_index + 1,
+                candidate_index + 1,
+                theta,
                 theta,
                 1.0,
                 0.8,
+                "confirmed",
+                True,
+                False,
+                window.context_start_sample,
+                window.decision_sample,
+                0,
+                False,
             )
-            for theta in (first, first + 90.0)
+            for candidate_index, theta in enumerate((first, first + 90.0))
         )
         processor.process(window, candidates, geometry)
 
@@ -199,9 +220,7 @@ def test_candidate_independent_prepare_matches_compatible_process_api():
 
     prepared = processor.prepare(window)
     assert isinstance(prepared, PreparedL3Context)
-    assert prepared.window_key == (
-        window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
-    )
+    assert prepared.window_key == WindowKey.from_window(window)
     assert prepared.spectrum_fct.shape == (513, 7, 33)
     assert not prepared.spectrum_fct.requires_grad
     with pytest.raises(FrozenInstanceError):

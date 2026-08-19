@@ -1,21 +1,25 @@
 # Layer 3：逐方向音频增强
 
-> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#9-layer-3-改动)：L3 改为消费 `TrackedDirection`，所有方向输入、增强批次和音频输出按 `(WindowKey, track_id)` 精确对齐，且不自行创建或修补 ID。下文描述当前 1.0.1 实现。
+> 本分支实现[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#9-layer-3-改动)的L3公共ID契约；完整1.1.0仍需与L2、L4、UI和Recording分支整合后验收。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。本目录现已实现L3音频中心公共契约；内部复数STFT仅用于波束形成，不再跨层输出。
 
 ## 公共契约
 
-L3接收同一320 ms、48 kHz的逻辑8通道音频、L2的0～3个平滑候选角度，以及窗口内16个连续20 ms IMCRA结果。方向增强的目标有效频带为**80～8000 Hz**。内部波束形成只使用前7个物理麦；第8路HardwareMix保留在输入接口中，但不参与导向矢量、协方差矩阵或麦对计算。4个及以上候选属于接口错误，不会截断。L3不接收L2内部ID、不再次滤波角度，也不产生仅供UI的预测方向额外批次。
+L3接收同一320 ms、48 kHz的逻辑8通道音频、L2公开的0～3个`TrackedDirection`，以及窗口内16个连续20 ms IMCRA结果。正式关联键为`(WindowKey, track_id)`；输入元组顺序、`rank`和`theta_deg`均为权威值，L3不得按角度分配、猜测、排序、合并或修补ID。入口拒绝跨窗、重复ID/排名、旧`CandidateDirection`和未获许可的coasting目标。
+
+观测目标可正常处理；未观测目标只有在L2显式设置`allow_l3_prediction=True`时才作为受控短时预测目标处理。长时间coasting轨只属于L2 `active_tracks`时间线，不进入L3 `directions`，因而不产生增强音频。方向增强目标频带为**80～8000 Hz**。内部只使用前7个物理麦，第8路HardwareMix不参与导向矢量、协方差或麦对计算。
 
 每个候选方向输出：
 
 ```text
 theta_deg
+track_id / rank / WindowKey
 enhanced_audio: float32 [15360]  # 48 kHz mono
-session/epoch/window/decision_sample
 algorithm/fallback diagnostics
 ```
+
+`BeamformedL3Batch`和`Layer3Output`同样携带`WindowKey`及有序ID元数据。合成出口逐项校验WindowKey、ID集合与顺序、rank、角度和音频数量；任何偏差抛出`Layer3Error`，Runtime记录唯一`FAILED`终态并跳过后续L4，不会发布部分结果。
 
 BF用`1-SPP`加权当前7麦STFT外积得到完整空间噪声协方差，并用IMCRA `noise_psd`收缩其对角线。逐频点计算两个导向矢量的空间相关度：`rho<0.3`使用Dual LCMV，`0.3<=rho<0.7`使用soft-null loaded MVDR，`rho>=0.7`使用loaded MVDR；单候选使用loaded MVDR。矩阵病态、求解失败或结果非有限的频点回退DAS。IMCRA缺失、未ready或时间不连续时整窗回退DAS。
 
@@ -38,7 +42,8 @@ L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、refl
   `constant_beamwidth_baseline`。第三档以30°第一零点波束宽度（FNBW）为逐频点目标，
   根据真实6+1圆阵流形做正则化约束拟合，并用WNG下限保护；物理孔径无法安全实现
   30°的频点退回DS。该档不读取IMCRA或空间可分度p表，只用于对照，不改变正式默认算法；
-- 平滑候选数量、顺序、角度和时间身份原样继承，不做第二次追踪；
+- 0～3个公开方向的WindowKey、ID、原始顺序和角度逐项继承，不做第二次追踪；
+- 跨0°、重复/缺失ID、跨窗、长coasting、批次出口篡改和失败终态均有契约测试；
 - 每方向输出固定48 kHz `float32[15360]`、只读且finite；
 - 主链不再输出或依赖`[33,169]`；
 - 0/1/2候选及`rho`三分支；

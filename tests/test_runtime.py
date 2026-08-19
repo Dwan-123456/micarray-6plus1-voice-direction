@@ -13,7 +13,7 @@ import pytest
 
 from app.runtime import ApplicationRuntime
 from common.config import load_config
-from common.data_types import CandidateDirection, DecisionWindow, IngestedAudioBlock
+from common.data_types import DecisionWindow, IngestedAudioBlock, TrackedDirection
 from layer1_input.interface import DecodedAudio
 from layer3_direction_signal import (
     L3_MODE_CONSTANT_BEAMWIDTH,
@@ -384,7 +384,11 @@ def _listening_window_and_candidate():
         "s", 0, 0, 15_360, 13_440, 15_360, 0, 15_360, 48_000,
         np.zeros((15_360, 8), np.float32), (0,),
     )
-    candidate = CandidateDirection("s", 0, 0, 15_360, 13_440, 15_360, 30.0, 1.0, 0.8)
+    candidate = TrackedDirection(
+        "s", 0, 0, 15_360, 13_440, 15_360, 7, 1,
+        30.0, 30.0, 1.0, 0.8, "confirmed", True, False,
+        0, 15_360, 0, True,
+    )
     return window, candidate
 
 
@@ -402,6 +406,7 @@ class _CapturingLayer3:
             outputs.append(SimpleNamespace(
                 session_id=window.session_id, stream_epoch=window.stream_epoch,
                 window_id=window.window_id, decision_sample=window.decision_sample,
+                track_id=candidate.track_id, rank=candidate.rank,
                 theta_deg=candidate.theta_deg, sample_rate=48_000,
                 algorithm=("ds_baseline" if mode == L3_MODE_DS_BASELINE else "imcra_spatial_separation"),
                 fallback_reason=None, diagnostics=(),
@@ -473,3 +478,20 @@ def test_runtime_passes_selected_ds_baseline_mode_to_l3():
 
     assert layer3.calls[0][1] == L3_MODE_DS_BASELINE
     assert previews[0].runtime_backend == "ds_baseline"
+
+
+def test_runtime_mode_switch_never_changes_authoritative_l2_id():
+    window, direction = _listening_window_and_candidate()
+    layer3 = _CapturingLayer3()
+    runtime = _runtime_with_layer3(layer3)
+
+    for mode in (
+        L3_MODE_OPTIMIZED,
+        L3_MODE_DS_BASELINE,
+        L3_MODE_CONSTANT_BEAMWIDTH,
+    ):
+        runtime.set_l3_processing_mode(mode)
+        runtime._process_l3(window, (direction,))
+
+    assert [call[0][0].track_id for call in layer3.calls] == [7, 7, 7]
+    assert [call[0][0].rank for call in layer3.calls] == [1, 1, 1]

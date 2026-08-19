@@ -1010,7 +1010,8 @@ class ApplicationRuntime:
         values = item.work_item.config.values
         scan = DirectionScanConfig(**dict(values["scan_config"]))
         candidates = tuple(l2_output.candidates)
-        previews = self._beamform_previews(l3_output, 0, len(candidates))
+        directions = tuple(l2_output.directions)
+        previews = self._beamform_previews(l3_output, 0, len(directions))
         window = item.work_item.window
         status = PipelineStatus(
             "running",
@@ -1537,8 +1538,8 @@ class ApplicationRuntime:
                         direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                         direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     )
-                    if len(output.candidates) > 3:
-                        raise RuntimeError("Layer 2 contract violation: more than 3 candidates")
+                    if len(output.directions) > 3:
+                        raise RuntimeError("Layer 2 contract violation: more than 3 tracked directions")
                     diagnostics = self._l2_diagnostics(output, values)
                     stage = L2StageResult.completed(
                         item.key, output, started_monotonic_ns=started_ns,
@@ -1596,25 +1597,25 @@ class ApplicationRuntime:
                 started_ns = monotonic_ns()
                 try:
                     assert item.l2.output is not None
-                    candidates = item.l2.output.candidates
+                    directions = item.l2.output.directions
                     mode = str(item.work_item.config.values["l3_mode"])
-                    if not candidates:
+                    if not directions:
                         # A valid SRP response can have no accepted peaks.  Do
                         # not pay the 320 ms STFT/covariance preparation cost
                         # when there is no direction to synthesize.
-                        output = Layer3Output(())
+                        output = Layer3Output(item.work_item.key, ())
                     elif self._l3_cuda_stream is None:
                         prepared = self._layer3.prepare(item.work_item.window, mode=mode)
-                        output = self._layer3.process_prepared(prepared, candidates, self._geometry)
+                        output = self._layer3.process_prepared(prepared, directions, self._geometry)
                     else:
                         with torch.cuda.stream(self._l3_cuda_stream):
                             prepared = self._layer3.prepare(item.work_item.window, mode=mode)
                             output = self._layer3.process_prepared(
-                                prepared, candidates, self._geometry
+                                prepared, directions, self._geometry
                             )
                         self._l3_cuda_stream.synchronize()
                     self._validate_direction_outputs(
-                        "L3", candidates, output.enhanced_audio
+                        "L3", directions, output.enhanced_audio
                     )
                     stage = L3StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
@@ -1672,7 +1673,7 @@ class ApplicationRuntime:
                 started_ns = monotonic_ns()
                 try:
                     assert item.l2.output is not None and item.l3.output is not None
-                    formal_count = len(item.l2.output.candidates)
+                    formal_count = len(item.l2.output.directions)
                     inputs = self._layer4_inputs_from_output(
                         item.work_item.window, item.l3.output, formal_count
                     )
@@ -1686,7 +1687,7 @@ class ApplicationRuntime:
                     if output.threshold != frozen_threshold:
                         output = self._layer4.rethreshold(output, frozen_threshold)
                     self._validate_direction_outputs(
-                        "L4", item.l2.output.candidates, output.detections
+                        "L4", item.l2.output.directions, output.detections
                     )
                     submit_classification_feedback = getattr(
                         self._layer2, "submit_classification_feedback", None
@@ -1892,10 +1893,11 @@ class ApplicationRuntime:
         l4_result = joined.l4.output if joined.l4.state is StageState.COMPLETED else None
         response = None if l2_output is None else l2_output.spatial_response
         candidates = () if l2_output is None else l2_output.candidates
+        directions = () if l2_output is None else l2_output.directions
         search_diagnostics = None if l2_output is None else l2_output.search_diagnostics
         gate_decision = None if l2_output is None else l2_output.gate_decision
         previews = () if l3_output is None else self._beamform_previews(
-            l3_output, 0, len(candidates)
+            l3_output, 0, len(directions)
         )
         # Test-UI listening state is projected only after the formal result is
         # accepted below.  Slow preview disk/player work must never delay the
@@ -2064,7 +2066,10 @@ class ApplicationRuntime:
             normalized_scores=None if response is None else response.normalized_scores,
             gate_decision=gate_record, search_diagnostics=search_record,
             enhanced_audio=enhanced_records,
-            enhanced_waveforms=tuple(item.enhanced_audio for item in (() if l3_output is None else l3_output.enhanced_audio[:len(candidates)])),
+            enhanced_waveforms=tuple(
+                item.enhanced_audio
+                for item in (() if l3_output is None else l3_output.enhanced_audio[:len(directions)])
+            ),
             l4_result=l4_record,
             stage_statuses=stage_statuses,
             stage_timings_ms=stage_timings,
@@ -2308,6 +2313,15 @@ class ApplicationRuntime:
                 f"received {len(outputs)}"
             )
         for index, (candidate, output) in enumerate(zip(candidates, outputs, strict=True)):
+            if layer == "L3":
+                if getattr(output, "track_id", None) != candidate.track_id:
+                    raise RuntimeError(
+                        f"L3 contract violation: output {index} track_id does not match input"
+                    )
+                if getattr(output, "rank", None) != candidate.rank:
+                    raise RuntimeError(
+                        f"L3 contract violation: output {index} rank does not match input"
+                    )
             delta = abs(
                 ((float(output.theta_deg) - float(candidate.theta_deg) + 180.0) % 360.0)
                 - 180.0
@@ -2318,14 +2332,14 @@ class ApplicationRuntime:
                     f"{output.theta_deg} does not match candidate {candidate.theta_deg}"
                 )
 
-    def _process_l3(self, window, candidates):
+    def _process_l3(self, window, directions):
         """Run L3 exactly once for the formal, already-smoothed L2 candidates."""
-        candidates = tuple(candidates)
+        directions = tuple(directions)
         with self._l3_mode_lock:
             mode = self._l3_processing_mode
-        l3_output = self._layer3.process(window, candidates, self._geometry, mode=mode)
-        formal_count = len(candidates)
-        self._validate_direction_outputs("L3", candidates, l3_output.enhanced_audio)
+        l3_output = self._layer3.process(window, directions, self._geometry, mode=mode)
+        formal_count = len(directions)
+        self._validate_direction_outputs("L3", directions, l3_output.enhanced_audio)
         formal_previews = self._beamform_previews(l3_output, 0, formal_count)
         l4_inputs = self._layer4_inputs_from_output(window, l3_output, formal_count)
         return formal_previews, l4_inputs

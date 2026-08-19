@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from common.data_types import DecisionWindow
+from common.window_key import WindowKey
 
 if TYPE_CHECKING:
     from layer2_source_detection.pipeline import Layer2PipelineResult
@@ -35,39 +36,6 @@ def _freeze_config_value(value: object) -> object:
     raise TypeError(
         "processing config snapshots may contain only mappings, sequences, sets, bytes, and scalar values"
     )
-
-
-@dataclass(frozen=True, slots=True)
-class WindowKey:
-    """Globally unique identity on the authoritative ingest sample timeline."""
-
-    session_id: str
-    stream_epoch: int
-    window_id: int
-    decision_sample: int
-
-    def __post_init__(self) -> None:
-        if not self.session_id:
-            raise ValueError("WindowKey session_id cannot be empty")
-        if min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
-            raise ValueError("WindowKey numeric fields cannot be negative")
-
-    @classmethod
-    def from_window(cls, window: DecisionWindow) -> WindowKey:
-        return cls(
-            session_id=window.session_id,
-            stream_epoch=window.stream_epoch,
-            window_id=window.window_id,
-            decision_sample=window.decision_sample,
-        )
-
-    @property
-    def stream_key(self) -> tuple[str, int]:
-        return self.session_id, self.stream_epoch
-
-    @property
-    def timeline_order(self) -> tuple[str, int, int, int]:
-        return self.session_id, self.stream_epoch, self.decision_sample, self.window_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +115,7 @@ def _payload_identities(value: object) -> tuple[WindowKey, ...]:
         identity = _identity_from_object(child) if child is not None else None
         if identity is not None:
             identities.append(identity)
-    for name in ("candidates", "enhanced_audio", "detections"):
+    for name in ("candidates", "directions", "active_tracks", "enhanced_audio", "detections"):
         for child in getattr(value, name, ()):
             identity = _identity_from_object(child)
             if identity is not None:

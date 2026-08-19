@@ -20,6 +20,7 @@ from common.data_types import (
     EnhancedAudio,
     PipelineStatus,
     SpatialResponse,
+    TrackedDirection,
 )
 from data_management import DecisionRecord, ResultWatermark
 from gui.dev_test_ui.contracts import DevUiFrame, L1MeterSnapshot
@@ -240,6 +241,27 @@ def _open_l2_output(window: DecisionWindow) -> Layer2PipelineResult:
         1.0,
         0.9,
     )
+    direction = TrackedDirection(
+        window.session_id,
+        window.stream_epoch,
+        window.window_id,
+        window.decision_sample,
+        window.doa_start_sample,
+        window.doa_end_sample,
+        window.window_id + 1,
+        1,
+        candidate.theta_deg,
+        candidate.theta_deg,
+        candidate.raw_score,
+        candidate.normalized_score,
+        "confirmed",
+        True,
+        window.window_id == 0,
+        window.decision_sample,
+        window.decision_sample,
+        0,
+        False,
+    )
     diagnostics = CandidateSearchDiagnostics(
         "single_pass", "parallel_runtime_test_v1", 0, 1, "single_pass", 1.0
     )
@@ -249,6 +271,8 @@ def _open_l2_output(window: DecisionWindow) -> Layer2PipelineResult:
         response,
         (candidate,),
         diagnostics,
+        directions=(direction,),
+        active_tracks=(direction,),
     )
 
 
@@ -271,14 +295,17 @@ def _blocked_l2_output(window: DecisionWindow) -> Layer2PipelineResult:
     return Layer2PipelineResult(Layer2ExecutionState.BLOCKED, gate, None, (), None)
 
 
-def _l3_output(window: DecisionWindow, candidates: tuple[CandidateDirection, ...]) -> Layer3Output:
+def _l3_output(window: DecisionWindow, candidates: tuple[TrackedDirection, ...]) -> Layer3Output:
     return Layer3Output(
+        WindowKey.from_window(window),
         tuple(
             EnhancedAudio(
                 window.session_id,
                 window.stream_epoch,
                 window.window_id,
                 window.decision_sample,
+                candidate.track_id,
+                candidate.rank,
                 window.context_start_sample,
                 window.context_end_sample,
                 candidate.theta_deg,
@@ -399,7 +426,7 @@ class _StubL3:
     def process_prepared(
         self,
         window: DecisionWindow,
-        candidates: tuple[CandidateDirection, ...],
+        candidates: tuple[TrackedDirection, ...],
         geometry: object,
     ) -> Layer3Output:
         del geometry

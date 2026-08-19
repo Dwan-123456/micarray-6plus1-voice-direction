@@ -7,9 +7,11 @@ import pytest
 import torch
 
 from common.config import load_config
-from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapshot
+from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapshot, TrackedDirection
+from common.window_key import WindowKey
 from common.geometry import physical_6plus1_geometry
 from layer3_direction_signal import (
+    BeamformedL3Batch,
     L3_MODE_CONSTANT_BEAMWIDTH,
     L3_MODE_DS_BASELINE,
     Layer3Processor,
@@ -58,14 +60,30 @@ def _window(
     )
 
 
-def _candidate(theta: float) -> CandidateDirection:
-    return CandidateDirection("session", 0, 4, 15_360, 13_440, 15_360, theta, 1.0, 0.8)
+def _candidate(
+    theta: float,
+    *,
+    track_id: int | None = None,
+    rank: int | None = None,
+    observed: bool = True,
+    allow_prediction: bool = False,
+) -> TrackedDirection:
+    identity = int(round(theta * 10.0)) + 1 if track_id is None else track_id
+    original_rank = identity if rank is None else rank
+    last_observed = 15_360 if observed else 14_400
+    return TrackedDirection(
+        "session", 0, 4, 15_360, 13_440, 15_360,
+        identity, original_rank, theta if observed else None, theta, 1.0, 0.8,
+        "confirmed" if observed else "coasting", observed, False,
+        0, last_observed, 15_360 - last_observed, False, allow_prediction,
+    )
 
 
 def test_l3_empty_candidates_skips_outputs():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     output = processor.process(_window(np.zeros((15_360, 8), np.float32)), (), physical_6plus1_geometry())
     assert output.enhanced_audio == ()
+    assert output.window_key == WindowKey("session", 0, 4, 15_360)
 
 
 def test_l3_outputs_one_48khz_mono_audio_per_candidate():
@@ -87,10 +105,90 @@ def test_l3_outputs_one_48khz_mono_audio_per_candidate():
         assert not hasattr(item, "stft_complex")
 
 
+@pytest.mark.parametrize("mode", ("optimized", "ds_baseline", "constant_beamwidth_baseline"))
+def test_all_three_modes_preserve_authoritative_ids_angles_and_original_order(mode):
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    directions = (
+        _candidate(359.5, track_id=73, rank=2),
+        _candidate(0.5, track_id=11, rank=1),
+        _candidate(180.0, track_id=42, rank=3),
+    )
+    output = processor.process(
+        _window(np.zeros((15_360, 8), np.float32)),
+        directions,
+        physical_6plus1_geometry(),
+        mode=mode,
+    )
+    assert tuple(item.track_id for item in output.enhanced_audio) == (73, 11, 42)
+    assert tuple(item.rank for item in output.enhanced_audio) == (2, 1, 3)
+    assert tuple(item.theta_deg for item in output.enhanced_audio) == (359.5, 0.5, 180.0)
+    assert all(item.window_key == output.window_key for item in output.enhanced_audio)
+
+
+def test_l3_rejects_duplicate_and_missing_public_ids_without_angle_repair():
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    window = _window(np.zeros((15_360, 8), np.float32))
+    geometry = physical_6plus1_geometry()
+    with pytest.raises(RuntimeError, match="track_ids must be unique"):
+        processor.process(
+            window,
+            (_candidate(5.0, track_id=9), _candidate(95.0, track_id=9)),
+            geometry,
+        )
+    legacy = CandidateDirection("session", 0, 4, 15_360, 13_440, 15_360, 5.0, 1.0, 0.8)
+    with pytest.raises(RuntimeError, match="only public L2 TrackedDirection"):
+        processor.process(window, (legacy,), geometry)  # type: ignore[arg-type]
+
+
+def test_l3_allows_only_explicit_short_prediction_and_rejects_long_coasting():
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    window = _window(np.zeros((15_360, 8), np.float32), ready_imcra=False)
+    geometry = physical_6plus1_geometry()
+    predicted = _candidate(12.0, track_id=5, observed=False, allow_prediction=True)
+    output = processor.process(window, (predicted,), geometry, mode=L3_MODE_DS_BASELINE)
+    assert output.enhanced_audio[0].track_id == 5
+    long_coasting = _candidate(12.0, track_id=5, observed=False, allow_prediction=False)
+    with pytest.raises(RuntimeError, match="long-coasting"):
+        processor.process(window, (long_coasting,), geometry, mode=L3_MODE_DS_BASELINE)
+
+
+def test_l3_exit_rejects_beamformed_id_order_corruption(monkeypatch):
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    window = _window(np.zeros((15_360, 8), np.float32), ready_imcra=False)
+    directions = (
+        _candidate(25.0, track_id=4, rank=2),
+        _candidate(120.0, track_id=8, rank=1),
+    )
+    geometry = physical_6plus1_geometry()
+    prepared = processor.prepare(window, mode=L3_MODE_DS_BASELINE)
+    valid = processor.beamformer.process_prepared_batch(prepared, directions, geometry)
+    corrupted = BeamformedL3Batch(
+        valid.window_key,
+        valid.spectra_mft,
+        tuple(reversed(valid.track_ids)),
+        valid.ranks,
+        valid.theta_degrees,
+        valid.backends,
+        valid.fallback_reasons,
+        valid.diagnostics,
+    )
+    monkeypatch.setattr(
+        processor.beamformer,
+        "process_prepared_batch",
+        lambda *_args, **_kwargs: corrupted,
+    )
+    with pytest.raises(RuntimeError, match="track_id set or order"):
+        processor.process_prepared(prepared, directions, geometry)
+
+
 def test_l3_rejects_candidate_from_another_window():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
-    wrong = CandidateDirection("session", 0, 5, 16_320, 14_400, 16_320, 30.0, 1.0, 0.8)
-    with pytest.raises(RuntimeError, match="同一窗口"):
+    wrong = TrackedDirection(
+        "session", 0, 5, 16_320, 14_400, 16_320, 301, 1,
+        30.0, 30.0, 1.0, 0.8, "confirmed", True, False,
+        0, 16_320, 0, False,
+    )
+    with pytest.raises(RuntimeError, match="WindowKey"):
         processor.process(_window(np.zeros((15_360, 8), np.float32)), (wrong,), physical_6plus1_geometry())
 
 
@@ -107,7 +205,7 @@ def test_l3_accepts_three_candidates_and_rejects_four():
         physical_6plus1_geometry(),
     )
     assert len(output.enhanced_audio) == 3
-    with pytest.raises(RuntimeError, match="0、1、2或3"):
+    with pytest.raises(RuntimeError, match="zero to three"):
         processor.process(
             _window(np.zeros((15_360, 8), np.float32)),
             (_candidate(0.0), _candidate(90.0), _candidate(180.0), _candidate(270.0)),

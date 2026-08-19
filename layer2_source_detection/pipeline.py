@@ -8,7 +8,8 @@ import numpy as np
 
 from common.angle import circular_distance_deg
 from common.config import ProjectConfig
-from common.data_types import CandidateDirection, DecisionWindow, SpatialResponse
+from common.data_types import CandidateDirection, DecisionWindow, SpatialResponse, TrackedDirection
+from common.window_key import WindowKey
 from common.geometry import MicGeometry
 
 from .configuration import DirectionScanConfig
@@ -49,6 +50,10 @@ class Layer2PipelineResult:
     candidate_track_is_formal: tuple[bool, ...] = ()
     candidate_track_is_new: tuple[bool, ...] = ()
     candidate_track_is_kalman_ready: tuple[bool, ...] = ()
+    # V1.1 public ID contract. L3 consumes only directions; it never derives
+    # identities from legacy candidates or their private sidecar metadata.
+    directions: tuple[TrackedDirection, ...] = ()
+    active_tracks: tuple[TrackedDirection, ...] = ()
 
     def __post_init__(self) -> None:
         identity = (
@@ -57,7 +62,26 @@ class Layer2PipelineResult:
             self.gate_decision.window_id,
             self.gate_decision.decision_sample,
         )
+        window_key = WindowKey(*identity)
         object.__setattr__(self, "candidates", tuple(self.candidates))
+        directions = tuple(self.directions)
+        active_tracks = tuple(self.active_tracks)
+        if len(directions) > 3:
+            raise ValueError("Layer 2 result cannot publish more than 3 L3 directions")
+        for name, values in (("directions", directions), ("active_tracks", active_tracks)):
+            if any(not isinstance(item, TrackedDirection) for item in values):
+                raise TypeError(f"Layer 2 {name} must contain only TrackedDirection values")
+            if any(item.window_key != window_key for item in values):
+                raise ValueError(f"Layer 2 {name} must belong to the result WindowKey")
+            if len({item.track_id for item in values}) != len(values):
+                raise ValueError(f"Layer 2 {name} track_ids must be unique")
+        active_ids = {item.track_id for item in active_tracks}
+        if directions and not active_tracks:
+            raise ValueError("Layer 2 public directions require matching active_tracks")
+        if any(item.track_id not in active_ids for item in directions):
+            raise ValueError("Layer 2 directions must be a subset of active_tracks")
+        object.__setattr__(self, "directions", directions)
+        object.__setattr__(self, "active_tracks", active_tracks)
         track_ids = tuple(self.candidate_track_ids)
         prediction_flags = tuple(self.candidate_is_prediction)
         formal_flags = tuple(self.candidate_track_is_formal)
@@ -119,7 +143,12 @@ class Layer2PipelineResult:
         if self.state is Layer2ExecutionState.BLOCKED:
             if self.gate_decision.allow_srp:
                 raise ValueError("blocked Layer 2 result requires a closed probability Gate")
-            if self.spatial_response is not None or self.candidates or self.search_diagnostics is not None:
+            if (
+                self.spatial_response is not None
+                or self.candidates
+                or self.search_diagnostics is not None
+                or directions
+            ):
                 raise ValueError("blocked Layer 2 result cannot contain SRP output")
             return
         if self.gate_decision.state is not ProbabilityGateState.OPEN:

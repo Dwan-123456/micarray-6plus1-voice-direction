@@ -21,6 +21,55 @@
 
 ---
 
+## 2026-08-19 — L3迁移到公开方向ID与严格批次对齐契约
+
+- **版本/标签**：项目`1.1.0`并行迁移的L3分支；未创建发布标签，已发布`v1.0.1`不移动。
+- **类型**：公共DTO、L3接口、Runtime阶段契约、文档与自动测试。
+- **涉及文件**：`common/window_key.py`、`common/data_types.py`、`common/__init__.py`、`app/processing_contracts.py`、`app/runtime.py`、`layer2_source_detection/pipeline.py`、`layer3_direction_signal/{interface,prepared,engine,hybrid,feature}.py`、L3 README及相关测试。
+
+### L1与Windowing
+
+- 采集、8通道顺序、校准、IMCRA、预降噪、DecisionWindow尺寸和20 ms发布时间轴均无变化。
+
+### L2
+
+- MUSIC/SRP、模型阶数、跟踪算法、Kalman和生命周期实现均无变化；本分支不分配、猜测或修补方向ID。
+- `Layer2PipelineResult`增加公开`directions`与`active_tracks`承接字段及WindowKey/ID唯一性校验，供L2 Tracking分支输出权威`TrackedDirection`；旧私有候选元数据不再被L3用于构造ID。
+
+### L3
+
+- 公共输入由`CandidateDirection`切换为0～3个`TrackedDirection`。新增共享`WindowKey`类型；`DirectionalSignal`、`BeamformedL3Batch`、`SpectrogramFeature`和`EnhancedAudio`携带`track_id`、原始`rank`、`theta_deg`及WindowKey身份。
+- 入口严格校验同窗、类型、数量、ID唯一、rank唯一及处理许可；L3保持输入元组顺序，不按角度排序、分配、合并或修补ID。
+- 观测目标可处理；coasting目标只有在L2明确设置`allow_l3_prediction=True`时才可作为短时预测目标处理。长coasting轨仅留在`active_tracks`时间线，误送入L3时明确失败，不生成增强音频。
+- 波束形成批次和音频合成出口逐项校验WindowKey、ID集合与顺序、rank、角度和数量。错误转为Runtime L3 `FAILED`终态，L4按既有阶段规则跳过。
+- `optimized`、`ds_baseline`和`constant_beamwidth_baseline`算法、数值参数、缓存、输出音频shape与fallback行为无变化；运行时模式切换不改变权威L2 ID。
+
+### L4
+
+- CNN、重采样、响度补偿、模型和阈值逻辑无变化。L4公开ID契约由独立L4迁移分支负责，本次未提前修改其DTO。
+
+### Development Test UI、录音与数据管理
+
+- Test UI和Production UI的正式界面行为、试听关联实现、录音schema、Catalog、manifest、恢复和本地数据均无变化；仅更新集成测试夹具以显式提供L2权威ID。
+- 未修改或新增模型、音频、空间表格、录音或其他二进制资产。
+
+### 跨层接口与兼容性
+
+- `WindowKey`从Runtime内部定义提升为`common.window_key`公共类型，并由`app.processing_contracts`继续导出，保持原导入路径兼容。
+- L3公共入口不兼容旧无ID`CandidateDirection`；缺失ID、重复ID、跨窗ID和出口顺序损坏均拒绝，而不是静默兼容。
+- 本分支需要与L2 Tracking、L4、Runtime/Recording和UI的其余1.1.0并行分支整合后才能发布，不单独创建`v1.1.0`。
+
+### 测试与验收
+
+- 增加0～3方向、359.5°/0.5°跨0°、非排序输入、重复/缺失ID、跨窗、短预测许可、长coasting拒绝、出口ID篡改、三BF模式一致性、模式切换ID稳定及L3失败终态覆盖。
+- 完整自动测试353项通过；全部改动文件的Ruff检查和`git diff --check`通过。未进行新的真实麦克风、诊室三声源或长时间实机验收。
+
+### Git与Git LFS
+
+- 仅Python、Markdown普通文本发生变化；Git LFS资产无变化，未创建或移动版本标签。
+
+---
+
 ## 2026-08-19 — 按改动范围选择测试验证级别
 
 - **版本/标签**：`1.0.1`之后的工程工作流维护；未创建新发布标签，`v1.0.1`不移动。

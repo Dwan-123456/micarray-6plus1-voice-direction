@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,13 @@ import pytest
 
 from app.runtime import ApplicationRuntime
 from common.config import load_config
-from common.data_types import CandidateDirection, IngestedAudioBlock, PipelineStatus, SpatialResponse
+from common.data_types import (
+    CandidateDirection,
+    IngestedAudioBlock,
+    PipelineStatus,
+    SpatialResponse,
+    TrackedDirection,
+)
 from common.geometry import MIC_POSITIONS_M
 from gui.dev_test_ui.aggregator import DevUiAggregator, PerformanceTracker
 from gui.dev_test_ui.contracts import L1MeterSnapshot, TrackedAudioSnapshot
@@ -627,6 +634,26 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
         pipeline=StubPipeline(frames), serial_device=StubSerial(),
         source_probability_provider=open_probabilities,
     )
+    # This branch tests the L3 public-ID boundary while the separate L2 branch
+    # owns production tracking. Supply explicit authoritative IDs in this
+    # integration fixture; L3 itself must never synthesize them.
+    original_l2_process = runtime._layer2.process
+
+    def process_with_public_ids(*args, **kwargs):
+        result = original_l2_process(*args, **kwargs)
+        directions = tuple(
+            TrackedDirection(
+                item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
+                item.doa_start_sample, item.doa_end_sample, index + 1, index + 1,
+                item.theta_deg, item.theta_deg, item.raw_score, item.normalized_score,
+                "confirmed", True, index == 0, item.doa_start_sample,
+                item.decision_sample, 0, False,
+            )
+            for index, item in enumerate(result.candidates)
+        )
+        return replace(result, directions=directions, active_tracks=directions)
+
+    runtime._layer2.process = process_with_public_ids
     runtime.start()
     deadline, frame = time.monotonic() + 8, None
     while time.monotonic() < deadline:

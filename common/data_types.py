@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from .window_key import WindowKey
+
 
 _IMCRA_FREQUENCIES_HZ = np.fft.rfftfreq(2048, 1.0 / 48_000).astype(np.float32)
 _IMCRA_FREQUENCIES_HZ = _IMCRA_FREQUENCIES_HZ[
@@ -282,6 +284,89 @@ class CandidateDirection:
             raise ValueError("CandidateDirection角度或归一化分数越界")
 
 
+@dataclass(frozen=True, slots=True)
+class TrackedDirection:
+    """L2-owned direction ID; downstream layers must preserve it verbatim."""
+
+    session_id: str
+    stream_epoch: int
+    window_id: int
+    decision_sample: int
+    doa_start_sample: int
+    doa_end_sample: int
+    track_id: int
+    rank: int
+    measured_theta_deg: float | None
+    theta_deg: float
+    raw_score: float
+    normalized_score: float
+    track_state: str
+    is_observed: bool
+    is_new_track: bool
+    first_seen_sample: int
+    last_observed_sample: int
+    missed_samples: int
+    kalman_applied: bool
+    allow_l3_prediction: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.session_id or min(
+            self.stream_epoch, self.window_id, self.doa_start_sample,
+            self.first_seen_sample, self.last_observed_sample, self.missed_samples,
+        ) < 0:
+            raise ValueError("TrackedDirection identity, rank, or lifetime is invalid")
+        if (
+            type(self.track_id) is not int or self.track_id <= 0
+            or type(self.rank) is not int or self.rank <= 0
+        ):
+            raise ValueError("TrackedDirection track_id and rank must be positive integers")
+        if self.doa_end_sample != self.decision_sample or self.doa_end_sample - self.doa_start_sample != 1_920:
+            raise ValueError("TrackedDirection DOA boundary is invalid")
+        if not all(np.isfinite(value) for value in (
+            self.theta_deg, self.raw_score, self.normalized_score,
+        )):
+            raise ValueError("TrackedDirection angle and scores must be finite")
+        if not 0.0 <= self.theta_deg < 360.0 or not 0.0 <= self.normalized_score <= 1.0:
+            raise ValueError("TrackedDirection angle or normalized score is out of range")
+        if self.measured_theta_deg is not None and (
+            not np.isfinite(self.measured_theta_deg)
+            or not 0.0 <= self.measured_theta_deg < 360.0
+        ):
+            raise ValueError("TrackedDirection measured angle must be missing or in [0,360)")
+        if self.track_state not in {"tentative", "confirmed", "coasting"}:
+            raise ValueError("TrackedDirection state is invalid")
+        if any(type(value) is not bool for value in (
+            self.is_observed, self.is_new_track, self.kalman_applied, self.allow_l3_prediction,
+        )):
+            raise TypeError("TrackedDirection flags must be bool")
+        if not self.first_seen_sample <= self.last_observed_sample <= self.decision_sample:
+            raise ValueError("TrackedDirection lifecycle samples are not monotonic")
+        if self.is_observed:
+            if (
+                self.measured_theta_deg is None
+                or self.last_observed_sample != self.decision_sample
+                or self.missed_samples != 0
+                or self.track_state == "coasting"
+                or self.allow_l3_prediction
+            ):
+                raise ValueError("observed TrackedDirection lifecycle is inconsistent")
+        elif (
+            self.measured_theta_deg is not None
+            or self.track_state != "coasting"
+            or self.missed_samples != self.decision_sample - self.last_observed_sample
+            or self.is_new_track
+        ):
+            raise ValueError("unobserved TrackedDirection must be a consistent coasting track")
+
+    @property
+    def window_key(self) -> WindowKey:
+        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
+
+    @property
+    def eligible_for_l3(self) -> bool:
+        return self.is_observed or self.allow_l3_prediction
+
+
 def _readonly_exact_complex64(value: object, shape: tuple[int, ...], name: str) -> NDArray[np.complex64]:
     raw = np.asarray(value)
     if raw.shape != shape or raw.dtype != np.complex64:
@@ -297,6 +382,8 @@ class DirectionalSignal:
     stream_epoch: int
     window_id: int
     decision_sample: int
+    track_id: int
+    rank: int
     context_start_sample: int
     context_end_sample: int
     theta_deg: float
@@ -317,7 +404,13 @@ class DirectionalSignal:
             "constant_beamwidth_baseline",
         }:
             raise ValueError("DirectionalSignal后端无效")
+        if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
+            raise ValueError("DirectionalSignal track_id or original rank is invalid")
         object.__setattr__(self, "stft_complex", _readonly_exact_complex64(self.stft_complex, (513, 33), "stft_complex"))
+
+    @property
+    def window_key(self) -> WindowKey:
+        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +419,8 @@ class SpectrogramFeature:
     stream_epoch: int
     window_id: int
     decision_sample: int
+    track_id: int
+    rank: int
     context_start_sample: int
     context_end_sample: int
     theta_deg: float
@@ -340,7 +435,13 @@ class SpectrogramFeature:
             raise ValueError("SpectrogramFeature上下文边界无效")
         if not np.isfinite(self.theta_deg) or not 0 <= self.theta_deg < 360:
             raise ValueError("SpectrogramFeature角度无效")
+        if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
+            raise ValueError("SpectrogramFeature track_id or original rank is invalid")
         object.__setattr__(self, "spectrogram", _readonly_exact_float32(self.spectrogram, (33, 169), "spectrogram"))
+
+    @property
+    def window_key(self) -> WindowKey:
+        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +452,8 @@ class EnhancedAudio:
     stream_epoch: int
     window_id: int
     decision_sample: int
+    track_id: int
+    rank: int
     context_start_sample: int
     context_end_sample: int
     theta_deg: float
@@ -369,9 +472,15 @@ class EnhancedAudio:
             raise ValueError("EnhancedAudio采样率或角度无效")
         if not self.algorithm:
             raise ValueError("EnhancedAudio算法标识不能为空")
+        if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
+            raise ValueError("EnhancedAudio track_id or original rank is invalid")
         waveform = _readonly_exact_float32(self.enhanced_audio, (15_360,), "enhanced_audio")
         object.__setattr__(self, "diagnostics", tuple(str(item) for item in self.diagnostics))
         object.__setattr__(self, "enhanced_audio", waveform)
+
+    @property
+    def window_key(self) -> WindowKey:
+        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
 
 
 @dataclass(frozen=True, slots=True)
