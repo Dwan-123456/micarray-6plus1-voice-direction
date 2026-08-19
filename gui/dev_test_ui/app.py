@@ -133,7 +133,7 @@ def build_window(
         SrpThresholdControl,
     )
     from .settings import DevUiSettings
-    from .srp_panel import DirectionTrackTable, MusicPanelSnapshot, MusicPolarPanel
+    from .srp_panel import MusicPanelSnapshot, MusicPolarPanel
 
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
@@ -429,14 +429,13 @@ def build_window(
                 "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
             )
             self.gate_readout = ProbabilityGateReadout()
-            self.direction_table = DirectionTrackTable()
             right_layout.addWidget(self.gate_threshold)
             right_layout.addWidget(self.srp_kalman)
             right_layout.addWidget(self.srp_kalman_q)
             right_layout.addWidget(self.srp_kalman_r)
             right_layout.addWidget(self.gate_readout)
             right_layout.addWidget(self.srp_threshold)
-            right_layout.addWidget(self.direction_table, 1)
+            right_layout.addStretch(1)
             splitter.addWidget(self.srp_polar)
             splitter.addWidget(right)
             splitter.setSizes((700, 300))
@@ -1114,7 +1113,6 @@ def build_window(
                 )
                 if window_key != self._last_rendered_window:
                     self.srp_polar.set_snapshot(snapshot, live=True)
-                    self.direction_table.set_snapshot(snapshot)
                     self._last_rendered_window = window_key
                 search_suffix = ""
                 diagnostics = getattr(frame, "music_diagnostics", None)
@@ -1133,7 +1131,6 @@ def build_window(
             elif "srp" in frame.missing_reasons:
                 self.srp_header.setText(frame.missing_reasons["srp"])
                 self.srp_polar.set_snapshot(None)
-                self.direction_table.set_snapshot(None)
                 self._last_rendered_window = None
             now = monotonic()
             if now - self._last_performance_refresh >= 1.0 / config.dev_test_ui.performance_refresh_hz:

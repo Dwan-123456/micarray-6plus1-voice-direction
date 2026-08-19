@@ -784,6 +784,7 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert right_layout.indexOf(window.gate_threshold) == 0
         assert not hasattr(window, "srp_iterative")
         assert not hasattr(window, "srp_id_tracking")
+        assert not hasattr(window, "direction_table")
         assert right_layout.indexOf(window.srp_kalman) == 1
         assert right_layout.indexOf(window.srp_kalman_q) == 2
         assert right_layout.indexOf(window.srp_kalman_r) == 3
