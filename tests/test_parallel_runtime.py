@@ -357,7 +357,7 @@ class _StubL2:
         self.last_kalman_error = None
         self.last_id_tracking_error = None
         self.id_tracker = SimpleNamespace(active_track_count=0)
-        self.voice_feedback: list[tuple[str, int, int, float]] = []
+        self.voice_feedback: list[tuple[str, int, int, int, float, bool]] = []
 
     @staticmethod
     def reset() -> None:
@@ -381,9 +381,12 @@ class _StubL2:
             self.probe.add("l2", window.window_id, started, time.monotonic())
 
     def submit_voice_feedback(
-        self, session_id: str, stream_epoch: int, decision_sample: int, theta_deg: float
+        self, session_id: str, stream_epoch: int, decision_sample: int,
+        track_id: int, probability: float, is_voice: bool,
     ) -> bool:
-        self.voice_feedback.append((session_id, stream_epoch, decision_sample, theta_deg))
+        self.voice_feedback.append((
+            session_id, stream_epoch, decision_sample, track_id, probability, is_voice,
+        ))
         return True
 
 
@@ -605,12 +608,15 @@ def test_late_ordered_commit_from_old_epoch_cannot_update_new_epoch_ui(tmp_path:
     assert runtime.latest_dev_ui.empty()
 
 
-def test_completed_l4_does_not_feed_direction_lifecycle_back_to_l2(tmp_path: Path) -> None:
+def test_completed_l4_returns_track_probability_to_l2(tmp_path: Path) -> None:
     runtime, _store, _probe = _start_with_stubs(tmp_path)
     try:
         runtime._admit_window(_window(0))
         _wait_until(lambda: runtime.processing_status["l4_actual_completed"] >= 1)
-        assert runtime._layer2.voice_feedback == []
+        feedback = runtime._layer2.voice_feedback
+        assert len(feedback) == 1
+        assert feedback[0][:4] == ("parallel-session", 0, 15_360, 1)
+        assert feedback[0][4:] == (0.8, True)
     finally:
         runtime.stop()
 

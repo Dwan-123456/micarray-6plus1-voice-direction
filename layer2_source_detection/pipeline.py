@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, replace
 from enum import Enum
+from math import isfinite
+from threading import Lock
 
 from common.angle import circular_distance_deg
 from common.config import ProjectConfig
@@ -119,6 +122,8 @@ class Layer2Pipeline:
         self.id_tracker = tracker or GlobalDirectionTracker()
         self.last_kalman_error: str | None = None
         self.last_id_tracking_error: str | None = None
+        self._voice_feedback: deque[tuple[str, int, int, int, float, bool]] = deque(maxlen=4096)
+        self._voice_feedback_lock = Lock()
 
     @classmethod
     def from_project(cls, config: ProjectConfig, *, scanner: DetailedDirectionScanner | None = None) -> "Layer2Pipeline":
@@ -144,7 +149,38 @@ class Layer2Pipeline:
         if callable(reset_scanner):
             reset_scanner()
         self.id_tracker.reset()
+        with self._voice_feedback_lock:
+            self._voice_feedback.clear()
         self.last_kalman_error = self.last_id_tracking_error = None
+
+    def submit_voice_feedback(
+        self,
+        session_id: str,
+        stream_epoch: int,
+        decision_sample: int,
+        track_id: int,
+        probability: float,
+        is_voice: bool,
+    ) -> bool:
+        if (
+            not session_id or min(stream_epoch, decision_sample) < 0
+            or type(track_id) is not int or track_id <= 0
+            or type(is_voice) is not bool
+            or not isfinite(probability) or not 0.0 <= probability <= 1.0
+        ):
+            return False
+        with self._voice_feedback_lock:
+            self._voice_feedback.append(
+                (session_id, stream_epoch, decision_sample, track_id, float(probability), is_voice)
+            )
+        return True
+
+    def _drain_voice_feedback(self) -> None:
+        with self._voice_feedback_lock:
+            pending = tuple(self._voice_feedback)
+            self._voice_feedback.clear()
+        for item in pending:
+            self.id_tracker.apply_voice_feedback(*item)
 
     def process(self, window: DecisionWindow, probabilities: tuple[SourceProbability20ms, ...],
                 geometry: MicGeometry, scan_config: DirectionScanConfig, *, gate_threshold: float,
@@ -154,6 +190,7 @@ class Layer2Pipeline:
                 direction_kalman_r_scale: float = 1.0) -> Layer2PipelineResult:
         if type(direction_kalman_enabled) is not bool:
             raise TypeError("L2 Kalman switch must be bool")
+        self._drain_voice_feedback()
         force_open_for_active_id = self.id_tracker.has_live_tracks(
             window.session_id, window.stream_epoch, window.decision_sample
         )

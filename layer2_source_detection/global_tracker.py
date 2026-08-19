@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -48,12 +48,17 @@ class _Track:
     confirmed: bool = False
     filtered_theta: float | None = None
     filtered_velocity_dps: float = 0.0
+    last_voice_sample: int | None = None
+    last_voice_probability: float | None = None
+    noise_interference: bool = False
+    noise_voice_recovery_samples: list[int] = field(default_factory=list)
 
 
 class GlobalDirectionTracker:
     """Deterministic sample-time lifecycle with session-scoped non-reused IDs."""
 
     backend = "global_assignment_v1"
+    voice_absence_noise_samples = 3 * 48_000
 
     def __init__(self, config: GlobalTrackerConfig | None = None) -> None:
         self.config = config or GlobalTrackerConfig()
@@ -110,6 +115,7 @@ class GlobalDirectionTracker:
 
         self.prepare_stream(session_id, stream_epoch)
         self._expire_tracks(decision_sample)
+        self._refresh_noise_labels(decision_sample)
         return bool(self._tracks)
 
     def _expire_tracks(self, decision_sample: int) -> None:
@@ -117,6 +123,80 @@ class GlobalDirectionTracker:
         for track_id, track in tuple(self._tracks.items()):
             if decision_sample - track.last_observed > ttl:
                 del self._tracks[track_id]
+
+    def _refresh_noise_labels(self, decision_sample: int) -> None:
+        for track in self._tracks.values():
+            semantic_anchor = (
+                track.first_seen if track.last_voice_sample is None else track.last_voice_sample
+            )
+            if decision_sample - semantic_anchor >= self.voice_absence_noise_samples:
+                track.noise_interference = True
+
+    def apply_voice_feedback(
+        self,
+        session_id: str,
+        stream_epoch: int,
+        decision_sample: int,
+        track_id: int,
+        probability: float,
+        is_voice: bool,
+    ) -> bool:
+        """Apply one delayed, authoritative L4 result to an existing ID."""
+
+        if (session_id, stream_epoch) != (self._session_id, self._stream_epoch):
+            return False
+        track = self._tracks.get(track_id)
+        if track is None or decision_sample < track.first_seen:
+            return False
+        probability = float(probability)
+        if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
+            raise ValueError("L4 voice feedback probability must be in [0,1]")
+        track.last_voice_probability = probability
+        if is_voice:
+            track.last_voice_sample = max(
+                decision_sample,
+                decision_sample if track.last_voice_sample is None else track.last_voice_sample,
+            )
+            if track.noise_interference:
+                nearby_non_noise = any(
+                    other_id != track_id
+                    and not other.noise_interference
+                    and abs(_delta(track.unwrapped_theta, other.unwrapped_theta))
+                    <= self.config.association_gate_deg
+                    for other_id, other in self._tracks.items()
+                )
+                if nearby_non_noise:
+                    track.noise_voice_recovery_samples.clear()
+                else:
+                    cutoff = decision_sample - self.voice_absence_noise_samples
+                    track.noise_voice_recovery_samples[:] = [
+                        sample for sample in track.noise_voice_recovery_samples
+                        if sample >= cutoff
+                    ]
+                    if (
+                        not track.noise_voice_recovery_samples
+                        or decision_sample > track.noise_voice_recovery_samples[-1]
+                    ):
+                        track.noise_voice_recovery_samples.append(decision_sample)
+                    if len(track.noise_voice_recovery_samples) >= 5:
+                        track.noise_interference = False
+                        track.noise_voice_recovery_samples.clear()
+        return True
+
+    @staticmethod
+    def _update_observation(track: _Track, candidate: CandidateDirection, decision_sample: int,
+                            max_velocity_dps: float) -> int:
+        elapsed = max(1, decision_sample - track.last_observed)
+        previous_unwrapped = track.unwrapped_theta
+        unwrapped_measurement = previous_unwrapped + _delta(candidate.theta_deg, previous_unwrapped)
+        measured_velocity = (unwrapped_measurement - previous_unwrapped) * 48_000.0 / elapsed
+        track.unwrapped_theta = unwrapped_measurement
+        track.velocity_dps = float(np.clip(measured_velocity, -max_velocity_dps, max_velocity_dps))
+        track.last_observed = decision_sample
+        track.observations += 1
+        track.raw_score = candidate.raw_score
+        track.normalized_score = candidate.normalized_score
+        return elapsed
 
     def _new_id(self, session_id: str) -> int:
         track_id = self._next_by_session.setdefault(session_id, 1)
@@ -142,8 +222,14 @@ class GlobalDirectionTracker:
             raise ValueError("direction tracking sample must advance")
         doa_end_sample = decision_sample if doa_end_sample is None else doa_end_sample
         self._expire_tracks(decision_sample)
+        self._refresh_noise_labels(decision_sample)
         candidates = tuple(candidates)
-        track_ids = tuple(sorted(self._tracks))
+        # Noise markers are excluded from the exclusive Hungarian rows so a
+        # nearby normal ID can never be merged into a stationary noise ID.
+        track_ids = tuple(sorted(
+            track_id for track_id, track in self._tracks.items()
+            if not track.noise_interference
+        ))
         assigned: dict[int, int] = {}
         if track_ids and candidates:
             rows, columns = len(track_ids), len(candidates)
@@ -176,6 +262,28 @@ class GlobalDirectionTracker:
             for row, column in zip(selected_rows, selected_columns, strict=True):
                 if row < rows and column < columns and cost[row, column] < 1.0e5:
                     assigned[column] = track_ids[row]
+        noise_ids = tuple(sorted(
+            track_id for track_id, track in self._tracks.items()
+            if track.noise_interference
+        ))
+        for index, candidate in enumerate(candidates):
+            if index in assigned:
+                continue
+            normal_nearby = any(
+                abs(_delta(candidate.theta_deg, self._tracks[track_id].unwrapped_theta))
+                <= self.config.association_gate_deg
+                for track_id in track_ids
+            )
+            if normal_nearby:
+                continue
+            viable_noise = tuple(
+                (abs(_delta(candidate.theta_deg, self._tracks[track_id].unwrapped_theta)), track_id)
+                for track_id in noise_ids
+                if abs(_delta(candidate.theta_deg, self._tracks[track_id].unwrapped_theta))
+                <= self.config.association_gate_deg
+            )
+            if viable_noise:
+                assigned[index] = min(viable_noise)[1]
         directions: list[TrackedDirection] = []
         assignment_ids: list[int] = []
         new_flags: list[bool] = []
@@ -192,21 +300,9 @@ class GlobalDirectionTracker:
                 self._tracks[track_id] = track
             else:
                 track = self._tracks[track_id]
-                elapsed = max(1, decision_sample - track.last_observed)
-                previous_unwrapped = track.unwrapped_theta
-                unwrapped_measurement = previous_unwrapped + _delta(candidate.theta_deg, previous_unwrapped)
-                measured_velocity = (unwrapped_measurement - previous_unwrapped) * 48_000.0 / elapsed
-                measured_velocity = float(np.clip(
-                    measured_velocity, -self.config.max_velocity_dps, self.config.max_velocity_dps
-                ))
-                # Geometric association state is updated independently of the
-                # optional display/output smoother.
-                track.unwrapped_theta = unwrapped_measurement
-                track.velocity_dps = measured_velocity
-                track.last_observed = decision_sample
-                track.observations += 1
-                track.raw_score = candidate.raw_score
-                track.normalized_score = candidate.normalized_score
+                elapsed = self._update_observation(
+                    track, candidate, decision_sample, self.config.max_velocity_dps
+                )
             if kalman_enabled:
                 if track.filtered_theta is None:
                     track.filtered_theta = track.unwrapped_theta
@@ -238,6 +334,7 @@ class GlobalDirectionTracker:
                 track_id, rank, candidate.theta_deg, output_theta,
                 candidate.raw_score, candidate.normalized_score, state,
                 True, is_new, track.first_seen, track.last_observed, 0, kalman_enabled,
+                track.noise_interference,
             ))
             assignment_ids.append(track_id)
             new_flags.append(is_new)
@@ -278,6 +375,7 @@ class GlobalDirectionTracker:
                 track_id, len(active) + 1, None, theta,
                 track.raw_score, track.normalized_score, "coasting", False, False,
                 track.first_seen, track.last_observed, missed, kalman_enabled,
+                track.noise_interference,
             ))
         self._last_sample = decision_sample
         self.last_assignments = tuple(assignment_ids)
