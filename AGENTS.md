@@ -11,6 +11,13 @@ These rules apply to every Codex task performed anywhere in this repository.
 - Do not upload incomplete or failing work as a completed change. The user's latest explicit instruction to delay or skip an upload overrides the normal automatic push workflow.
 - Use semantic versions for releases. Do not move, replace, or rewrite an already published version tag.
 
+## Verification scope
+
+- For a narrowly scoped change to one feature, run only the directly relevant tests: the nearest unit tests plus any integration or contract tests that directly consume the changed behavior. Do not run the full suite by default.
+- Run the full test suite for broad architecture or cross-layer changes, public DTO or configuration-schema changes with multiple consumers, Runtime scheduling/concurrency/time-axis changes, recording schema/transaction/recovery changes, dependency/build/release changes, or broad refactors.
+- If the impact boundary is uncertain, focused verification exposes spillover, or relevant tests fail outside the expected component, expand verification to the affected neighboring suites and then to the full suite when necessary.
+- Documentation-only or workflow-only changes do not require pytest unless they affect generated artifacts or executable documentation contracts; use the relevant static, formatting, link, or diff checks instead.
+
 ## Data boundaries
 
 - Never commit `.venv/`, `data/`, runtime recordings, scratch recordings, catalogs, logs, caches, `.partial` files, secrets, tokens, passwords, or local proxy settings.
