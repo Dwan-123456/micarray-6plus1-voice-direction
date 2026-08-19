@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from time import monotonic
 from types import MappingProxyType
@@ -181,9 +180,10 @@ if QWidget is not None:
             self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self.setAlternatingRowColors(False)
-            self._probability_history: dict[
-                tuple[str, int, int], deque[tuple[float, int, float]]
-            ] = {}
+            self._probability_stream: tuple[str, int] | None = None
+            self._probability_window_started: float | None = None
+            self._probability_pending: dict[int, float] = {}
+            self._probability_display: dict[int, float] = {}
             for row in range(self.ROW_COUNT):
                 for column in range(len(self.HEADERS)):
                     self.setItem(row, column, QTableWidgetItem(""))
@@ -191,28 +191,26 @@ if QWidget is not None:
         def set_snapshot(self, snapshot: MusicPanelSnapshot | None) -> None:
             tracks = () if snapshot is None else snapshot.active_tracks
             now = monotonic()
-            cutoff = now - 1.0
             if snapshot is not None:
                 stream = (snapshot.response.session_id, snapshot.response.stream_epoch)
-                self._probability_history = {
-                    key: values
-                    for key, values in self._probability_history.items()
-                    if key[:2] == stream
-                }
+                if stream != self._probability_stream:
+                    self._probability_stream = stream
+                    self._probability_window_started = now
+                    self._probability_pending.clear()
+                    self._probability_display.clear()
+                elif (
+                    self._probability_window_started is not None
+                    and now - self._probability_window_started >= 1.0
+                ):
+                    self._probability_display = self._probability_pending
+                    self._probability_pending = {}
+                    self._probability_window_started = now
                 for track_id, probability in snapshot.l4_probability_by_track.items():
-                    key = (*stream, int(track_id))
-                    values = self._probability_history.setdefault(key, deque())
-                    window_id = snapshot.response.window_id
-                    if values and values[-1][1] == window_id:
-                        values[-1] = (values[-1][0], window_id, float(probability))
-                    else:
-                        values.append((now, window_id, float(probability)))
-            for key in tuple(self._probability_history):
-                values = self._probability_history[key]
-                while values and values[0][0] < cutoff:
-                    values.popleft()
-                if not values:
-                    del self._probability_history[key]
+                    track_id = int(track_id)
+                    self._probability_pending[track_id] = max(
+                        float(probability),
+                        self._probability_pending.get(track_id, 0.0),
+                    )
             self.setUpdatesEnabled(False)
             try:
                 for row in range(self.ROW_COUNT):
@@ -221,16 +219,7 @@ if QWidget is not None:
                         values = ("",) * len(self.HEADERS)
                         colour = self.palette().text().color()
                     else:
-                        key = (
-                            snapshot.response.session_id,
-                            snapshot.response.stream_epoch,
-                            track.track_id,
-                        )
-                        history = self._probability_history.get(key, ())
-                        probability = max(
-                            (value for _seen, _window, value in history),
-                            default=None,
-                        )
+                        probability = self._probability_display.get(track.track_id)
                         values = (
                             str(track.track_id),
                             "—" if track.measured_theta_deg is None else f"{track.measured_theta_deg:.1f}°",

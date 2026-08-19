@@ -26,7 +26,7 @@
 - **版本/标签**：Development Test UI界面调整；未创建或移动版本标签。
 - **类型**：DOA/MUSIC方向表显示与L4概率聚合。
 - 关闭三行表格的交替灰白底色，使固定三行使用相同背景；权威ID文字颜色和圆图颜色映射保持不变。
-- `L4概率`按`(session_id, stream_epoch, track_id)`显示最近1秒内已接收概率的最大值；同窗刷新不重复累计，切换session/epoch时清除旧历史。
+- `L4概率`按`(session_id, stream_epoch, track_id)`在每个1秒统计周期内累计最大值，只在周期结束时更新一次表格，显示刚结束那1秒的最大概率；切换session/epoch时清除旧统计。
 - L1～L4算法、L2权威ID生命周期、录音和试听均无变化；Development Test UI定向测试通过，Git LFS资产无变化。
 
 ---

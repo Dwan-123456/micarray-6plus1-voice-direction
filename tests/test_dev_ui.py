@@ -913,7 +913,7 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     assert table.item(0, 1).text() == "30.0°"
     assert table.item(0, 2).text() == "31.0°"
     assert table.item(0, 4).text() == "confirmed"
-    assert table.item(0, 7).text() == "0.910"
+    assert table.item(0, 7).text() == "—"
     assert table.rowCount() == 3
     assert not table.alternatingRowColors()
     assert table.item(0, 0) is first_item
@@ -928,7 +928,7 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     table.set_snapshot(MusicPanelSnapshot(
         response2, (track2,), (track2,), now[0], {7: 0.40},
     ))
-    assert table.item(0, 7).text() == "0.910"
+    assert table.item(0, 7).text() == "—"
 
     now[0] = 101.1
     response3 = replace(response2, window_id=2, decision_sample=17_280,
@@ -938,6 +938,17 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
                      last_observed_sample=17_280)
     table.set_snapshot(MusicPanelSnapshot(
         response3, (track3,), (track3,), now[0], {7: 0.40},
+    ))
+    assert table.item(0, 7).text() == "0.910"
+
+    now[0] = 102.2
+    response4 = replace(response3, window_id=3, decision_sample=18_240,
+                        doa_start_sample=16_320, doa_end_sample=18_240)
+    track4 = replace(track3, window_id=3, decision_sample=18_240,
+                     doa_start_sample=16_320, doa_end_sample=18_240,
+                     last_observed_sample=18_240)
+    table.set_snapshot(MusicPanelSnapshot(
+        response4, (track4,), (track4,), now[0], {7: 0.25},
     ))
     assert table.item(0, 7).text() == "0.400"
 
