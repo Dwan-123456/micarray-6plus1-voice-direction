@@ -117,7 +117,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `DecisionWindow [15360,8]` 和 20 ms 发布节拍保持不变；320 ms是L3/L4上下文和L2可用历史上限，不代表L2每次都重新计算整段音频。
 - L2维护按session/epoch/sample连续的滚动STFT与协方差状态。每个新DecisionWindow原则上只加入最近20 ms产生的新帧并移出超出MUSIC历史长度的旧帧；禁止每20 ms从头重算320 ms STFT和全部协方差。
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
-- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；Gate 关闭时跳过新的 MUSIC 观测，但已经存在的 track 按绝对 sample 推进到 coasting/超时。
+- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有活动ID时，Gate关闭会跳过新的MUSIC观测。当前窗口开始时只要存在任意未删除ID，低于门限的正式概率判决即强制放行MUSIC；最后一个ID删除后立即恢复概率门限。ID继续按3秒绝对sample TTL推进到coasting/超时；预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
 
 ## 7. Layer 2：MUSIC 定位

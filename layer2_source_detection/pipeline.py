@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from common.angle import circular_distance_deg
@@ -154,8 +154,22 @@ class Layer2Pipeline:
                 direction_kalman_r_scale: float = 1.0) -> Layer2PipelineResult:
         if type(direction_kalman_enabled) is not bool:
             raise TypeError("L2 Kalman switch must be bool")
+        force_open_for_active_id = self.id_tracker.has_live_tracks(
+            window.session_id, window.stream_epoch, window.decision_sample
+        )
         decision = self.gate.evaluate(window, probabilities, threshold=gate_threshold,
                                       config_revision=gate_config_revision)
+        if force_open_for_active_id and decision.state is ProbabilityGateState.CLOSED:
+            decision = replace(
+                decision,
+                state=ProbabilityGateState.OPEN,
+                sound_present=True,
+                reason="active_id_force_open",
+                diagnostics=decision.diagnostics + (
+                    "active_id_force_open=true",
+                    "active_id_force_open_while_id_exists=true",
+                ),
+            )
         response: SpatialResponse | None = None
         diagnostics: MusicDiagnostics | None = None
         observations: tuple[CandidateDirection, ...] = ()

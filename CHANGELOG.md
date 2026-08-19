@@ -21,6 +21,16 @@
 
 ---
 
+## 2026-08-19 — 活动方向ID存在期间强制保持Probability Gate开启
+
+- **版本/标签**：项目`1.1.0`开发分支；仍未发布，不创建或移动版本标签。
+- **L2**：每个窗口在概率Gate判定前，先按绝对sample清理超过3秒TTL的轨迹。只要仍存在任意tentative、confirmed或coasting ID，低于门限的正式40 ms概率判决即改为强制OPEN并继续运行Rolling NormMUSIC；最后一个ID删除后立即恢复按概率门限判断。epoch/session变化不会继承旧轨迹的强制状态，预热、概率缺失及无效输入仍保持阻断。
+- **接口与文档**：不增加公共DTO字段或运行时开关；Gate通过`reason=active_id_force_open`及诊断字段明确记录强制来源。同步更新L2说明和1.1目标架构。
+- **未改变**：L1采集、IMCRA概率算法、MUSIC/MDL数值算法、全局ID关联、Kalman、L3、L4、Development Test UI布局、录音格式、模型和Git LFS资产均无变化。
+- **验证**：增加“建立ID后低概率仍强制OPEN”和“最后ID超过3秒TTL后恢复CLOSED”的自动测试；未进行真实麦克风及长时间声场验收。
+
+---
+
 ## 2026-08-19 — Kalman关闭时方向轨采用最后观测角保持
 
 - **版本/标签**：`feature/l2-music-tracking-v1.1`开发分支；项目`1.1.0`仍未发布，不创建或移动标签。

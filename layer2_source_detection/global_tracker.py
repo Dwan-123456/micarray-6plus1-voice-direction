@@ -97,6 +97,27 @@ class GlobalDirectionTracker:
     def active_track_ids(self) -> tuple[int, ...]:
         return tuple(sorted(self._tracks))
 
+    def has_live_tracks(
+        self, session_id: str, stream_epoch: int, decision_sample: int
+    ) -> bool:
+        """Return whether this window starts with at least one unexpired ID.
+
+        The check uses the same absolute-sample TTL as ``update``.  It also
+        applies stream lifecycle changes before the probability Gate is
+        evaluated, so an ID from an old epoch can never force the new epoch
+        open.
+        """
+
+        self.prepare_stream(session_id, stream_epoch)
+        self._expire_tracks(decision_sample)
+        return bool(self._tracks)
+
+    def _expire_tracks(self, decision_sample: int) -> None:
+        ttl = self.config.coasting_ttl_samples
+        for track_id, track in tuple(self._tracks.items()):
+            if decision_sample - track.last_observed > ttl:
+                del self._tracks[track_id]
+
     def _new_id(self, session_id: str) -> int:
         track_id = self._next_by_session.setdefault(session_id, 1)
         self._next_by_session[session_id] = track_id + 1
@@ -120,10 +141,7 @@ class GlobalDirectionTracker:
         if self._last_sample is not None and decision_sample <= self._last_sample:
             raise ValueError("direction tracking sample must advance")
         doa_end_sample = decision_sample if doa_end_sample is None else doa_end_sample
-        ttl = self.config.coasting_ttl_samples
-        for track_id, track in tuple(self._tracks.items()):
-            if decision_sample - track.last_observed > ttl:
-                del self._tracks[track_id]
+        self._expire_tracks(decision_sample)
         candidates = tuple(candidates)
         track_ids = tuple(sorted(self._tracks))
         assigned: dict[int, int] = {}

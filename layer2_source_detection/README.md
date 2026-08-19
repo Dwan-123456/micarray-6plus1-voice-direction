@@ -22,7 +22,7 @@ DecisionWindow + 两个对齐的20 ms概率
     → TrackedDirection[0..3] + active_tracks
 ```
 
-`track_id`只表示空间方向轨迹，不是人物或声纹身份。Gate关闭时MUSIC不运行，但追踪器仍按当前绝对sample推进miss/TTL；短漏检保留同一ID，超过TTL后再次观察会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
+`track_id`只表示空间方向轨迹，不是人物或声纹身份。只要当前窗口开始时仍有任意未删除ID，低于门限的正式Gate概率会被强制放行并运行MUSIC；最后一个ID删除后，Gate立即恢复按概率门限判断。ID仍使用3秒绝对sample TTL；预热、缺失或无效概率不会被伪造成有效概率。短漏检保留同一ID，超过TTL后再次观察会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
 
 ## 滚动计算
 

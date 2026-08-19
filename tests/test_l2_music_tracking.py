@@ -12,7 +12,11 @@ from common.data_types import CandidateDirection, DecisionWindow
 from common.geometry import MIC_POSITIONS_M, physical_6plus1_geometry
 from layer2_source_detection import DirectionScanConfig, Layer2Pipeline, RollingNormMusicScanner
 from layer2_source_detection.global_tracker import GlobalDirectionTracker, GlobalTrackerConfig
-from layer2_source_detection.probability_gate import SourceProbability20ms, SourceProbabilityState
+from layer2_source_detection.probability_gate import (
+    ProbabilityGateState,
+    SourceProbability20ms,
+    SourceProbabilityState,
+)
 
 
 CONFIG = Path(__file__).parents[1] / "config" / "config.yaml"
@@ -233,3 +237,50 @@ def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observati
         gate_threshold=0.6, gate_config_revision=0,
     )
     assert result.spatial_response is None and result.directions == ()
+
+
+def test_live_id_forces_closed_probability_gate_open_for_three_second_ttl() -> None:
+    config = load_config(CONFIG, environ={})
+    pipeline = Layer2Pipeline.from_project(config)
+    audio = _audio((30.0,), seed=29, samples=15_360 + 960)
+
+    def probabilities(window: DecisionWindow, value: float) -> tuple[SourceProbability20ms, ...]:
+        return tuple(SourceProbability20ms(
+            window.session_id, window.stream_epoch, start, start + 960, value,
+            SourceProbabilityState.READY, "ready",
+        ) for start in (window.doa_start_sample, window.doa_start_sample + 960))
+
+    first_window = _window(audio, 0)
+    first = pipeline.process(
+        first_window, probabilities(first_window, 1.0), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0,
+    )
+    assert first.directions
+
+    second_window = _window(audio, 1)
+    forced = pipeline.process(
+        second_window, probabilities(second_window, 0.0), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0,
+    )
+    assert forced.gate_decision.state is ProbabilityGateState.OPEN
+    assert forced.gate_decision.probability_40ms == 0.0
+    assert forced.gate_decision.reason == "active_id_force_open"
+    assert forced.spatial_response is not None
+
+    expired_decision = second_window.decision_sample + 3 * 48_000 + 960
+    expired_window = DecisionWindow(
+        second_window.session_id, second_window.stream_epoch, 999, expired_decision,
+        expired_decision - 1_920, expired_decision,
+        expired_decision - 15_360, expired_decision, 48_000,
+        np.zeros((15_360, 8), dtype=np.float32), (999,),
+    )
+    restored = pipeline.process(
+        expired_window, probabilities(expired_window, 0.0), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0,
+    )
+    assert restored.gate_decision.state is ProbabilityGateState.CLOSED
+    assert restored.gate_decision.reason == "probability_below_threshold"
+    assert restored.spatial_response is None and restored.active_tracks == ()
