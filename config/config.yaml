@@ -30,9 +30,15 @@ device:
   light_service_url: null
 
 calibration:
+  version: gain_polarity_integer_delay_v1
+  correction_model: gain_polarity_integer_delay_v1
   gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   polarity: [1, 1, 1, 1, 1, 1, 1]
   delay_samples: [0, 0, 0, 0, 0, 0, 0]
+  # Reserved versioned asset boundaries. Current L1 rejects non-null values
+  # until fractional/frequency-domain correction is implemented and verified.
+  fractional_delay_asset: null
+  frequency_response_asset: null
 
 timing:
   decision_hop_samples: 960
@@ -82,6 +88,12 @@ layer2:
   probability_gate:
     backend: mean_2x20ms_v1
     threshold: 0.60
+  # L1/Windowing preparation for future incremental MUSIC benchmarking.
+  # 240 ms is a comparison candidate, not a frozen release default.
+  music:
+    context_ms: 240
+    comparison_context_ms: [160, 240, 320]
+    max_history_ms: 320
   # Optional per-private-ID circular angle filter. Requires ID tracking; default OFF.
   direction_kalman:
     enabled: false

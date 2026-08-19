@@ -12,6 +12,7 @@ from layer1_input.algorithms import Pcm16InterleavedDecoder
 from layer1_input.calibration import ChannelCalibrator
 from layer1_input.capture import AudioCapture
 from layer1_input.configuration import CalibrationConfig
+from common.data_types import CalibrationAssetIdentity
 from layer1_input.interface import CdcHotmapFrame, DecodedAudio
 from layer1_input.http_hotmap import HttpHotmapSource
 from layer1_input.protocols import beam_direction_command, led_command
@@ -228,6 +229,20 @@ class Layer1Tests(unittest.TestCase):
         audio = DecodedAudio(np.zeros((8, 8), dtype=np.float32), 48_000, 0, 1.5, hotmap=hotmap)
         output = ChannelCalibrator(self._calibration()).process(audio)
         self.assertIs(output.hotmap, hotmap)
+
+    def test_calibration_publishes_version_hash_and_verification_state(self):
+        config = self._calibration(status="verified", report_hash="b" * 64)
+        calibrator = ChannelCalibrator(config)
+        output = calibrator.process(DecodedAudio(np.zeros((8, 8), np.float32), 48_000, 0, 0.0))
+        self.assertEqual(output.calibration.status, "verified")
+        self.assertEqual(output.calibration.version, "gain_polarity_integer_delay_v1")
+        self.assertEqual(output.calibration.report_hash, "b" * 64)
+        self.assertEqual(len(output.calibration.calibration_hash), 64)
+
+    def test_future_calibration_assets_are_explicitly_rejected_until_implemented(self):
+        asset = CalibrationAssetIdentity("calibration/fractional.npz", "fractional-v1", "a" * 64)
+        with self.assertRaisesRegex(ValueError, "接口已预留"):
+            ChannelCalibrator(self._calibration(fractional_delay_asset=asset))
 
     def test_input_pipeline_attaches_latest_hotmap_without_processing(self):
         class StubSource:

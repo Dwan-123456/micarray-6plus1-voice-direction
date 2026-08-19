@@ -16,8 +16,46 @@
 2. 每次提交前必须记录本次实际变化；没有变化的模块明确写“无变化”，防止遗漏跨层影响。
 3. 每条记录至少包含日期、版本/标签、变更类型、涉及文件、各模块具体变化、接口或兼容性影响、验证结果和Git LFS资产变化。
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
-5. 本文件记录“发生了什么”；当前权威接口与参数仍以`ARCHITECTURE_V0.3_TARGET.md`、`config/config.yaml`和代码为准。
+5. 本文件记录“发生了什么”；1.1.0迁移以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
+
+---
+
+## 2026-08-19 — 完成1.1.0的L1与Windowing输入准备
+
+- **版本/标签**：面向项目`1.1.0`的分支准备；未修改项目版本，未创建或移动`v1.1.0`及任何已发布标签。
+- **类型**：L1校准公共契约、Windowing滚动输入契约、配置、Development Test UI、测试与文档。
+- **涉及文件**：`common/config.py`、`common/data_types.py`、`layer1_input/`、`ingest/coordinator.py`、`windowing/assembler.py`、`config/config.yaml`、Runtime校准hash适配、Development Test UI L1状态、相关测试、README与`ARCHITECTURE_V1.1_TARGET.md`。
+
+### L1
+
+- 保留48 kHz、8通道逻辑顺序、20 ms发布节拍、按7个物理麦独立更新的Cohen 2003 IMCRA和可选预降噪；采集、IMCRA参数与音频处理算法无变化。
+- 新增不可变`CalibrationMetadata`及未来资产身份，明确传播`verified/unverified、version、calibration_hash、correction_model、report_hash`，并为亚采样延迟和频率响应校准预留`uri/version/sha256`边界。
+- 当前增益、极性和整数sample delay继续生效；尚未实现的未来资产配置会显式拒绝，避免被静默忽略。规范化校准配置hash变化触发新epoch，同一epoch内校准身份变化被拒绝。
+- `IngestedAudioBlock`稳定向下游提供连续、校准后的7路物理麦，同时保留第8路HardwareMix用于显示/录制；L1未增加、创建、保存或解释方向ID。
+
+### Windowing与L2输入边界
+
+- `DecisionWindow [15360,8]`和每960 samples/20 ms发布一次保持不变，继续提供最多320 ms历史。
+- 新增只含7路物理麦的`physical_samples`和`physical_history(160|240|320)`，HardwareMix不能通过该接口进入MUSIC；新增按session、epoch和decision sample定义的滚动状态键、最近20 ms更新起点及连续后继检查。
+- 配置增加`layer2.music.context_ms`三档选择、固定`160/240/320 ms`比较集合和320 ms历史上限。现有SRP配置适配器显式忽略该准备字段，正式MUSIC/STFT/协方差算法和性能默认值仍待L2分支与目标机基准完成。
+- WindowAssembler不创建STFT、MUSIC结果或方向ID；现有Probability Gate的两个20 ms IMCRA概率对齐语义保持不变。
+
+### Development Test UI、Runtime与Production UI
+
+- Development Test UI的L1状态增加校准状态、版本和hash摘要；`unverified`显示明确红色警告，`verified`显示绿色状态。
+- Runtime与Production采集主机统一使用规范化校准配置hash，避免不同JSON序列化路径产生不同身份；调度、队列、正式定位启动策略及Production UI布局无变化。
+
+### L2、L3、L4、录音与数据管理
+
+- L2的SRP-PHAT、Gate、候选、私有追踪和Kalman算法无变化；仅增加未来MUSIC有效历史的配置/输入边界，不实现MUSIC或公共方向ID。
+- L3波束形成、L4分类、跨层公共DTO、DecisionRecord版本、RecordingStore schema、Catalog、录音文件和数据恢复无变化。
+
+### 测试、资产与验收状态
+
+- 增加连续任意切块、epoch/校准hash重置、同epoch校准拒绝、verified/unverified传播、8通道映射、HardwareMix隔离、160/240/320 ms物理历史和滚动后继契约测试，并覆盖UI校准警告字段。
+- 聚焦验证`108 passed`，全量自动测试`357 passed`；本次改动文件Ruff检查和`git diff --check`通过。全仓Ruff仍报告既有`layer2_source_detection/__init__.py`的12项E402，本分支未修改该文件。真实硬件校准、160/240/320 ms MUSIC性能比较和诊室实机门禁未在本分支执行，不能视为1.1.0正式验收。
+- 未修改模型、精选音频或其他二进制资产；无Git LFS对象变化，本地录音和数据目录不进入提交。
 
 ---
 

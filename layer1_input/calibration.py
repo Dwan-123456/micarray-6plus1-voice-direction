@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from common.data_types import CalibrationMetadata
+
 from .configuration import CalibrationConfig
 from .interface import DecodedAudio
 
@@ -13,6 +15,11 @@ class ChannelCalibrator:
         self._scale = np.asarray(config.gains, dtype=np.float32) * np.asarray(config.polarity, dtype=np.float32)
         self._max_delay = int(np.max(self._delays))
         self._history = np.zeros((self._max_delay, len(self._delays)), dtype=np.float32)
+        self._metadata = config.metadata
+
+    @property
+    def metadata(self) -> CalibrationMetadata:
+        return self._metadata
 
     def reset(self) -> None:
         self._history.fill(0.0)
@@ -39,4 +46,5 @@ class ChannelCalibrator:
             native_samples=frame.native_samples,
             hotmap=frame.hotmap,
             noise_spectrum=frame.noise_spectrum,
+            calibration=self._metadata,
         )

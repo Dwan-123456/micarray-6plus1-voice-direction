@@ -34,6 +34,9 @@ class L1MeterSnapshot:
     imcra_hop: ImcraHopSnapshot | None = None
     pre_denoise_enabled: bool = False
     pre_denoise_mean_gain_db: float = 0.0
+    calibration_status: str = "unverified"
+    calibration_version: str = "unversioned"
+    calibration_hash: str = "0" * 64
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.end_sample, self.sequence_id) < 0:
@@ -44,6 +47,12 @@ class L1MeterSnapshot:
             raise ValueError("recording_state无效")
         if type(self.pre_denoise_enabled) is not bool or not np.isfinite(self.pre_denoise_mean_gain_db):
             raise ValueError("L1 pre-denoise meter state is invalid")
+        if self.calibration_status not in {"verified", "unverified"}:
+            raise ValueError("L1 calibration status must be verified or unverified")
+        if not self.calibration_version or len(self.calibration_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in self.calibration_hash
+        ):
+            raise ValueError("L1 calibration version/hash is invalid")
         rms, peak = _readonly(self.rms_dbfs, np.float32, "rms_dbfs"), _readonly(self.peak_dbfs, np.float32, "peak_dbfs")
         if not np.isfinite(rms).all() or not np.isfinite(peak).all():
             raise ValueError("meter数值必须finite")

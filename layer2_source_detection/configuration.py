@@ -43,7 +43,13 @@ class DirectionScanConfig:
     @classmethod
     def from_layer2(cls, config: Layer2Config) -> "DirectionScanConfig":
         values = config.model_dump(
-            exclude={"probability_gate", "direction_kalman", "direction_id_tracking", "scanner_backend"}
+            exclude={
+                "probability_gate",
+                "direction_kalman",
+                "direction_id_tracking",
+                "scanner_backend",
+                "music",
+            }
         )
         return cls(**values)
 

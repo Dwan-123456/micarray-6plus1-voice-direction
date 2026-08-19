@@ -2,13 +2,15 @@
 
 from .angle import THETA_DEGREES, circular_distance_deg, wrap_theta_deg
 from .data_types import (
-    CandidateDirection, DecisionWindow, EnhancedAudio, IngestedAudioBlock,
+    CalibrationAssetIdentity, CalibrationMetadata, CandidateDirection, DecisionWindow, EnhancedAudio, IngestedAudioBlock,
     PipelineStatus, SpatialResponse,
 )
 from .geometry import MIC_POSITIONS_M, MicGeometry, physical_6plus1_geometry
 
 __all__ = [
     "CandidateDirection",
+    "CalibrationAssetIdentity",
+    "CalibrationMetadata",
     "DecisionWindow",
     "EnhancedAudio",
     "IngestedAudioBlock",

@@ -1,12 +1,12 @@
 # 6+1 麦克风阵列项目 1.1.0：MUSIC 与公开方向 ID 目标架构
 
-状态：**规划已确认，代码尚未迁移；当前可运行版本仍为项目 1.0.1、Layer 2 公开版本 1.1。**
+状态：**规划已确认；L1 + Windowing 输入准备已迁移，L2～L4、公共方向 ID、记录与界面主迁移尚未完成。当前发布版本仍为项目 1.0.1、Layer 2 公开版本 1.1。**
 
 目标版本：项目 `1.1.0`，完成全部代码、测试与验收后才允许创建新标签 `v1.1.0`。不得移动、覆盖或重写已经发布的 `v1.0.1`。
 
 适用范围：Layer 1～Layer 4、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore、数据管理、测试与资产。
 
-覆盖规则：本文件是 **1.1.0 待实现架构** 的权威规划；[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md) 和各目录 README 继续描述当前 1.0.1 实现。迁移完成前，不能把本文件中的目标描述成已实现功能。
+覆盖规则：本文件是 **1.1.0 迁移架构** 的权威契约；[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md) 保留历史基线，各目录 README 必须明确区分已迁移与待实现内容。整体迁移完成前，不能把尚未落地的 MUSIC、公共 ID 或跨层改造描述成已实现功能。
 
 ## 1. 改造目标与非目标
 
@@ -112,6 +112,8 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 当前增益、极性和整数 sample delay 校准继续兼容；MUSIC 实机误差若表明需要亚采样或频率相关补偿，应新增版本化的频域校准资产，不得静默改写旧 calibration hash。
 - L1 不创建、不保存、不解释 `track_id`。
 
+本分支已经冻结以下输入边界：`CalibrationMetadata`随`IngestedAudioBlock`和`DecisionWindow`传播，包含`status、version、calibration_hash、correction_model、report_hash`以及可选的亚采样/频率响应资产身份。资产身份只保存`uri、version、sha256`；当前整数延迟校准器遇到非空未来资产会显式拒绝，避免静默忽略。校准配置的规范化SHA-256发生变化时必须形成新的epoch；同一epoch内更换校准会被拒绝。未提供正式校准身份的兼容输入被显式标记为`unverified`，Development Test UI显示警告。
+
 ## 6. Windowing 改动
 
 - `DecisionWindow [15360,8]` 和 20 ms 发布节拍保持不变；320 ms是L3/L4上下文和L2可用历史上限，不代表L2每次都重新计算整段音频。
@@ -119,6 +121,8 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
 - Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；Gate 关闭时跳过新的 MUSIC 观测，但已经存在的 track 按绝对 sample 推进到 coasting/超时。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
+
+本分支已经实现Windowing侧的滚动输入契约：`DecisionWindow.physical_samples`和`physical_history(160|240|320)`只返回7个物理麦，`HardwareMix`只能通过独立属性访问；`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/240/320三档之一、比较集合固定为三档且历史上限为320 ms。WindowAssembler仍只组装窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
 
 ## 7. Layer 2：MUSIC 定位
 

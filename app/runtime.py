@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import queue
-import hashlib
-import json
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, replace
@@ -13,7 +11,7 @@ from typing import Callable
 import numpy as np
 import torch
 
-from common.config import ProjectConfig, config_hash, load_config
+from common.config import ProjectConfig, calibration_config_hash, config_hash, load_config
 from common.data_types import DecisionWindow, PipelineStatus
 from common.geometry import physical_6plus1_geometry
 from data_management import DecisionRecord, RecordingStore, ResultWatermark, SessionMetadata
@@ -1197,12 +1195,9 @@ class ApplicationRuntime:
                         mailbox.get_nowait()
                     except queue.Empty:
                         break
-        calibration_payload = json.dumps(
-            self.config.calibration.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
         metadata = SessionMetadata(
             config_hash(config=self.config),
-            hashlib.sha256(calibration_payload).hexdigest(),
+            calibration_config_hash(self.config.calibration),
             geometry_version=self.config.hardware.geometry_version,
             runtime={
                 "processing_device": self.processing_device,

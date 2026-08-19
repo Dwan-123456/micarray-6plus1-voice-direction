@@ -4,7 +4,13 @@ from collections import deque
 
 import numpy as np
 
-from common.data_types import DecisionWindow, ImcraHopSnapshot, IngestedAudioBlock, PipelineStatus
+from common.data_types import (
+    CalibrationMetadata,
+    DecisionWindow,
+    ImcraHopSnapshot,
+    IngestedAudioBlock,
+    PipelineStatus,
+)
 
 
 class WindowAssembler:
@@ -21,6 +27,7 @@ class WindowAssembler:
         self._buffer = np.empty((0, 8), dtype=np.float32)
         self._segments: deque[tuple[int, int, int]] = deque()
         self._imcra_hops: deque[ImcraHopSnapshot] = deque()
+        self._calibration: CalibrationMetadata | None = None
         self._next_decision = context_samples
         self._next_window_id = 0
         self._epoch_window_count = 0
@@ -34,6 +41,7 @@ class WindowAssembler:
         self._buffer = np.empty((0, 8), dtype=np.float32)
         self._segments.clear()
         self._imcra_hops.clear()
+        self._calibration = block.calibration
         self._next_decision = self.context_samples
         self._epoch_window_count = 0
 
@@ -42,6 +50,8 @@ class WindowAssembler:
     ) -> tuple[DecisionWindow, ...]:
         if self._session_id != block.session_id or self._epoch != block.stream_epoch:
             self._start_epoch(block)
+        elif block.calibration != self._calibration:
+            raise ValueError("WindowAssembler calibration boundary changed without a new epoch")
         expected_start = 0 if not self._segments and not len(self._buffer) else self._segments[-1][1]
         if block.start_sample != expected_start:
             raise ValueError("WindowAssembler收到非连续block；连续性只能由Coordinator重建epoch")
@@ -86,6 +96,7 @@ class WindowAssembler:
                     data,
                     sequence_ids,
                     imcra_hops,
+                    block.calibration,
                 )
             )
             self._next_window_id += 1

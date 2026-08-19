@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,6 +12,57 @@ _IMCRA_FREQUENCIES_HZ = _IMCRA_FREQUENCIES_HZ[
     (_IMCRA_FREQUENCIES_HZ >= 80.0) & (_IMCRA_FREQUENCIES_HZ <= 8_000.0)
 ]
 _IMCRA_BIN_COUNT = int(_IMCRA_FREQUENCIES_HZ.size)
+
+
+def _valid_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationAssetIdentity:
+    """Versioned identity for a future calibration asset; payloads stay outside audio DTOs."""
+
+    uri: str
+    version: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if not self.uri or not self.version or not _valid_sha256(self.sha256):
+            raise ValueError("calibration asset requires uri, version, and lowercase SHA-256")
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationMetadata:
+    """Immutable L1 correction boundary propagated with every calibrated stream."""
+
+    status: str
+    version: str
+    calibration_hash: str
+    correction_model: str
+    report_hash: str | None = None
+    fractional_delay_asset: CalibrationAssetIdentity | None = None
+    frequency_response_asset: CalibrationAssetIdentity | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"verified", "unverified"}:
+            raise ValueError("calibration status must be verified or unverified")
+        if not self.version or not self.correction_model or not _valid_sha256(self.calibration_hash):
+            raise ValueError("calibration metadata requires version, model, and lowercase SHA-256")
+        if self.report_hash is not None and not _valid_sha256(self.report_hash):
+            raise ValueError("calibration report hash must be lowercase SHA-256 or None")
+        for asset in (self.fractional_delay_asset, self.frequency_response_asset):
+            if asset is not None and not isinstance(asset, CalibrationAssetIdentity):
+                raise TypeError("calibration extension identity has an invalid type")
+
+    @classmethod
+    def unverified_identity(cls) -> "CalibrationMetadata":
+        payload = b"unverified_identity_gain_polarity_integer_delay_v1"
+        return cls(
+            "unverified",
+            "unverified_identity_v1",
+            hashlib.sha256(payload).hexdigest(),
+            "gain_polarity_integer_delay_v1",
+        )
 
 
 def _readonly_float32(value: object, shape: tuple[int | None, ...], name: str) -> NDArray[np.float32]:
@@ -138,6 +190,7 @@ class IngestedAudioBlock:
     hotmap: object | None = None
     noise_spectrum: object | None = None
     imcra_hop: ImcraHopSnapshot | None = None
+    calibration: CalibrationMetadata = field(default_factory=CalibrationMetadata.unverified_identity)
 
     def __post_init__(self) -> None:
         if not self.session_id:
@@ -155,6 +208,8 @@ class IngestedAudioBlock:
         object.__setattr__(self, "samples", samples)
         object.__setattr__(self, "native_samples", native)
         object.__setattr__(self, "timestamp", float(self.timestamp))
+        if not isinstance(self.calibration, CalibrationMetadata):
+            raise TypeError("IngestedAudioBlock calibration must be CalibrationMetadata")
         if self.imcra_hop is not None:
             hop = self.imcra_hop
             if (
@@ -181,12 +236,15 @@ class DecisionWindow:
     samples: NDArray[np.float32]
     source_sequence_ids: tuple[int, ...]
     imcra_hops: tuple[ImcraHopSnapshot, ...] = ()
+    calibration: CalibrationMetadata = field(default_factory=CalibrationMetadata.unverified_identity)
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
             raise ValueError("DecisionWindow标识和边界无效")
         if self.sample_rate != 48_000:
             raise ValueError("DecisionWindow采样率必须为48000")
+        if not isinstance(self.calibration, CalibrationMetadata):
+            raise TypeError("DecisionWindow calibration must be CalibrationMetadata")
         if self.doa_end_sample != self.context_end_sample or self.context_end_sample != self.decision_sample:
             raise ValueError("DOA、context与decision endpoint必须相同")
         if self.doa_end_sample - self.doa_start_sample != 1_920:
@@ -218,6 +276,49 @@ class DecisionWindow:
         ):
             raise ValueError("DecisionWindow IMCRA hops must be unique and chronological")
         object.__setattr__(self, "imcra_hops", hops)
+
+    @property
+    def physical_samples(self) -> NDArray[np.float32]:
+        """Continuous calibrated MIC0..MIC5+Center history; HardwareMix is excluded."""
+
+        return self.samples[:, :7]
+
+    @property
+    def hardware_mix(self) -> NDArray[np.float32]:
+        return self.samples[:, 7]
+
+    @property
+    def available_history_samples(self) -> int:
+        return self.context_end_sample - self.context_start_sample
+
+    @property
+    def rolling_update_start_sample(self) -> int:
+        """Start of the newest 20 ms that incremental L2 state should append."""
+
+        return self.decision_sample - 960
+
+    @property
+    def rolling_state_key(self) -> tuple[str, int, int]:
+        return self.session_id, self.stream_epoch, self.decision_sample
+
+    def is_contiguous_successor_of(self, previous: "DecisionWindow") -> bool:
+        return (
+            (self.session_id, self.stream_epoch) == (previous.session_id, previous.stream_epoch)
+            and self.decision_sample == previous.decision_sample + 960
+        )
+
+    def physical_history(self, context_ms: int) -> NDArray[np.float32]:
+        """Return one configured MUSIC comparison history without HardwareMix."""
+
+        if context_ms not in {160, 240, 320}:
+            raise ValueError("MUSIC context_ms must be one of 160/240/320")
+        sample_count = context_ms * 48
+        return self.physical_samples[-sample_count:]
+
+    def physical_history_start_sample(self, context_ms: int) -> int:
+        if context_ms not in {160, 240, 320}:
+            raise ValueError("MUSIC context_ms must be one of 160/240/320")
+        return self.decision_sample - context_ms * 48
 
 
 def _readonly_exact_float32(value: object, shape: tuple[int, ...], name: str) -> NDArray[np.float32]:

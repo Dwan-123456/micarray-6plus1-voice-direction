@@ -2,7 +2,7 @@
 
 > 当前项目版本：`1.0.1`；Layer 2公开版本：`1.1`。
 
-> **下一目标版本：项目 `1.1.0`（规划中，尚未实现/发布）。** 已确认的 MUSIC、多目标全局 ID、跨 L2～L4 公共 ID、逐 ID 试听和录音管理改造，以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为权威目标。本文其余“已完成/当前”内容仍描述 1.0.1，不得据此认为 1.1.0 已经完成。
+> **下一目标版本：项目 `1.1.0`（分阶段迁移中，尚未发布）。** L1 + Windowing的MUSIC输入准备已经落地；MUSIC、多目标全局ID、跨L2～L4公共ID、逐ID试听和录音管理仍待实现。以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为权威契约，不得据此认为1.1.0整体已经完成。
 
 > 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L4、Development Test UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 

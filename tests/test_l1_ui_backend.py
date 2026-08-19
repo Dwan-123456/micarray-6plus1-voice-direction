@@ -1,6 +1,6 @@
 import numpy as np
 
-from common.data_types import IngestedAudioBlock
+from common.data_types import CalibrationMetadata, IngestedAudioBlock
 from gui.dev_test_ui import L1Meter
 from ingest import BlockFanout
 from gui.dev_test_ui.scratch_recorder import ScratchRecorder
@@ -45,6 +45,20 @@ def test_meter_uses_eight_independent_latest_960_sample_channels():
     assert np.isclose(snapshot.rms_dbfs[1], -6.0206, atol=0.001)
     assert snapshot.rms_dbfs[2] == -120
     assert snapshot.clipped.tolist() == [True, False, False, False, False, False, False, False]
+
+
+def test_meter_exposes_calibration_warning_boundary():
+    calibration = CalibrationMetadata(
+        "unverified", "board-calibration-v2", "a" * 64, "gain_polarity_integer_delay_v1"
+    )
+    value = IngestedAudioBlock(
+        "session", 0, 0, 960, 48_000, 0, 0.0, np.zeros((960, 8), np.float32),
+        calibration=calibration,
+    )
+    snapshot = L1Meter().add(value)
+    assert snapshot.calibration_status == "unverified"
+    assert snapshot.calibration_version == "board-calibration-v2"
+    assert snapshot.calibration_hash == "a" * 64
 
 
 def test_scratch_record_pause_resume_finish_preserves_real_ranges(tmp_path):

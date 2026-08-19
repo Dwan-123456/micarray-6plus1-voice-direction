@@ -1,6 +1,6 @@
 # Layer 1：八通道输入、物理映射与IMCRA
 
-> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#5-layer-1-改动)：为滚动MUSIC保证连续、校准后的7麦输入和最多320 ms可用历史，增加verified/unverified校准状态与可版本化的亚采样/频域校准边界；L1不创建ID。下文描述当前1.0.1实现。
+> 项目1.1.0的L1输入准备已按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#5-layer-1-改动)迁移：连续、校准后的7麦输入、verified/unverified状态、版本/hash边界和未来亚采样/频域资产接口已经落地；L1仍不创建ID。MUSIC及公共方向ID仍由后续分支实现。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1的逻辑8通道、麦克风面坐标和20 ms IMCRA迁移已完成。
 
@@ -12,7 +12,13 @@ L1读取48 kHz native 8ch音频，完成PCM解码、校准、连续性guard和�
 [MIC0, MIC1, MIC2, MIC3, MIC4, MIC5, Center, HardwareMix]
 ```
 
-输出是`float32 [N,8]`。前7路是物理阵列，最后1路是硬件合成总声音；HardwareMix只作为预留接口、显示、录制和后续实验输入，不得加入麦克风几何、SRP麦对或MVDR steering。
+输出是`float32 [N,8]`。前7路是物理阵列，最后1路是硬件合成总声音；HardwareMix只作为预留接口、显示、录制和后续实验输入，不得加入麦克风几何、SRP/MUSIC或MVDR steering。
+
+## 校准身份边界
+
+每个`IngestedAudioBlock`携带不可变`CalibrationMetadata`，并原样进入`DecisionWindow`。元数据包含`status、version、calibration_hash、correction_model、report_hash`，以及可选的`fractional_delay_asset`和`frequency_response_asset`身份；未来资产仅以`uri、version、sha256`标识，实际补偿算法不在本次实现中。当前校准器继续执行增益、极性和整数sample delay；若配置了尚未支持的未来资产会明确拒绝启动，不能悄悄忽略。
+
+规范化校准配置的SHA-256是处理边界的一部分。校准hash变化会触发新epoch，同一epoch内变更会被WindowAssembler拒绝。没有正式校准身份的兼容输入使用明确的`unverified`身份；Development Test UI显示红色警告，verified状态同时显示版本和hash摘要。
 
 ## 麦克风面坐标
 
@@ -58,6 +64,7 @@ L1不计算DOA、不执行波束形成、不判断人声，也不分配权威绝
 ## 已实现门禁测试
 
 - native→logical 8ch映射、只读/finite/C-contiguous契约；
+- verified/unverified校准状态、稳定版本/hash传播、同epoch边界拒绝和未来资产显式拒绝；
 - 麦克风面逆时针几何及灯面镜像防错；
 - HardwareMix保留但不进入7麦阵列算法；
 - IMCRA 20 ms更新、80～8000 Hz PSD/SPP状态、500～4000 Hz概率聚合、重置、预热及概率范围；

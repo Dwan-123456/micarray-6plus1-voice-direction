@@ -48,4 +48,7 @@ class L1Meter:
             block.imcra_hop,
             pre_denoise_enabled,
             pre_denoise_mean_gain_db,
+            block.calibration.status,
+            block.calibration.version,
+            block.calibration.calibration_hash,
         )
