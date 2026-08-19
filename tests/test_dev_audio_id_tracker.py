@@ -100,6 +100,29 @@ def test_coasting_keeps_row_until_l2_deletes_track(tmp_path):
     assert tracker.snapshots()[0].state == "ended"
 
 
+def test_coasting_bf_preview_appends_real_audio_to_same_authoritative_id(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    first = _direction(5, 15_360, 45.0)
+    tracker.update(
+        _window(15_360), (first,), (_preview(5, 15_360, 45.0),),
+        active_tracks=(first,),
+    )
+    coast = _direction(
+        5, 16_320, 46.0, measured=None, state="coasting", observed=False,
+    )
+    tracker.update(
+        _window(16_320), (coast,), (_preview(5, 16_320, 46.0),),
+        active_tracks=(coast,),
+    )
+    tracker.update(_window(17_280), (), (), active_tracks=())
+
+    cache = tracker.audio_cache_path(5)
+    assert cache is not None
+    audio = np.memmap(cache, dtype=np.float32, mode="r")
+    assert len(audio) == 2 * 960
+    assert np.sqrt(np.mean(np.square(audio[960:], dtype=np.float64))) > 0.01
+
+
 def test_skipped_results_recover_absolute_timeline_without_speedup(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     first = _direction(9, 15_360, 30.0)

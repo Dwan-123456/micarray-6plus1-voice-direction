@@ -21,6 +21,18 @@
 
 ---
 
+## 2026-08-19 — coasting权威ID持续生成L3波束形成试听音频
+
+- **版本/标签**：L2→L3权威ID试听链路修复；未创建或移动版本标签。
+- **类型**：跨层数据契约与Development Test UI试听行为修复。
+- L2的`directions`除已确认实测ID外，现会在最多3路和方向间隔至少45°的约束内纳入仍有效的`coasting`权威ID；优先选择等待时间短、得分高且ID稳定的轨迹，并沿用保持/预测输出角送入L3。
+- 未确认轨迹失去观测后保持`tentative`，不伪装为`coasting`，也不会触发L3波束形成；正式`confirmed/coasting`元数据保持一致并继续使用原`track_id`。
+- L3算法、三档模式和Development Test UI缓存格式无变化；但coasting窗口现在获得真实BF输出并写入同一`(session_id, stream_epoch, track_id)`试听轨，只有本窗确实没有该ID的L3输出时才按既有绝对时间轴补等时静音。
+- L4算法无变化，但继续消费与L3相同的权威方向集合；L1、录音/数据管理、Production UI、模型和二进制资产均无变化，Git LFS资产无变化。
+- **验证**：新增confirmed→coasting BF目标、tentative排除和同ID真实音频连续写入测试；完成相关跨层定向测试及全量测试（结果见本次提交验证记录）。
+
+---
+
 ## 2026-08-19 — 移除Development Test UI右侧ID候选表格
 
 - **版本/标签**：Development Test UI布局精简；未创建或移动版本标签。

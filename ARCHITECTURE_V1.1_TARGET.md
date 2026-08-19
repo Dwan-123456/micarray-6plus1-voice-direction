@@ -91,7 +91,7 @@ kalman_applied
 
 字段名可在实现时按现有类型风格微调，但上述语义不可丢失。L2 公共结果同时区分：
 
-- `directions`：本窗口真正交给 L3 的 0～3 个方向；每项必须有唯一 `track_id`。
+- `directions`：本窗口真正交给 L3 的 0～3 个权威方向；包含已确认实测ID，以及在数量/角距限制内仍有效的confirmed→coasting保持/预测ID；每项必须有唯一 `track_id`。
 - `active_tracks`：包含当前观测轨和仍在短时 coasting 的轨迹，用于 UI 与时间线；并非所有 active track 都必须触发 L3 波束形成。
 - `spatial_response`：MUSIC 360 点伪谱及频率/归一化诊断。
 - `model_order`：本窗口估计的声源数量和质量信息。
@@ -182,7 +182,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 输入从无 ID 的 `CandidateDirection` 改为 `TrackedDirection`，以 `(WindowKey, track_id)` 为方向批次身份。
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
-- 默认仅处理本窗 `directions` 中可观测或满足受控短时预测条件的目标。仅用于时间线的长 coasting 轨不生成 L3 音频。
+- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。coasting ID在3方向上限和45°分离约束内继续按其输出角执行 L3 BF，输出携带原`track_id`的真实音频；未确认tentative轨不生成 L3 音频。
 - optimized、ds_baseline、constant_beamwidth_baseline 三档仍保留；切换模式不改变权威 ID，只隔离各模式的试听缓存。
 
 ## 10. Layer 4 改动
@@ -210,7 +210,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed、L4 probability`；观测和预测样式可以不同，但颜色稳定绑定权威 ID。
 - 左下试听继续保留 Center Mic 原音参考、20 ms 稳定 hop 拼接、可恢复真实音频补洞、过旧缺口补等时静音、交叉淡化、至少 2 秒显示、3 秒等待、有界分段和三档 L3 模式隔离。
 - 方向音频只按 `(session_id, stream_epoch, track_id)` 拼接。删除 `_formal_aliases`、`_resolve_formal_track_id`、按角度贪心重关联和 ID 换号合并；UI 不再修补 L2 身份错误。
-- coasting 期间保留轨道行并显示状态；只有 L2 删除轨迹或 session/mode 生命周期结束时封存对应试听轨。
+- coasting 期间保留轨道行并显示状态；当L2将该权威ID放入`directions`时，继续拼接实际L3 BF音频，只有本窗未提供该ID的L3输出时才按绝对时间轴补等时静音；只有 L2 删除轨迹或 session/mode 生命周期结束时封存对应试听轨。
 
 ## 13. RecordingStore、数据管理与 Production UI
 
