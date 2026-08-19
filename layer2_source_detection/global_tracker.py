@@ -229,7 +229,29 @@ class GlobalDirectionTracker:
             if track_id in observed_ids:
                 continue
             missed = decision_sample - track.last_observed
-            theta = (track.unwrapped_theta + track.velocity_dps * missed / 48_000.0) % 360.0
+            if kalman_enabled:
+                # Prediction is an explicit Kalman-only output feature.  If
+                # Kalman was enabled after the last observation, initialize
+                # its forecast from the last real ID position instead of
+                # inventing a discontinuity or changing the trajectory ID.
+                base_theta = (
+                    track.unwrapped_theta
+                    if track.filtered_theta is None
+                    else track.filtered_theta
+                )
+                forecast_velocity = (
+                    track.velocity_dps
+                    if track.filtered_theta is None
+                    else track.filtered_velocity_dps
+                )
+                theta = (base_theta + forecast_velocity * missed / 48_000.0) % 360.0
+            else:
+                # ID lifetime and association remain active with Kalman OFF,
+                # but the published/coasting angle is a zero-order hold of
+                # the last real observation.  Raw velocity may still be used
+                # internally by the global assignment and is never exposed
+                # as an OFF-mode angle prediction.
+                theta = track.unwrapped_theta % 360.0
             active.append(TrackedDirection(
                 session_id, stream_epoch,
                 window_id,

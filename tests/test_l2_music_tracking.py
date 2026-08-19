@@ -198,6 +198,28 @@ def test_kalman_toggle_changes_only_angle_not_id_or_lifecycle() -> None:
     assert third[0].track_state == "confirmed"
 
 
+def test_kalman_off_coasting_holds_last_observed_angle_without_prediction() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (10.0,), kalman_enabled=False)
+    second, _ = _update(tracker, 16_320, (20.0,), kalman_enabled=False)
+    _, active = _update(tracker, 18_240, (), kalman_enabled=False)
+    assert first[0].track_id == second[0].track_id == active[0].track_id
+    assert active[0].track_state == "coasting"
+    assert active[0].theta_deg == pytest.approx(20.0)
+    assert not active[0].kalman_applied
+
+
+def test_kalman_off_zero_order_hold_is_circular_and_switch_does_not_change_id() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (359.0,), kalman_enabled=True)
+    second, _ = _update(tracker, 16_320, (1.0,), kalman_enabled=True)
+    _, predicted = _update(tracker, 17_280, (), kalman_enabled=True)
+    _, held = _update(tracker, 18_240, (), kalman_enabled=False)
+    assert first[0].track_id == second[0].track_id == predicted[0].track_id == held[0].track_id
+    assert held[0].theta_deg == pytest.approx(1.0)
+    assert not held[0].kalman_applied
+
+
 def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observation() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)

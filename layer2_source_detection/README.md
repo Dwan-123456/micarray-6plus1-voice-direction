@@ -33,7 +33,7 @@ DecisionWindow + 两个对齐的20 ms概率
 ## 兼容和删除边界
 
 - 原SRP-PHAT与iterative multiple peak正式实现、配置、setter、UI开关和专属测试已删除；包不再导出旧扫描器。
-- ID追踪没有enable开关。Kalman仍可在运行中独立开启/关闭，切换不会清空或换号。
+- ID追踪没有enable开关。Kalman仍可在运行中独立开启/关闭，切换不会清空或换号。Kalman关闭时，漏检/coasting轨迹的公开角度严格保持最后一次真实观测位置，不使用角速度外推；Kalman开启时才允许输出预测角。
 - `CandidateDirection`仅作为尚未迁移消费者的同角度兼容投影；公共权威输出是`TrackedDirection`与`active_tracks`。
 - 第8路HardwareMix只用于接口、显示和录音，不进入MUSIC协方差或导向计算。
 
