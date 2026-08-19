@@ -4,7 +4,7 @@
 
 目标版本：项目 `1.1.0`，完成全部代码、测试与验收后才允许创建新标签 `v1.1.0`。不得移动、覆盖或重写已经发布的 `v1.0.1`。
 
-适用范围：Layer 1～Layer 4、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore、数据管理、测试与资产。
+适用范围：Layer 1～Layer 4、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore、数据管理、独立 Pipeline Log UI、测试与资产。
 
 覆盖规则：本文件是 **1.1.0 待实现架构** 的权威规划；[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md) 和各目录 README 继续描述当前 1.0.1 实现。迁移完成前，不能把本文件中的目标描述成已实现功能。
 
@@ -17,6 +17,7 @@
 5. ID 从 L2 的私有 UI sidecar 元数据升级为 L2、L3、L4、Runtime、时间线、正式记录和逐 ID 试听共同使用的公共字段。
 6. Test UI 根据 L2 的权威 ID 拼接 L3 音频；删除 UI 自己的二次角度关联、别名合并和贪心补救。
 7. 录音管理和 Production UI 能按会话与 ID 查询方向时间线、L4 判断及增强音频，并提供逐 ID 试听。
+8. 新增与 L1～L4、Test UI、录音存储系统平行的独立 Pipeline Log UI，只通过公开只读接口统计和回看会话，不进入、控制或反压实时处理链。
 
 这里的 `track_id` 是**阵列方向轨迹 ID**，不是人的生物身份或说话人身份。在两个声源处于同一方向、近距离交叉或空间证据不足时，系统不能承诺保持真实人物身份不交换。
 
@@ -59,6 +60,9 @@ ResultJoiner：按WindowKey有序合并，逐ID精确对齐
     ├── DecisionRecord v4 / RecordingStore / ID时间线
     ├── Development Test UI / 按ID连续试听
     └── Production UI / 运行录音详情与逐ID回放
+
+Recording/Data公共只读查询边界
+    └── Pipeline Log UI / 性能统计、阶段时间线、单窗详情与逐ID回看
 ```
 
 跨窗口并行仍为 `L2(n) || L3(n-1) || L4(n-2)`；同一窗口仍严格执行 `L2 → L3 → L4`。`track_id` 只增加对齐维度，不允许绕过 `WindowKey = (session_id, stream_epoch, window_id, decision_sample)`。
@@ -234,9 +238,19 @@ v4 至少保存：
 - 现有 native/logical/physical 通道试听、模拟测试、QA、标注、hash、恢复、Trash 和本地数据边界保持。
 - `data/`、运行录音、Catalog、日志和临时缓存继续只保存在本地，不提交 GitHub。
 
-## 14. 测试与验收门禁
+## 14. 独立 Pipeline Log UI
 
-### 14.1 MUSIC
+- Log UI 是项目级平行子系统，不是 Layer 5，也不是 Development Test UI 的附属面板；实时主链和录音提交不等待它。
+- 第一版以完成/封存 session 的公开记录为权威来源，按 `WindowKey` 展示各阶段终态、compute/queue wait/端到端延迟、实际完成频率、丢窗与异常；按 `(session_id, stream_epoch, track_id)` 展示方向、L3资产和L4结果。
+- 只使用版本化公共查询接口。接口未提供的字段显示 `N/A`，不得读取私有对象、直接解析内部缓存，或消费 `latest_dev_ui`、`latest_l4_dev_ui` 等读取即移除的实时邮箱。
+- Log UI 只统计、展示和回放，不启动/停止 Runtime，不改参数，不标注、导出、迁移、重建 Catalog 或写入项目数据目录。
+- 当前 1.0.1 尚无完整的单 session 公共回看接口，也没有跨进程逐窗只读事件流；这些能力在未实现前必须明确显示不可用，不能绕过边界伪造。
+- 可选同进程 Live 只轮询公开 `processing_status` 聚合状态；独立进程逐窗 Live 需等待未来正式公共只读流。
+- Log UI 的完整数据模式、页面、统计口径、兼容规则和只读验收以[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)为权威契约。
+
+## 15. 测试与验收门禁
+
+### 15.1 MUSIC
 
 - 1、2、3 个合成远场声源；0 个声源/纯噪声；方向包含 `359°/0°/1°` 和恰好 45°。
 - 不同幅度、频谱、混响和部分相干输入；HardwareMix 注入不得改变结果。
@@ -244,7 +258,7 @@ v4 至少保存：
 - 校准前后、错误极性/延迟、MIC 顺序和观察面镜像防错。
 - 与独立 Pyroomacoustics/离线参考输出在约定容差内对照。
 
-### 14.2 ID 与 Kalman
+### 15.2 ID 与 Kalman
 
 - `358→359→0→1` 和反向跨界不换 ID；公开角始终 `[0,360)`。
 - 候选 rank 交换、两个/三个目标移动和会合前后使用全局一对一分配，不重复分配。
@@ -252,22 +266,23 @@ v4 至少保存：
 - Gate 关闭、latest-wins 丢窗、绝对 sample 大跳、epoch 切换、session 切换和确定性 tie-break。
 - Kalman 开/关/运行时切换不改变 ID；不确定度过大不发布 L3 预测目标。
 
-### 14.3 跨层、存储和 UI
+### 15.3 跨层、存储和 UI
 
 - L2→L3→L4→DecisionRecord 的 WindowKey、ID 集合、顺序、角度和数量逐项一致。
 - L3/L4 失败、超时、空候选、队列丢弃和停机 drain 仍生成唯一终态并推进正确 watermark。
 - DecisionRecord v4、逐 ID 文件名、manifest、Catalog、恢复、旧 v3 读取和本地数据不入库。
 - Test UI 不再存在 iterative/ID 开关或二次关联；按 ID 拼接、补洞、等待、封存、模式隔离和 Center 参考均有自动测试。
 - Production UI 可查询并试听逐 ID 结果；L1-only 录音明确无 ID。
+- Log UI 的 v3/v4、缺字段、完整阶段终态、统计公式、十万窗加载和严格只读门禁通过；封存静态记录读取前后文件与Catalog不变，Live场景以调用审计和对照运行证明不消费邮箱、不调用写接口或引入额外状态变化。
 
-### 14.4 性能与实机
+### 15.4 性能与实机
 
 - 在目标设备上分别基准160/240/320 ms滚动历史，验证50 Hz持续流水、预热后每20 ms有新MUSIC结果、队列不持续积压；L2初始预算为p95不超过15 ms、硬门限小于20 ms。记录STFT、协方差、eigh、伪谱、MDL和关联的分项耗时。
 - 增加“增量结果与从头离线重算一致”测试、长时间滚动数值漂移测试，以及配置/校准revision和sample跳跃触发安全重建测试。不得通过隐藏丢窗或复用过期伪谱宣称实时通过。
 - 使用真实阵列完成静止、移动、`359° ↔ 0°`、新说话方向、短时静音、三声源、混响和长时间运行验收。
 - 自动测试不能替代真实麦克风的校准和诊室验收。
 
-## 15. 推荐迁移顺序与分支边界
+## 16. 推荐迁移顺序与分支边界
 
 1. **L1 + Windowing**：补 MUSIC 输入/校准契约和测试，不引入 ID。
 2. **L2 MUSIC**：完成多帧 STFT、协方差、MDL、NormMUSIC、圆周峰值，并移除 iterative 正式路径。
@@ -276,6 +291,7 @@ v4 至少保存：
 5. **Runtime**：更新配置快照、StageResult、Joiner、时间线和 DecisionRecord v4。
 6. **Development Test UI**：删除旧开关，展示 MUSIC/ID，并按权威 ID 拼接试听。
 7. **Recording/Data + Production UI**：保存、查询和试听逐 ID 资产，兼容 v3 只读。
-8. **整合验收**：全量自动测试、性能、实机、CHANGELOG、语义版本与 `v1.1.0` 发布。
+8. **Pipeline Log UI**：公共只读查询契约冻结后，完成离线统计/回看与可选聚合 Live；不修改实时处理链。
+9. **整合验收**：全量自动测试、性能、实机、CHANGELOG、语义版本与 `v1.1.0` 发布。
 
 并行分支可以分别修改，但公共 DTO、字段命名、WindowKey/ID 对齐和 DecisionRecord v4 schema 必须先冻结；合并时以本文件为共同契约，禁止每个分支自行发明不同 ID 语义。
