@@ -39,6 +39,10 @@ class DuplicateStageResultError(ResultJoinerError):
     pass
 
 
+class StageAlignmentError(ResultJoinerError):
+    pass
+
+
 class JoinerCapacityError(ResultJoinerError):
     pass
 
@@ -206,6 +210,15 @@ class ResultJoiner:
             attribute = result.stage_name
             if getattr(pending, attribute) is not None:
                 raise DuplicateStageResultError(f"{attribute} result already published for {result.key}")
+            existing_track_orders = {
+                stage.track_ids
+                for stage in (pending.l2, pending.l3, pending.l4)
+                if stage is not None
+            }
+            if existing_track_orders and existing_track_orders != {result.track_ids}:
+                raise StageAlignmentError(
+                    f"{attribute} track ID order does not match the published window stages"
+                )
             if self._pending_bytes + result_bytes > self.max_pending_bytes:
                 raise JoinerCapacityError("stage result would exceed the pending-byte limit")
             setattr(pending, attribute, result)
@@ -242,6 +255,14 @@ class ResultJoiner:
             pending = None if stream is None else stream.windows.get(key)
             if pending is None:
                 raise UnknownWindowError(f"cannot terminate unknown window: {key}")
+            inherited_track_ids = next(
+                (
+                    stage.track_ids
+                    for stage in (pending.l2, pending.l3, pending.l4)
+                    if stage is not None and stage.track_ids
+                ),
+                (),
+            )
             additions: list[tuple[str, TerminalStageResult, int]] = []
             for attribute, result_type in (
                 ("l2", L2StageResult),
@@ -257,6 +278,7 @@ class ResultJoiner:
                         started_monotonic_ns=now_ns,
                         finished_monotonic_ns=now_ns,
                         error=reason if state is StageState.FAILED else None,
+                        track_ids=inherited_track_ids,
                     )
                     result_bytes = artifact_byte_size(result)
                     additions.append((attribute, result, result_bytes))
@@ -293,6 +315,7 @@ class ResultJoiner:
                         reason,
                         started_monotonic_ns=now_ns,
                         finished_monotonic_ns=now_ns,
+                        track_ids=pending.l2.track_ids,
                     )
                     result_bytes = artifact_byte_size(result)
                     additions.append((attribute, result, result_bytes))

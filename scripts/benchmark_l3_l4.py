@@ -271,6 +271,7 @@ def _l4_batches(total: int, count: int, seed: int) -> tuple[tuple[Layer4AudioSeg
                     0,
                     window_id,
                     (window_id + 16) * 960,
+                    index + 1,
                     float(20 + index * 100),
                     48_000,
                     waveforms[index],

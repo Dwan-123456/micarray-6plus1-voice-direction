@@ -119,7 +119,7 @@ def _l4_result(
         (
             VoiceDetection(
                 session_id, epoch, window_id, decision_sample,
-                30.0, 0.9, True, "test-model",
+                1, 30.0, 0.9, True, "test-model",
             ),
         ),
         (ModelPrediction("test-model", probability, 1.0, {}),),
@@ -312,6 +312,7 @@ def test_gate_unavailable_preserves_l3_listening_rows_across_epoch_recovery():
         direction_kalman_q_scale=1.0,
         direction_kalman_r_scale=1.0,
         scan_config_revision=3,
+        candidate_track_ids=(1,),
     )
     row0 = TrackedAudioSnapshot(
         "aggregator-test", 0, 7, "active", 30.0, 0.8, 9_600,
@@ -364,6 +365,7 @@ def test_ui_aggregator_ignores_late_l4_from_old_epoch_and_old_window_without_sid
             direction_kalman_q_scale=1.0,
             direction_kalman_r_scale=1.0,
             scan_config_revision=3,
+            candidate_track_ids=(1,),
         )
 
     response0, candidates0, gate0, diagnostics0 = _open_l2_result(window_id=0)
@@ -609,6 +611,13 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
             )
         )
     runtime_config = load_config(CONFIG, environ={})
+    runtime_config = runtime_config.model_copy(update={
+        "layer2": runtime_config.layer2.model_copy(update={
+            "direction_id_tracking": runtime_config.layer2.direction_id_tracking.model_copy(
+                update={"enabled": True}
+            )
+        })
+    })
 
     def open_probabilities(window):
         return (

@@ -21,6 +21,39 @@
 
 ---
 
+## 2026-08-19 — L4公共方向ID透传与语义边界
+
+- **版本/标签**：当前项目版本与`v1.0.1`标签保持不变；未创建、移动或预发布`v1.1.0`标签。
+- **类型**：L4公共契约、Runtime阶段对齐、Test UI/记录消费映射与自动测试。
+- **涉及文件**：`layer4_voice_classifier/contracts.py`、`layer4_voice_classifier/engine.py`、`layer4_voice_classifier/README.md`、`app/processing_contracts.py`、`app/result_joiner.py`、`app/runtime.py`、`gui/dev_test_ui/contracts.py`、`scripts/benchmark_l3_l4.py`、L4/Runtime/Joiner/Test UI相关测试及`CHANGELOG.md`。
+
+### L1、L2与L3
+
+- L1采集、通道映射、IMCRA、预降噪、Windowing和时间轴无变化。
+- L2定位/跟踪算法和几何生命周期无变化；L4不再调用L2按角度的语音反馈入口。L2旧反馈API本身由L2迁移分支负责清理，本分支不改写L2算法。
+- L3波束形成、三种模式、增强波形和缓存无变化。L3公共DTO尚未合并时，L3阶段结果携带同一有序ID并在L4入口逐项绑定；未在L4生成或按角度猜测ID。
+
+### L4
+
+- `Layer4AudioSegment`、`VoiceDetection`和`Layer4Result`增加/公开`track_id`与有序`track_ids`，限制同窗0～3个唯一正整数ID。
+- L4严格保持输入的WindowKey、ID顺序和`theta_deg`；重新阈值只重算`is_voice`，不改变概率、模型、ID、角度或关联。
+- CNN插件接口保持ID无关的概率向量，兼容旧模型输出；NVIDIA Frame-VAD Multilingual MarbleNet v2.0权重/推理、48→16 kHz多相重采样、连续峰值聚合、IMCRA响度补偿、primary/shadow和0.70分类边界均无变化。
+
+### Runtime、Development Test UI与录音数据
+
+- L2/L3/L4 `StageResult`均携带有序`track_ids`；ResultJoiner在接收时拒绝缺失或错序ID，阶段失败、跳过、丢弃和取消终态继承已知ID并继续推进watermark。
+- Runtime校验候选、L3音频和L4检测的数量、ID顺序与角度，删除L4按角度调用`submit_classification_feedback`/`submit_voice_feedback`的路径。
+- Runtime向DecisionRecord候选、增强音频元数据、L4检测及L4嵌套结果写入同一`track_id`；当前写入映射可供DecisionRecord v4/录音管理分支直接消费，本L4分支不提前改动存储schema版本。
+- Test UI契约校验L2/L4的ID、方向数、顺序和角度逐项一致。Production UI布局、Catalog查询和按ID试听实现无变化，由各自v1.1分支合并。
+
+### 测试、资产与验收
+
+- 新增ID透传、0～3个方向、空批次、重复/缺失/错序ID、角度错位、重新阈值、阶段失败终态、旧模型输出兼容及Runtime/Record/Test UI同ID消费测试。
+- 相关L4、Runtime、Joiner和Test UI测试84项通过，包含旧Runtime内部调用迁移的相邻集成测试102项通过；完整自动测试355项通过，Ruff和`git diff --check`通过。
+- 模型权重、音频fixture和Git LFS资产无变化；未进行新的麦克风、三声源、远场、长时运行或目标设备实机验收。
+
+---
+
 ## 2026-08-19 — 按改动范围选择测试验证级别
 
 - **版本/标签**：`1.0.1`之后的工程工作流维护；未创建新发布标签，`v1.0.1`不移动。
