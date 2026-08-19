@@ -21,6 +21,22 @@
 
 ---
 
+## 2026-08-19 — 独立只读 Pipeline Log UI 完整实现
+
+- **版本/标签**：项目 `1.1.0` 开发分支；未创建或移动发布标签，已发布的 `v1.0.1` 不变。
+- **类型**：Pipeline Log UI 只读适配、标准模型、统计引擎、五页界面、按需回放与自动测试。
+- **涉及文件**：`gui/log_ui/`、`tests/test_log_ui.py`；根 `CHANGELOG.md` 仅增加本条记录。
+- 新增记录列表、会话总览、分页 Pipeline 时间线、单窗详情、ID 与异常五页；跨 epoch 显式断开，方向角支持仅用于显示的圆周连续展开，异常可分类筛选并跳转到对应单窗。
+- 新增公开查询 capability 探测和 v3/v4 标准化：逐窗主键固定为 `WindowKey`，方向轨主键固定为 `(session_id, stream_epoch, track_id)`；未知 schema、坏记录、接口缺失和未封存数据 fail-closed，并分别显示 `N/A / 未记录 / 尚未封存 / 校验失败`，不推断成 0 或正常。
+- 新增阶段终态、实际完成 Hz、compute/queue wait/end-to-end p50/p95/p99、样本数与缺失率统计；实际 Hz 只计 `COMPLETED`，分母按各 epoch 完整公开 sample 区间求和。
+- Log UI 只能接受宿主注入的现有公开查询 provider，不接受 data root、不构造 `DataManagerService`、不打开 Catalog/SQLite/WAL、不消费 Runtime latest-only 邮箱，也不提供 Runtime/算法/录音/数据修改控件。音频仅在点击播放后调用公开校验资产接口按需读取，界面不展示绝对路径。
+- 后台 session 加载支持取消，内存 session 使用有界 LRU，10万窗口级列表按页显示；关闭或加载失败不改变主 Runtime、Test UI、录音或数据管理状态。
+- **未改变**：L1、Windowing、L2 MUSIC/ID、L3、L4、Application Runtime、Development Test UI、Production UI、RecordingStore/Catalog及公共数据契约的实现均无变化；模型、配置、音频和精选测试资产无变化。
+- **验证**：Pipeline Log UI及其Recording v4公开查询边界聚焦测试 `17 passed`（其中Log UI专属测试13项）；Ruff 和 `git diff --check` 通过；完成 Qt offscreen 五页渲染检查。未进行真实封存 session 的人工回放、10万条真实磁盘记录性能或诊室实机验收。
+- Git LFS 管理资产无变化；`data/`、Catalog、录音、日志、缓存、临时文件和本地设置未纳入提交。
+
+---
+
 ## 2026-08-19 — Runtime、时间线与公共方向ID跨层集成
 
 - **版本/标签**：项目`1.1.0`迁移集成；未创建发布标签，已发布的`v1.0.1`不移动。
