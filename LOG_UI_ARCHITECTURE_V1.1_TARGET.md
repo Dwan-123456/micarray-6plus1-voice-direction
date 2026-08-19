@@ -1,8 +1,8 @@
-# 6+1 麦克风阵列项目1.1.1：独立Pipeline Log UI架构
+# 6+1 麦克风阵列项目1.1.2：独立Pipeline Log UI架构
 
-状态：**代码、公共只读查询、五个页面与自动化测试已完成并纳入项目1.1.1；真实封存session人工回放和大规模实机数据验收仍需继续。**
+状态：**代码、公共只读查询、五个页面与自动化测试已纳入项目1.1.2；真实封存session人工回放和大规模实机数据验收仍需继续。**
 
-发布版本：项目`1.1.1`。本文件定义Log UI的定位、只读边界、数据覆盖、页面与验收要求；未通过的实机项目必须继续明确标注。
+发布版本：项目`1.1.2`。本文件定义Log UI的定位、只读边界、数据覆盖、页面与验收要求；未通过的实机项目必须继续明确标注。
 
 上位架构：[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)。当前运行时与录音实现以[`app/README.md`](app/README.md)、[`data_management/README.md`](data_management/README.md)和代码为准；[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)仅保留历史迁移契约。
 
@@ -91,10 +91,10 @@ Log UI 不得在项目 `data/` 中创建数据库、WAL、SHM、索引、缓存�
 
 未来若项目新增公共只读事件流，只增加新的 `LogSource` 适配器；不得让 Log UI 反向成为 Runtime 的依赖。
 
-### 4.4 历史记录与1.1.1能力
+### 4.4 历史记录与1.1.2能力
 
 - 1.0.1历史记录可能缺少MUSIC、公共ID或完整逐ID资产，Log UI通过schema和能力探测降级展示。
-- 1.1.1通过公共接口提供session decisions、track timeline、track audio assets和session audio assets等只读查询能力。
+- 1.1.2通过公共接口提供session decisions、track timeline、track audio assets和session audio assets等只读查询能力。
 - 未探测到的能力显示`N/A`，不能绕过接口读取内部文件，也不能为旧记录补造不存在的数据。
 
 ## 5. 公开数据覆盖矩阵
@@ -233,7 +233,7 @@ actual_completed_hz = 所选范围内COMPLETED窗口数 / observed_duration_s
 
 ## 10. 实施阶段
 
-1. **P0：观察矩阵冻结**。确定字段 → 公开接口 → 页面 → 缺失行为；明确历史记录与1.1.1 capability。
+1. **P0：观察矩阵冻结**。确定字段 → 公开接口 → 页面 → 缺失行为；明确历史记录与1.1.2 capability。
 2. **P1：离线只读内核**。完成只读来源、v3/v4适配、标准模型、索引和统计公式。
 3. **P2：五个页面**。完成记录列表、总览、Pipeline时间线、单窗详情、ID与异常联动。
 4. **P3：可选同进程概览**。只显示公开 `processing_status` 聚合数据，不消费实时邮箱。
@@ -268,7 +268,7 @@ Log UI 可以在独立分支开发，但必须等待 Recording/Data 公共只读
 
 ## 12. 完成定义
 
-Log UI作为1.1.1已实现组件满足以下自动化与接口条件：
+Log UI作为1.1.2已实现组件满足以下自动化与接口条件：
 
 1. 公共只读数据契约已经冻结并有版本化测试；
 2. 五个页面和统计口径完成；

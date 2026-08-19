@@ -18,6 +18,7 @@ legacy_reference_only/
 # tests/fixtures/audio/ instead.
 data/
 reports/
+tmp/
 *.partial
 *.log
 .env

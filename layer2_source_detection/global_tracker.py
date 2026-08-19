@@ -416,7 +416,8 @@ class GlobalDirectionTracker:
                 decision_sample,
                 doa_start_sample, doa_end_sample,
                 track_id, len(active) + 1, None, theta,
-                track.raw_score, track.normalized_score, "coasting", False, False,
+                track.raw_score, track.normalized_score,
+                "coasting" if track.confirmed else "tentative", False, False,
                 track.first_seen, track.last_observed, missed, kalman_enabled,
                 track.noise_interference,
             ))

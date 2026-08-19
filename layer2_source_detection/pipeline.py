@@ -23,6 +23,36 @@ class Layer2ExecutionState(str, Enum):
     PROCESSED = "processed"
 
 
+def _select_l3_directions(
+    observed: tuple[TrackedDirection, ...],
+    active: tuple[TrackedDirection, ...],
+    *,
+    limit: int = 3,
+    minimum_separation_deg: float = 45.0,
+) -> tuple[TrackedDirection, ...]:
+    """Select authoritative observed/coasting IDs that receive L3 BF."""
+
+    selected = [item for item in observed if item.track_state == "confirmed"]
+    selected_ids = {item.track_id for item in selected}
+    coasting = sorted(
+        (
+            item for item in active
+            if item.track_state == "coasting" and item.track_id not in selected_ids
+        ),
+        key=lambda item: (item.missed_samples, -item.normalized_score, item.track_id),
+    )
+    for item in coasting:
+        if len(selected) >= limit:
+            break
+        if all(
+            circular_distance_deg(item.theta_deg, existing.theta_deg)
+            >= minimum_separation_deg
+            for existing in selected
+        ):
+            selected.append(item)
+    return tuple(selected)
+
+
 @dataclass(frozen=True, slots=True)
 class Layer2PipelineResult:
     """One window of authoritative L2 output.
@@ -55,7 +85,9 @@ class Layer2PipelineResult:
         object.__setattr__(self, "active_tracks", active)
         track_ids = tuple(self.candidate_track_ids) or tuple(item.track_id for item in directions)
         prediction = tuple(self.candidate_is_prediction) or tuple(not item.is_observed for item in directions)
-        formal = tuple(self.candidate_track_is_formal) or tuple(item.track_state == "confirmed" for item in directions)
+        formal = tuple(self.candidate_track_is_formal) or tuple(
+            item.track_state in {"confirmed", "coasting"} for item in directions
+        )
         is_new = tuple(self.candidate_track_is_new) or tuple(item.is_new_track for item in directions)
         kalman = tuple(self.candidate_track_is_kalman_ready) or tuple(item.kalman_applied for item in directions)
         if not directions:
@@ -213,13 +245,17 @@ class Layer2Pipeline:
         if decision.allow_srp:
             response, observations, diagnostics = self.scanner.scan_detailed(
                 window, geometry, scan_config, scan_config_revision)
-        directions, active = self.id_tracker.update(
+        observed_directions, active = self.id_tracker.update(
             window.session_id, window.stream_epoch, window.decision_sample, observations,
             window_id=window.window_id, doa_start_sample=window.doa_start_sample,
             doa_end_sample=window.doa_end_sample, kalman_enabled=direction_kalman_enabled,
             q_scale=direction_kalman_q_scale, r_scale=direction_kalman_r_scale,
             allow_births=True if diagnostics is None else diagnostics.births_allowed)
         self.last_id_tracking_error = self.last_kalman_error = None
+        directions = (
+            _select_l3_directions(observed_directions, active)
+            if decision.allow_srp else ()
+        )
         candidates = tuple(CandidateDirection(
             item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
             item.doa_start_sample, item.doa_end_sample, item.theta_deg,
@@ -229,7 +265,7 @@ class Layer2Pipeline:
             state, decision, response, candidates, diagnostics,
             tuple(item.track_id for item in directions),
             tuple(not item.is_observed for item in directions),
-            tuple(item.track_state == "confirmed" for item in directions),
+            tuple(item.track_state in {"confirmed", "coasting"} for item in directions),
             tuple(item.is_new_track for item in directions),
             tuple(item.kalman_applied for item in directions), directions, active,
             getattr(self.scanner, "model_order", None),

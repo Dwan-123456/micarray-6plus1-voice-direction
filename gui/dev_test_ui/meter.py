@@ -16,6 +16,8 @@ class L1Meter:
         self._epoch_key: tuple[str, int] | None = None
         self._chunks: deque[np.ndarray] = deque()
         self._frames = 0
+        self._pre_denoise_gain_linear_sum = 0.0
+        self._pre_denoise_gain_samples = 0
 
     def add(
         self, block: IngestedAudioBlock, *, light_state: str = "unknown", recording_state: str = "idle",
@@ -26,6 +28,19 @@ class L1Meter:
             self._chunks.clear()
             self._frames = 0
             self._epoch_key = key
+            self._pre_denoise_gain_linear_sum = 0.0
+            self._pre_denoise_gain_samples = 0
+        historical_gain_db = 0.0
+        if pre_denoise_enabled:
+            sample_count = len(block.samples)
+            self._pre_denoise_gain_linear_sum += (
+                10.0 ** (float(pre_denoise_mean_gain_db) / 20.0)
+            ) * sample_count
+            self._pre_denoise_gain_samples += sample_count
+            historical_gain = (
+                self._pre_denoise_gain_linear_sum / self._pre_denoise_gain_samples
+            )
+            historical_gain_db = float(20.0 * np.log10(max(historical_gain, 1.0e-12)))
         self._chunks.append(block.samples)
         self._frames += len(block.samples)
         while self._chunks and self._frames - len(self._chunks[0]) >= self.window_samples:
@@ -47,7 +62,7 @@ class L1Meter:
             recording_state,
             block.imcra_hop,
             pre_denoise_enabled,
-            pre_denoise_mean_gain_db,
+            historical_gain_db,
             block.calibration.status,
             block.calibration.version,
             block.calibration.calibration_hash,

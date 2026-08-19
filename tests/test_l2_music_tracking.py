@@ -12,6 +12,7 @@ from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapsh
 from common.geometry import MIC_POSITIONS_M, physical_6plus1_geometry
 from layer2_source_detection import DirectionScanConfig, Layer2Pipeline, RollingNormMusicScanner
 from layer2_source_detection.global_tracker import GlobalDirectionTracker, GlobalTrackerConfig
+from layer2_source_detection.pipeline import _select_l3_directions
 from layer2_source_detection.probability_gate import (
     ProbabilityGateState,
     SourceProbability20ms,
@@ -336,16 +337,18 @@ def test_birth_coast_reacquire_ttl_and_session_scoped_monotonic_ids() -> None:
     tracker = _tracker()
     first, _ = _update(tracker, 15_360, (30.0,))
     first_id = first[0].track_id
-    _, active = _update(tracker, 16_320, ())
+    confirmed, _ = _update(tracker, 16_320, (30.5,))
+    assert confirmed[0].track_id == first_id
+    _, active = _update(tracker, 17_280, ())
     assert active[0].track_id == first_id and active[0].track_state == "coasting"
-    recovered, _ = _update(tracker, 17_280, (31.0,))
+    recovered, _ = _update(tracker, 18_240, (31.0,))
     assert recovered[0].track_id == first_id
-    _update(tracker, 23_040, ())
-    replacement, _ = _update(tracker, 24_000, (31.0,))
+    _update(tracker, 24_000, ())
+    replacement, _ = _update(tracker, 24_960, (31.0,))
     assert replacement[0].track_id > first_id
     epoch_track = tracker.update(
-        "track", 1, 24_960, (_candidate(24_960, 31.0),),
-        window_id=26, doa_start_sample=23_040, doa_end_sample=24_960,
+        "track", 1, 25_920, (_candidate(25_920, 31.0),),
+        window_id=27, doa_start_sample=24_000, doa_end_sample=25_920,
     )[0][0]
     assert epoch_track.track_id > replacement[0].track_id
 
@@ -368,6 +371,30 @@ def test_kalman_toggle_changes_only_angle_not_id_or_lifecycle() -> None:
     assert first[0].track_id == second[0].track_id == third[0].track_id
     assert second[0].kalman_applied and not third[0].kalman_applied
     assert third[0].track_state == "confirmed"
+
+
+def test_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> None:
+    tracker = _tracker()
+    _update(tracker, 15_360, (20.0,), kalman_enabled=True)
+    confirmed, _ = _update(tracker, 16_320, (22.0,), kalman_enabled=True)
+    observed, active = _update(tracker, 17_280, (), kalman_enabled=True)
+
+    selected = _select_l3_directions(observed, active)
+
+    assert len(selected) == 1
+    assert selected[0].track_id == confirmed[0].track_id
+    assert selected[0].track_state == "coasting"
+    assert not selected[0].is_observed
+
+
+def test_tentative_missing_id_is_not_selected_as_an_l3_bf_target() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (20.0,), kalman_enabled=True)
+    observed, active = _update(tracker, 16_320, (), kalman_enabled=True)
+
+    assert first[0].track_state == "tentative"
+    assert active[0].track_state == "tentative"
+    assert _select_l3_directions(observed, active) == ()
 
 
 def test_kalman_off_coasting_holds_last_observed_angle_without_prediction() -> None:
@@ -424,7 +451,9 @@ def test_live_id_forces_closed_probability_gate_open_for_three_second_ttl() -> N
         DirectionScanConfig.from_project(config), gate_threshold=0.6,
         gate_config_revision=0,
     )
-    assert first.directions
+    assert first.active_tracks
+    assert first.active_tracks[0].track_state == "tentative"
+    assert first.directions == ()
 
     second_window = _window(audio, 1)
     forced = pipeline.process(

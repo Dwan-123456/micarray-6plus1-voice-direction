@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .srp_panel import track_colour_hex
+
 
 class UnavailableCanvas(QWidget):
     def __init__(self, title: str, parent: QWidget | None = None):
@@ -567,11 +569,15 @@ class AudioTrackRow(QWidget):
     def set_snapshot(self, snapshot, *, playing: bool) -> None:
         if snapshot.track_id == 0:
             text = "Center Mic 对照"
+            label_style = "font-family:Consolas"
         else:
-            text = f"最终角度 {snapshot.theta_deg:6.1f}°"
+            text = str(snapshot.track_id)
+            label_style = f"font-family:Consolas;color:{track_colour_hex(snapshot.track_id)}"
         if text != self._rendered_text:
             self.label.setText(text)
             self._rendered_text = text
+        if self.label.styleSheet() != label_style:
+            self.label.setStyleSheet(label_style)
         self.duration.setText(f"{snapshot.duration_seconds:5.1f} s")
         self.waveform.set_envelope(snapshot.waveform_envelope)
         self.set_playing(playing)

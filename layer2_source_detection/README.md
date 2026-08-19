@@ -1,6 +1,6 @@
 # Layer 2 1.1：Rolling NormMUSIC 与公共方向轨迹
 
-本目录是项目`1.1.1`正式组成部分，L2公开版本为`1.1`，已实现Rolling NormMUSIC、公共方向ID与可选Kalman平滑。
+本目录是项目`1.1.2`正式组成部分，L2公开版本为`1.1`，已实现Rolling NormMUSIC、公共方向ID、可选Kalman平滑、可选DPD与IMCRA白化。
 
 ## 正式主链
 

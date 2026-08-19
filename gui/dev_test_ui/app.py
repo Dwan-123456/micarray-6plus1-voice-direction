@@ -136,7 +136,7 @@ def build_window(
         SrpThresholdControl,
     )
     from .settings import DevUiSettings
-    from .srp_panel import DirectionTrackTable, MusicPanelSnapshot, MusicPolarPanel
+    from .srp_panel import MusicPanelSnapshot, MusicPolarPanel
 
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
@@ -454,7 +454,6 @@ def build_window(
                 "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
             )
             self.gate_readout = ProbabilityGateReadout()
-            self.direction_table = DirectionTrackTable()
             right_layout.addWidget(self.gate_threshold)
             right_layout.addWidget(self.srp_kalman)
             right_layout.addWidget(self.srp_kalman_q)
@@ -464,7 +463,7 @@ def build_window(
             right_layout.addWidget(self.music_noise_whitening)
             right_layout.addWidget(self.music_order_limit)
             right_layout.addWidget(self.srp_threshold)
-            right_layout.addWidget(self.direction_table, 1)
+            right_layout.addStretch(1)
             splitter.addWidget(self.srp_polar)
             splitter.addWidget(right)
             splitter.setSizes((700, 300))
@@ -632,6 +631,10 @@ def build_window(
                 if name == "启动采集":
                     self._enter_starting_state()
                 elif name == "停止采集":
+                    if runtime.active:
+                        raise RuntimeError(
+                            runtime.last_error or "Runtime仍有线程或录音会话未停止"
+                        )
                     self._enter_stopped_state()
                 self.statusBar().showMessage(f"{name}已完成", 3000)
             except Exception as exc:
@@ -938,6 +941,12 @@ def build_window(
                         self._replay_reset_pending = False
                 elif self._replay_reset_pending and latest.l1 is not None:
                     self._replay_reset_pending = False
+            # A completed stop may leave one diagnostic frame in the latest-
+            # only mailboxes.  Keep the already-rendered final snapshot, but
+            # never repaint that residual frame as LIVE after Runtime is idle.
+            if not runtime.active:
+                latest = None
+                latest_l4 = None
             if latest is not None:
                 self._frame = latest
                 self._last_l1_seen = monotonic()
@@ -1134,7 +1143,7 @@ def build_window(
                 if l1.pre_denoise_enabled:
                     self._set_text(
                         self.pre_denoise_label,
-                        f"预降噪: ON | 已替换7路 | 平均频率增益 {l1.pre_denoise_mean_gain_db:.1f} dB",
+                        f"预降噪: ON | 已替换7路 | 历史平均频率增益 {l1.pre_denoise_mean_gain_db:.1f} dB",
                     )
                 else:
                     self._set_text(self.pre_denoise_label, "预降噪: OFF | 原始音频直通")
@@ -1191,7 +1200,6 @@ def build_window(
                 )
                 if window_key != self._last_rendered_window:
                     self.srp_polar.set_snapshot(snapshot, live=True)
-                    self.direction_table.set_snapshot(snapshot)
                     self._last_rendered_window = window_key
                 search_suffix = ""
                 diagnostics = frame.search_diagnostics
@@ -1214,7 +1222,6 @@ def build_window(
             elif "srp" in frame.missing_reasons:
                 self.srp_header.setText(frame.missing_reasons["srp"])
                 self.srp_polar.set_snapshot(None)
-                self.direction_table.set_snapshot(None)
                 self._last_rendered_window = None
             now = monotonic()
             if now - self._last_performance_refresh >= 1.0 / config.dev_test_ui.performance_refresh_hz:

@@ -17,8 +17,35 @@
 2. 每次提交前必须记录本次实际变化；没有变化的模块明确写“无变化”，防止遗漏跨层影响。
 3. 每条记录至少包含日期、版本/标签、变更类型、涉及文件、各模块具体变化、接口或兼容性影响、验证结果和Git LFS资产变化。
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
-5. 本文件记录“发生了什么”；当前1.1.1架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
+5. 本文件记录“发生了什么”；当前1.1.2架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
+
+---
+
+## 2026-08-19 — 项目1.1.2整合发布
+
+- **版本/标签**：项目`1.1.2`，创建新的不可变标签`v1.1.2`；`v1.0.0`、`v1.0.1`、`v1.1.1`及全部历史分支保持原位，不移动、不覆盖、不删除。
+- **发布范围**：整合`v1.1.1`之后的已提交功能与当前工作区全部项目修改，覆盖L2、L3、Runtime、Development Test UI、录音数据管理、架构文档和自动测试。Layer 1、Windowing、Layer 4模型、Pipeline Log UI与Production UI继续作为完整项目组成部分打包上传。
+- **L2**：MDL诊断范围扩展为0～6阶，公共方向仍最多3个；增加1/2/3可调实际MUSIC阶数上限、可选DPD rank-1 MUSIC与可选IMCRA噪声白化。confirmed方向漏检进入coasting后，在最多3路及至少45°分离约束内继续作为权威L3目标；tentative漏检轨不伪装成正式目标。
+- **L3与Runtime**：优化多声源矩阵求解和跨跳滚动缓存；L2/L3/L4等待队列最终固定为容量1的低延迟latest-wins。停机在强制取消后按完整超时等待worker，全部退出后清空残留阶段队列，避免停止状态残留窗口和内存占用。
+- **Development Test UI**：coasting权威ID继续接收并拼接真实L3波束形成音频；移除右上重复方向表，L3轨道直接显示稳定ID与对应颜色；预降噪增益改为本epoch历史平均；停止后不把残留latest帧重新显示为LIVE。已有可播放语音不会仅因末尾长静音被删除，整体有声占比不超过30%的轨道仍清理。
+- **录音与数据管理**：纳入回收站操作同步更新Catalog的既有修复；RecordingStore schema、正式录音格式和CNN资产本次不变。运行录音、scratch、Catalog、日志和本机`data/`不上传。
+- **未改变**：L1采集、通道映射、IMCRA核心算法、WindowAssembler时间轴、L4 MarbleNet模型与概率语义、Log UI只读边界、Production UI核心页面和历史记录兼容规则无新算法变化。
+- **项目边界**：将报告渲染产生的`tmp/`纳入Git忽略；本机临时页面保留在本地、不删除也不上传。`.venv/`、缓存、密钥、代理设置和未精选本地数据继续排除。
+- **验证**：完整自动测试`389 passed`；核心源码与测试Ruff全部通过；全目录Python编译通过；项目元数据为`1.1.2`、L2公开版本为`1.1`；Git差异、冲突标记、敏感数据与LFS边界检查通过。
+- **Git LFS**：模型、精选测试音频和大型数组继续按`.gitattributes`管理；当前工作区没有新增或修改LFS资产。
+
+---
+
+## 2026-08-19 — coasting权威ID持续生成L3波束形成试听音频
+
+- **版本/标签**：L2→L3权威ID试听链路修复；未创建或移动版本标签。
+- **类型**：跨层数据契约与Development Test UI试听行为修复。
+- L2的`directions`除已确认实测ID外，现会在最多3路和方向间隔至少45°的约束内纳入仍有效的`coasting`权威ID；优先选择等待时间短、得分高且ID稳定的轨迹，并沿用保持/预测输出角送入L3。
+- 未确认轨迹失去观测后保持`tentative`，不伪装为`coasting`，也不会触发L3波束形成；正式`confirmed/coasting`元数据保持一致并继续使用原`track_id`。
+- L3算法、三档模式和Development Test UI缓存格式无变化；但coasting窗口现在获得真实BF输出并写入同一`(session_id, stream_epoch, track_id)`试听轨，只有本窗确实没有该ID的L3输出时才按既有绝对时间轴补等时静音。
+- L4算法无变化，但继续消费与L3相同的权威方向集合；L1、录音/数据管理、Production UI、Pipeline Log UI、模型和二进制资产均无变化，Git LFS资产无变化。
+- **验证**：新增confirmed→coasting BF目标、tentative排除和同ID真实音频连续写入测试；完成相关跨层定向测试及全量测试（结果见本次提交验证记录）。
 
 ---
 

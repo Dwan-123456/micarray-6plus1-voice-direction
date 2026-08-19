@@ -16,7 +16,6 @@ _CROSSFADE_SAMPLES = 480
 _EDGE_FADE_SAMPLES = 240
 _SOUND_RMS_THRESHOLD = 10.0 ** (-50.0 / 20.0)
 _MIN_SOUND_RATIO = 0.30
-_LONG_SILENCE_HOPS = 150
 
 
 @dataclass(slots=True)
@@ -37,8 +36,6 @@ class _Track:
     envelope_peaks: deque[float] = field(default_factory=deque)
     total_hops: int = 0
     sound_hops: int = 0
-    consecutive_silent_hops: int = 0
-    longest_silent_hops: int = 0
     stream_key: tuple[str, int] | None = None
     processing_mode: str = "optimized"
 
@@ -218,7 +215,13 @@ class AudioIdTracker:
             output[-_EDGE_FADE_SAMPLES:] *= ramp[::-1]
         return output
 
-    def _append_audio(self, track: _Track, audio: np.ndarray) -> None:
+    def _append_audio(
+        self,
+        track: _Track,
+        audio: np.ndarray,
+        *,
+        observed_hops: tuple[bool, ...] | None = None,
+    ) -> None:
         audio = np.asarray(audio, dtype=np.float32)
         if (
             audio.ndim != 1
@@ -227,6 +230,11 @@ class AudioIdTracker:
             or not np.isfinite(audio).all()
         ):
             raise ValueError("Test UI L3 audio block must contain finite whole 20 ms hops")
+        hop_count = len(audio) // _HOP_SAMPLES
+        if observed_hops is None:
+            observed_hops = (True,) * hop_count
+        elif len(observed_hops) != hop_count:
+            raise ValueError("Test UI L3 observed-hop mask must align with audio")
         offset = 0
         while offset < len(audio):
             path = self._segment_path(track)
@@ -236,25 +244,34 @@ class AudioIdTracker:
                 stream.write(np.ascontiguousarray(audio[offset:offset + count]).tobytes())
             track.segment_samples += count
             offset += count
-        self._update_envelope(track, audio)
+        self._update_envelope(track, audio, observed_hops=observed_hops)
 
-    def _update_envelope(self, track: _Track, audio: np.ndarray) -> None:
+    def _update_envelope(
+        self,
+        track: _Track,
+        audio: np.ndarray,
+        *,
+        observed_hops: tuple[bool, ...] | None = None,
+    ) -> None:
         hops = np.asarray(audio, dtype=np.float32).reshape(-1, _HOP_SAMPLES)
+        if observed_hops is None:
+            observed_hops = (True,) * len(hops)
+        elif len(observed_hops) != len(hops):
+            raise ValueError("Test UI L3 observed-hop mask must align with envelope")
         track.envelope_peaks.extend(
             float(item) for item in np.max(np.abs(hops), axis=1)
         )
         rms_values = np.sqrt(np.mean(np.square(hops, dtype=np.float64), axis=1))
-        for rms in rms_values:
+        for rms, observed in zip(rms_values, observed_hops, strict=True):
+            # Exact-duration silence inserted for a missing/coasting result is
+            # a timeline placeholder, not evidence that the L3 output itself
+            # was a silent/low-quality candidate.  Keep it audible as silence
+            # but exclude it from the post-capture quality filter.
+            if not observed:
+                continue
             track.total_hops += 1
             if float(rms) >= _SOUND_RMS_THRESHOLD:
                 track.sound_hops += 1
-                track.consecutive_silent_hops = 0
-            else:
-                track.consecutive_silent_hops += 1
-                track.longest_silent_hops = max(
-                    track.longest_silent_hops,
-                    track.consecutive_silent_hops,
-                )
         if track.track_id == 0:
             return
         maximum = self.retained_segments * self.segment_samples // _HOP_SAMPLES
@@ -305,7 +322,7 @@ class AudioIdTracker:
                 fade_out=fade_out,
             )
             track.fade_in_next = bool(fade_out)
-        self._append_audio(track, output)
+        self._append_audio(track, output, observed_hops=(audio is not None,))
         track.last_emitted_decision_sample = decision_sample
 
     def _append_timeline_block(
@@ -331,7 +348,11 @@ class AudioIdTracker:
                     hop, fade_in=track.fade_in_next, fade_out=False,
                 ))
                 track.fade_in_next = False
-        self._append_audio(track, np.concatenate(prepared))
+        self._append_audio(
+            track,
+            np.concatenate(prepared),
+            observed_hops=tuple(hop is not None for hop in hops),
+        )
         track.last_emitted_decision_sample = (
             first_decision_sample + (len(hops) - 1) * _HOP_SAMPLES
         )
@@ -435,10 +456,12 @@ class AudioIdTracker:
     def _should_discard_quiet_track(track: _Track) -> bool:
         if track.track_id == 0 or track.total_hops <= 0:
             return False
-        return (
-            track.longest_silent_hops >= _LONG_SILENCE_HOPS
-            or track.sound_hops / track.total_hops <= _MIN_SOUND_RATIO
-        )
+        # Judge the completed candidate as a whole.  A valid recording may
+        # legitimately end with several seconds of silence while an offline
+        # replay backlog drains; that silent tail must not delete the earlier
+        # playable speech.  Fully/mostly silent candidates still fail the
+        # requested 30 percent sound-ratio gate.
+        return track.sound_hops / track.total_hops <= _MIN_SOUND_RATIO
 
     def _delete_track_segments(self, track: _Track) -> None:
         directories = {path.parent.resolve() for path in track.segments}

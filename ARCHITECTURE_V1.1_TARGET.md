@@ -1,8 +1,8 @@
-# 6+1 麦克风阵列项目 1.1.1：MUSIC 与公开方向 ID 架构
+# 6+1 麦克风阵列项目 1.1.2：MUSIC 与公开方向 ID 架构
 
-状态：**1.1.1代码与自动化验收已完成并进入正式发布；真实阵列、诊室声场与长时间运行验收仍按本文门禁继续执行，不以自动测试替代。**
+状态：**1.1.2代码已整合并进入发布验收；真实阵列、诊室声场与长时间运行验收仍按本文门禁继续执行，不以自动测试替代。**
 
-发布版本：项目 `1.1.1`，对应不可变标签 `v1.1.1`。不得移动、覆盖或重写已经发布的 `v1.0.1`及其他历史标签。
+发布版本：项目`1.1.2`，对应不可变标签`v1.1.2`。不得移动、覆盖或重写已经发布的`v1.0.1`、`v1.1.1`及其他历史标签。
 
 适用范围：Layer 1～Layer 4、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore、数据管理、独立 Pipeline Log UI、测试与资产。
 
@@ -97,7 +97,7 @@ kalman_applied
 
 字段名可在实现时按现有类型风格微调，但上述语义不可丢失。L2 公共结果同时区分：
 
-- `directions`：本窗口真正交给 L3 的 0～3 个方向；每项必须有唯一 `track_id`。
+- `directions`：本窗口真正交给 L3 的 0～3 个权威方向；包含已确认实测ID，以及在数量/角距限制内仍有效的confirmed→coasting保持/预测ID；每项必须有唯一 `track_id`。
 - `active_tracks`：包含当前观测轨和仍在短时 coasting 的轨迹，用于 UI 与时间线；并非所有 active track 都必须触发 L3 波束形成。
 - `spatial_response`：MUSIC 360 点伪谱及频率/归一化诊断。
 - `model_order`：本窗口估计的声源数量和质量信息。
@@ -158,7 +158,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 首版最多输出 3 个候选，圆周 NMS 最小间隔继续为 45°。
 - 峰值选择必须原生处理数组首尾相邻，`359°` 和 `0°` 属于相邻角度。
 - 无足够有效频点、协方差退化或模型阶数不可信时，返回可诊断的 blocked/degraded/failed 状态，不得静默复用上一窗伪谱冒充新观测。
-- 原 SRP-PHAT、iterative multiple peak 与相关回退不再进入正式1.1.1主链；删除配置、运行时setter、UI开关和专属测试。若保留历史实现用于回归，只能放在明确的非运行时归档边界，不能被新pipeline导入。
+- 原 SRP-PHAT、iterative multiple peak 与相关回退不再进入正式1.1.2主链；删除配置、运行时setter、UI开关和专属测试。若保留历史实现用于回归，只能放在明确的非运行时归档边界，不能被新pipeline导入。
 
 ## 8. Layer 2：永久 ID 与可选 Kalman
 
@@ -197,7 +197,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 输入从无 ID 的 `CandidateDirection` 改为 `TrackedDirection`，以 `(WindowKey, track_id)` 为方向批次身份。
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
-- 默认仅处理本窗 `directions` 中可观测或满足受控短时预测条件的目标。仅用于时间线的长 coasting 轨不生成 L3 音频。
+- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。coasting ID在3方向上限和45°分离约束内继续按其输出角执行 L3 BF，输出携带原`track_id`的真实音频；未确认tentative轨不生成 L3 音频。
 - optimized、ds_baseline、constant_beamwidth_baseline 三档仍保留；切换模式不改变权威 ID，只隔离各模式的试听缓存。
 
 ## 10. Layer 4 改动
@@ -225,7 +225,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed、L4 probability`；观测和预测样式可以不同，但颜色稳定绑定权威 ID。
 - 左下试听继续保留 Center Mic 原音参考、20 ms 稳定 hop 拼接、可恢复真实音频补洞、过旧缺口补等时静音、交叉淡化、至少 2 秒显示、3 秒等待、有界分段和三档 L3 模式隔离。
 - 方向音频只按 `(session_id, stream_epoch, track_id)` 拼接。删除 `_formal_aliases`、`_resolve_formal_track_id`、按角度贪心重关联和 ID 换号合并；UI 不再修补 L2 身份错误。
-- coasting 期间保留轨道行并显示状态；只有 L2 删除轨迹或 session/mode 生命周期结束时封存对应试听轨。
+- coasting 期间保留轨道行并显示状态；当L2将该权威ID放入`directions`时，继续拼接实际L3 BF音频，只有本窗未提供该ID的L3输出时才按绝对时间轴补等时静音；只有 L2 删除轨迹或 session/mode 生命周期结束时封存对应试听轨。
 
 ## 13. RecordingStore、数据管理与 Production UI
 
@@ -255,7 +255,7 @@ v4 至少保存：
 - 第一版以完成/封存 session 的公开记录为权威来源，按 `WindowKey` 展示各阶段终态、compute/queue wait/端到端延迟、实际完成频率、丢窗与异常；按 `(session_id, stream_epoch, track_id)` 展示方向、L3资产和L4结果。
 - 只使用版本化公共查询接口。接口未提供的字段显示 `N/A`，不得读取私有对象、直接解析内部缓存，或消费 `latest_dev_ui`、`latest_l4_dev_ui` 等读取即移除的实时邮箱。
 - Log UI 只统计、展示和回放，不启动/停止 Runtime，不改参数，不标注、导出、迁移、重建 Catalog 或写入项目数据目录。
-- 1.1.1已提供封存session的公共只读查询与Log UI；未由公开接口提供的数据仍必须明确显示不可用，不能绕过边界伪造。
+- 1.1.2提供封存session的公共只读查询与Log UI；未由公开接口提供的数据仍必须明确显示不可用，不能绕过边界伪造。
 - 可选同进程 Live 只轮询公开 `processing_status` 聚合状态；独立进程逐窗 Live 需等待未来正式公共只读流。
 - Log UI 的完整数据模式、页面、统计口径、兼容规则和只读验收以[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)为权威契约。
 
@@ -305,6 +305,6 @@ v4 至少保存：
 6. **Development Test UI**：删除旧开关，展示 MUSIC/ID，并按权威 ID 拼接试听。
 7. **Recording/Data + Production UI**：保存、查询和试听逐 ID 资产，兼容 v3 只读。
 8. **Pipeline Log UI**：公共只读查询契约冻结后，完成离线统计/回看与可选聚合 Live；不修改实时处理链。
-9. **整合验收**：全量自动测试、性能记录、实机边界、CHANGELOG、语义版本与 `v1.1.1` 发布。
+9. **整合验收**：全量自动测试、性能记录、实机边界、CHANGELOG、语义版本与`v1.1.2`发布。
 
 并行分支可以分别修改，但公共 DTO、字段命名、WindowKey/ID 对齐和 DecisionRecord v4 schema 必须先冻结；合并时以本文件为共同契约，禁止每个分支自行发明不同 ID 语义。

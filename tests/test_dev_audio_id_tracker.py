@@ -100,6 +100,29 @@ def test_coasting_keeps_row_until_l2_deletes_track(tmp_path):
     assert tracker.snapshots()[0].state == "ended"
 
 
+def test_coasting_bf_preview_appends_real_audio_to_same_authoritative_id(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    first = _direction(5, 15_360, 45.0)
+    tracker.update(
+        _window(15_360), (first,), (_preview(5, 15_360, 45.0),),
+        active_tracks=(first,),
+    )
+    coast = _direction(
+        5, 16_320, 46.0, measured=None, state="coasting", observed=False,
+    )
+    tracker.update(
+        _window(16_320), (coast,), (_preview(5, 16_320, 46.0),),
+        active_tracks=(coast,),
+    )
+    tracker.update(_window(17_280), (), (), active_tracks=())
+
+    cache = tracker.audio_cache_path(5)
+    assert cache is not None
+    audio = np.memmap(cache, dtype=np.float32, mode="r")
+    assert len(audio) == 2 * 960
+    assert np.sqrt(np.mean(np.square(audio[960:], dtype=np.float64))) > 0.01
+
+
 def test_skipped_results_recover_absolute_timeline_without_speedup(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     first = _direction(9, 15_360, 30.0)
@@ -152,7 +175,7 @@ def test_ended_track_above_thirty_percent_sound_is_retained(tmp_path):
     assert tracker.snapshots()[0].track_id == 13
 
 
-def test_ended_track_with_three_seconds_continuous_silence_is_deleted(tmp_path):
+def test_playable_track_survives_silent_tail_while_replay_queue_drains(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     for index in range(250):
         decision = 15_360 + index * 960
@@ -163,7 +186,38 @@ def test_ended_track_with_three_seconds_continuous_silence_is_deleted(tmp_path):
         )
         tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
     tracker.update(_window(15_360 + 250 * 960), (), (), active_tracks=())
-    assert tracker.snapshots() == ()
+    rows = tracker.snapshots()
+    assert len(rows) == 1
+    assert rows[0].track_id == 14
+    assert tracker.audio_cache_path(14) is not None
+
+
+def test_coasting_timeline_silence_does_not_delete_playable_observed_audio(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    first_decision = 15_360
+    observed = _direction(15, first_decision, 120.0)
+    tracker.update(
+        _window(first_decision),
+        (observed,),
+        (_preview(15, first_decision, 120.0),),
+        active_tracks=(observed,),
+    )
+    for index in range(1, 201):
+        decision = first_decision + index * 960
+        coast = _direction(
+            15, decision, 120.0,
+            measured=None, state="coasting", observed=False,
+        )
+        tracker.update(_window(decision), (), (), active_tracks=(coast,))
+    tracker.update(_window(first_decision + 201 * 960), (), (), active_tracks=())
+
+    rows = tracker.snapshots()
+    assert len(rows) == 1
+    assert rows[0].track_id == 15
+    assert rows[0].audio_sample_count == 201 * 960
+    cache = tracker.audio_cache_path(15)
+    assert cache is not None
+    assert cache.stat().st_size == 201 * 960 * np.dtype(np.float32).itemsize
 
 
 def test_mode_change_seals_and_isolates_cache_partitions(tmp_path):
