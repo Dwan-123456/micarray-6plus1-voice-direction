@@ -151,7 +151,7 @@ def test_terminal_drop_watermark_is_audited_without_duplicate_result_row(tmp_pat
     assert rows[1]["stage_statuses"] == {
         "l2": "dropped", "l3": "dropped", "l4": "dropped",
     }
-    assert rows[1]["schema_version"] == "decision_record_v3"
+    assert rows[1]["schema_version"] == "decision_record_v4"
     store.close()
 
 
@@ -167,8 +167,13 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
     waveform = np.linspace(-0.25, 0.25, 15360, dtype=np.float32)
     store.append_result(DecisionRecord(
         session, 0, 7, 48000, (46080, 48000), (32640, 48000), "ok",
-        candidates=({"theta_deg": 30.0, "raw_score": 2.0, "normalized_score": 0.8},),
-        detections=({"theta_deg": 30.0, "probability": 0.9, "is_voice": True, "model_id": "primary"},),
+        candidates=({"track_id": 7, "measured_theta_deg": 29.0, "theta_deg": 30.0,
+                     "track_state": "confirmed", "is_observed": True, "is_new_track": False,
+                     "kalman_applied": True, "raw_score": 2.0, "normalized_score": 0.8},),
+        active_tracks=({"track_id": 7, "measured_theta_deg": 29.0, "theta_deg": 30.0,
+                        "track_state": "confirmed", "is_observed": True},),
+        detections=({"track_id": 7, "theta_deg": 30.0, "probability": 0.9,
+                     "is_voice": True, "model_id": "primary"},),
         voice_direction_count=1,
         raw_scores=np.arange(360, dtype=np.float32),
         normalized_scores=np.linspace(0, 1, 360, dtype=np.float32),
@@ -182,14 +187,23 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
         },
         search_diagnostics={"mode": "single_pass", "algorithm_version": "srp_phat_single_pass_v1"},
         enhanced_audio=({
-            "theta_deg": 30.0, "backend": "frequency_hybrid", "fallback_reason": None,
+            "track_id": 7, "theta_deg": 30.0, "backend": "frequency_hybrid", "fallback_reason": None,
             "diagnostics": [], "sample_rate": 48000, "start_sample": 32640, "end_sample": 48000,
         },),
         enhanced_waveforms=(waveform,),
         l4_result={
             "primary_model_id": "primary", "threshold": 0.5,
             "predictions": [{"model_id": "primary", "probabilities": [0.9], "latency_ms": 1.2, "metadata": {}}],
-        },
+            },
+        music_algorithm_version="normmusic_incremental_v1",
+        model_order={"estimated_sources": 1, "algorithm": "mdl_wax_kailath_v1"},
+        music_diagnostics={"valid_frequency_count": 43, "covariance_condition_max": 120.0},
+        kalman_applied=True,
+        config_revision=3,
+        config_hash="config-v4",
+        calibration_revision=2,
+        calibration_version="calibration-v2",
+        calibration_hash="calibration-hash-v2",
     ))
     store.advance_result_watermark(ResultWatermark(session, 0, 48000))
     manifest = store.stop_session()
@@ -211,6 +225,7 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
         assert spatial["doa_end_samples"].tolist() == [48000]
         assert spatial["theta_degrees"].tolist() == list(range(360))
     enhanced = next(item for item in assets if item["kind"] == "enhanced_audio")
+    assert enhanced["track_id"] == 7 and "track000007" in enhanced["path"]
     assert (enhanced["start_sample"], enhanced["end_sample"]) == (32640, 48000)
     with wave.open(str(root / enhanced["path"]), "rb") as wav:
         assert (wav.getnchannels(), wav.getnframes()) == (1, 15360)
@@ -657,7 +672,7 @@ def _decision_mapping(session: str, window_id: int, decision: int, *, waveform_s
         "doa_range": (max(0, decision - 1920), decision),
         "context_range": (max(0, decision - 15360), decision),
         "status": "ok",
-        "enhanced_audio": () if waveform is None else ({"theta_deg": 0.0},),
+        "enhanced_audio": () if waveform is None else ({"track_id": 1, "theta_deg": 0.0},),
         "enhanced_waveforms": () if waveform is None else (waveform,),
     }
 
@@ -871,6 +886,11 @@ def test_dedicated_recording_streams_complete_raw_input_with_pause_resume(tmp_pa
     assert manifest["source_categories"] == ["人声"]
     assert manifest["source_movements"] == ["静止"]
     assert manifest["noise_source"] == "空调"
+    assert manifest["algorithm_direction_ids"] == {
+        "status": "not_available",
+        "reason": "l1_only_recording",
+        "display_text": "无算法方向ID",
+    }
     assert {item["kind"] for item in manifest["assets"]} == {"native_8ch", "cdc_hotmaps", "labels"}
     labels = json.loads((root / "labels.json").read_text(encoding="utf-8"))
     assert labels["schema_version"] == "test_recording_labels_v3"

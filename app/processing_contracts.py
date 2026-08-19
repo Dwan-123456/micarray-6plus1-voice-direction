@@ -130,11 +130,8 @@ def _payload_track_ids(value: object) -> tuple[int, ...] | None:
     existing CNN plugins.  IDs live on the L2/L3/L4 public DTOs and their
     stage result, never inside a model adapter.
     """
-    for name in ("track_ids", "candidate_track_ids"):
-        if hasattr(value, name):
-            raw = tuple(getattr(value, name))
-            if raw or name == "track_ids":
-                return raw
+    if hasattr(value, "track_ids"):
+        return tuple(getattr(value, "track_ids"))
     for name in ("directions", "candidates", "enhanced_audio", "detections"):
         if not hasattr(value, name):
             continue
@@ -143,6 +140,10 @@ def _payload_track_ids(value: object) -> tuple[int, ...] | None:
             return ()
         if all(hasattr(child, "track_id") for child in children):
             return tuple(child.track_id for child in children)
+    if hasattr(value, "candidate_track_ids"):
+        raw = tuple(getattr(value, "candidate_track_ids"))
+        if raw and all(type(track_id) is int and track_id > 0 for track_id in raw):
+            return raw
     return None
 
 

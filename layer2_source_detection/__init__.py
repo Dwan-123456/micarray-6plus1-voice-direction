@@ -1,8 +1,5 @@
 """Layer 2 v1.1: specification-locked 360-degree SRP-PHAT direction processing."""
 
-LAYER2_PUBLIC_VERSION = "1.1"
-__version__ = LAYER2_PUBLIC_VERSION
-
 from .candidates import robust_z_sigmoid, select_candidate_indices
 from .configuration import DirectionScanConfig
 from .direction_smoothing import (
@@ -26,6 +23,9 @@ from .probability_gate import (
     SourceProbabilityState,
 )
 from .srp_phat import SrpPhatScanner
+
+LAYER2_PUBLIC_VERSION = "1.1"
+__version__ = LAYER2_PUBLIC_VERSION
 
 __all__ = [
     "LAYER2_PUBLIC_VERSION",

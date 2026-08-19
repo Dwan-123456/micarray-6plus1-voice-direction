@@ -242,6 +242,11 @@ class CorpusStore:
                 "audio_kind": "native_8ch",
                 "hotmap_kind": "cdc_hotmaps",
             },
+            "algorithm_direction_ids": {
+                "status": "not_available",
+                "reason": "l1_only_recording",
+                "display_text": "无算法方向ID",
+            },
         }
         append_audit(root, "raw_recording_created", {"display_name": manifest["display_name"]})
         write_manifest(root / "recording_manifest.json", manifest)

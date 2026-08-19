@@ -738,8 +738,11 @@ class RecordingStore:
                 },
                 "mapping_contract": dict(self._mapping_contract),
                 "calibration_hash": meta.get("calibration_hash", ""),
+                "calibration_revision": int(meta.get("calibration_revision", 0)),
+                "calibration_version": meta.get("calibration_version", "unversioned"),
                 "geometry_version": meta.get("geometry_version", "r6plus1_mic_face_ccw_v1"),
                 "config_hash": meta.get("config_hash", ""),
+                "config_revision": int(meta.get("config_revision", 0)),
                 "git_commit": meta.get("git_commit"),
                 "runtime": meta.get("runtime", {}),
                 "algorithm_versions": meta.get("algorithm_versions", {}),
@@ -1026,12 +1029,23 @@ class RecordingStore:
         item = public_mapping(result)
         if item.get("session_id") != self._session_id:
             raise ValueError("算法结果不属于当前录音session")
+        schema = item.setdefault("schema_version", "decision_record_v4")
+        if schema != "decision_record_v4":
+            raise ValueError("旧DecisionRecord v3仅支持读取，不能写入新录音")
         for key in ("raw_scores", "normalized_scores"):
             if item.get(key) is not None:
                 item[key] = np.asarray(item[key], np.float32).copy()
         item["enhanced_waveforms"] = tuple(
             np.asarray(value, np.float32).copy() for value in item.get("enhanced_waveforms", ())
         )
+        metadata = tuple(item.get("enhanced_audio", ()))
+        if len(metadata) != len(item["enhanced_waveforms"]):
+            raise ValueError("增强音频元数据与波形数量不一致")
+        track_ids = tuple(value.get("track_id") for value in metadata)
+        if track_ids and any(type(value) is not int or value <= 0 for value in track_ids):
+            raise ValueError("DecisionRecord v4增强音频必须包含正整数track_id")
+        if len(set(track_ids)) != len(track_ids):
+            raise ValueError("同一窗口的增强音频track_id不能重复")
         return item
 
     @staticmethod
@@ -1402,7 +1416,7 @@ class RecordingStore:
                 self._all_results.append(
                     {
                         "record_type": "dropped_window",
-                        "schema_version": "decision_record_v3",
+                        "schema_version": "decision_record_v4",
                         "session_id": value["session_id"],
                         "stream_epoch": value["stream_epoch"],
                         **dropped_item,
@@ -1448,11 +1462,12 @@ class RecordingStore:
                 continue
             assets: list[dict[str, Any]] = []
             metadata = item.get("enhanced_audio", ())
-            for index, (audio_meta, waveform) in enumerate(zip(metadata, waveforms)):
+            for index, (audio_meta, waveform) in enumerate(zip(metadata, waveforms, strict=True)):
+                track_id = int(audio_meta["track_id"])
                 theta_mdeg = int(round(float(audio_meta["theta_deg"]) * 1000))
                 name = (
                     f"epoch{epoch:03d}_window{int(item['window_id']):012d}_"
-                    f"decision{decision:012d}_theta{theta_mdeg:06d}_{index}.wav"
+                    f"decision{decision:012d}_track{track_id:06d}_theta{theta_mdeg:06d}_{index}.wav"
                 )
                 path = self._root / "enhanced_audio" / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -1472,6 +1487,7 @@ class RecordingStore:
                     "stream_epoch": epoch,
                     "window_id": int(item["window_id"]),
                     "decision_sample": decision,
+                    "track_id": track_id,
                     # Internal transaction metadata.  It is removed before
                     # the public session manifest is committed.
                     "_partial_path": str(partial.relative_to(self._root)),
@@ -1581,7 +1597,7 @@ class RecordingStore:
             return None
         journal = self._root / "enhanced_asset_commit.json"
         atomic_json(journal, {
-            "schema_version": "enhanced_asset_commit_v1",
+            "schema_version": "enhanced_asset_commit_v2",
             "session_id": self._session_id,
             "created_at_utc": utc_now(),
             "entries": [
@@ -1592,6 +1608,7 @@ class RecordingStore:
                     "stream_epoch": asset["stream_epoch"],
                     "window_id": asset["window_id"],
                     "decision_sample": asset["decision_sample"],
+                    "track_id": asset["track_id"],
                 }
                 for asset, partial, final in pending
             ],
@@ -1648,7 +1665,7 @@ class RecordingStore:
                         ):
                             item.pop(key, None)
                         item.setdefault("record_type", "decision")
-                        item.setdefault("schema_version", "decision_record_v3")
+                        item.setdefault("schema_version", "decision_record_v4")
                         out.write(json.dumps(_json_ready(item), ensure_ascii=False) + "\n")
                     out.flush()
                     os.fsync(out.fileno())
@@ -1768,11 +1785,14 @@ class RecordingStore:
                     chunk["assets"].append(dict(asset))
                 metadata = item.get("enhanced_audio", ())
                 waveforms = item.get("enhanced_waveforms", ())
-                for index, (audio_meta, waveform) in enumerate(zip(metadata, waveforms)):
+                pending_pairs = zip(metadata, waveforms, strict=True) if waveforms else ()
+                for index, (audio_meta, waveform) in enumerate(pending_pairs):
+                    track_id = int(audio_meta["track_id"])
                     theta_mdeg = int(round(float(audio_meta["theta_deg"]) * 1000))
                     name = (
                         f"epoch{epoch:03d}_window{int(item['window_id']):012d}_"
-                        f"decision{int(item['decision_sample']):012d}_theta{theta_mdeg:06d}_{index}.wav"
+                        f"decision{int(item['decision_sample']):012d}_track{track_id:06d}_"
+                        f"theta{theta_mdeg:06d}_{index}.wav"
                     )
                     path = self._root / "enhanced_audio" / name
                     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1792,6 +1812,7 @@ class RecordingStore:
                         "stream_epoch": epoch,
                         "window_id": int(item["window_id"]),
                         "decision_sample": int(item["decision_sample"]),
+                        "track_id": track_id,
                         "_partial_path": str(partial.relative_to(self._root)),
                         **_json_ready(dict(audio_meta)),
                     })

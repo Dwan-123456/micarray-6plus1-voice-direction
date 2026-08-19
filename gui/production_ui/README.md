@@ -1,10 +1,10 @@
 # 麦克风阵列录音与数据管理
 
-> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#13-recordingstore数据管理与-production-ui)：运行录音详情增加逐 ID 时间线、状态、L4 概率和增强音频试听；L1-only 测试录音明确不含算法 ID。下文描述当前 1.0.1 实现。
+本目录已完成[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#13-recordingstore数据管理与-production-ui)中的录音管理页面分支改造。运行录音详情使用公共`(session_id, stream_epoch, track_id)`，显示轨迹时间线摘要并提供逐ID增强音频试听；旧v3和L1-only录音明确不含算法ID。项目1.1.0仍需等待其余分支合并和总体验收。
 
 权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。专用测试录音使用`raw_microphone_recording_v1`：录制时直接流式保存主机收到的原始8通道PCM16与每一帧CDC热力图，不在内存累计整段录音，也不为新录音生成7通道派生音频。
 
-目标界面继续管理Runtime Sessions、Test Corpus、录制向导、质量与标注、系统维护及实验快照。新增内容包括：native/logical 8ch通道说明、HardwareMix标识、IMCRA/Gate时间线、原始SRP空间响应、L2平滑候选、逐方向L3音频和L4结果。内部追踪ID不显示、不检索也不写入资产。
+界面继续管理Runtime Sessions、Test Corpus、录制向导、质量与标注、系统维护及实验快照。运行录音详情显示方向ID、首末sample、持续时间、首末角与角度变化、状态和最新L4概率；可试听逐ID增强时间线、Center参考，以及native/logical/physical任一通道。逐ID试听只继承正式公共ID，不按角度创建或合并ID。
 
 操作者在开始录制前填写环境、数字形式的声源数量、每个声源各自的类型与移动方式，以及噪音来源；只录环境噪音时声源数量可以为0。系统使用环境、声源数量和录制时间自动生成列表显示名称，并把上述结构化信息随录音写入labels和manifest。录音列表只提供原始8通道任选通道试听、用所选录音进行模拟测试、移到可恢复回收站三类操作。“模拟测试”必须同时存在`native_8ch`与`cdc_hotmaps`资产，Test UI按原始相对时序注入两路输入；只有普通WAV的旧样本不能冒充完整麦克风阵列。
 
@@ -17,3 +17,5 @@ python scripts/run_audio_data_manager.py --data-root data
 ```
 
 结束录音后，音频、热力图、环境、逐声源类型与移动方式、噪音来源、录制区间与资产哈希共同写入独立Recording目录并登记到Catalog。
+
+专用测试录音只保存L1原始输入和热力图，不运行方向算法；向导和manifest固定标明“无算法方向ID”。模拟测试后由Test UI重新运行算法产生的ID不回写或冒充原始录音ID。

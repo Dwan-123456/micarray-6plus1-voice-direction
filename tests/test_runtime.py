@@ -428,14 +428,14 @@ def test_runtime_passes_only_formal_smoothed_candidates_to_l3_once():
     layer3 = _CapturingLayer3()
     runtime = _runtime_with_layer3(layer3)
 
-    formal, l4_inputs = runtime._process_l3(window, (candidate,), (17,))
+    formal, l4_inputs = runtime._process_l3(window, (candidate,), (7,))
 
     assert len(layer3.calls) == 1
     assert tuple(item.theta_deg for item in layer3.calls[0][0]) == (30.0,)
     assert layer3.calls[0][1] == L3_MODE_OPTIMIZED
     assert len(formal) == 1 and formal[0].theta_deg == 30.0
     assert len(l4_inputs) == 1 and l4_inputs[0].waveform.shape == (15_360,)
-    assert l4_inputs[0].track_id == 17
+    assert l4_inputs[0].track_id == 7
     assert l4_inputs[0].array_source_probabilities_20ms == (None,) * 16
 
 
@@ -455,7 +455,7 @@ def test_runtime_aligns_all_sixteen_context_imcra_probabilities_to_l4_audio():
     window = replace(window, imcra_hops=hops)
     runtime = _runtime_with_layer3(_CapturingLayer3())
 
-    _, l4_inputs = runtime._process_l3(window, (candidate,), (17,))
+    _, l4_inputs = runtime._process_l3(window, (candidate,), (7,))
 
     assert l4_inputs[0].array_source_probabilities_20ms == pytest.approx(
         tuple(index / 15.0 for index in range(16))
@@ -475,7 +475,7 @@ def test_runtime_passes_selected_ds_baseline_mode_to_l3():
     runtime = _runtime_with_layer3(layer3)
     runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE)
 
-    previews, _l4_inputs = runtime._process_l3(window, (candidate,), (17,))
+    previews, _l4_inputs = runtime._process_l3(window, (candidate,), (7,))
 
     assert layer3.calls[0][1] == L3_MODE_DS_BASELINE
     assert previews[0].runtime_backend == "ds_baseline"

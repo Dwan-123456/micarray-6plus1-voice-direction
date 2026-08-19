@@ -16,6 +16,7 @@ from .qa import leakage_check, qa_recording
 from .retention import directory_size, move_to_trash, restore_from_trash
 from .recording_store import RecordingStore
 from .statistics import assign_grouped_splits, corpus_statistics
+from .timeline import enhanced_assets, iter_session_decisions, load_session_manifest
 
 
 class DataManagerService:
@@ -42,6 +43,57 @@ class DataManagerService:
 
     def runtime_sessions(self) -> list[dict[str, Any]]:
         return self.catalog.list_sessions()
+
+    def runtime_session_tracks(
+        self, session_id: str, *, stream_epoch: int | None = None
+    ) -> list[dict[str, Any]]:
+        if self.catalog.get_session(session_id) is None:
+            raise FileNotFoundError(session_id)
+        return self.catalog.session_track_summaries(session_id, stream_epoch=stream_epoch)
+
+    def track_timeline(self, session_id: str, stream_epoch: int, track_id: int) -> list[dict[str, Any]]:
+        if self.catalog.get_session(session_id) is None:
+            raise FileNotFoundError(session_id)
+        return self.catalog.track_timeline(session_id, stream_epoch, track_id)
+
+    def track_audio_assets(self, session_id: str, stream_epoch: int, track_id: int) -> list[dict[str, Any]]:
+        row = self.catalog.get_session(session_id)
+        if row is None:
+            raise FileNotFoundError(session_id)
+        return [
+            item
+            for item in enhanced_assets(row["path"])
+            if int(item.get("stream_epoch", -1)) == int(stream_epoch)
+            and int(item.get("track_id", -1)) == int(track_id)
+        ]
+
+    def session_audio_assets(self, session_id: str, kind: str) -> list[dict[str, Any]]:
+        if kind not in {"native_8ch", "logical_8ch", "physical_7ch"}:
+            raise ValueError("运行录音试听类型必须是native/logical/physical")
+        row = self.catalog.get_session(session_id)
+        if row is None:
+            raise FileNotFoundError(session_id)
+        root = Path(row["path"]).resolve()
+        manifest = load_session_manifest(root)
+        assets = []
+        for chunk in manifest.get("chunks", ()):
+            for asset in chunk.get("assets", ()):
+                if asset.get("kind") != kind:
+                    continue
+                path = (root / str(asset["path"])).resolve(strict=True)
+                if root != path and root not in path.parents:
+                    raise ValueError("运行录音资产路径越界")
+                if sha256_file(path) != asset.get("sha256"):
+                    raise ValueError(f"运行录音资产hash校验失败：{asset['path']}")
+                assets.append({**dict(asset), "absolute_path": str(path)})
+        assets.sort(key=lambda item: (int(item["stream_epoch"]), int(item["start_sample"])))
+        return assets
+
+    def session_decisions(self, session_id: str, *, include_v3: bool = True) -> list[dict[str, Any]]:
+        row = self.catalog.get_session(session_id)
+        if row is None:
+            raise FileNotFoundError(session_id)
+        return list(iter_session_decisions(row["path"], include_v3=include_v3))
 
     def recordings(self, **filters: Any) -> list[dict[str, Any]]:
         rows = self.catalog.list_recordings(**filters)

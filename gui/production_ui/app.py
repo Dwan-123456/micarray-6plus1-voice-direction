@@ -141,6 +141,12 @@ class DataTable(QTableWidget):
                 pass
         if key == "duration_samples":
             return f"{int(value) / 48_000:.1f} 秒"
+        if key == "duration_seconds":
+            return f"{float(value):.2f} 秒"
+        if key in {"first_theta_deg", "last_theta_deg", "angle_change_deg"}:
+            return f"{float(value):.1f}°"
+        if key in {"latest_l4_probability", "mean_l4_probability"}:
+            return "—" if value in {None, ""} else f"{float(value):.3f}"
         return str(value)
 
     def selected_id(self) -> str | None:
@@ -648,6 +654,59 @@ class AudioDataManager(QMainWindow):
         )
         box.addLayout(filters)
         box.addWidget(self.runtime_table)
+        self.runtime_table.itemSelectionChanged.connect(self._runtime_session_selected)
+
+        detail_box = QGroupBox("方向ID与录音试听")
+        detail_layout = QVBoxLayout(detail_box)
+        self.runtime_direction_status = QLabel("请选择一条运行录音。")
+        self.runtime_direction_status.setObjectName("pageIntro")
+        detail_layout.addWidget(self.runtime_direction_status)
+        self.runtime_track_table = DataTable(
+            [
+                ("track_key", "内部轨迹键"),
+                ("stream_epoch", "Epoch"),
+                ("track_id", "方向ID"),
+                ("first_sample", "首Sample"),
+                ("last_sample", "末Sample"),
+                ("duration_seconds", "持续时间"),
+                ("first_theta_deg", "起始角"),
+                ("last_theta_deg", "结束角"),
+                ("angle_change_deg", "角度变化"),
+                ("state", "状态"),
+                ("latest_l4_probability", "最新L4概率"),
+            ],
+            "该运行录音没有算法方向ID。",
+        )
+        self.runtime_track_table.setColumnHidden(0, True)
+        detail_layout.addWidget(self.runtime_track_table)
+        listen_actions = QHBoxLayout()
+        listen_track = QPushButton("试听所选方向ID")
+        listen_track.clicked.connect(self._listen_runtime_track)
+        listen_center = QPushButton("试听Center参考")
+        listen_center.clicked.connect(self._listen_runtime_center)
+        self.runtime_audio_kind = QComboBox()
+        self.runtime_audio_kind.addItem("Native原始8通道", ("native_8ch", 8))
+        self.runtime_audio_kind.addItem("Logical逻辑8通道", ("logical_8ch", 8))
+        self.runtime_audio_kind.addItem("Physical物理7通道", ("physical_7ch", 7))
+        self.runtime_audio_kind.currentIndexChanged.connect(self._update_runtime_audio_channels)
+        self.runtime_audio_channel = QComboBox()
+        self._update_runtime_audio_channels()
+        listen_raw = QPushButton("试听所选原始通道")
+        listen_raw.clicked.connect(self._listen_runtime_raw_channel)
+        stop_listen = QPushButton("停止试听")
+        stop_listen.clicked.connect(self.channel_player.stop)
+        for widget in (
+            listen_track,
+            listen_center,
+            self.runtime_audio_kind,
+            self.runtime_audio_channel,
+            listen_raw,
+            stop_listen,
+        ):
+            listen_actions.addWidget(widget)
+        listen_actions.addStretch()
+        detail_layout.addLayout(listen_actions)
+        box.addWidget(detail_box)
         actions = QHBoxLayout()
         promote = QPushButton("提取片段到测试语料")
         promote.setToolTip("复制所选运行录音中的一段，原始录音不会被修改")
@@ -767,6 +826,10 @@ class AudioDataManager(QMainWindow):
         self.wizard_status.setObjectName("warningText")
         self.wizard_status.setWordWrap(True)
         form.addRow(self.wizard_status)
+        self.wizard_direction_id_status = QLabel("方向ID：无算法方向ID（专用录音仅采集L1输入）")
+        self.wizard_direction_id_status.setObjectName("pageIntro")
+        self.wizard_direction_id_status.setWordWrap(True)
+        form.addRow(self.wizard_direction_id_status)
         outer.addWidget(formbox, 1)
         steps_box = QGroupBox("录制流程与当前操作")
         steps_layout = QVBoxLayout(steps_box)
@@ -994,6 +1057,95 @@ class AudioDataManager(QMainWindow):
 
     def refresh_recordings(self):
         self._job(self.service.recordings, self.corpus_table.load)
+
+    def _runtime_session_selected(self) -> None:
+        session_id = self.runtime_table.selected_id()
+        if not session_id:
+            self.runtime_track_table.load([])
+            self.runtime_direction_status.setText("请选择一条运行录音。")
+            return
+        self.runtime_direction_status.setText("正在读取方向ID时间线……")
+        self._job(
+            lambda: self.service.runtime_session_tracks(session_id),
+            lambda rows: self._load_runtime_tracks(session_id, rows),
+        )
+
+    def _load_runtime_tracks(self, session_id: str, rows: list[dict[str, Any]]) -> None:
+        if self.runtime_table.selected_id() != session_id:
+            return
+        display_rows = [
+            {**row, "track_key": f"{row['stream_epoch']}:{row['track_id']}"}
+            for row in rows
+        ]
+        self._runtime_track_rows = display_rows
+        self.runtime_track_table.load(display_rows)
+        self.runtime_direction_status.setText(
+            f"方向ID数量：{len(rows)}"
+            if rows
+            else "无算法方向ID：该录音是旧v3、L1-only，或录制期间没有形成公共方向轨迹。"
+        )
+
+    def _selected_runtime_track(self) -> tuple[str, int, int] | None:
+        session_id = self.runtime_table.selected_id()
+        track_key = self.runtime_track_table.selected_id()
+        if not session_id or not track_key or ":" not in track_key:
+            return None
+        epoch_text, track_text = track_key.split(":", 1)
+        return session_id, int(epoch_text), int(track_text)
+
+    def _listen_runtime_track(self) -> None:
+        selected = self._selected_runtime_track()
+        if selected is None:
+            return self._info("请先选择运行录音和其中一个方向ID。")
+        session_id, epoch, track_id = selected
+        self.channel_player.stop()
+        self._job(
+            lambda: self.service.track_audio_assets(session_id, epoch, track_id),
+            lambda assets: self._play_runtime_track(track_id, assets),
+        )
+
+    def _play_runtime_track(self, track_id: int, assets: list[dict[str, Any]]) -> None:
+        try:
+            self.channel_player.play_track_assets(assets)
+        except (OSError, ValueError) as exc:
+            return QMessageBox.warning(self, "无法试听方向ID", str(exc))
+        self.statusBar().showMessage(f"正在试听方向ID {track_id} 的连续增强音频", 6000)
+
+    def _listen_runtime_center(self) -> None:
+        session_id = self.runtime_table.selected_id()
+        if not session_id:
+            return self._info("请先选择一条运行录音。")
+        self._listen_runtime_assets(session_id, "logical_8ch", 6, "Center参考")
+
+    def _update_runtime_audio_channels(self, _index: int | None = None) -> None:
+        _kind, channel_count = self.runtime_audio_kind.currentData()
+        self.runtime_audio_channel.clear()
+        for index in range(int(channel_count)):
+            self.runtime_audio_channel.addItem(f"通道 {index + 1}", index)
+
+    def _listen_runtime_raw_channel(self) -> None:
+        session_id = self.runtime_table.selected_id()
+        if not session_id:
+            return self._info("请先选择一条运行录音。")
+        kind, _channel_count = self.runtime_audio_kind.currentData()
+        channel = int(self.runtime_audio_channel.currentData())
+        self._listen_runtime_assets(session_id, str(kind), channel, self.runtime_audio_kind.currentText())
+
+    def _listen_runtime_assets(self, session_id: str, kind: str, channel: int, label: str) -> None:
+        self.channel_player.stop()
+        self._job(
+            lambda: self.service.session_audio_assets(session_id, kind),
+            lambda assets: self._play_runtime_assets(label, channel, assets),
+        )
+
+    def _play_runtime_assets(self, label: str, channel: int, assets: list[dict[str, Any]]) -> None:
+        try:
+            paths = [item["absolute_path"] for item in assets]
+            channel_count = int(assets[0]["channel_count"]) if assets else 0
+            self.channel_player.play_files(paths, channel=channel, channel_count=channel_count)
+        except (OSError, ValueError, KeyError) as exc:
+            return QMessageBox.warning(self, "无法试听运行录音", str(exc))
+        self.statusBar().showMessage(f"正在试听 {label} · 通道 {channel + 1}", 6000)
 
     def _load_sessions(self, rows):
         self._runtime_rows = rows

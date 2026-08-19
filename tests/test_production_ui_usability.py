@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from gui.production_ui.app import AudioDataManager, DataTable, ImportMetadataDialog
+from gui.production_ui.channel_player import NativeChannelPlayer
 
 
 def app_instance() -> QApplication:
@@ -85,7 +86,95 @@ def test_wizard_uses_chinese_allowed_use_choices(tmp_path):
     assert window.wizard_start.text() == "开始录制"
     assert window.wizard_pause.text() == "暂停录制"
     assert window.wizard_stop.text() == "结束并保存"
+    assert "无算法方向ID" in window.wizard_direction_id_status.text()
     window.close()
+
+
+def test_runtime_detail_shows_public_tracks_and_plays_track_and_center(tmp_path, monkeypatch):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    session_id = "session-v4"
+    summary = {
+        "session_id": session_id,
+        "stream_epoch": 2,
+        "track_id": 7,
+        "first_sample": 960,
+        "last_sample": 48_000,
+        "duration_seconds": 1.0,
+        "first_theta_deg": 359.0,
+        "last_theta_deg": 1.0,
+        "angle_change_deg": 2.0,
+        "state": "confirmed",
+        "latest_l4_probability": 0.91,
+    }
+    monkeypatch.setattr(window, "_job", lambda fn, done: done(fn()))
+    monkeypatch.setattr(window.service, "runtime_session_tracks", lambda _sid: [summary])
+    monkeypatch.setattr(
+        window.service,
+        "track_audio_assets",
+        lambda _sid, _epoch, _track: [{"absolute_path": "track.wav", "decision_sample": 48_000}],
+    )
+    monkeypatch.setattr(
+        window.service,
+        "session_audio_assets",
+        lambda _sid, _kind: [{"absolute_path": "logical.wav", "channel_count": 8}],
+    )
+    track_calls = []
+    raw_calls = []
+    monkeypatch.setattr(window.channel_player, "play_track_assets", lambda assets: track_calls.append(assets))
+    monkeypatch.setattr(
+        window.channel_player,
+        "play_files",
+        lambda paths, *, channel, channel_count: raw_calls.append((paths, channel, channel_count)),
+    )
+
+    window._load_sessions([{"id": session_id, "started_at": "", "ended_at": "", "mode": "continuous",
+                            "status": "complete", "path": str(tmp_path)}])
+    window.runtime_table.selectRow(0)
+    assert window.runtime_track_table.rowCount() == 1
+    assert "方向ID数量：1" in window.runtime_direction_status.text()
+    window.runtime_track_table.selectRow(0)
+    window._listen_runtime_track()
+    window._listen_runtime_center()
+
+    assert track_calls and track_calls[0][0]["absolute_path"] == "track.wav"
+    assert raw_calls == [(["logical.wav"], 6, 8)]
+    window.close()
+
+
+def test_runtime_detail_explicitly_reports_no_algorithm_track_id(tmp_path, monkeypatch):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    monkeypatch.setattr(window, "_job", lambda fn, done: done(fn()))
+    monkeypatch.setattr(window.service, "runtime_session_tracks", lambda _sid: [])
+    window._load_sessions([{"id": "l1-only", "started_at": "", "ended_at": "", "mode": "manual",
+                            "status": "complete", "path": str(tmp_path)}])
+    window.runtime_table.selectRow(0)
+    assert "无算法方向ID" in window.runtime_direction_status.text()
+    window.close()
+
+
+def test_track_player_removes_320ms_overlap_between_decision_assets(tmp_path, monkeypatch):
+    paths = []
+    for index in range(2):
+        path = tmp_path / f"track-{index}.wav"
+        with wave.open(str(path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(48_000)
+            output.writeframes(bytes(15_360 * 2))
+        paths.append(path)
+    player = NativeChannelPlayer()
+    clips = []
+    monkeypatch.setattr(player, "_start_clips", lambda values: clips.extend(values))
+
+    player.play_track_assets([
+        {"absolute_path": str(paths[0]), "decision_sample": 15_360},
+        {"absolute_path": str(paths[1]), "decision_sample": 16_320},
+    ])
+
+    assert (clips[0].start_frame, clips[0].frame_count) == (0, 15_360)
+    assert (clips[1].start_frame, clips[1].frame_count, clips[1].silence_before) == (14_400, 960, 0)
 
 
 def test_wizard_builds_one_type_and_movement_row_per_source(tmp_path):

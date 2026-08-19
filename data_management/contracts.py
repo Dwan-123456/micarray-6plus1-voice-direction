@@ -10,6 +10,9 @@ import numpy as np
 class SessionMetadata:
     config_hash: str
     calibration_hash: str
+    config_revision: int = 0
+    calibration_revision: int = 0
+    calibration_version: str = "unversioned"
     geometry_version: str = "r6plus1_mic_face_ccw_v1"
     git_commit: str | None = None
     runtime: Mapping[str, Any] = field(default_factory=dict)
@@ -94,8 +97,21 @@ class DecisionRecord:
     stage_timings_ms: Mapping[str, float] = field(default_factory=dict, compare=False)
     stage_queue_wait_ms: Mapping[str, float] = field(default_factory=dict, compare=False)
     terminal_reason: str | None = field(default=None, compare=False)
+    schema_version: str = "decision_record_v4"
+    music_algorithm_version: str | None = None
+    model_order: Mapping[str, Any] | None = field(default=None, compare=False)
+    music_diagnostics: Mapping[str, Any] | None = field(default=None, compare=False)
+    active_tracks: tuple[Mapping[str, Any], ...] = field(default=(), compare=False)
+    kalman_applied: bool = False
+    config_revision: int = 0
+    config_hash: str = ""
+    calibration_revision: int = 0
+    calibration_version: str = "unversioned"
+    calibration_hash: str = ""
 
     def __post_init__(self) -> None:
+        if self.schema_version not in {"decision_record_v3", "decision_record_v4"}:
+            raise ValueError("DecisionRecord schema必须是v3或v4")
         if self.status not in {"ok", "degraded", "error"}:
             raise ValueError("未知DecisionRecord状态")
         if min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
@@ -109,6 +125,10 @@ class DecisionRecord:
                 object.__setattr__(self, name, array.copy())
         if len(self.enhanced_audio) != len(self.enhanced_waveforms):
             raise ValueError("增强音频元数据与波形数量不一致")
+        if min(self.config_revision, self.calibration_revision) < 0:
+            raise ValueError("配置和校准revision不能为负数")
+        if type(self.kalman_applied) is not bool:
+            raise TypeError("kalman_applied必须是bool")
         allowed_stage_states = {
             "completed", "skipped", "failed", "timed_out", "dropped", "cancelled",
         }
@@ -129,6 +149,8 @@ class DecisionRecord:
                 detection_theta = float(detection["theta_deg"])
                 if not np.isclose(candidate_theta, detection_theta, atol=1e-6, rtol=0.0):
                     raise ValueError("候选方向与检测方向必须同序对齐")
+        if self.schema_version == "decision_record_v4":
+            self._validate_v4_track_alignment()
         detected_voice_count = sum(bool(item.get("is_voice", False)) for item in self.detections)
         if self.voice_direction_count != detected_voice_count:
             raise ValueError("voice_direction_count必须等于正式检测中的人声方向数")
@@ -143,10 +165,56 @@ class DecisionRecord:
                 raise ValueError("增强音频必须是finite float32[15360]")
             waveforms.append(array.copy())
         object.__setattr__(self, "enhanced_audio", tuple(dict(item) for item in self.enhanced_audio))
+        object.__setattr__(self, "candidates", tuple(dict(item) for item in self.candidates))
+        object.__setattr__(self, "detections", tuple(dict(item) for item in self.detections))
+        object.__setattr__(self, "active_tracks", tuple(dict(item) for item in self.active_tracks))
         object.__setattr__(self, "enhanced_waveforms", tuple(waveforms))
+        if self.model_order is not None:
+            object.__setattr__(self, "model_order", dict(self.model_order))
+        if self.music_diagnostics is not None:
+            object.__setattr__(self, "music_diagnostics", dict(self.music_diagnostics))
         object.__setattr__(self, "stage_statuses", statuses)
         object.__setattr__(self, "stage_timings_ms", timings)
         object.__setattr__(self, "stage_queue_wait_ms", waits)
+
+    @staticmethod
+    def _track_ids(items: tuple[Mapping[str, Any], ...], name: str) -> tuple[int, ...]:
+        if not items:
+            return ()
+        values = tuple(item.get("track_id") for item in items)
+        # During branch integration an empty ID set is allowed only as an
+        # explicit no-ID record.  Once one item carries an ID, the whole
+        # aligned batch must carry unique positive IDs.
+        if all(value is None for value in values):
+            return ()
+        if any(type(value) is not int or int(value) <= 0 for value in values):
+            raise ValueError(f"{name}必须全部包含正整数track_id")
+        result = tuple(int(value) for value in values)
+        if len(set(result)) != len(result):
+            raise ValueError(f"{name}的track_id不能重复")
+        return result
+
+    def _validate_v4_track_alignment(self) -> None:
+        candidate_ids = self._track_ids(self.candidates, "L2候选")
+        enhanced_ids = self._track_ids(self.enhanced_audio, "L3增强音频")
+        detection_ids = self._track_ids(self.detections, "L4检测")
+        active_ids = self._track_ids(self.active_tracks, "active_tracks")
+        if candidate_ids:
+            if enhanced_ids and enhanced_ids != candidate_ids:
+                raise ValueError("L3 track_id必须与L2同序对齐")
+            if detection_ids and detection_ids != candidate_ids:
+                raise ValueError("L4 track_id必须与L2同序对齐")
+        elif enhanced_ids or detection_ids:
+            raise ValueError("L3/L4存在track_id时L2候选也必须包含track_id")
+        if active_ids and candidate_ids and not set(candidate_ids).issubset(active_ids):
+            raise ValueError("本窗L2方向必须包含在active_tracks中")
+        for item in (*self.candidates, *self.active_tracks):
+            theta = item.get("theta_deg")
+            measured = item.get("measured_theta_deg")
+            if theta is not None and (not np.isfinite(theta) or not 0 <= float(theta) < 360):
+                raise ValueError("输出角必须位于[0,360)")
+            if measured is not None and (not np.isfinite(measured) or not 0 <= float(measured) < 360):
+                raise ValueError("观测角必须位于[0,360)")
 
 
 def public_mapping(value: object) -> dict[str, Any]:

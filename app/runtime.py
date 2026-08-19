@@ -278,6 +278,12 @@ class ApplicationRuntime:
             "l2": 0, "l3": 0, "l4": 0, "commit": 0,
         }
         self._project_config_hash = config_hash(config=config)
+        calibration_payload = json.dumps(
+            config.calibration.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self._calibration_hash = hashlib.sha256(calibration_payload).hexdigest()
         self._compute_cache: ComputeCache
         self._result_joiner: ResultJoiner
         self._reset_processing_graph()
@@ -518,6 +524,9 @@ class ApplicationRuntime:
             diagnostics=(f"admission_drop={rejected.reason}",),
             stage_statuses={"l2": "dropped", "l3": "dropped", "l4": "dropped"},
             terminal_reason=rejected.reason,
+            config_hash=self._project_config_hash,
+            calibration_version=self.config.hardware.hardware_calibration_status,
+            calibration_hash=self._calibration_hash,
         )
         watermark = ResultWatermark(
             rejected.session_id,
@@ -1063,10 +1072,10 @@ class ApplicationRuntime:
             diagnostics,
             {},
             output,
-            getattr(l2_output, "candidate_track_ids", ()),
-            getattr(l2_output, "candidate_is_prediction", ()),
-            getattr(l2_output, "candidate_track_is_formal", ()),
-            getattr(l2_output, "candidate_track_is_new", ()),
+            tuple(item.track_id for item in directions),
+            tuple(not item.is_observed for item in directions),
+            (True,) * len(directions),
+            tuple(item.is_new_track for item in directions),
         )
         with self._ui_lock:
             current_stream = getattr(self._ui_aggregator, "current_stream", None)
@@ -1201,12 +1210,12 @@ class ApplicationRuntime:
                         mailbox.get_nowait()
                     except queue.Empty:
                         break
-        calibration_payload = json.dumps(
-            self.config.calibration.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
         metadata = SessionMetadata(
-            config_hash(config=self.config),
-            hashlib.sha256(calibration_payload).hexdigest(),
+            self._project_config_hash,
+            self._calibration_hash,
+            config_revision=0,
+            calibration_revision=0,
+            calibration_version=self.config.hardware.hardware_calibration_status,
             geometry_version=self.config.hardware.geometry_version,
             runtime={
                 "processing_device": self.processing_device,
@@ -2037,19 +2046,7 @@ class ApplicationRuntime:
             window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
             (window.doa_start_sample, window.doa_end_sample),
             (window.context_start_sample, window.context_end_sample), status,
-            candidates=tuple(
-                {"track_id": track_id,
-                 "theta_deg": item.theta_deg, "raw_score": item.raw_score,
-                 "normalized_score": item.normalized_score,
-                 "search_iteration": (
-                     search_diagnostics.evidence[index].search_iteration
-                     if search_diagnostics is not None and index < len(search_diagnostics.evidence)
-                     else 0
-                 )}
-                for index, (track_id, item) in enumerate(
-                    zip(joined.l2.track_ids, candidates, strict=True)
-                )
-            ),
+            candidates=tuple(asdict(item) for item in directions),
             detections=tuple(
                 {"track_id": item.track_id,
                  "theta_deg": item.theta_deg, "probability": item.probability,
@@ -2074,6 +2071,33 @@ class ApplicationRuntime:
             stage_timings_ms=stage_timings,
             stage_queue_wait_ms=stage_waits,
             terminal_reason=joined.terminal_reason,
+            active_tracks=tuple(
+                asdict(item)
+                for item in (() if l2_output is None else l2_output.active_tracks)
+            ),
+            kalman_applied=any(item.kalman_applied for item in directions),
+            config_revision=work.config.revision,
+            config_hash=work.config.config_hash,
+            calibration_revision=0,
+            calibration_version=self.config.hardware.hardware_calibration_status,
+            calibration_hash=self._calibration_hash,
+            music_algorithm_version=(
+                None if search_diagnostics is None else search_diagnostics.algorithm_version
+            ),
+            model_order=(
+                None
+                if l2_output is None or getattr(l2_output, "model_order", None) is None
+                else asdict(l2_output.model_order)
+            ),
+            music_diagnostics=(
+                None
+                if search_diagnostics is None or not hasattr(search_diagnostics, "state")
+                else {
+                    "state": asdict(search_diagnostics.state),
+                    "valid_frequency_bins": search_diagnostics.valid_frequency_bins,
+                    "covariance_quality": search_diagnostics.covariance_quality,
+                }
+            ),
         )
         dropped_windows = ()
         if joined.state in {StageState.DROPPED, StageState.CANCELLED}:
@@ -2117,14 +2141,12 @@ class ApplicationRuntime:
                 if l3_output is not None:
                     tracked_audio = self.dev_audio_tracker.update(
                         window,
-                        candidates,
+                        directions,
                         previews,
-                        track_ids=getattr(l2_output, "candidate_track_ids", ()),
-                        prediction_flags=getattr(l2_output, "candidate_is_prediction", ()),
-                        formal_flags=getattr(l2_output, "candidate_track_is_formal", ()),
-                        kalman_ready_flags=getattr(
-                            l2_output, "candidate_track_is_kalman_ready", ()
-                        ),
+                        track_ids=tuple(item.track_id for item in directions),
+                        prediction_flags=tuple(not item.is_observed for item in directions),
+                        formal_flags=(True,) * len(directions),
+                        kalman_ready_flags=tuple(item.kalman_applied for item in directions),
                     )
                 elif l2_output is not None and not candidates:
                     # A formal empty L2 result advances the listening tracks
@@ -2183,6 +2205,7 @@ class ApplicationRuntime:
         stage_timings,
     ) -> None:
         window = joined.work_item.window
+        directions = () if l2_output is None else tuple(l2_output.directions)
         with self._ui_lock:
             current_stream = getattr(self._ui_aggregator, "current_stream", None)
             if current_stream is not None and current_stream != (
@@ -2227,10 +2250,10 @@ class ApplicationRuntime:
                     direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                     direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     scan_config_revision=int(values["scan_config_revision"]),
-                    candidate_track_ids=getattr(l2_output, "candidate_track_ids", ()),
-                    candidate_is_prediction=getattr(l2_output, "candidate_is_prediction", ()),
-                    candidate_track_is_formal=getattr(l2_output, "candidate_track_is_formal", ()),
-                    candidate_track_is_new=getattr(l2_output, "candidate_track_is_new", ()),
+                    candidate_track_ids=tuple(item.track_id for item in directions),
+                    candidate_is_prediction=tuple(not item.is_observed for item in directions),
+                    candidate_track_is_formal=(True,) * len(directions),
+                    candidate_track_is_new=tuple(item.is_new_track for item in directions),
                 )
             self._ui_aggregator.update_l3(
                 previews, None if l3_output is not None else f"L3 {joined.l3.state.value}",
