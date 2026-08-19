@@ -33,6 +33,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.min_peak_distance_deg == 45.0
     assert config.runtime.max_candidate_batch == 3
     assert AudioConfig.from_project(config).block_size == 960
+    assert AudioConfig.from_project(config).handoff_blocks == 500
     assert CdcConfig.from_project(config).required is False
     assert CalibrationConfig.from_project(config).delay_samples == (0,) * 7
     assert len(config_hash(config)) == 64

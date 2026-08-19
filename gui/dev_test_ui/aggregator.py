@@ -178,7 +178,10 @@ class DevUiAggregator:
         current_stream = (status.session_id, status.stream_epoch)
         if previous_stream is not None and previous_stream != current_stream:
             self._clear_window_state(clear_tracked_audio=True)
-            self._srp_error = "WARMING_UP: awaiting the first Layer 2 result for the new stream epoch"
+            self._srp_error = (
+                "WARMING_UP: awaiting the first Layer 2 result for the new stream epoch; "
+                f"{status.message}"
+            )
             return self.frame()
         retained_keys = {
             (item.session_id, item.stream_epoch)

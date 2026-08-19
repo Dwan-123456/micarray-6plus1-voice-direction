@@ -115,6 +115,26 @@ def test_runtime_has_no_obsolete_iterative_peak_search_switch(tmp_path):
     assert not hasattr(runtime, "set_iterative_peak_search_enabled")
 
 
+def test_processing_status_exposes_input_discontinuity_reason(tmp_path):
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+    first = DecodedAudio(np.zeros((960, 8), np.float32), 48_000, 0, 0.0)
+    after_gap = DecodedAudio(np.zeros((960, 8), np.float32), 48_000, 2, 0.04)
+    runtime.coordinator.ingest(first)
+    runtime.coordinator.ingest(after_gap)
+
+    health = runtime.processing_status["input_health"]
+
+    assert health["stream_epoch"] == 1
+    assert health["discontinuity_count"] == 1
+    assert health["last_discontinuity"]["reason"] == "sequence_gap"
+    assert health["input_overflow_count"] == 0
+    assert health["handoff_drop_count"] == 0
+    runtime.close()
+
+
 def test_runtime_processing_snapshot_freezes_music_id_lifecycle_and_kalman_revisions(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,

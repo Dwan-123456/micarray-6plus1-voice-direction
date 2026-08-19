@@ -21,6 +21,40 @@
 
 ---
 
+## 2026-08-19 — 加固长时间音频采集并公开IMCRA重置原因
+
+- **版本/标签**：项目`1.1.0`开发分支；仍未发布，不创建或移动版本标签。
+- **类型**：L1实时采集可靠性、连续性诊断、Test UI错误归因和回归测试。
+- **涉及文件**：`layer1_input/capture.py`、`config/config.yaml`、`app/runtime.py`、`gui/dev_test_ui/aggregator.py`、L1/Ingest/Runtime说明及对应测试。
+
+### L1、Ingest与Windowing
+
+- 将RMS电平计算移出PortAudio实时回调，改为读取capture status时按需计算；回调只保留PCM复制、sequence/timestamp、健康事件和有界投递，降低完整L2～L4并发时因Python回调超时导致`input_overflow`的风险。
+- 主链capture handoff由100个20 ms块（2秒）调整为500块（10秒），吸收Windows/GPU/UI短时调度停顿；队列仍有硬上限，持续过载不会无限增长。
+- 新增专用`handoff_drop_count`及交接队列当前深度、容量、高水位；连续满队列丢块合并为一个带范围与lost sample数的健康事件，避免同一拥塞突发反复增加epoch和重复触发2.4秒IMCRA预热。
+- 真实`input_overflow/handoff_drop/sequence_gap/timestamp_gap`仍增加epoch，WindowAssembler与IMCRA仍安全重建；不补零、不隐藏真实丢音。单纯静音或概率降低仍不会触发`warming_up`。
+
+### Runtime与Development Test UI
+
+- 公开`processing_status.input_health`，包含当前epoch、连续性中断计数、最后中断原因、input/handoff drop计数和交接队列水位。
+- Gate因epoch变化等待L2或IMCRA重新预热时，诊断增加`epoch_reset:<reason>`，可直接识别`health_event:input_overflow`、`health_event:handoff_drop`、`sequence_gap`或`timestamp_gap`，不再只显示无来源的`WARMING_UP`。
+- Development Test UI布局、控件、试听和用户当前未提交的L4概率显示改动均未由本任务修改。
+
+### L2、L3、L4与录音数据
+
+- MUSIC、模型阶数、全局ID关联、Kalman、L3波束形成、L4模型和处理队列策略均无变化；较高`processing_drops`仍是独立的算法吞吐问题，不会重置IMCRA。
+- RecordingStore、Catalog、manifest、录音格式、Production UI和Pipeline Log UI均无变化；本次实机诊断不保存或上传音频。
+
+### 测试、实机与资产
+
+- 新增连续handoff overflow事件合并、回调不执行RMS、capture水位和Runtime输入中断公开原因测试，并锁定10秒handoff配置。
+- 不落盘裸采集+IMCRA实机10秒：499块，epoch 0，input/handoff drop均为0，L1 p95约3.5 ms。
+- 不落盘完整L1～L4实机120秒：6008块、约49.88 Hz，epoch 0，input/handoff drop均为0，handoff高水位3/500；算法处理丢窗685次，明确不属于输入丢音或IMCRA重置。
+- 未进行小时级诊室录音、设备热插拔或强制CPU/GPU饱和故障注入；这些仍属于最终实机门禁。
+- Git LFS模型、音频和阵列资产无变化；`data/`、录音、Catalog、日志和临时文件不纳入提交。
+
+---
+
 ## 2026-08-19 — 活动方向ID存在期间强制保持Probability Gate开启
 
 - **版本/标签**：项目`1.1.0`开发分支；仍未发布，不创建或移动版本标签。

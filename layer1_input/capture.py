@@ -39,10 +39,11 @@ class AudioCapture:
         self._next_event_id = 0
         self._stream_origin_monotonic = 0.0
         self._recent: deque[bytes] = deque(maxlen=max(1, sample_rate // block_size * 5))
-        self._levels = [0.0] * channels
         self._frames_received = 0
         self._last_error: str | None = None
         self._dropped_subscriber_blocks = 0
+        self._handoff_drop_count = 0
+        self._handoff_queue_high_water = 0
         self._callback_status_count = 0
         self._input_overflow_count = 0
 
@@ -78,6 +79,8 @@ class AudioCapture:
             self._recent.clear()
             self._frames_received = 0
             self._dropped_subscriber_blocks = 0
+            self._handoff_drop_count = 0
+            self._handoff_queue_high_water = 0
             self._callback_status_count = 0
             self._input_overflow_count = 0
             self._health_events.clear()
@@ -123,14 +126,57 @@ class AudioCapture:
                     stream.close()
             return self.status()
 
+    def _append_handoff_drop_locked(self, dropped: NumberedCaptureBlock) -> None:
+        """Coalesce one contiguous queue-overflow burst into one epoch event."""
+
+        if self._health_events:
+            previous = self._health_events[-1]
+            if (
+                previous.kind == "handoff_drop"
+                and previous.first_sequence_id_after_gap == dropped.sequence_id
+            ):
+                lost = (
+                    None
+                    if previous.lost_sample_count is None
+                    else previous.lost_sample_count + dropped.frame_count
+                )
+                self._health_events.pop()
+                self._health_events.append(
+                    InputHealthEvent(
+                        previous.event_id,
+                        time.monotonic(),
+                        "handoff_drop",
+                        previous.last_sequence_id_before_gap,
+                        dropped.sequence_id + 1,
+                        lost,
+                        "capture handoff queue full; contiguous dropped blocks coalesced",
+                    )
+                )
+                return
+        self._health_events.append(
+            InputHealthEvent(
+                self._next_event_id,
+                time.monotonic(),
+                "handoff_drop",
+                dropped.sequence_id - 1 if dropped.sequence_id else None,
+                dropped.sequence_id + 1,
+                dropped.frame_count,
+                "capture handoff queue full",
+            )
+        )
+        self._next_event_id += 1
+
     def _callback(self, indata: np.ndarray, frames: int, _time: Any, status: Any) -> None:
+        # PortAudio owns ``indata`` only for the duration of this callback, so
+        # one byte copy is unavoidable.  Keep every other calculation off the
+        # real-time callback; levels are derived lazily by ``status()``.
+        payload = np.asarray(indata, dtype="<i2").tobytes(order="C")
         with self._lock:
             sequence_id = self._next_sequence_id
             self._next_sequence_id += 1
             timestamp = self._stream_origin_monotonic + self._frames_received / self.sample_rate
-        if status:
-            self._last_error = str(status)
-            with self._lock:
+            if status:
+                self._last_error = str(status)
                 self._callback_status_count += 1
                 if bool(getattr(status, "input_overflow", False)):
                     self._input_overflow_count += 1
@@ -139,12 +185,7 @@ class AudioCapture:
                         sequence_id - 1 if sequence_id else None, sequence_id, None, str(status),
                     ))
                     self._next_event_id += 1
-        samples = np.asarray(indata, dtype="<i2")
-        payload = samples.tobytes(order="C")
-        levels = np.sqrt(np.mean(np.square(samples.astype(np.float32) / 32768.0), axis=0)).tolist()
-        with self._lock:
             self._recent.append(payload)
-            self._levels = [float(value) for value in levels]
             self._frames_received += frames
             subscribers = tuple(self._subscribers)
             numbered_subscribers = tuple(self._numbered_subscribers)
@@ -174,12 +215,14 @@ class AudioCapture:
                     continue
                 with self._lock:
                     self._dropped_subscriber_blocks += 1
-                    self._health_events.append(InputHealthEvent(
-                        self._next_event_id, time.monotonic(), "handoff_drop",
-                        dropped.sequence_id - 1 if dropped.sequence_id else None,
-                        dropped.sequence_id + 1, dropped.frame_count, "capture handoff queue full",
-                    ))
-                    self._next_event_id += 1
+                    self._handoff_drop_count += 1
+                    self._append_handoff_drop_locked(dropped)
+            depth = subscriber.qsize()
+            if depth > self._handoff_queue_high_water:
+                with self._lock:
+                    self._handoff_queue_high_water = max(
+                        self._handoff_queue_high_water, depth
+                    )
 
     def subscribe(self, maxsize: int = 10) -> queue.Queue[bytes]:
         """Subscribe to native blocks.
@@ -226,4 +269,42 @@ class AudioCapture:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return {"running": self.running, "requested_device": self.device_name, "requested_host_api": self.host_api, "device_index": self._device_index, "device": self._device_info, "sample_rate": self.sample_rate, "channels": self.channels, "sample_format": "s16-le", "layout": "interleaved", "block_size_frames": self.block_size, "bytes_per_frame": self.channels * 2, "frames_received": self._frames_received, "rms_levels": self._levels, "last_error": self._last_error, "callback_status_count": self._callback_status_count, "input_overflow_count": self._input_overflow_count, "dropped_subscriber_blocks": self._dropped_subscriber_blocks}
+            latest_payload = self._recent[-1] if self._recent else None
+            numbered_subscribers = tuple(self._numbered_subscribers)
+            result = {
+                "running": self.running,
+                "requested_device": self.device_name,
+                "requested_host_api": self.host_api,
+                "device_index": self._device_index,
+                "device": self._device_info,
+                "sample_rate": self.sample_rate,
+                "channels": self.channels,
+                "sample_format": "s16-le",
+                "layout": "interleaved",
+                "block_size_frames": self.block_size,
+                "bytes_per_frame": self.channels * 2,
+                "frames_received": self._frames_received,
+                "last_error": self._last_error,
+                "callback_status_count": self._callback_status_count,
+                "input_overflow_count": self._input_overflow_count,
+                "dropped_subscriber_blocks": self._dropped_subscriber_blocks,
+                "handoff_drop_count": self._handoff_drop_count,
+                "handoff_queue_depth": max(
+                    (subscriber.qsize() for subscriber in numbered_subscribers),
+                    default=0,
+                ),
+                "handoff_queue_capacity": max(
+                    (subscriber.maxsize for subscriber in numbered_subscribers),
+                    default=0,
+                ),
+                "handoff_queue_high_water": self._handoff_queue_high_water,
+            }
+        if latest_payload is None:
+            levels = [0.0] * self.channels
+        else:
+            samples = np.frombuffer(latest_payload, dtype="<i2").reshape(-1, self.channels)
+            levels = np.sqrt(
+                np.mean(np.square(samples.astype(np.float32) / 32768.0), axis=0)
+            ).tolist()
+        result["rms_levels"] = [float(value) for value in levels]
+        return result

@@ -123,3 +123,39 @@ def test_numbered_capture_handoff_is_bounded_and_reports_drop():
     assert visible.sequence_id == 1
     assert len(events) == 1 and events[0].kind == "handoff_drop"
     assert (events[0].last_sequence_id_before_gap, events[0].first_sequence_id_after_gap) == (None, 1)
+
+
+def test_numbered_capture_coalesces_one_contiguous_overflow_burst():
+    capture = AudioCapture("test", "test", 48_000, 8, 2)
+    receiver = capture.subscribe_numbered(maxsize=1)
+    capture._stream_origin_monotonic = 10.0
+    capture._callback(np.zeros((2, 8), dtype=np.int16), 2, None, None)
+    capture._callback(np.ones((2, 8), dtype=np.int16), 2, None, None)
+    capture._callback(np.full((2, 8), 2, dtype=np.int16), 2, None, None)
+
+    visible = receiver.get_nowait()
+    events = capture.take_health_events()
+    status = capture.status()
+
+    assert visible.sequence_id == 2
+    assert len(events) == 1
+    assert events[0].kind == "handoff_drop"
+    assert events[0].last_sequence_id_before_gap is None
+    assert events[0].first_sequence_id_after_gap == 2
+    assert events[0].lost_sample_count == 4
+    assert status["handoff_drop_count"] == 2
+    assert status["handoff_queue_capacity"] == 1
+    assert status["handoff_queue_high_water"] == 1
+
+
+def test_capture_callback_defers_rms_work_to_status(monkeypatch):
+    capture = AudioCapture("test", "test", 48_000, 8, 2)
+    samples = np.full((2, 8), 16_384, dtype=np.int16)
+
+    with monkeypatch.context() as context:
+        context.setattr(np, "sqrt", lambda _value: (_ for _ in ()).throw(
+            AssertionError("RMS must not run in the PortAudio callback")
+        ))
+        capture._callback(samples, 2, None, None)
+
+    assert capture.status()["rms_levels"] == pytest.approx([0.5] * 8)

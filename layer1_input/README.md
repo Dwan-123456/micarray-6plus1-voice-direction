@@ -14,6 +14,12 @@ L1读取48 kHz native 8ch音频，完成PCM解码、校准、连续性guard和�
 
 输出是`float32 [N,8]`。前7路是物理阵列，最后1路是硬件合成总声音；HardwareMix只作为预留接口、显示、录制和后续实验输入，不得加入麦克风几何、SRP麦对或MVDR steering。
 
+## 长时间连续采集边界
+
+PortAudio回调只复制驱动当前提供的PCM块、分配单调sequence并投递到有界交接队列；RMS电平改为读取`status()`时按需计算，不能占用实时回调。正式主链交接容量为500个20 ms块（10秒），用于吸收Windows调度、GPU或UI造成的短时停顿；持续算力不足仍必须通过队列深度、高水位和drop计数暴露，不能无限积压或伪装为连续。
+
+`status()`公开`input_overflow_count、handoff_drop_count、handoff_queue_depth、handoff_queue_capacity、handoff_queue_high_water`。连续的handoff满队列丢块合并为一次有范围和lost sample数的健康事件，避免同一次拥塞突发对IMCRA反复重置；不连续的独立缺口仍分别增加epoch。任何真实缺失都不补零、不隐藏。
+
 ## 麦克风面坐标
 
 官方装配图从灯面俯视，灯面位于麦克风背面。算法统一从朝上的麦克风面观察：中央麦为原点，实际位于底部的MIC0方向为`+x/0°`，角度逆时针增加。MIC0～MIC5依次是`0°、60°、120°、180°、240°、300°`，Center为原点。
@@ -49,7 +55,7 @@ PSD状态保留80～8000 Hz目标频带，概率证据带与L2 SRP定位频带�
 
 不可变`ImcraHopSnapshot`发布字段包括`frequencies_hz、noise_psd、smoothed_psd、conditional_smoothed_psd、minimum_psd、conditional_minimum_psd、spp、speech_absence_probability、posterior_snr、prior_snr、noise_features、noise_level_db、source_probability_per_mic、array_source_probability_20ms`。所有频谱状态形状为`[7,338]`，必须finite且只读；概率必须位于`[0,1]`。
 
-断流、sequence/timestamp/rate异常或epoch切换时必须清空IMCRA状态并重新预热。预热期间发布明确状态，不能把缺失概率写成0。
+断流、sequence/timestamp/rate异常或epoch切换时必须清空IMCRA状态并重新预热。预热期间发布明确状态，不能把缺失概率写成0。单纯静音或概率下降不改变epoch，也不会让IMCRA重新进入`warming_up`。
 
 ## 边界
 
@@ -63,5 +69,6 @@ L1不计算DOA、不执行波束形成、不判断人声，也不分配权威绝
 - IMCRA 20 ms更新、80～8000 Hz PSD/SPP状态、500～4000 Hz概率聚合、重置、预热及概率范围；
 - 40 ms/20 ms WOLA连续重建、每麦独立增益、HardwareMix直通、预热旁路和运行时开关；
 - 设备、WAV、实时handoff和Ingest时间轴一致性。
+- PortAudio回调不执行RMS、连续handoff溢出事件合并、交接队列高水位与输入健康诊断。
 
 Development Test UI左上象限需显示8路电平、IMCRA状态、每麦噪声摘要及20 ms概率；灯控和scratch录音仍复用同一L1输入，不能重开设备。

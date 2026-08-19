@@ -209,7 +209,9 @@ runtime:
   preferred_device: cuda
   allow_cpu_fallback: true
   max_candidate_batch: 3
-  capture_handoff_blocks: 100
+  # Ten seconds absorbs transient Windows/GPU/UI stalls without hiding a
+  # sustained overload; depth/high-water/drop counters remain observable.
+  capture_handoff_blocks: 500
   # Legacy serial-queue field retained for old launch profiles.
   processing_queue_windows: 1
   # L2/L3/L4 are independent single-worker FIFO stages.  These small queues

@@ -6,6 +6,6 @@ IngestCoordinator消费L1逻辑8通道音频、InputHealthEvent及同sample区�
 
 输出`IngestedAudioBlock.samples`目标shape为`float32 [N,8]`，顺序为`MIC0..MIC5、Center、HardwareMix`；存在native副本时仍为Host原始8ch顺序。数组必须finite、C-contiguous、只读且`N>0`。
 
-WindowAssembler与RecordingStore订阅同一份不可变block。sequence gap、timestamp/rate异常、设备重启、overflow或handoff丢块只在这里转换为epoch重置；不得补零或让不同消费者建立不同时间轴。IMCRA结果必须继承同一epoch和sample边界，旧epoch结果不得进入新窗口。
+WindowAssembler与RecordingStore订阅同一份不可变block。sequence gap、timestamp/rate异常、设备重启、overflow或handoff丢块只在这里转换为epoch重置；不得补零或让不同消费者建立不同时间轴。同一次连续handoff溢出突发先在采集边界合并为一个带缺失范围的健康事件，因此只产生一次epoch重置；真正分离的多次缺口仍分别重置。IMCRA结果必须继承同一epoch和sample边界，旧epoch结果不得进入新窗口。
 
 迁移测试覆盖8ch所有权、音频/IMCRA身份对齐、断流重置、overflow、有界handoff及录音/算法同时间轴。

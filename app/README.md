@@ -28,6 +28,6 @@ Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Outpu
 
 启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L4,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L4→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。超时的已注册窗口显式转为`CANCELLED/error`；仍有worker存活时拒绝假关闭。
 
-Development Test UI只通过公开只读`processing_status`获取每阶段队列深度/容量、worker存活、在途窗口、缓存字节、完成数和错误数；其中L4诊断包括`l4_actual_completed/l4_dropped/l4_skipped/l4_actual_hz`及显示邮箱深度、容量、覆盖数。UI不得读取Runtime私有队列或据此修改调度。
+Development Test UI只通过公开只读`processing_status`获取每阶段队列深度/容量、worker存活、在途窗口、缓存字节、完成数和错误数；其中`input_health`公开当前epoch、连续性中断次数/最后原因、input overflow、handoff drop及交接队列深度/容量/高水位，L4诊断包括`l4_actual_completed/l4_dropped/l4_skipped/l4_actual_hz`及显示邮箱深度、容量、覆盖数。Gate因新epoch重新预热时，UI错误文案附带`epoch_reset:<reason>`，可直接区分静音、处理丢窗与真实输入中断。UI不得读取Runtime私有队列或据此修改调度。
 
 回归测试覆盖公共ID逐项进入L3/L4、跨层错序/角度/WindowKey拒绝、队列丢弃、sample跳跃、epoch变化、配置revision、停机drain、唯一终态/watermark和有序提交；普通运行与Test UI运行使用同一正式L2/L3/L4链路。

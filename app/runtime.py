@@ -721,6 +721,34 @@ class ApplicationRuntime:
     def compute_cache_bytes(self) -> int:
         return self._compute_cache.current_bytes
 
+    def _epoch_reset_reason(self, session_id: str, stream_epoch: int) -> str | None:
+        for item in reversed(self.coordinator.discontinuities):
+            if item.session_id == session_id and item.new_epoch == stream_epoch:
+                return item.reason
+        return None
+
+    def _input_health_snapshot(self) -> dict[str, object]:
+        source = getattr(self.pipeline, "source", None)
+        capture = getattr(source, "capture", None)
+        status_method = getattr(capture, "status", None)
+        try:
+            capture_status = status_method() if callable(status_method) else {}
+        except Exception as exc:
+            capture_status = {"last_error": f"capture status unavailable: {exc}"}
+        last = self.coordinator.discontinuities[-1] if self.coordinator.discontinuities else None
+        return {
+            "stream_epoch": self.coordinator.stream_epoch,
+            "discontinuity_count": len(self.coordinator.discontinuities),
+            "last_discontinuity": None if last is None else asdict(last),
+            "input_overflow_count": int(capture_status.get("input_overflow_count", 0)),
+            "handoff_drop_count": int(capture_status.get("handoff_drop_count", 0)),
+            "handoff_queue_depth": int(capture_status.get("handoff_queue_depth", 0)),
+            "handoff_queue_capacity": int(capture_status.get("handoff_queue_capacity", 0)),
+            "handoff_queue_high_water": int(capture_status.get("handoff_queue_high_water", 0)),
+            "callback_status_count": int(capture_status.get("callback_status_count", 0)),
+            "last_error": capture_status.get("last_error"),
+        }
+
     @property
     def processing_status(self) -> dict[str, object]:
         snapshots = self._compute_cache.snapshots()
@@ -768,6 +796,7 @@ class ApplicationRuntime:
             "last_admission_rejection": self._last_rejected_admission,
             "timeline_gap_count": self._timeline_gap_count,
             "last_timeline_gap": self._last_timeline_gap,
+            "input_health": self._input_health_snapshot(),
             "l4_actual_completed": l4_diagnostics["actual_completed"],
             "l4_dropped": l4_diagnostics["dropped"],
             "l4_skipped": l4_diagnostics["skipped"],
@@ -1333,7 +1362,14 @@ class ApplicationRuntime:
                     except queue.Empty:
                         break
             self._performance.add_block(block, received)
-            frame = self._ui_aggregator.update_l1(snapshot, self.assembler.status)
+            pipeline_status = self.assembler.status
+            reset_reason = self._epoch_reset_reason(block.session_id, block.stream_epoch)
+            if reset_reason is not None:
+                pipeline_status = replace(
+                    pipeline_status,
+                    message=f"{pipeline_status.message}; epoch_reset:{reset_reason}",
+                )
+            frame = self._ui_aggregator.update_l1(snapshot, pipeline_status)
             if stream_changed and self.dev_audio_tracker is not None:
                 # A continuity break starts a new formal processing epoch, but
                 # the L3 listening cache belongs to the whole capture session.
@@ -2235,8 +2271,19 @@ class ApplicationRuntime:
                     None, (), f"L2 {joined.l2.state.value.upper()}: {joined.l2.error or joined.l2.reason}"
                 )
             elif response is None:
+                unavailable_reason = gate_decision.reason
+                reset_reason = self._epoch_reset_reason(
+                    window.session_id, window.stream_epoch
+                )
+                if (
+                    reset_reason is not None
+                    and unavailable_reason == "upstream_probability_warming_up"
+                ):
+                    unavailable_reason = (
+                        f"{unavailable_reason}; epoch_reset:{reset_reason}"
+                    )
                 self._ui_aggregator.update_srp(
-                    None, (), f"UNAVAILABLE: {gate_decision.reason}", gate_decision=gate_decision,
+                    None, (), f"UNAVAILABLE: {unavailable_reason}", gate_decision=gate_decision,
                     gate_threshold=float(values["gate_threshold"]),
                     gate_config_revision=int(values["gate_config_revision"]),
                     direction_threshold=scan.direction_threshold,

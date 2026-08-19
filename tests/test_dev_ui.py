@@ -267,10 +267,14 @@ def test_ui_aggregator_clears_old_and_ignores_late_l2_results_on_epoch_change():
         scan_config_revision=0,
     )
 
-    new_status = PipelineStatus("warming_up", "epoch-test", 1, 960, 15_360, "Warming")
+    new_status = PipelineStatus(
+        "warming_up", "epoch-test", 1, 960, 15_360,
+        "Warming; epoch_reset:health_event:input_overflow",
+    )
     current = aggregator.update_l1(meter(1), new_status)
     assert current.gate_decision is None
     assert "WARMING_UP" in current.missing_reasons["srp"]
+    assert "epoch_reset:health_event:input_overflow" in current.missing_reasons["srp"]
 
     late = aggregator.update_srp(
         None, (), "BACKGROUND_ONLY", gate_decision=gate,
