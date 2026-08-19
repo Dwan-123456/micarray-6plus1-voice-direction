@@ -9,8 +9,8 @@ import tempfile
 class DevUiSettings:
     """Atomic persistent store for operator-tuned Development Test UI values."""
 
-    SCHEMA_VERSION = "dev_test_ui_settings_v9"
-    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v8"
+    SCHEMA_VERSION = "dev_test_ui_settings_v10"
+    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v9"
     OLDER_SCHEMA_VERSION = "dev_test_ui_settings_v2"
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
     OBSOLETE_KEYS = {
@@ -27,6 +27,7 @@ class DevUiSettings:
             if payload.get("schema_version") not in {
                 self.SCHEMA_VERSION,
                 self.PREVIOUS_SCHEMA_VERSION,
+                "dev_test_ui_settings_v8",
                 "dev_test_ui_settings_v7",
                 "dev_test_ui_settings_v5",
                 "dev_test_ui_settings_v4",
@@ -86,6 +87,32 @@ class DevUiSettings:
         limit = self._validate_music_order_limit(value)
         self._save_update(layer2_music_effective_order_limit=limit)
         return limit
+
+    def load_music_dpd_rank1_enabled(self, default: bool = False) -> bool:
+        fallback = self._validate_bool(default)
+        try:
+            return self._validate_bool(self._load_payload()["layer2_music_dpd_rank1_enabled"])
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_music_dpd_rank1_enabled(self, value: bool) -> bool:
+        enabled = self._validate_bool(value)
+        self._save_update(layer2_music_dpd_rank1_enabled=enabled)
+        return enabled
+
+    def load_music_noise_whitening_enabled(self, default: bool = False) -> bool:
+        fallback = self._validate_bool(default)
+        try:
+            return self._validate_bool(
+                self._load_payload()["layer2_music_noise_whitening_enabled"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_music_noise_whitening_enabled(self, value: bool) -> bool:
+        enabled = self._validate_bool(value)
+        self._save_update(layer2_music_noise_whitening_enabled=enabled)
+        return enabled
 
     def load_direction_kalman_enabled(self, default: bool = False) -> bool:
         fallback = self._validate_bool(default)

@@ -31,6 +31,8 @@ class MusicPeakEvidence:
     fixed_reference_normalized_score: float
     supporting_pairs: int
     supporting_frequency_bins: int
+    frequency_support_ratio: float = 0.0
+    mean_plane_wave_fit: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +68,11 @@ class MusicDiagnostics:
     effective_model_order: int | None = None
     mdl_saturated: bool = False
     births_allowed: bool = True
+    dpd_rank1_enabled: bool = False
+    selected_frequency_bins: int = 0
+    noise_whitening_enabled: bool = False
+    whitening_status: str = "disabled"
+    imcra_noise_hops: int = 0
     covariance_update_ms: float = 0.0
     eigensolve_ms: float = 0.0
     spectrum_ms: float = 0.0
@@ -86,6 +93,12 @@ class MusicDiagnostics:
             raise ValueError("effective MUSIC order must be 0..3")
         if type(self.mdl_saturated) is not bool or type(self.births_allowed) is not bool:
             raise TypeError("MUSIC saturation/birth flags must be bool")
+        if type(self.dpd_rank1_enabled) is not bool or type(self.noise_whitening_enabled) is not bool:
+            raise TypeError("MUSIC DPD/whitening flags must be bool")
+        if min(self.selected_frequency_bins, self.imcra_noise_hops) < 0:
+            raise ValueError("MUSIC DPD/noise counts must be non-negative")
+        if self.whitening_status not in {"disabled", "imcra_psd", "unavailable"}:
+            raise ValueError("invalid MUSIC whitening status")
         timings = (self.covariance_update_ms, self.eigensolve_ms, self.spectrum_ms, self.total_ms)
         if not all(np.isfinite(value) and value >= 0.0 for value in timings):
             raise ValueError("invalid MUSIC timing diagnostics")
@@ -96,7 +109,7 @@ class MusicDiagnostics:
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_mdl_cap_v2"
+    algorithm_version = "frequency_normalized_music_dpd_whitening_v3"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -147,6 +160,151 @@ class RollingNormMusicScanner:
             axis=0,
         )[self._frequency_indices]
         return np.einsum("fc,fd->fcd", spectrum, spectrum.conj(), optimize=True)
+
+    def _target_frequencies(self, config: DirectionScanConfig) -> np.ndarray:
+        if self._frequencies_hz is None:
+            self._prepare_frequency_axis(config)
+        assert self._frequencies_hz is not None
+        return self._frequencies_hz
+
+    @staticmethod
+    def _interpolate_imcra(
+        source_frequencies: np.ndarray, values: np.ndarray, target_frequencies: np.ndarray
+    ) -> np.ndarray:
+        values = np.asarray(values, dtype=np.float64)
+        return np.mean(
+            np.stack([
+                np.interp(target_frequencies, source_frequencies, channel)
+                for channel in values
+            ]),
+            axis=0,
+        )
+
+    def _imcra_metrics(
+        self, window: DecisionWindow, config: DirectionScanConfig
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        frequencies = self._target_frequencies(config)
+        ready = tuple(hop for hop in window.imcra_hops if hop.state == "ready")
+        if not ready:
+            ones = np.ones(frequencies.size, dtype=np.float64)
+            return ones, ones, None
+        spp = np.mean(np.stack([
+            self._interpolate_imcra(hop.frequencies_hz, hop.spp, frequencies)
+            for hop in ready
+        ]), axis=0)
+        prior_snr = np.mean(np.stack([
+            self._interpolate_imcra(hop.frequencies_hz, hop.prior_snr, frequencies)
+            for hop in ready
+        ]), axis=0)
+        noise_psd = np.mean(np.stack([
+            np.stack([
+                np.interp(frequencies, hop.frequencies_hz, channel)
+                for channel in np.asarray(hop.noise_psd, dtype=np.float64)
+            ])
+            for hop in ready
+        ]), axis=0)
+        return np.clip(spp, 0.0, 1.0), np.maximum(prior_snr, 0.0), noise_psd
+
+    def _whiten(
+        self,
+        covariance: np.ndarray,
+        steering: np.ndarray,
+        window: DecisionWindow,
+        config: DirectionScanConfig,
+    ) -> tuple[np.ndarray, np.ndarray, str]:
+        if not config.noise_whitening_enabled:
+            return covariance, steering, "disabled"
+        _, _, noise_psd = self._imcra_metrics(window, config)
+        if noise_psd is None:
+            return covariance, steering, "unavailable"
+        noise = np.zeros_like(covariance)
+        diagonal = np.maximum(noise_psd.T, config.eigenvalue_floor)
+        indices = np.arange(7)
+        noise[:, indices, indices] = diagonal
+        status = "imcra_psd"
+        trace = np.real(np.trace(noise, axis1=1, axis2=2)) / 7.0
+        identity = np.eye(7, dtype=np.complex128)[None, :, :]
+        noise = (
+            (1.0 - config.noise_covariance_shrinkage) * noise
+            + config.noise_covariance_shrinkage * trace[:, None, None] * identity
+            + config.diagonal_loading
+            * np.maximum(trace, config.eigenvalue_floor)[:, None, None]
+            * identity
+        )
+        try:
+            factor = np.linalg.cholesky(noise)
+            left = np.linalg.solve(factor, covariance)
+            whitened_covariance = np.linalg.solve(
+                factor, left.conj().transpose(0, 2, 1)
+            ).conj().transpose(0, 2, 1)
+            whitened_steering = np.linalg.solve(
+                factor, steering.transpose(0, 2, 1)
+            ).transpose(0, 2, 1)
+        except np.linalg.LinAlgError:
+            return covariance, steering, "unavailable"
+        whitened_covariance = 0.5 * (
+            whitened_covariance + whitened_covariance.conj().transpose(0, 2, 1)
+        )
+        norm = np.linalg.norm(whitened_steering, axis=2, keepdims=True)
+        whitened_steering /= np.maximum(norm, 1.0e-12)
+        return whitened_covariance, whitened_steering, status
+
+    @staticmethod
+    def _circular_distance_grid(angles: np.ndarray, center: float) -> np.ndarray:
+        return np.abs((angles - center + 180.0) % 360.0 - 180.0)
+
+    def _dpd_rank1_spectrum(
+        self,
+        eigenvalues: np.ndarray,
+        eigenvectors: np.ndarray,
+        steering: np.ndarray,
+        window: DecisionWindow,
+        config: DirectionScanConfig,
+        frequency_mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        noise = eigenvectors[:, :, :6]
+        projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
+        denominator = np.sum(np.abs(projection) ** 2, axis=2)
+        per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
+        per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
+
+        principal = eigenvectors[:, :, -1]
+        plane_fit_by_angle = np.abs(
+            np.einsum("fac,fc->fa", steering.conj(), principal, optimize=True)
+        ) ** 2
+        plane_fit_by_angle /= np.maximum(
+            np.sum(np.abs(steering) ** 2, axis=2), 1.0e-12
+        )
+        plane_fit = np.max(plane_fit_by_angle, axis=1)
+        peak_angles = np.argmax(per_frequency, axis=1).astype(np.float64)
+        eigen_ratio = eigenvalues[:, -1] / np.maximum(eigenvalues[:, -2], 1.0e-12)
+        spp, prior_snr, _ = self._imcra_metrics(window, config)
+        spp = spp[frequency_mask]
+        prior_snr = prior_snr[frequency_mask]
+        eig_weight = np.clip(
+            (eigen_ratio - config.dpd_min_eigenvalue_ratio)
+            / np.maximum(eigen_ratio, 1.0e-12),
+            0.0,
+            1.0,
+        )
+        snr_weight = prior_snr / (1.0 + prior_snr)
+        weights = eig_weight * plane_fit * np.maximum(spp, 0.05) * np.maximum(snr_weight, 0.05)
+        selected = (
+            (eigen_ratio >= config.dpd_min_eigenvalue_ratio)
+            & (plane_fit >= config.dpd_min_plane_wave_fit)
+            & np.isfinite(weights)
+            & (weights > 0.0)
+        )
+        grid = np.arange(360, dtype=np.float64)
+        vote = np.zeros(360, dtype=np.float64)
+        for angle, weight in zip(peak_angles[selected], weights[selected], strict=True):
+            distance = self._circular_distance_grid(grid, float(angle))
+            kernel = np.maximum(0.0, 1.0 - distance / (config.dpd_angle_tolerance_deg + 1.0))
+            vote += float(weight) * kernel
+        total_weight = float(np.sum(weights[selected]))
+        if total_weight > 0.0:
+            vote /= total_weight
+        return vote, per_frequency, selected, weights, plane_fit
 
     def _rebuild(self, window: DecisionWindow, config: DirectionScanConfig, reason: str) -> None:
         history_samples = config.context_ms * 48
@@ -263,6 +421,10 @@ class RollingNormMusicScanner:
             + config.covariance_shrinkage * trace[:, None, None] * identity
             + config.diagonal_loading * np.maximum(trace, config.eigenvalue_floor)[:, None, None] * identity
         )
+        steering, rebuilt = self._steering_tensor(geometry, config, config_revision)
+        covariance, steering, whitening_status = self._whiten(
+            covariance, steering, window, config
+        )
         eigenvalues, eigenvectors = np.linalg.eigh(covariance)
         eigensolved = perf_counter()
         valid = np.isfinite(eigenvalues).all(axis=1) & (eigenvalues[:, -1] > config.eigenvalue_floor)
@@ -270,7 +432,6 @@ class RollingNormMusicScanner:
             raise DirectionScanError("MUSIC covariance quality left too few valid frequency bins")
         eigenvalues = eigenvalues[valid]
         eigenvectors = eigenvectors[valid]
-        steering, rebuilt = self._steering_tensor(geometry, config, config_revision)
         steering = steering[valid]
         refresh_mdl = self._last_mdl_sample is None or (
             window.decision_sample - self._last_mdl_sample >= config.mdl_max_age_ms * 48
@@ -293,17 +454,45 @@ class RollingNormMusicScanner:
         model_order = self._last_model_order
         assert model_order is not None
         diagnostic_order = model_order.estimated_sources
-        effective_order = min(diagnostic_order, config.effective_order_limit)
         mdl_saturated = diagnostic_order > config.max_candidates
-        if effective_order == 0:
-            raw = np.zeros(360, dtype=np.float64)
+        selected = np.ones(int(valid.sum()), dtype=bool)
+        weights = np.ones(int(valid.sum()), dtype=np.float64)
+        plane_fit = np.zeros(int(valid.sum()), dtype=np.float64)
+        if config.dpd_rank1_enabled:
+            raw, per_frequency, selected, weights, plane_fit = self._dpd_rank1_spectrum(
+                eigenvalues, eigenvectors, steering, window, config, valid,
+            )
+            effective_order = 1 if int(selected.sum()) else 0
+            limit = config.effective_order_limit
+            stop_reason = "dpd_rank1_vote" if int(selected.sum()) else "dpd_no_reliable_bins"
+            fallback_reason = (
+                "imcra_noise_psd_unavailable"
+                if config.noise_whitening_enabled and whitening_status == "unavailable"
+                else None
+            )
+            births_allowed = bool(selected.any())
         else:
-            noise = eigenvectors[:, :, : 7 - effective_order]
-            projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
-            denominator = np.sum(np.abs(projection) ** 2, axis=2)
-            per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
-            per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
-            raw = per_frequency.mean(axis=0)
+            effective_order = min(diagnostic_order, config.effective_order_limit)
+            limit = effective_order
+            if effective_order == 0:
+                raw = np.zeros(360, dtype=np.float64)
+                per_frequency = np.zeros((int(valid.sum()), 360), dtype=np.float64)
+            else:
+                noise = eigenvectors[:, :, : 7 - effective_order]
+                projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
+                denominator = np.sum(np.abs(projection) ** 2, axis=2)
+                per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
+                per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
+                raw = per_frequency.mean(axis=0)
+            stop_reason = "mdl_saturated" if mdl_saturated else "model_order_applied"
+            fallback_reason = (
+                "imcra_noise_psd_unavailable"
+                if config.noise_whitening_enabled and whitening_status == "unavailable"
+                else (
+                    "diagnostic_order_exceeds_output_limit" if mdl_saturated else None
+                )
+            )
+            births_allowed = not mdl_saturated
         normalized = np.asarray(
             (raw - raw.min()) / max(float(raw.max() - raw.min()), 1.0e-12), dtype=np.float32
         )
@@ -324,13 +513,28 @@ class RollingNormMusicScanner:
             {int(index - 360) for index in peaks if 360 <= index < 720},
             key=lambda index: (-float(normalized[index]), index),
         )
+        if limit <= 0:
+            ranked = []
         chosen: list[int] = []
-        limit = effective_order
+        support_by_index: dict[int, tuple[int, float, float]] = {}
         for index in ranked:
             if normalized[index] < config.direction_threshold:
                 continue
             if any(abs(((index - old + 180) % 360) - 180) < config.min_peak_distance_deg for old in chosen):
                 continue
+            if config.dpd_rank1_enabled:
+                peak_angles = np.argmax(per_frequency, axis=1).astype(np.float64)
+                supporters = selected & (
+                    self._circular_distance_grid(peak_angles, float(index))
+                    <= config.dpd_angle_tolerance_deg
+                )
+                selected_weight = float(np.sum(weights[selected]))
+                support_weight = float(np.sum(weights[supporters]))
+                support_ratio = support_weight / max(selected_weight, 1.0e-12)
+                if support_ratio < config.dpd_min_frequency_support_ratio:
+                    continue
+                mean_fit = float(np.mean(plane_fit[supporters])) if supporters.any() else 0.0
+                support_by_index[index] = (int(supporters.sum()), support_ratio, mean_fit)
             chosen.append(index)
             if len(chosen) == limit:
                 break
@@ -350,22 +554,43 @@ class RollingNormMusicScanner:
                 state.removed_frames, True, state.reason,
             )
         evidence = tuple(
-            MusicPeakEvidence(item.theta_deg, 0, item.raw_score, item.normalized_score, 7, int(valid.sum()))
+            MusicPeakEvidence(
+                item.theta_deg,
+                0,
+                item.raw_score,
+                item.normalized_score,
+                7,
+                support_by_index.get(int(item.theta_deg), (int(valid.sum()), 1.0, 0.0))[0],
+                support_by_index.get(int(item.theta_deg), (int(valid.sum()), 1.0, 0.0))[1],
+                support_by_index.get(int(item.theta_deg), (int(valid.sum()), 1.0, 0.0))[2],
+            )
             for item in candidates
         )
         assert self.last_state_diagnostic is not None
+        ready_imcra_hops = sum(hop.state == "ready" for hop in window.imcra_hops)
+        covariance_quality = (
+            "degraded"
+            if (config.dpd_rank1_enabled and not selected.any())
+            or (config.noise_whitening_enabled and whitening_status == "unavailable")
+            else ("ready" if model_order.status == "ready" else "degraded")
+        )
         diagnostics = MusicDiagnostics(
             "frequency_normalized_music", self.algorithm_version, config_revision,
             model_order, self.last_state_diagnostic, int(valid.sum()),
-            "ready" if model_order.status == "ready" else "degraded",
-            stop_reason="mdl_saturated" if mdl_saturated else "model_order_applied",
-            fallback_reason="diagnostic_order_exceeds_output_limit" if mdl_saturated else None,
+            covariance_quality,
+            stop_reason=stop_reason,
+            fallback_reason=fallback_reason,
             evidence=evidence,
             eligible_peak_count=len(ranked), candidate_limit=limit or 3,
             candidate_limit_applied=bool(limit and len(candidates) == limit and len(ranked) > limit),
             effective_model_order=effective_order,
             mdl_saturated=mdl_saturated,
-            births_allowed=not mdl_saturated,
+            births_allowed=births_allowed,
+            dpd_rank1_enabled=config.dpd_rank1_enabled,
+            selected_frequency_bins=int(selected.sum()) if config.dpd_rank1_enabled else int(valid.sum()),
+            noise_whitening_enabled=config.noise_whitening_enabled,
+            whitening_status=whitening_status,
+            imcra_noise_hops=ready_imcra_hops if config.noise_whitening_enabled else 0,
             covariance_update_ms=(covariance_updated - started) * 1_000.0,
             eigensolve_ms=(eigensolved - covariance_updated) * 1_000.0,
             spectrum_ms=(spectrum_built - eigensolved) * 1_000.0,

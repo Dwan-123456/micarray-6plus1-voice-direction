@@ -129,6 +129,8 @@ def build_window(
         GateProbabilityThresholdControl,
         DirectionKalmanControl,
         KalmanNoiseScaleControl,
+        MusicDpdRank1Control,
+        MusicNoiseWhiteningControl,
         MusicOrderLimitControl,
         ProbabilityGateReadout,
         SrpThresholdControl,
@@ -192,6 +194,14 @@ def build_window(
     runtime.set_music_effective_order_limit(ui_settings.load_music_effective_order_limit(
         config.layer2.effective_order_limit
     ))
+    runtime.set_music_dpd_rank1_enabled(ui_settings.load_music_dpd_rank1_enabled(
+        config.layer2.dpd_rank1_enabled
+    ))
+    runtime.set_music_noise_whitening_enabled(
+        ui_settings.load_music_noise_whitening_enabled(
+            config.layer2.noise_whitening_enabled
+        )
+    )
     persisted_kalman = ui_settings.load_direction_kalman_enabled(
         config.layer2.direction_kalman.enabled
     )
@@ -427,6 +437,16 @@ def build_window(
             )
             self.srp_threshold = SrpThresholdControl(runtime.direction_threshold)
             self.music_order_limit = MusicOrderLimitControl(runtime.music_effective_order_limit)
+            self.music_dpd_rank1 = MusicDpdRank1Control(runtime.music_dpd_rank1_enabled)
+            self.music_noise_whitening = MusicNoiseWhiteningControl(
+                runtime.music_noise_whitening_enabled
+            )
+            self.music_dpd_rank1.setToolTip(
+                "仅使用通过直达声主导检验的频点，并以rank-1 MUSIC方向投票；默认关闭。"
+            )
+            self.music_noise_whitening.setToolTip(
+                "用IMCRA每麦noise_psd构造对角噪声协方差，同时白化协方差和steering；默认关闭。"
+            )
             self.srp_kalman = DirectionKalmanControl(runtime.direction_kalman_enabled)
             self.srp_kalman_q = KalmanNoiseScaleControl("Q倍率", runtime.direction_kalman_q_scale)
             self.srp_kalman_r = KalmanNoiseScaleControl("R倍率", runtime.direction_kalman_r_scale)
@@ -440,6 +460,8 @@ def build_window(
             right_layout.addWidget(self.srp_kalman_q)
             right_layout.addWidget(self.srp_kalman_r)
             right_layout.addWidget(self.gate_readout)
+            right_layout.addWidget(self.music_dpd_rank1)
+            right_layout.addWidget(self.music_noise_whitening)
             right_layout.addWidget(self.music_order_limit)
             right_layout.addWidget(self.srp_threshold)
             right_layout.addWidget(self.direction_table, 1)
@@ -450,6 +472,8 @@ def build_window(
             self.srp_polar.candidate_selected.connect(self._select_candidate)
             self.srp_threshold.threshold_changed.connect(self._set_srp_threshold)
             self.music_order_limit.order_changed.connect(self._set_music_order_limit)
+            self.music_dpd_rank1.enabled_changed.connect(self._set_music_dpd_rank1)
+            self.music_noise_whitening.enabled_changed.connect(self._set_music_noise_whitening)
             self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
             self.srp_kalman.enabled_changed.connect(self._set_direction_kalman)
             self.srp_kalman_q.apply_requested.connect(self._apply_kalman_q_scale)
@@ -513,6 +537,36 @@ def build_window(
                 with QSignalBlocker(self.music_order_limit.combo):
                     self.music_order_limit.set_value(previous)
                 self.statusBar().showMessage(f"设置MUSIC阶数上限失败: {exc}", 8000)
+
+        def _set_music_dpd_rank1(self, enabled: bool):
+            previous = runtime.music_dpd_rank1_enabled
+            try:
+                enabled = ui_settings.save_music_dpd_rank1_enabled(bool(enabled))
+                runtime.set_music_dpd_rank1_enabled(enabled)
+                self.music_dpd_rank1.set_enabled(enabled, pending=True)
+                self.statusBar().showMessage(
+                    f"DPD + rank-1 MUSIC {'已开启' if enabled else '已关闭'}；下一窗口生效", 3500
+                )
+            except Exception as exc:
+                runtime.set_music_dpd_rank1_enabled(previous)
+                with QSignalBlocker(self.music_dpd_rank1):
+                    self.music_dpd_rank1.set_enabled(previous)
+                self.statusBar().showMessage(f"DPD + rank-1 MUSIC切换失败: {exc}", 8000)
+
+        def _set_music_noise_whitening(self, enabled: bool):
+            previous = runtime.music_noise_whitening_enabled
+            try:
+                enabled = ui_settings.save_music_noise_whitening_enabled(bool(enabled))
+                runtime.set_music_noise_whitening_enabled(enabled)
+                self.music_noise_whitening.set_enabled(enabled, pending=True)
+                self.statusBar().showMessage(
+                    f"IMCRA噪声白化 {'已开启' if enabled else '已关闭'}；下一窗口生效", 3500
+                )
+            except Exception as exc:
+                runtime.set_music_noise_whitening_enabled(previous)
+                with QSignalBlocker(self.music_noise_whitening):
+                    self.music_noise_whitening.set_enabled(previous)
+                self.statusBar().showMessage(f"IMCRA噪声白化切换失败: {exc}", 8000)
 
         def _set_direction_kalman(self, enabled: bool):
             previous = runtime.direction_kalman_enabled
@@ -1037,6 +1091,14 @@ def build_window(
                 applied_revision is not None
                 and applied_revision != runtime.direction_scan_config_revision
             )
+            with QSignalBlocker(self.music_dpd_rank1):
+                self.music_dpd_rank1.set_enabled(
+                    runtime.music_dpd_rank1_enabled, pending=revision_pending
+                )
+            with QSignalBlocker(self.music_noise_whitening):
+                self.music_noise_whitening.set_enabled(
+                    runtime.music_noise_whitening_enabled, pending=revision_pending
+                )
             applied_kalman = getattr(frame, "direction_kalman_enabled", None)
             applied_q_scale = getattr(frame, "direction_kalman_q_scale", None)
             applied_r_scale = getattr(frame, "direction_kalman_r_scale", None)
@@ -1138,6 +1200,9 @@ def build_window(
                         f" | MDL {diagnostics.model_order.estimated_sources}"
                         f" / MUSIC {diagnostics.effective_model_order}"
                         f" | valid bins {diagnostics.valid_frequency_bins}"
+                        f" | DPD {'ON' if diagnostics.dpd_rank1_enabled else 'OFF'}"
+                        f" {diagnostics.selected_frequency_bins} bins"
+                        f" | WHITE {diagnostics.whitening_status.upper()}"
                         f" | {diagnostics.covariance_quality.upper()}"
                     )
                 self._set_text(self.srp_header,

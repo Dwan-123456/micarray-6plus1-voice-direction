@@ -133,6 +133,14 @@ class DirectionKalmanControl(_RuntimeSwitchControl):
     label = "Circular Kalman"
 
 
+class MusicDpdRank1Control(_RuntimeSwitchControl):
+    label = "DPD + rank-1 MUSIC"
+
+
+class MusicNoiseWhiteningControl(_RuntimeSwitchControl):
+    label = "IMCRA噪声白化"
+
+
 class KalmanNoiseScaleControl(QWidget):
     apply_requested = Signal(float)
 

@@ -835,6 +835,34 @@ class ApplicationRuntime:
         return value
 
     @property
+    def music_dpd_rank1_enabled(self) -> bool:
+        with self._scan_config_lock:
+            return self._scan_config.dpd_rank1_enabled
+
+    def set_music_dpd_rank1_enabled(self, value: bool) -> bool:
+        if type(value) is not bool:
+            raise ValueError("L2 DPD rank-1 setting must be bool")
+        with self._scan_config_lock:
+            if value != self._scan_config.dpd_rank1_enabled:
+                self._scan_config = replace(self._scan_config, dpd_rank1_enabled=value)
+                self._scan_config_revision += 1
+        return value
+
+    @property
+    def music_noise_whitening_enabled(self) -> bool:
+        with self._scan_config_lock:
+            return self._scan_config.noise_whitening_enabled
+
+    def set_music_noise_whitening_enabled(self, value: bool) -> bool:
+        if type(value) is not bool:
+            raise ValueError("L2 IMCRA noise whitening setting must be bool")
+        with self._scan_config_lock:
+            if value != self._scan_config.noise_whitening_enabled:
+                self._scan_config = replace(self._scan_config, noise_whitening_enabled=value)
+                self._scan_config_revision += 1
+        return value
+
+    @property
     def direction_scan_config_revision(self) -> int:
         with self._scan_config_lock:
             return self._scan_config_revision
@@ -1922,6 +1950,11 @@ class ApplicationRuntime:
                 f"l2_music_covariance_quality={music.covariance_quality}",
                 f"l2_music_model_order={music.model_order.estimated_sources}",
                 f"l2_music_mdl_age_samples={music.model_order.mdl_age_samples}",
+                f"l2_music_dpd_rank1_enabled={music.dpd_rank1_enabled}",
+                f"l2_music_selected_frequency_bins={music.selected_frequency_bins}",
+                f"l2_music_noise_whitening_enabled={music.noise_whitening_enabled}",
+                f"l2_music_whitening_status={music.whitening_status}",
+                f"l2_music_imcra_noise_hops={music.imcra_noise_hops}",
             )),
             *(() if music_state is None else (
                 f"l2_music_rolling_state={music_state.state}",
@@ -1991,6 +2024,11 @@ class ApplicationRuntime:
             f"l2_search_eligible_peaks={search_diagnostics.eligible_peak_count}",
             f"l2_search_candidate_limit={search_diagnostics.candidate_limit}",
             f"l2_search_limit_applied={search_diagnostics.candidate_limit_applied}",
+            f"l2_search_dpd_rank1_enabled={search_diagnostics.dpd_rank1_enabled}",
+            f"l2_search_selected_frequency_bins={search_diagnostics.selected_frequency_bins}",
+            f"l2_search_noise_whitening_enabled={search_diagnostics.noise_whitening_enabled}",
+            f"l2_search_whitening_status={search_diagnostics.whitening_status}",
+            f"l2_search_imcra_noise_hops={search_diagnostics.imcra_noise_hops}",
             *( () if search_diagnostics.fallback_reason is None else
                (f"l2_search_fallback={search_diagnostics.fallback_reason}",) ),
         )
@@ -2025,13 +2063,20 @@ class ApplicationRuntime:
             "eligible_peak_count": search_diagnostics.eligible_peak_count,
             "candidate_limit": search_diagnostics.candidate_limit,
             "candidate_limit_applied": search_diagnostics.candidate_limit_applied,
+            "dpd_rank1_enabled": search_diagnostics.dpd_rank1_enabled,
+            "selected_frequency_bins": search_diagnostics.selected_frequency_bins,
+            "noise_whitening_enabled": search_diagnostics.noise_whitening_enabled,
+            "whitening_status": search_diagnostics.whitening_status,
+            "imcra_noise_hops": search_diagnostics.imcra_noise_hops,
             "evidence": [
                 {"theta_deg": evidence.theta_deg,
                  "search_iteration": evidence.search_iteration,
                  "residual_raw_score": evidence.residual_raw_score,
                  "fixed_reference_normalized_score": evidence.fixed_reference_normalized_score,
                  "supporting_pairs": evidence.supporting_pairs,
-                 "supporting_frequency_bins": evidence.supporting_frequency_bins}
+                 "supporting_frequency_bins": evidence.supporting_frequency_bins,
+                 "frequency_support_ratio": evidence.frequency_support_ratio,
+                 "mean_plane_wave_fit": evidence.mean_plane_wave_fit}
                 for evidence in search_diagnostics.evidence
             ],
         }

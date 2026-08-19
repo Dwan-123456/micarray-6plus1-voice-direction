@@ -22,6 +22,20 @@
 
 ---
 
+## 2026-08-19 — 增加可选DPD rank-1 MUSIC与IMCRA噪声白化
+
+- **版本/标签**：`v1.1.1`发布后的L2试验性鲁棒定位功能；不创建或移动版本标签。
+- **类型**：L2 MUSIC候选生成与噪声白化、Runtime实时配置、Development Test UI控制、记录诊断、文档和回归测试。
+- **涉及文件**：L2 `configuration.py`、`music.py`，项目配置，Runtime，Development Test UI的`app.py`、`panels.py`、`settings.py`，README、1.1.1架构说明及对应测试。
+- 新增默认关闭的`DPD + rank-1 MUSIC`。开启后以逐频主特征值间隙和平面波拟合筛选可靠频点，以IMCRA `spp/prior_snr`加权rank-1 MUSIC方向票，并要求候选具备真实加权跨频支持；候选数仍受用户手动1/2/3上限约束，MDL在该路径保留为诊断而不直接规定候选数。
+- 新增默认关闭的`IMCRA噪声白化`。白化严格只消费当前DecisionWindow中READY的公开IMCRA逐麦`noise_psd`，形成逐频对角噪声协方差并同时白化观测协方差和steering；当前接口没有跨麦互谱，因此没有虚构完整噪声CSM。缺少READY快照或数值分解失败时标记`unavailable`并安全退回未白化MUSIC。
+- 两个开关均通过Test UI按钮实时修改revision并原子持久化；L2标题显示DPD选中频点数与白化状态。DecisionRecord/运行诊断增加开关、可靠频点、白化状态、IMCRA hop数量及每候选支持率/平面波拟合值。
+- **未改变**：L1 IMCRA算法和预降噪、概率Gate、永久匈牙利ID及可选Kalman、L3、L4、Runtime队列策略、正式录音/数据管理、Production UI、独立Log UI、模型和音频资产均无变化。
+- **验证**：配置、L2、Runtime、v1.1契约与Development Test UI重点回归`114 passed`；完整自动测试`386 passed`，相关文件Ruff与`git diff --check`通过。两个功能同时开启的30窗短基准为p50 `11.60 ms`、p95 `13.45 ms`、最大`13.79 ms`。按用户要求不运行10分钟负载，自动测试与短基准不构成真实阵列声场验收。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-19 — L2/L3/L4等待队列由10000改为1
 
 - **版本/标签**：`v1.1.1`发布后的Runtime低延迟配置修正；不创建或移动版本标签。

@@ -193,6 +193,13 @@ class Layer2Config(StrictModel):
     min_peak_distance_deg: Literal[45.0]
     max_candidates: Literal[3]
     effective_order_limit: Literal[1, 2, 3]
+    dpd_rank1_enabled: bool = False
+    dpd_min_eigenvalue_ratio: float = Field(gt=1)
+    dpd_min_plane_wave_fit: float = Field(ge=0, le=1)
+    dpd_min_frequency_support_ratio: float = Field(gt=0, le=1)
+    dpd_angle_tolerance_deg: int = Field(gt=0, le=45)
+    noise_whitening_enabled: bool = False
+    noise_covariance_shrinkage: float = Field(ge=0, le=1)
 
     @model_validator(mode="after")
     def validate_direction_postprocessing(self) -> "Layer2Config":
@@ -202,6 +209,8 @@ class Layer2Config(StrictModel):
         ):
             if value != 0.02 and abs(value * 10.0 - round(value * 10.0)) > 1.0e-9:
                 raise ValueError("Layer 2 Kalman Q/R scales must use 0.1 steps (or the 0.02 minimum)")
+        if type(self.dpd_rank1_enabled) is not bool or type(self.noise_whitening_enabled) is not bool:
+            raise TypeError("Layer 2 DPD/whitening switches must be bool")
         return self
 
 class StftConfig(StrictModel):

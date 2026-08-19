@@ -28,6 +28,13 @@ class DirectionScanConfig:
     min_peak_distance_deg: float
     max_candidates: int
     effective_order_limit: int
+    dpd_rank1_enabled: bool
+    dpd_min_eigenvalue_ratio: float
+    dpd_min_plane_wave_fit: float
+    dpd_min_frequency_support_ratio: float
+    dpd_angle_tolerance_deg: int
+    noise_whitening_enabled: bool
+    noise_covariance_shrinkage: float
 
     @classmethod
     def from_project(cls, config: ProjectConfig) -> "DirectionScanConfig":
@@ -54,7 +61,9 @@ class DirectionScanConfig:
         finite = (
             self.direction_threshold, self.peak_prominence, self.min_peak_distance_deg,
             self.covariance_shrinkage, self.diagonal_loading, self.eigenvalue_floor,
-            self.min_cross_frequency_consistency,
+            self.min_cross_frequency_consistency, self.dpd_min_eigenvalue_ratio,
+            self.dpd_min_plane_wave_fit, self.dpd_min_frequency_support_ratio,
+            self.noise_covariance_shrinkage,
         )
         if not all(np.isfinite(value) for value in finite):
             raise ValueError("Layer 2配置必须全部finite")
@@ -66,6 +75,19 @@ class DirectionScanConfig:
             raise ValueError("Layer 2 max_candidates is fixed at 3")
         if self.effective_order_limit not in {1, 2, 3}:
             raise ValueError("effective MUSIC order limit must be 1, 2, or 3")
+        if type(self.dpd_rank1_enabled) is not bool or type(self.noise_whitening_enabled) is not bool:
+            raise TypeError("DPD/whitening switches must be bool")
+        if (
+            self.dpd_min_eigenvalue_ratio <= 1
+            or not 0 <= self.dpd_min_plane_wave_fit <= 1
+            or not 0 < self.dpd_min_frequency_support_ratio <= 1
+            or not 1 <= self.dpd_angle_tolerance_deg <= 45
+        ):
+            raise ValueError("DPD rank-1 quality configuration is invalid")
+        if (
+            not 0 <= self.noise_covariance_shrinkage <= 1
+        ):
+            raise ValueError("MUSIC noise covariance configuration is invalid")
         if not 0 <= self.covariance_shrinkage < 1 or self.diagonal_loading <= 0:
             raise ValueError("MUSIC covariance regularization is invalid")
         if self.eigenvalue_floor <= 0 or not 1 <= self.mdl_max_age_ms <= 100:

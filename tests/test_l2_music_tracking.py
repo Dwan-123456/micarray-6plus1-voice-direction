@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from common.config import load_config
-from common.data_types import CandidateDirection, DecisionWindow
+from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapshot
 from common.geometry import MIC_POSITIONS_M, physical_6plus1_geometry
 from layer2_source_detection import DirectionScanConfig, Layer2Pipeline, RollingNormMusicScanner
 from layer2_source_detection.global_tracker import GlobalDirectionTracker, GlobalTrackerConfig
@@ -41,13 +41,54 @@ def _audio(directions: tuple[float, ...], *, seed: int = 1, samples: int = 16_32
     return np.asarray(output, dtype=np.float32)
 
 
-def _window(audio: np.ndarray, index: int = 0, *, session: str = "music", epoch: int = 0) -> DecisionWindow:
+def _imcra_hops(
+    index: int = 0,
+    *,
+    noise_by_mic: np.ndarray | None = None,
+    spp: float = 0.8,
+    prior_snr: float = 3.0,
+) -> tuple[ImcraHopSnapshot, ...]:
+    frequencies = np.fft.rfftfreq(2048, 1.0 / 48_000.0).astype(np.float32)
+    frequencies = frequencies[frequencies <= 8_000.0]
+    shape = (7, frequencies.size)
+    noise_by_mic = (
+        np.ones(7, dtype=np.float32)
+        if noise_by_mic is None
+        else np.asarray(noise_by_mic, dtype=np.float32)
+    )
+    noise = np.broadcast_to(noise_by_mic[:, None], shape).copy()
+    ones = np.ones(shape, dtype=np.float32)
+    spp_values = np.full(shape, spp, dtype=np.float32)
+    start = index * 960
+    return tuple(
+        ImcraHopSnapshot(
+            "music", 0, start + hop * 960, start + (hop + 1) * 960, (index * 16 + hop,),
+            "cohen_imcra_2003_l1_v2", "ready", frequencies,
+            noise, ones * 2.0, ones * 1.5, ones * 0.5, ones * 0.4,
+            spp_values, 1.0 - spp_values, ones * (prior_snr + 1.0), ones * prior_snr,
+            np.ones((7, 4), dtype=np.float32),
+            10.0 * np.log10(np.maximum(noise_by_mic, 1.0e-12)),
+            np.full(7, spp, dtype=np.float32), spp,
+        )
+        for hop in range(16)
+    )
+
+
+def _window(
+    audio: np.ndarray,
+    index: int = 0,
+    *,
+    session: str = "music",
+    epoch: int = 0,
+    imcra_hops: tuple[ImcraHopSnapshot, ...] = (),
+) -> DecisionWindow:
     start = index * 960
     decision = 15_360 + start
     samples = np.ascontiguousarray(audio[start:start + 15_360])
     return DecisionWindow(
         session, epoch, index, decision, decision - 1_920, decision,
         decision - 15_360, decision, 48_000, samples, (index,),
+        imcra_hops,
     )
 
 
@@ -79,6 +120,8 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     assert scan.context_ms in {160, 240, 320}
     assert (scan.frequency_min_hz, scan.frequency_max_hz) == (2_000.0, 4_000.0)
     assert scan.max_candidates == 3 and scan.min_peak_distance_deg == 45.0
+    assert not scan.dpd_rank1_enabled
+    assert not scan.noise_whitening_enabled
 
 
 @pytest.mark.parametrize("source_count", range(7))
@@ -172,6 +215,77 @@ def test_manual_music_order_limit_caps_diagnostic_mdl_without_hiding_it(
     assert diagnostics.stop_reason == "mdl_saturated"
 
 
+def test_optional_dpd_rank1_uses_real_frequency_support_and_manual_ceiling() -> None:
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        dpd_rank1_enabled=True,
+        effective_order_limit=1,
+        direction_threshold=0.15,
+    )
+    response, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
+        _window(_audio((73.0,), seed=53)), physical_6plus1_geometry(), config,
+    )
+    assert diagnostics.dpd_rank1_enabled
+    assert diagnostics.effective_model_order == 1
+    assert diagnostics.selected_frequency_bins >= config.min_valid_frequency_bins
+    assert len(candidates) == 1
+    assert abs(((candidates[0].theta_deg - 73.0 + 180.0) % 360.0) - 180.0) <= 2.0
+    assert int(np.argmax(response.raw_scores)) in range(71, 76)
+    assert diagnostics.evidence[0].supporting_frequency_bins < diagnostics.valid_frequency_bins + 1
+    assert diagnostics.evidence[0].frequency_support_ratio >= config.dpd_min_frequency_support_ratio
+
+
+def test_optional_dpd_rank1_separates_two_sources_across_zero_boundary() -> None:
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        dpd_rank1_enabled=True,
+        direction_threshold=0.15,
+        effective_order_limit=2,
+    )
+    _, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
+        _window(_audio((359.0, 90.0), seed=81), imcra_hops=_imcra_hops()),
+        physical_6plus1_geometry(), config,
+    )
+    assert len(candidates) == 2
+    angles = tuple(candidate.theta_deg for candidate in candidates)
+    assert min(abs(((angle - 359.0 + 180.0) % 360.0) - 180.0) for angle in angles) <= 3.0
+    assert min(abs(((angle - 90.0 + 180.0) % 360.0) - 180.0) for angle in angles) <= 3.0
+    assert all(
+        item.frequency_support_ratio >= config.dpd_min_frequency_support_ratio
+        for item in diagnostics.evidence
+    )
+
+
+def test_optional_imcra_noise_psd_whitening_is_independent_and_safe() -> None:
+    base = DirectionScanConfig.from_project(load_config(CONFIG, environ={}))
+    config = replace(base, noise_whitening_enabled=True)
+    hops = _imcra_hops(noise_by_mic=np.asarray((1, 2, 3, 4, 5, 6, 7), np.float32))
+    response, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
+        _window(_audio((35.0,), seed=59), imcra_hops=hops),
+        physical_6plus1_geometry(), config,
+    )
+    assert diagnostics.noise_whitening_enabled
+    assert diagnostics.whitening_status == "imcra_psd"
+    assert diagnostics.imcra_noise_hops == 16
+    assert np.isfinite(response.raw_scores).all()
+    assert candidates
+
+
+def test_optional_whitening_without_ready_imcra_falls_back_without_failure() -> None:
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        noise_whitening_enabled=True,
+    )
+    response, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
+        _window(_audio((120.0,), seed=61)), physical_6plus1_geometry(), config,
+    )
+    assert diagnostics.whitening_status == "unavailable"
+    assert diagnostics.covariance_quality == "degraded"
+    assert diagnostics.fallback_reason == "imcra_noise_psd_unavailable"
+    assert np.isfinite(response.raw_scores).all()
+    assert candidates
+
+
 def test_music_rolling_p95_is_below_hard_20ms_budget() -> None:
     scan = DirectionScanConfig.from_project(load_config(CONFIG, environ={}))
     audio = _audio((80.0,), seed=17, samples=15_360 + 30 * 960)
@@ -181,6 +295,27 @@ def test_music_rolling_p95_is_below_hard_20ms_budget() -> None:
         started = perf_counter()
         scanner.scan_detailed(_window(audio, index), physical_6plus1_geometry(), scan)
         times.append((perf_counter() - started) * 1000.0)
+    assert np.percentile(times[2:], 95) <= 15.0
+    assert max(times[2:]) < 20.0
+
+
+def test_optional_dpd_and_imcra_whitening_fit_20ms_hard_budget() -> None:
+    scan = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        dpd_rank1_enabled=True,
+        noise_whitening_enabled=True,
+        direction_threshold=0.15,
+    )
+    audio = _audio((80.0,), seed=71, samples=15_360 + 30 * 960)
+    scanner = RollingNormMusicScanner()
+    times = []
+    for index in range(30):
+        started = perf_counter()
+        scanner.scan_detailed(
+            _window(audio, index, imcra_hops=_imcra_hops(index)),
+            physical_6plus1_geometry(), scan,
+        )
+        times.append((perf_counter() - started) * 1_000.0)
     assert np.percentile(times[2:], 95) <= 15.0
     assert max(times[2:]) < 20.0
 

@@ -143,6 +143,15 @@ layer2:
   # Test UI may change this runtime ceiling to 1, 2, or 3. The diagnostic MDL
   # result remains 0..6 and the scanner uses min(diagnostic, this limit).
   effective_order_limit: 3
+  # Optional experimental safeguards. Both remain OFF until explicitly enabled
+  # from Development Test UI; the manual ceiling remains independent.
+  dpd_rank1_enabled: false
+  dpd_min_eigenvalue_ratio: 1.50
+  dpd_min_plane_wave_fit: 0.45
+  dpd_min_frequency_support_ratio: 0.25
+  dpd_angle_tolerance_deg: 10
+  noise_whitening_enabled: false
+  noise_covariance_shrinkage: 0.10
 
 stft:
   n_fft: 1024

@@ -135,12 +135,16 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     settings = DevUiSettings(tmp_path)
     assert settings.load_direction_threshold(.35) == .35
     assert settings.load_music_effective_order_limit(3) == 3
+    assert settings.load_music_dpd_rank1_enabled() is False
+    assert settings.load_music_noise_whitening_enabled() is False
     assert settings.load_direction_kalman_enabled() is False
     assert settings.load_gate_probability_threshold(0.60) == 0.60
     assert settings.load_l1_pre_denoise_enabled(False) is False
 
     settings.save_direction_threshold(.67)
     settings.save_music_effective_order_limit(1)
+    settings.save_music_dpd_rank1_enabled(True)
+    settings.save_music_noise_whitening_enabled(True)
     assert settings.load_direction_threshold(.35) == .67
     assert settings.load_music_effective_order_limit(3) == 1
     settings.save_direction_threshold(.42)
@@ -153,6 +157,8 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     loaded = DevUiSettings(tmp_path)
     assert loaded.load_direction_threshold(.35) == .42
     assert loaded.load_music_effective_order_limit(3) == 1
+    assert loaded.load_music_dpd_rank1_enabled() is True
+    assert loaded.load_music_noise_whitening_enabled() is True
     assert loaded.load_direction_kalman_enabled() is True
     assert loaded.load_direction_kalman_q_scale(1.0) == 1.2
     assert loaded.load_direction_kalman_r_scale(1.0) == 0.8
@@ -162,6 +168,8 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     payload = loaded.path.read_text(encoding="utf-8")
     assert '"layer2_direction_threshold": 0.42' in payload
     assert '"layer2_music_effective_order_limit": 1' in payload
+    assert '"layer2_music_dpd_rank1_enabled": true' in payload
+    assert '"layer2_music_noise_whitening_enabled": true' in payload
     assert "layer2_iterative_peak_search_enabled" not in payload
     assert "layer2_direction_id_tracking_enabled" not in payload
 
@@ -797,8 +805,10 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert right_layout.indexOf(window.srp_kalman_q) == 2
         assert right_layout.indexOf(window.srp_kalman_r) == 3
         assert right_layout.indexOf(window.gate_readout) == 4
-        assert right_layout.indexOf(window.music_order_limit) == 5
-        assert right_layout.indexOf(window.srp_threshold) == 6
+        assert right_layout.indexOf(window.music_dpd_rank1) == 5
+        assert right_layout.indexOf(window.music_noise_whitening) == 6
+        assert right_layout.indexOf(window.music_order_limit) == 7
+        assert right_layout.indexOf(window.srp_threshold) == 8
         decision = ProbabilityGateDecision(
             "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
             0.55, 0.75, 0.65, 0.60, 4, True, "probability_at_or_above_threshold",

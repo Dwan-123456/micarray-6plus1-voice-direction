@@ -50,6 +50,8 @@ def test_processing_config_has_music_mdl_lifecycle_and_no_removed_switches() -> 
     assert values["music"]["context_ms"] in {160, 240, 320}
     assert (values["n_fft"], values["win_length"], values["hop_length"]) == (1024, 960, 480)
     assert values["mdl_max_age_ms"] <= 100
+    assert values["dpd_rank1_enabled"] is False
+    assert values["noise_whitening_enabled"] is False
     assert values["direction_id_tracking"]["coasting_ttl_ms"] > 0
     assert "iterative_peak_search_enabled" not in values
     assert "enabled" not in values["direction_id_tracking"]
