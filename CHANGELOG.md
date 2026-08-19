@@ -67,7 +67,7 @@
 
 ## 2026-08-19 — 完成项目1.1.0分支的L2 Rolling NormMUSIC重构
 
-- **版本/标签**：项目`1.1.0`开发分支；未发布、未创建`v1.1.0`标签，已发布`v1.0.1`不移动。
+- **版本/标签**：`feature/l2-music-tracking-v1.1`开发分支；项目`1.1.0`未发布、未创建`v1.1.0`标签，已发布`v1.0.1`不移动。
 - **类型**：L2定位主链、公共方向轨迹、运行时/跨层DTO、Test UI诊断、DecisionRecord v4适配及回归测试。
 - **涉及文件**：`layer2_source_detection/`、`common/config.py`、`common/data_types.py`、`config/config.yaml`、`app/`、`gui/dev_test_ui/`、L3/L4公共track_id透传、数据管理适配、README和相关测试。
 
@@ -98,7 +98,7 @@
 ### 验证、性能与资产
 
 - 自动测试覆盖0～3源、全角度/跨0°、45°NMS、HardwareMix隔离、滚动增量与全量重建等价、rank交换、birth/miss/短漏检/TTL、Gate关闭、丢窗/sample跳跃、epoch/session、确定性tie-break、Kalman运行切换、跨层ID和DecisionRecord v4。
-- 完整自动测试：`302 passed`。本机Rolling MUSIC性能测试满足稳态p95不高于15 ms且单窗低于20 ms；尚未完成真实麦克风、诊室混响、三声源和长时间目标机实机验收。
+- 完整自动测试：`310 passed`。本机Rolling MUSIC性能测试满足稳态p95不高于15 ms且单窗低于20 ms；尚未完成真实麦克风、诊室混响、三声源和长时间目标机实机验收。
 - Git LFS资产、CNN模型、精选音频和运行数据无变化；`data/`、录音、Catalog、日志和缓存未纳入提交。
 
 ---
