@@ -339,3 +339,16 @@ def test_normal_track_moving_near_noise_track_is_not_merged_into_it() -> None:
             "track", 0, first_sample + 1_920 + offset, noise_id, 0.95, True
         )
     assert tracker._tracks[noise_id].noise_interference
+
+
+def test_internal_tracker_never_exceeds_four_active_ids() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=45.0, max_velocity_dps=60.0,
+        confirmation_observations=2, confirmation_window_samples=9_600,
+        coasting_ttl_samples=200_000, miss_cost=1.0, birth_cost=1.0,
+    ))
+    first, _ = _update(tracker, 15_360, (0.0, 120.0, 240.0))
+    second, active = _update(tracker, 16_320, (60.0, 180.0, 300.0))
+    assert len(first) == len(second) == 3
+    assert len(active) == tracker.active_track_count == 4
+    assert len(set(tracker.active_track_ids)) == 4

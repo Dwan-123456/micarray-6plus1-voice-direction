@@ -59,6 +59,7 @@ class GlobalDirectionTracker:
 
     backend = "global_assignment_v1"
     voice_absence_noise_samples = 3 * 48_000
+    max_active_tracks = 4
 
     def __init__(self, config: GlobalTrackerConfig | None = None) -> None:
         self.config = config or GlobalTrackerConfig()
@@ -266,6 +267,7 @@ class GlobalDirectionTracker:
             track_id for track_id, track in self._tracks.items()
             if track.noise_interference
         ))
+        used_noise_ids: set[int] = set()
         for index, candidate in enumerate(candidates):
             if index in assigned:
                 continue
@@ -283,15 +285,50 @@ class GlobalDirectionTracker:
                 <= self.config.association_gate_deg
             )
             if viable_noise:
-                assigned[index] = min(viable_noise)[1]
+                unused_noise = tuple(
+                    item for item in viable_noise if item[1] not in used_noise_ids
+                )
+                if unused_noise:
+                    noise_id = min(unused_noise)[1]
+                    assigned[index] = noise_id
+                    used_noise_ids.add(noise_id)
+
+        birth_indices = [index for index in range(len(candidates)) if index not in assigned]
+        required_slots = max(
+            0, len(self._tracks) + len(birth_indices) - self.max_active_tracks
+        )
+        protected_ids = set(assigned.values())
+        victims = sorted(
+            (track for track in self._tracks.values() if track.track_id not in protected_ids),
+            key=lambda track: (
+                0 if track.noise_interference else 1,
+                0 if track.last_voice_sample is None else 1,
+                0 if not track.confirmed else 1,
+                track.last_observed,
+                track.normalized_score,
+                track.track_id,
+            ),
+        )
+        for victim in victims[:required_slots]:
+            del self._tracks[victim.track_id]
+        available_births = max(0, self.max_active_tracks - len(self._tracks))
+        allowed_births = set(sorted(
+            birth_indices,
+            key=lambda index: (
+                -candidates[index].normalized_score,
+                candidates[index].theta_deg,
+                index,
+            ),
+        )[:available_births])
         directions: list[TrackedDirection] = []
         assignment_ids: list[int] = []
         new_flags: list[bool] = []
-        for rank, candidate in enumerate(candidates, start=1):
-            index = rank - 1
+        for index, candidate in enumerate(candidates):
             track_id = assigned.get(index)
             is_new = track_id is None
             if is_new:
+                if index not in allowed_births:
+                    continue
                 track_id = self._new_id(session_id)
                 track = _Track(
                     track_id, candidate.theta_deg, 0.0, decision_sample,
@@ -328,6 +365,7 @@ class GlobalDirectionTracker:
             ):
                 track.confirmed = True
             state = "confirmed" if track.confirmed else "tentative"
+            rank = len(directions) + 1
             directions.append(TrackedDirection(
                 session_id, stream_epoch, candidate.window_id, decision_sample,
                 candidate.doa_start_sample, candidate.doa_end_sample,

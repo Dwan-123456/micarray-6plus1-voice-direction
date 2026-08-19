@@ -174,6 +174,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 - 轨迹内部维护 unwrapped angle；`359° → 0°` 应表现为 `+1°`，反向为 `-1°`，公开时再 `% 360`。
 - ID 关联永远开启，不存在 `enable_id_tracking` UI/配置开关。
+- 内部活动方向ID最多4个，公共输出仍最多3个；达到上限时只能淘汰未被本窗关联的低优先级轨迹，不得清空整个tracker、重置epoch或把Gate改成`WARMING_UP`。
 - Kalman 可以开关，但只影响 `theta_deg` 平滑和短时预测，不影响 ID 的分配、确认、miss 或删除。
 - 开关 Kalman 不得清空 tracker 或改变已有 ID。Kalman 状态按 `track_id` 建立；关闭时使用观测/几何预测，重新开启时安全重建滤波状态。
 - 不确定度过大时 active track 可继续 coasting 展示，但不得发布虚假的 L3 目标。
