@@ -28,7 +28,7 @@ L1读取48 kHz native 8ch音频，完成PCM解码、校准、连续性guard和�
 
 ## IMCRA输出
 
-IMCRA已迁入L1，对校准后的7个物理麦按20 ms hop独立更新。实现遵循[Israel Cohen 2003论文](https://doi.org/10.1109/TSA.2003.811544)的双迭代流程：第一轮时频平滑与最小值跟踪产生粗VAD，第二轮排除强语音分量后再次平滑和跟踪最小值，再按论文式(29)、式(7)和式(10)～(12)依次计算先验语音缺失概率、后验SPP和噪声PSD。算法版本固定为`cohen_imcra_2003_l1_v1`。
+IMCRA已迁入L1，对校准后的7个物理麦按20 ms hop独立更新。实现遵循[Israel Cohen 2003论文](https://doi.org/10.1109/TSA.2003.811544)的双迭代流程：第一轮时频平滑与最小值跟踪产生粗VAD，第二轮排除强语音分量后再次平滑和跟踪最小值，再按论文式(29)、式(7)和式(10)～(12)依次计算先验语音缺失概率、后验SPP和噪声PSD。当前算法版本为`cohen_imcra_2003_l1_v2`。
 
 论文表I参数固定为`w=1、αs=0.9、U=8、V=15、D=120、Bmin=1.66、γ0=4.6、γ1=3、ζ0=1.67、α=0.92、αd=0.85、β=1.47`。表I数值原本用于16 kHz实验；本版本把递归参数固定下来，同时适配项目的48 kHz输入、960-sample hop和2048点FFT。`Bmin`与窗、hop和FFT有关，未来若完成统计/实机重标定，必须升级算法版本，不能静默覆盖当前基线。
 
@@ -41,19 +41,19 @@ IMCRA已迁入L1，对校准后的7个物理麦按20 ms hop独立更新。实现
 5. 式(32)～(33)：Decision-Directed先验SNR及确定语音存在时的LSA增益；
 6. 式(10)～(12)：用SPP调节递归平滑系数并作`β`偏差补偿，得到噪声PSD。
 
-每个结果发布**80～8000 Hz**范围内的338点频率轴、两轮平滑谱、两轮局部最小量、先验/后验SNR、先验语音缺失概率、后验SPP和噪声PSD。每麦噪声特征为`noise_level_db、signal_level_db、snr_db、mean_spp`；前三项使用80～8000 Hz宽频统计，`mean_spp`在500～4000 Hz证据子带聚合。7个`mean_spp`的中位数形成`array_source_probability_20ms ∈ [0,1]`。这是本项目的阵列概率适配器，不属于论文单通道公式。
+每个结果发布**0～8000 Hz**范围内的342点频率轴、两轮平滑谱、两轮局部最小量、先验/后验SNR、先验语音缺失概率、后验SPP和噪声PSD。每麦噪声特征为`noise_level_db、signal_level_db、snr_db、mean_spp`；前三项使用0～8000 Hz宽频统计，`mean_spp`仍只在500～4000 Hz证据子带聚合。7个`mean_spp`的中位数形成`array_source_probability_20ms ∈ [0,1]`。这是本项目的阵列概率适配器，不属于论文单通道公式。
 
 结果与音频共享session、epoch和绝对sample区间。HardwareMix不参与IMCRA状态或7麦阵列概率聚合。
 
 ## 可切换预降噪
 
-`ImcraWienerPreDenoiser`在IMCRA完成原始20 ms音频估计后运行。每个物理麦使用自己的`prior_snr`和`SPP`生成SPP保护Wiener增益，处理80～8000 Hz，最低增益为-18 dB；HardwareMix及频带外内容直通。处理器以两个20 ms hop组成40 ms平方根Hann窗，以20 ms步长执行50%重叠相加，输出仍是连续960点hop并保留原sample边界。
+`ImcraWienerPreDenoiser`在IMCRA完成原始20 ms音频估计后运行。每个物理麦使用自己的`prior_snr`和`SPP`生成SPP保护Wiener增益，处理0～8000 Hz，最低增益为-18 dB；HardwareMix及8000 Hz以上内容直通。具体处理是：把相邻两个20 ms hop组成40 ms帧，乘平方根Hann窗后执行2048点RFFT；对每麦、每个0～8000 Hz频点的复数STFT系数乘实数增益，因此同时缩放该频点的幅度、保留相位；随后执行IRFFT、再次乘平方根Hann窗，并以20 ms步长50%重叠相加，恢复连续时域音频。当前算法版本为`imcra_wiener_wola_v2`。
 
 Test UI的L1区域提供“IMCRA预降噪”开关。OFF时输出原始LogicalAudio；ON时Runtime等待对应降噪hop完成，将下游音频前7路替换为降噪结果后再生成DecisionWindow。IMCRA预热或无效时使用单位增益。`native_samples`始终保持设备原始数据，第8路HardwareMix始终不修改。
 
-PSD状态保留80～8000 Hz目标频带，概率证据带与L2 SRP定位频带一致，避免低频震动和高频噪声影响Gate。
+PSD/SPP状态保留0～8000 Hz目标频带；概率证据仍仅从500～4000 Hz聚合，避免新纳入的直流和低频震动直接影响Gate。
 
-不可变`ImcraHopSnapshot`发布字段包括`frequencies_hz、noise_psd、smoothed_psd、conditional_smoothed_psd、minimum_psd、conditional_minimum_psd、spp、speech_absence_probability、posterior_snr、prior_snr、noise_features、noise_level_db、source_probability_per_mic、array_source_probability_20ms`。所有频谱状态形状为`[7,338]`，必须finite且只读；概率必须位于`[0,1]`。
+不可变`ImcraHopSnapshot`发布字段包括`frequencies_hz、noise_psd、smoothed_psd、conditional_smoothed_psd、minimum_psd、conditional_minimum_psd、spp、speech_absence_probability、posterior_snr、prior_snr、noise_features、noise_level_db、source_probability_per_mic、array_source_probability_20ms`。所有频谱状态形状为`[7,342]`，必须finite且只读；概率必须位于`[0,1]`。
 
 断流、sequence/timestamp/rate异常或epoch切换时必须清空IMCRA状态并重新预热。预热期间发布明确状态，不能把缺失概率写成0。
 
@@ -67,7 +67,7 @@ L1不计算DOA、不执行波束形成、不判断人声，也不分配权威绝
 - verified/unverified校准状态、稳定版本/hash传播、同epoch边界拒绝和未来资产显式拒绝；
 - 麦克风面逆时针几何及灯面镜像防错；
 - HardwareMix保留但不进入7麦阵列算法；
-- IMCRA 20 ms更新、80～8000 Hz PSD/SPP状态、500～4000 Hz概率聚合、重置、预热及概率范围；
+- IMCRA 20 ms更新、0～8000 Hz PSD/SPP状态、500～4000 Hz概率聚合、重置、预热及概率范围；
 - 40 ms/20 ms WOLA连续重建、每麦独立增益、HardwareMix直通、预热旁路和运行时开关；
 - 设备、WAV、实时handoff和Ingest时间轴一致性。
 

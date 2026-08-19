@@ -20,7 +20,7 @@ CONFIG = Path(__file__).parents[1] / "config/config.yaml"
 
 def _hop(index: int) -> ImcraHopSnapshot:
     frequencies = np.fft.rfftfreq(2048, 1 / 48_000).astype(np.float32)
-    frequencies = frequencies[(frequencies >= 80.0) & (frequencies <= 8_000.0)]
+    frequencies = frequencies[frequencies <= 8_000.0]
     shape = (7, len(frequencies))
     scale = np.float32(1.0 + index * 0.01)
     noise = np.full(shape, scale, np.float32)
@@ -33,7 +33,7 @@ def _hop(index: int) -> ImcraHopSnapshot:
         index * 960,
         (index + 1) * 960,
         (index,),
-        "cohen_imcra_2003_l1_v1",
+        "cohen_imcra_2003_l1_v2",
         "ready",
         frequencies,
         noise,

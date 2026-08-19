@@ -80,11 +80,11 @@ class TimingConfig(StrictModel):
 
 class Layer1ImcraConfig(StrictModel):
     enabled: bool
-    algorithm_version: Literal["cohen_imcra_2003_l1_v1"]
+    algorithm_version: Literal["cohen_imcra_2003_l1_v2"]
     hop_samples: Literal[960]
     n_fft: Literal[2048]
     window: Literal["hann_periodic"]
-    output_frequency_min_hz: Literal[80.0]
+    output_frequency_min_hz: Literal[0.0]
     output_frequency_max_hz: Literal[8000.0]
     frequency_min_hz: Literal[500.0]
     frequency_max_hz: Literal[4000.0]
@@ -115,7 +115,7 @@ class Layer1ImcraConfig(StrictModel):
 
 class Layer1PreDenoiseConfig(StrictModel):
     enabled: bool = False
-    algorithm_version: Literal["imcra_wiener_wola_v1"]
+    algorithm_version: Literal["imcra_wiener_wola_v2"]
     frame_samples: Literal[1920]
     hop_samples: Literal[960]
     n_fft: Literal[2048]

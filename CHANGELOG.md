@@ -21,6 +21,36 @@
 
 ---
 
+## 2026-08-19 — 扩展IMCRA统计与预降噪至0～8000 Hz
+
+- **版本/标签**：项目仍处于`1.1.0`分支迁移阶段；未修改项目版本，未创建或移动发布标签。
+- **类型**：L1 IMCRA输出契约、Wiener预降噪频带、录音sidecar契约、测试与文档。
+- **涉及文件**：`common/config.py`、`common/data_types.py`、`config/config.yaml`、`layer1_input/imcra.py`消费的配置、`layer1_input/pre_denoise.py`、L1/数据管理/架构文档、基准脚本及相关测试。
+
+### L1
+
+- IMCRA仍按7个物理麦分别计算，但发布和宽频噪声统计范围由80～8000 Hz扩展为0～8000 Hz；2048点RFFT频率轴由338点变为342点，算法版本升级为`cohen_imcra_2003_l1_v2`。
+- Gate使用的`mean_spp`证据带保持500～4000 Hz，因此直流和新纳入的低频bin不会直接改变L2 Gate聚合频带。
+- Wiener预降噪改为对0～8000 Hz复数STFT系数乘每麦实数增益，再经IRFFT和40 ms/20 ms平方根Hann WOLA恢复时域音频；8000 Hz以上、HardwareMix和native音频保持直通。算法版本升级为`imcra_wiener_wola_v2`。
+
+### Windowing、L2、L3与L4
+
+- WindowAssembler、DecisionWindow大小/节拍和滚动历史契约无变化；L2 MUSIC、Gate阈值、方向ID与Kalman无变化。
+- L3、L4算法和处理频带无变化；仅测试fixture适配新的IMCRA 342点输入轴。
+
+### Development Test UI、录音与数据管理
+
+- Development Test UI行为与布局无变化，继续显示由L1发布的噪声摘要。
+- IMCRA录音sidecar的频谱数组从`[record,7,338]`变为`[record,7,342]`，manifest继续从实际轴写入`frequency_bin_count`；其他录音schema、Catalog、事务和恢复行为无变化。
+
+### 测试、资产与验收状态
+
+- 增加0 Hz起点、342点频率轴和预降噪0～8000 Hz掩码覆盖测试；同步配置、数据管理、L3 fixture与生产采集契约测试。
+- 聚焦验证`104 passed`，新增DC频点回归单测`4 passed`，全量自动测试`358 passed`；本次改动文件Ruff检查和`git diff --check`通过。未进行真实硬件听感、低频噪声抑制或诊室验收。
+- 无模型、音频或其他Git LFS资产变化，本地录音和数据目录不进入提交。
+
+---
+
 ## 2026-08-19 — 完成1.1.0的L1与Windowing输入准备
 
 - **版本/标签**：面向项目`1.1.0`的分支准备；未修改项目版本，未创建或移动`v1.1.0`及任何已发布标签。

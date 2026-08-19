@@ -44,10 +44,11 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert calibration.status == "unverified"
     assert calibration.calibration_hash == calibration_config_hash(config.calibration)
     assert len(config_hash(config)) == 64
-    assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v1"
+    assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v2"
+    assert config.layer1_imcra.output_frequency_min_hz == 0.0
     assert config.layer1_imcra.hop_samples == 960
     assert config.layer1_pre_denoise.enabled is False
-    assert config.layer1_pre_denoise.algorithm_version == "imcra_wiener_wola_v1"
+    assert config.layer1_pre_denoise.algorithm_version == "imcra_wiener_wola_v2"
     assert config.layer1_pre_denoise.frame_samples == 1920
     assert config.layer1_pre_denoise.hop_samples == 960
     assert config.layer1_pre_denoise.minimum_gain_db == -18.0

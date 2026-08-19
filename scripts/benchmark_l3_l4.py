@@ -76,7 +76,7 @@ def _timed(call: Callable[[], _T], stream: torch.cuda.Stream | None) -> tuple[_T
 
 def _imcra_frequencies() -> np.ndarray:
     frequencies = np.fft.rfftfreq(2_048, 1.0 / 48_000).astype(np.float32)
-    return frequencies[(frequencies >= 80.0) & (frequencies <= 8_000.0)]
+    return frequencies[frequencies <= 8_000.0]
 
 
 def _hop(index: int, frequencies: np.ndarray) -> ImcraHopSnapshot:
@@ -92,7 +92,7 @@ def _hop(index: int, frequencies: np.ndarray) -> ImcraHopSnapshot:
         index * 960,
         (index + 1) * 960,
         (index,),
-        "cohen_imcra_2003_l1_v1",
+        "cohen_imcra_2003_l1_v2",
         "ready",
         frequencies,
         noise,
