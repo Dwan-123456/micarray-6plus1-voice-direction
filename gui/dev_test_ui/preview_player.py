@@ -54,6 +54,15 @@ class PreviewPlayer:
             return self._playing
 
     @property
+    def playback_progress(self) -> float:
+        """Return the loaded audio's current sample position as a 0..1 ratio."""
+        with self._lock:
+            sample_count = len(self._audio)
+            if sample_count <= 0:
+                return 0.0
+            return float(np.clip(self._position / sample_count, 0.0, 1.0))
+
+    @property
     def stream_active(self) -> bool:
         stream = self._stream
         if stream is None:

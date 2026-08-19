@@ -444,6 +444,15 @@ class BeamformPanel(QGroupBox):
         for row in self._track_rows.values():
             row.set_playing(False)
 
+    def set_track_playback_progress(self, track_id: int, progress: float) -> None:
+        """Draw the player's real sample position only on its loaded track."""
+        for item_id, row in self._track_rows.items():
+            row.set_playback_progress(progress if item_id == int(track_id) else None)
+
+    def clear_track_playback_progress(self) -> None:
+        for row in self._track_rows.values():
+            row.set_playback_progress(None)
+
 
 class AudioWaveformThumbnail(QWidget):
     """Compact fixed-scale dBFS envelope; no audio-file rescans on UI refresh."""
@@ -451,6 +460,7 @@ class AudioWaveformThumbnail(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._envelope: tuple[float, ...] = ()
+        self._playback_progress: float | None = None
         self.setMinimumWidth(180)
         self.setFixedHeight(42)
 
@@ -460,6 +470,12 @@ class AudioWaveformThumbnail(QWidget):
             self._envelope = value
             self.update()
 
+    def set_playback_progress(self, progress: float | None) -> None:
+        value = None if progress is None else float(np.clip(progress, 0.0, 1.0))
+        if value != self._playback_progress:
+            self._playback_progress = value
+            self.update()
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
@@ -467,18 +483,21 @@ class AudioWaveformThumbnail(QWidget):
         middle = self.height() // 2
         painter.setPen(QPen(QColor("#526170"), 1))
         painter.drawLine(0, middle, self.width(), middle)
-        if not self._envelope or self.width() <= 0:
-            return
-        values = np.asarray(self._envelope, dtype=np.float32)
-        painter.setPen(QPen(QColor("#39b6d4"), 1))
-        half_height = max(1, middle - 3)
-        for x in range(self.width()):
-            start = x * len(values) // self.width()
-            stop = max(start + 1, (x + 1) * len(values) // self.width())
-            peak = float(np.max(values[start:stop], initial=0.0))
-            dbfs = max(-60.0, 20.0 * np.log10(max(peak, 1.0e-6)))
-            height = round(half_height * (dbfs + 60.0) / 60.0)
-            painter.drawLine(x, middle - height, x, middle + height)
+        if self._envelope and self.width() > 0:
+            values = np.asarray(self._envelope, dtype=np.float32)
+            painter.setPen(QPen(QColor("#39b6d4"), 1))
+            half_height = max(1, middle - 3)
+            for x in range(self.width()):
+                start = x * len(values) // self.width()
+                stop = max(start + 1, (x + 1) * len(values) // self.width())
+                peak = float(np.max(values[start:stop], initial=0.0))
+                dbfs = max(-60.0, 20.0 * np.log10(max(peak, 1.0e-6)))
+                height = round(half_height * (dbfs + 60.0) / 60.0)
+                painter.drawLine(x, middle - height, x, middle + height)
+        if self._playback_progress is not None and self.width() > 0:
+            x = round(self._playback_progress * max(0, self.width() - 1))
+            painter.setPen(QPen(QColor("#ffb000"), 2))
+            painter.drawLine(x, 0, x, self.height() - 1)
 
 
 class AudioTrackRow(QWidget):
@@ -525,6 +544,9 @@ class AudioTrackRow(QWidget):
         if playing != self._rendered_playing:
             self.play.setText("Ⅱ" if playing else "▶")
             self._rendered_playing = playing
+
+    def set_playback_progress(self, progress: float | None) -> None:
+        self.waveform.set_playback_progress(progress)
 
 
 class VoiceProbabilityPolar(QWidget):

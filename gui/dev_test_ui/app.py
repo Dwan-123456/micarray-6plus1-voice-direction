@@ -380,11 +380,6 @@ def build_window(
             denoise.addWidget(self.pre_denoise_label)
             denoise.addStretch()
             layout.addLayout(denoise)
-            self.calibration_label = QLabel("校准: UNVERIFIED")
-            self.calibration_label.setStyleSheet(
-                "QLabel { background:#7a3f00; color:white; padding:4px 8px; font-weight:600; }"
-            )
-            layout.addWidget(self.calibration_label)
             self.imcra_label = QLabel("IMCRA: WAITING | noise MIC0— MIC1— MIC2— MIC3— MIC4— MIC5— Center—")
             self.imcra_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.imcra_label.setStyleSheet("font-family:Consolas")
@@ -785,6 +780,16 @@ def build_window(
             self.preview_player.pause()
 
         def _toggle_track_audio(self, track_id: int):
+            if (
+                self._audio_source_key is not None
+                and self._audio_source_key[0] == "track"
+                and int(self._audio_source_key[1]) == int(track_id)
+            ):
+                if not self.preview_player.play():
+                    error = self.preview_player.take_error() or "unknown audio output error"
+                    self.bf_panel.sync_track_playback_stopped()
+                    self.statusBar().showMessage(f"试听失败：{error}", 5000)
+                return
             cache_path = audio_id_tracker.audio_cache_path(track_id)
             if cache_path is None:
                 label = "Center Mic" if track_id == 0 else f"ID-{track_id:03d}"
@@ -813,6 +818,16 @@ def build_window(
             self.preview_player.validate_output()
             if not self.preview_player.playing:
                 self.bf_panel.sync_track_playback_stopped()
+            if self._audio_source_key is not None and self._audio_source_key[0] == "track":
+                progress = self.preview_player.playback_progress
+                if self.preview_player.playing or progress > 0.0:
+                    self.bf_panel.set_track_playback_progress(
+                        int(self._audio_source_key[1]), progress
+                    )
+                else:
+                    self.bf_panel.clear_track_playback_progress()
+            else:
+                self.bf_panel.clear_track_playback_progress()
             playback_error = self.preview_player.take_error()
             if playback_error:
                 self.statusBar().showMessage(f"试听输出：{playback_error}", 5000)
@@ -1040,21 +1055,6 @@ def build_window(
                     )
                 else:
                     self._set_text(self.pre_denoise_label, "预降噪: OFF | 原始音频直通")
-                if l1.calibration_status == "verified":
-                    self.calibration_label.setStyleSheet(
-                        "QLabel { background:#16794b; color:white; padding:4px 8px; font-weight:600; }"
-                    )
-                    calibration_text = "校准: VERIFIED"
-                else:
-                    self.calibration_label.setStyleSheet(
-                        "QLabel { background:#9a3d24; color:white; padding:4px 8px; font-weight:700; }"
-                    )
-                    calibration_text = "警告：校准 UNVERIFIED，MUSIC方向结果不得作为实机验收"
-                self._set_text(
-                    self.calibration_label,
-                    f"{calibration_text} | {l1.calibration_version} | {l1.calibration_hash[:12]}",
-                )
-                self.calibration_label.setToolTip(f"calibration_sha256={l1.calibration_hash}")
                 self._set_text(self.l1_header,
                     f"{frame.pipeline_status.state.upper()} | session {l1.session_id[:8]} | epoch {l1.stream_epoch} | "
                     f"sample {l1.end_sample:012d} | seq {l1.sequence_id:08d} | age 000 ms"
