@@ -11,10 +11,22 @@
       "justMyCode": true
     },
     {
-      "name": "运行：Development Test UI（实现后）",
+      "name": "运行：Development Test UI",
       "type": "debugpy",
       "request": "launch",
       "module": "gui.dev_test_ui.app",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "运行：Audio Data Manager",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "gui.production_ui.app",
       "cwd": "${workspaceFolder}",
       "env": {
         "PYTHONPATH": "${workspaceFolder}"

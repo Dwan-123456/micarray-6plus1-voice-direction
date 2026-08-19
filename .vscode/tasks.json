@@ -57,6 +57,17 @@
         "env": {"PYTHONPATH": "${workspaceFolder}"}
       },
       "problemMatcher": []
+    },
+    {
+      "label": "运行：Audio Data Manager",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "gui.production_ui.app"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {"PYTHONPATH": "${workspaceFolder}"}
+      },
+      "problemMatcher": []
     }
   ]
 }

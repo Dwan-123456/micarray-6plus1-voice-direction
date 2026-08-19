@@ -44,6 +44,20 @@ class ThresholdRequest(BaseModel):
     increase: bool
 
 
+def _write_complete(packet: bytes, *, label: str) -> int:
+    """Write one device command and reject silent/partial serial writes."""
+    try:
+        bytes_written = serial_device.write(packet)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if bytes_written != len(packet):
+        raise HTTPException(
+            status_code=503,
+            detail=f"{label}未完整写入：{bytes_written}/{len(packet)} 字节",
+        )
+    return bytes_written
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "audio": audio.running, "serial": serial_device.running}
@@ -195,25 +209,15 @@ def hotmap_latest():
 def serial_write(request: RawWrite):
     try:
         data = bytes.fromhex(request.hex)
-        return {"bytes_written": serial_device.write(data), "hex": data.hex()}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="无效十六进制") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"bytes_written": _write_complete(data, label="串口数据"), "hex": data.hex()}
 
 
 @app.post("/lights/set")
 def lights_set(request: LightRequest):
-    try:
-        packet = led_command(request.enabled)
-        bytes_written = serial_device.write(packet)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if bytes_written != len(packet):
-        raise HTTPException(
-            status_code=503,
-            detail=f"定位指示灯指令未完整写入：{bytes_written}/{len(packet)} 字节",
-        )
+    packet = led_command(request.enabled)
+    bytes_written = _write_complete(packet, label="定位指示灯指令")
     return {
         "enabled": request.enabled,
         "official_command": packet.decode(),
@@ -240,14 +244,14 @@ def lights_off():
 def beam_direction(request: BeamDirectionRequest):
     try:
         packet = beam_direction_command(request.direction)
-        return {
-            "direction": packet.decode(),
-            "angle_degrees": int(packet.decode(), 12) * 30,
-            "beamformed_output_channel": 6,
-            "bytes_written": serial_device.write(packet),
-        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "direction": packet.decode(),
+        "angle_degrees": int(packet.decode(), 12) * 30,
+        "beamformed_output_channel": 6,
+        "bytes_written": _write_complete(packet, label="波束方向指令"),
+    }
 
 
 @app.post("/hotmap/threshold")
@@ -256,13 +260,14 @@ def hotmap_threshold(request: ThresholdRequest):
     return {
         "change": 50 if request.increase else -50,
         "official_command": packet.decode(),
-        "bytes_written": serial_device.write(packet),
+        "bytes_written": _write_complete(packet, label="热力图阈值指令"),
     }
 
 
 @app.post("/device/restore-defaults")
 def restore_defaults():
-    return {"official_command": "R", "bytes_written": serial_device.write(restore_defaults_command())}
+    packet = restore_defaults_command()
+    return {"official_command": "R", "bytes_written": _write_complete(packet, label="恢复默认指令")}
 
 
 if __name__ == "__main__":

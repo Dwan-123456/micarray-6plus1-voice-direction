@@ -21,6 +21,20 @@
 
 ---
 
+## 2026-08-19 — 非 Log UI 全仓静态可用性审查与边界加固
+
+- **版本/标签**：项目 `1.1.0` 开发分支；未创建或移动发布标签，已发布的 `v1.0.1` 不变。
+- **类型**：全仓静态审查、L1 串口控制失败语义、数据集锁定前校验和可执行入口补齐。
+- **涉及文件**：`layer1_input/api.py`、`data_management/service.py`、`.vscode/launch.json`、`.vscode/tasks.json`、`docs/KNOWN_ISSUES.md`和根 `CHANGELOG.md`。
+- L1 原始串口写入、指示灯、波束方向、热力图阈值和恢复默认命令统一校验完整写入；底层异常或短写均返回 503，不再误报成功。
+- 数据集分组分割先在内存中完成泄漏检查，通过后才改写 Recording 清单和 Catalog；校验失败不再留下部分更新。
+- VS Code 直接运行入口补齐 Audio Data Manager，并移除 Development Test UI 过时的“实现后”标记；已知问题文档明确区分软件阻断项与实机验收边界。
+- **未改变**：L1 音频采集/通道映射/算法、Windowing、L2 MUSIC/轨迹 ID、L3、L4、Application Runtime、Development Test UI 功能、Production UI 功能、录音格式、公共 DTO/配置、模型、音频与精选测试资产均无变化；Pipeline Log UI 及其测试文件按用户要求排除并保持原样。
+- **验证**：按用户要求未运行 pytest 或其他测试套件；对非 Log UI 代码执行 Ruff、全模块导入和 Python 语法编译检查，并执行 `git diff --check`。真实麦克风、CDC、声场、CUDA、长时录音及回放未实机验收。
+- Git LFS 管理资产无变化；`data/`、录音、Catalog、日志、缓存、临时文件和本地设置未纳入提交。
+
+---
+
 ## 2026-08-19 — 独立只读 Pipeline Log UI 完整实现
 
 - **版本/标签**：项目 `1.1.0` 开发分支；未创建或移动发布标签，已发布的 `v1.0.1` 不变。

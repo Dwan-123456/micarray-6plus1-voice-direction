@@ -194,19 +194,24 @@ class DataManagerService:
             raise ValueError("数据集没有Recording")
         manifests = [json.loads(row["metadata_json"]) for row in rows]
         assignments = assign_grouped_splits([{"id": item["recording_id"], **item} for item in manifests])
-        leakage_items = []
+        staged_manifests = [
+            {
+                **manifest,
+                "split": assignments[row["id"]],
+                "quality_status": "versioned",
+            }
+            for row, manifest in zip(rows, manifests, strict=True)
+        ]
+        report = leakage_check(staged_manifests)
+        if not report["passed"]:
+            raise ValueError(f"split泄漏检查失败: {report['leaks']}")
+
         recording_hashes = []
-        for row, manifest in zip(rows, manifests, strict=True):
-            manifest["split"] = assignments[row["id"]]
-            manifest["quality_status"] = "versioned"
+        for row, manifest in zip(rows, staged_manifests, strict=True):
             root = Path(row["path"])
             path = write_manifest(root / "recording_manifest.json", manifest)
             self.catalog.upsert_recording(manifest, root)
             recording_hashes.append({"recording_id": row["id"], "manifest_hash": sha256_file(path)})
-            leakage_items.append(manifest)
-        report = leakage_check(leakage_items)
-        if not report["passed"]:
-            raise ValueError(f"split泄漏检查失败: {report['leaks']}")
         root = Path(dataset["path"])
         payload = {
             "schema_version": "dataset_manifest_v1",
