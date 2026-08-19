@@ -113,7 +113,7 @@
 - 保留Center Mic全采集参考、内部稳定20 ms hop、可恢复真实音频补洞、过旧缺口等时静音、跨hop交叉淡化、至少2秒显示、有界10秒分段/3段保留、三档L3模式隔离，以及关闭窗口删除Test UI缓存。
 - 新增/更新控件删除、MUSIC 360点与状态、权威ID字段/L4概率、精确ID拼接、跨0°不换轨、缺口回填、coasting等待/删除封存、模式隔离及Center参考测试。
 - **未由本UI子变更调整**：L1采集/IMCRA/录音控制算法、MUSIC/MDL数值算法、L3波束形成算法、L4模型推理、Production UI和RecordingStore事务规则；这些1.1前置契约的并行变更另行记录。
-- 验证：Development Test UI定向测试`31 passed`；集成工作树全量测试`303 passed`。未进行真实阵列、声卡播放或诊室实机验收。
+- 验证：Development Test UI定向测试`31 passed`；配置/Runtime/UI重点回归`78 passed`；集成工作树全量测试`310 passed`，`git diff --check`通过。未进行真实阵列、声卡播放或诊室实机验收。
 - `data/`、运行录音、试听缓存、日志和本地设置未纳入提交；Git LFS资产无变化。
 
 ---
