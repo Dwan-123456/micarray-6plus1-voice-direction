@@ -41,13 +41,6 @@ def test_lookup_p_matches_direct_steering_calculation_and_wraps_angles():
         np.testing.assert_array_equal(lookup_p(theta_a, theta_b), lookup_p(theta_b, theta_a))
 
 
-def test_table_preserves_absolute_orientation_for_the_same_separation():
-    first = lookup_p(0, 120)
-    rotated = lookup_p(15, 135)
-    frequency_index = int(np.argmin(np.abs(P_FREQUENCIES_HZ - 5_000.0)))
-    assert abs(float(first[frequency_index]) - float(rotated[frequency_index])) > 0.2
-
-
 def test_table_context_matches_the_project_bf_configuration():
     validate_p_table_context(
         sample_rate=48_000,

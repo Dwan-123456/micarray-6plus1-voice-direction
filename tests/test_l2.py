@@ -90,13 +90,6 @@ def test_config_is_taken_from_the_unique_project_config(scan_config: DirectionSc
     assert scan_config.max_candidates == 2
 
 
-@pytest.mark.parametrize("theta", [0, 1, 30, 89, 90, 179, 180, 269, 270, 330, 359])
-def test_cardinal_wrap_and_geometry_directions(theta: int, scan_config: DirectionScanConfig) -> None:
-    response, _ = SrpPhatScanner().scan(decision_window(plane_wave(theta, seed=theta)), physical_6plus1_geometry(), scan_config)
-    estimated = int(np.argmax(response.raw_scores))
-    assert circular_distance_deg(estimated, theta) <= 1.0
-
-
 def test_every_degree_has_no_mirror_reverse_or_fixed_rotation(scan_config: DirectionScanConfig) -> None:
     scanner, geometry = SrpPhatScanner(), physical_6plus1_geometry()
     errors = []

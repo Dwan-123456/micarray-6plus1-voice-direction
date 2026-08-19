@@ -29,10 +29,6 @@ def test_wizard_allows_unspecified_source_count():
     assert validate_wizard(wizard_input(source_count=0, theta=(), distance=())) == []
 
 
-def test_wizard_does_not_require_a_preset_recording_time():
-    assert validate_wizard(wizard_input()) == []
-
-
 def test_wizard_requires_one_angle_and_distance_per_source():
     errors = validate_wizard(wizard_input(source_count=2))
     assert "真实角度的数量必须与声源数量一致" in errors

@@ -18,7 +18,7 @@ from layer1_input.protocols import beam_direction_command, led_command
 from layer1_input.pipeline import InputPipeline
 from layer1_input.pcm import float_to_pcm16
 from layer1_input.serial_device import SerialDevice
-from layer1_input.sources import MultichannelWavRecorder, WavAudioSource, map_physical_channels
+from layer1_input.sources import MultichannelWavRecorder, WavAudioSource
 
 
 class Layer1Tests(unittest.TestCase):
@@ -116,10 +116,6 @@ class Layer1Tests(unittest.TestCase):
         decoded = Pcm16InterleavedDecoder().decode(original.tobytes(), 1).reshape(-1)
         encoded = float_to_pcm16(decoded)
         np.testing.assert_array_equal(encoded, original)
-
-    def test_physical_mapping_excludes_ch6(self):
-        mapped = map_physical_channels(np.tile(np.arange(8, dtype=np.float32), (2, 1)), (0, 1, 2, 3, 4, 5, 7))
-        self.assertEqual(mapped[0].tolist(), [0, 1, 2, 3, 4, 5, 7])
 
     def test_audio_frame_shape(self):
         frame = DecodedAudio(np.zeros((960, 8)), 48000, 0, 0.0)

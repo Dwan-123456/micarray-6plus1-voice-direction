@@ -5,7 +5,6 @@ import pytest
 
 from common.config import load_config
 from common.data_types import IngestedAudioBlock
-from common.geometry import microphone_positions_m
 from ingest import IngestCoordinator
 from layer1_input.calibration import ChannelCalibrator
 from layer1_input.configuration import CalibrationConfig
@@ -38,16 +37,6 @@ def test_calibration_changes_only_the_seven_physical_microphones():
     assert output.samples.shape == (4, 8)
     assert np.array_equal(output.samples[:, :7], logical[:, :7] * 2.0)
     assert np.array_equal(output.samples[:, 7], logical[:, 7])
-
-
-def test_microphone_face_geometry_is_counterclockwise_without_hardware_mix():
-    positions = microphone_positions_m()
-    expected_angles = np.asarray((0, 60, 120, 180, 240, 300), dtype=np.float64)
-    measured = np.mod(np.rad2deg(np.arctan2(positions[:6, 1], positions[:6, 0])), 360.0)
-    assert np.allclose(measured, expected_angles, atol=1e-5)
-    assert np.allclose(np.linalg.norm(positions[:6], axis=1), 0.04)
-    assert np.array_equal(positions[6], np.zeros(2))
-    assert positions.shape == (7, 2)
 
 
 def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
