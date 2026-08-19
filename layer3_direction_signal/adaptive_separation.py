@@ -44,87 +44,117 @@ def adaptive_static_data(
     return AdaptiveStaticData(speech_band, identity, alias)
 
 
-def _condition_ok(matrix: torch.Tensor, limit: float) -> torch.Tensor:
-    try:
-        condition = torch.linalg.cond(matrix)
-    except RuntimeError:
-        return torch.zeros(matrix.shape[0], dtype=torch.bool, device=matrix.device)
-    return torch.isfinite(condition) & (condition <= limit)
-
-
-def _mvdr(
-    covariance_fcc: torch.Tensor,
-    steering_mfc: torch.Tensor,
+def _factorize(
+    matrix_xcc: torch.Tensor,
     condition_limit: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Factor a Hermitian positive-definite batch without an SVD.
+
+    Loaded covariance and LCMV Gram matrices are Hermitian positive definite. Their
+    spectral condition number is therefore the largest eigenvalue divided by the
+    smallest one, so ``eigvalsh`` preserves the previous 2-norm condition guard at
+    substantially lower cost than ``linalg.cond``'s general complex SVD.
+    """
+    try:
+        factor, info = torch.linalg.cholesky_ex(matrix_xcc, check_errors=False)
+        eigenvalues = torch.linalg.eigvalsh(matrix_xcc)
+    except RuntimeError:
+        identity = torch.eye(
+            matrix_xcc.shape[-1], dtype=matrix_xcc.dtype, device=matrix_xcc.device,
+        )
+        factor = identity.expand_as(matrix_xcc)
+        return factor, torch.zeros(matrix_xcc.shape[:-2], dtype=torch.bool, device=matrix_xcc.device)
+
+    smallest = eigenvalues[..., 0]
+    largest = eigenvalues[..., -1]
+    valid = (
+        info.eq(0)
+        & torch.isfinite(eigenvalues).all(dim=-1)
+        & (smallest > 0)
+        & (largest <= float(condition_limit) * smallest)
+    )
+    identity = torch.eye(
+        matrix_xcc.shape[-1], dtype=matrix_xcc.dtype, device=matrix_xcc.device,
+    )
+    safe_factor = torch.where(info.eq(0)[..., None, None], factor, identity)
+    return safe_factor, valid
+
+
+def _mvdr_from_solved(
+    solved_rfcm: torch.Tensor,
+    steering_fcm: torch.Tensor,
+    matrix_ok_rf: torch.Tensor,
     tolerance: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    steering_fcm = steering_mfc.permute(1, 2, 0).contiguous()
-    try:
-        solved = torch.linalg.solve(covariance_fcc, steering_fcm)
-    except RuntimeError:
-        return torch.zeros_like(steering_mfc), torch.zeros(
-            steering_mfc.shape[:2], dtype=torch.bool, device=steering_mfc.device,
-        )
-    denominator = torch.einsum("fcm,fcm->fm", steering_fcm.conj(), solved)
+    denominator = torch.einsum("fcm,rfcm->rfm", steering_fcm.conj(), solved_rfcm)
     safe = torch.where(torch.abs(denominator) > 1e-12, denominator, torch.ones_like(denominator))
-    weights = (solved / safe[:, None, :]).permute(2, 0, 1).contiguous()
-    response = torch.einsum("mfc,mfc->mf", weights.conj(), steering_mfc)
-    matrix_ok = _condition_ok(covariance_fcc, condition_limit)
+    columns = solved_rfcm / safe[:, :, None, :]
+    weights = columns.permute(0, 3, 1, 2).contiguous()
+    steering_mfc = steering_fcm.permute(2, 0, 1)
+    response = torch.einsum("rmfc,mfc->rmf", weights.conj(), steering_mfc)
     valid = (
-        matrix_ok[None, :]
+        matrix_ok_rf[:, None, :]
         & torch.isfinite(weights).all(dim=-1)
-        & torch.isfinite(denominator).transpose(0, 1)
+        & torch.isfinite(denominator).permute(0, 2, 1)
         & (torch.abs(response - 1.0) <= tolerance)
     )
     return weights, valid
 
 
-def _dual_lcmv(
-    covariance_fcc: torch.Tensor,
-    steering_mfc: torch.Tensor,
+def _dual_lcmv_from_solved(
+    solved_rfcm: torch.Tensor,
+    constraints_fcm: torch.Tensor,
+    covariance_ok_rf: torch.Tensor,
     condition_limit: float,
     tolerance: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    constraints_fcm = steering_mfc.permute(1, 2, 0).contiguous()
-    try:
-        solved = torch.linalg.solve(covariance_fcc, constraints_fcm)
-        gram = constraints_fcm.mH @ solved
-        transform = torch.linalg.solve(
-            gram,
-            torch.eye(2, dtype=torch.complex64, device=gram.device).expand(len(gram), 2, 2),
-        )
-        columns = solved @ transform
-    except RuntimeError:
-        return torch.zeros_like(steering_mfc), torch.zeros(
-            steering_mfc.shape[:2], dtype=torch.bool, device=steering_mfc.device,
-        )
-    weights = columns.permute(2, 0, 1).contiguous()
-    response = columns.mH @ constraints_fcm
-    identity = torch.eye(2, dtype=torch.complex64, device=response.device)
-    response_error = torch.amax(torch.abs(response - identity[None, :, :]), dim=(-2, -1))
-    matrix_ok = _condition_ok(covariance_fcc, condition_limit) & _condition_ok(gram, condition_limit)
-    per_frequency = matrix_ok & torch.isfinite(weights).all(dim=(0, 2)) & (response_error <= tolerance)
-    return weights, per_frequency[None, :].expand(2, -1)
+    gram_rfmm = torch.einsum("fcm,rfcn->rfmn", constraints_fcm.conj(), solved_rfcm)
+    factor, gram_ok = _factorize(gram_rfmm, condition_limit)
+    identity = torch.eye(2, dtype=gram_rfmm.dtype, device=gram_rfmm.device)
+    transform = torch.cholesky_solve(identity.expand_as(gram_rfmm), factor)
+    columns = solved_rfcm @ transform
+    weights = columns.permute(0, 3, 1, 2).contiguous()
+    response = torch.einsum("rfcm,fcn->rfmn", columns.conj(), constraints_fcm)
+    response_error = torch.amax(torch.abs(response - identity), dim=(-2, -1))
+    per_frequency = (
+        covariance_ok_rf
+        & gram_ok
+        & torch.isfinite(weights).all(dim=(1, 3))
+        & (response_error <= tolerance)
+    )
+    return weights, per_frequency[:, None, :].expand(-1, 2, -1)
 
 
-def _soft_null_mvdr(
-    loaded_fcc: torch.Tensor,
+def _soft_null_mvdr_batched(
+    loaded_rfcc: torch.Tensor,
     steering_mfc: torch.Tensor,
     strength: float,
     condition_limit: float,
     tolerance: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    output = torch.zeros_like(steering_mfc)
-    valid = torch.zeros(steering_mfc.shape[:2], dtype=torch.bool, device=steering_mfc.device)
-    scale = torch.diagonal(loaded_fcc, dim1=-2, dim2=-1).real.mean(dim=-1).clamp_min(1e-8)
-    for target, interferer in ((0, 1), (1, 0)):
-        interference = steering_mfc[interferer]
-        penalty = interference[..., :, None] * interference.conj()[..., None, :]
-        covariance = loaded_fcc + float(strength) * scale[:, None, None] * penalty
-        weights, ok = _mvdr(covariance, steering_mfc[target:target + 1], condition_limit, tolerance)
-        output[target] = weights[0]
-        valid[target] = ok[0]
-    return output, valid
+    loaded_scale = (
+        torch.diagonal(loaded_rfcc, dim1=-2, dim2=-1).real.mean(dim=-1).clamp_min(1e-8)
+    )
+    interference = steering_mfc.flip(0)
+    penalty_mfcc = interference[..., :, None] * interference.conj()[..., None, :]
+    covariance_rmfcc = (
+        loaded_rfcc[:, None]
+        + float(strength) * loaded_scale[:, None, :, None, None] * penalty_mfcc[None]
+    )
+    factor, matrix_ok = _factorize(covariance_rmfcc, condition_limit)
+    right_hand_side = steering_mfc[None, ..., None].expand(len(loaded_rfcc), -1, -1, -1, -1)
+    solved = torch.cholesky_solve(right_hand_side, factor)[..., 0]
+    denominator = torch.einsum("mfc,rmfc->rmf", steering_mfc.conj(), solved)
+    safe = torch.where(torch.abs(denominator) > 1e-12, denominator, torch.ones_like(denominator))
+    weights = solved / safe[..., None]
+    response = torch.einsum("rmfc,mfc->rmf", weights.conj(), steering_mfc)
+    valid = (
+        matrix_ok
+        & torch.isfinite(weights).all(dim=-1)
+        & torch.isfinite(denominator)
+        & (torch.abs(response - 1.0) <= tolerance)
+    )
+    return weights, valid
 
 
 def adaptive_separation_weights(
@@ -142,7 +172,6 @@ def adaptive_separation_weights(
         raise ValueError("adaptive separation requires one, two, or three 7-channel steering vectors")
     das = das_weights(steering_mfc)
     output = das.clone()
-    valid = torch.zeros((candidate_count, frequency_count), dtype=torch.bool, device=steering_mfc.device)
     static = static or adaptive_static_data(frequencies_hz, config, channel_count=channel_count)
     speech_band = static.speech_band_f
     if (
@@ -151,15 +180,16 @@ def adaptive_separation_weights(
         or static.alias_multiplier_f.shape != (frequency_count,)
     ):
         raise ValueError("adaptive static cache shapes do not match the current solve")
-    valid[:, ~speech_band] = True
     if candidate_count in {1, 3}:
         rho = torch.ones(frequency_count, dtype=torch.float32, device=steering_mfc.device)
-    elif spatial_p_f is None:
-        raise ValueError("two-candidate adaptive separation requires precomputed spatial p lookup values")
     else:
+        if spatial_p_f is None:
+            raise ValueError("two-candidate adaptive separation requires precomputed spatial p lookup values")
         rho = spatial_p_f
-    if rho.shape != (frequency_count,) or not torch.isfinite(rho).all() or bool(((rho < 0) | (rho > 1)).any()):
-        raise ValueError("spatial p must be finite [frequency] values in [0,1]")
+        if rho.shape != (frequency_count,):
+            raise ValueError("spatial p must be finite [frequency] values in [0,1]")
+        if bool((~torch.isfinite(rho) | (rho < 0) | (rho > 1)).any()):
+            raise ValueError("spatial p must be finite [frequency] values in [0,1]")
     rho = rho.to(device=steering_mfc.device, dtype=torch.float32)
     if candidate_count in {1, 3}:
         lcmv_mask = torch.zeros_like(speech_band)
@@ -175,55 +205,80 @@ def adaptive_separation_weights(
     uncertainty = 1.0 + (1.0 - noise_confidence_f) * config.uncertainty_loading_multiplier
     loading_multiplier = uncertainty * static.alias_multiplier_f
 
-    for factor in config.loading_retry_factors:
-        if bool(valid[:, speech_band].all()):
-            break
-        loading = float(factor) * loading_multiplier * scale
-        loaded = covariance_fcc + loading[:, None, None] * eye
+    retry_factors = torch.as_tensor(
+        config.loading_retry_factors, dtype=scale.dtype, device=scale.device,
+    )
+    loading = retry_factors[:, None] * loading_multiplier[None, :] * scale[None, :]
+    loaded_rfcc = covariance_fcc[None] + loading[..., None, None] * eye
+    covariance_factor, covariance_ok = _factorize(
+        loaded_rfcc, config.condition_number_limit,
+    )
+    steering_fcm = steering_mfc.permute(1, 2, 0).contiguous()
+    solved_rfcm = torch.cholesky_solve(
+        steering_fcm[None].expand(len(retry_factors), -1, -1, -1), covariance_factor,
+    )
+    mvdr_weights, mvdr_valid = _mvdr_from_solved(
+        solved_rfcm, steering_fcm, covariance_ok, config.constraint_tolerance,
+    )
 
-        lcmv_pending = lcmv_mask & ~valid.all(dim=0)
-        if candidate_count == 2 and bool(lcmv_pending.any()):
-            indices = torch.nonzero(lcmv_pending, as_tuple=False).flatten()
-            weights, ok = _dual_lcmv(
-                loaded[indices], steering_mfc[:, indices],
-                config.condition_number_limit, config.constraint_tolerance,
-            )
-            accept = ok & ~valid[:, indices]
-            output[:, indices] = torch.where(accept[..., None], weights, output[:, indices])
-            valid[:, indices] |= accept
+    if candidate_count == 2:
+        lcmv_weights, lcmv_valid = _dual_lcmv_from_solved(
+            solved_rfcm,
+            steering_fcm,
+            covariance_ok,
+            config.condition_number_limit,
+            config.constraint_tolerance,
+        )
+        soft_weights, soft_valid = _soft_null_mvdr_batched(
+            loaded_rfcc,
+            steering_mfc,
+            config.soft_null_strength,
+            config.condition_number_limit,
+            config.constraint_tolerance,
+        )
+        routed_weights = torch.where(
+            lcmv_mask[None, None, :, None],
+            lcmv_weights,
+            torch.where(soft_mask[None, None, :, None], soft_weights, mvdr_weights),
+        )
+        routed_valid = torch.where(
+            lcmv_mask[None, None, :],
+            lcmv_valid,
+            torch.where(soft_mask[None, None, :], soft_valid, mvdr_valid),
+        )
+    else:
+        routed_weights = mvdr_weights
+        routed_valid = mvdr_valid
 
-        soft_pending = soft_mask & ~valid.all(dim=0)
-        if candidate_count == 2 and bool(soft_pending.any()):
-            indices = torch.nonzero(soft_pending, as_tuple=False).flatten()
-            weights, ok = _soft_null_mvdr(
-                loaded[indices], steering_mfc[:, indices], config.soft_null_strength,
-                config.condition_number_limit, config.constraint_tolerance,
-            )
-            accept = ok & ~valid[:, indices]
-            output[:, indices] = torch.where(accept[..., None], weights, output[:, indices])
-            valid[:, indices] |= accept
-
-        mvdr_pending = mvdr_mask & ~valid.all(dim=0)
-        if bool(mvdr_pending.any()):
-            indices = torch.nonzero(mvdr_pending, as_tuple=False).flatten()
-            weights, ok = _mvdr(
-                loaded[indices], steering_mfc[:, indices],
-                config.condition_number_limit, config.constraint_tolerance,
-            )
-            accept = ok & ~valid[:, indices]
-            output[:, indices] = torch.where(accept[..., None], weights, output[:, indices])
-            valid[:, indices] |= accept
-
+    routed_valid &= speech_band[None, None, :]
+    valid = routed_valid.any(dim=0)
+    first_valid_retry = routed_valid.to(torch.int8).argmax(dim=0)
+    selected = torch.gather(
+        routed_weights,
+        0,
+        first_valid_retry[None, ..., None].expand(1, -1, -1, channel_count),
+    )[0]
+    output = torch.where(valid[..., None], selected, output)
     fallback = speech_band[None, :] & ~valid
     output = torch.where(fallback[..., None], das, output)
-    if not torch.isfinite(output).all():
+    diagnostic_values = torch.cat(
+        (
+            torch.stack((lcmv_mask.sum(), soft_mask.sum(), mvdr_mask.sum())),
+            fallback.sum(dim=1),
+            torch.isfinite(output).all().reshape(1),
+        )
+    ).tolist()
+    if not diagnostic_values[-1]:
         output = das
-        fallback = speech_band[None, :].expand(candidate_count, -1)
+        fallback_count = sum(int(item) for item in diagnostic_values[:3])
+        fallback_counts = (fallback_count,) * candidate_count
+    else:
+        fallback_counts = tuple(int(item) for item in diagnostic_values[3:-1])
     return AdaptiveWeightResult(
         output,
         rho,
-        int(lcmv_mask.sum().item()),
-        int(soft_mask.sum().item()),
-        int(mvdr_mask.sum().item()),
-        tuple(int(item) for item in fallback.sum(dim=1).tolist()),
+        int(diagnostic_values[0]),
+        int(diagnostic_values[1]),
+        int(diagnostic_values[2]),
+        fallback_counts,
     )

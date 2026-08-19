@@ -182,11 +182,11 @@ CUDA运行时L3与L4各自使用独立CUDA stream；只同步本阶段stream，�
 
 - Runtime CPU `ComputeCache`按L2/L3/L4分区，并同时受窗口数、单分区字节数和全局`compute_cache_max_bytes`硬限制；缓存只是优化，StageResult才是正确性来源。
 - L2复用窗、频率轴、频带mask、统一RFFT/PHAT前端和有界steering；逐窗GCC等大中间量用后即释放。
-- L3相邻320 ms窗口复用29/33个STFT帧，只计算新4帧；IMCRA统计和协方差滚动更新。频率轴、Hann窗、频带mask、steering及空间可分度查询有界复用；GPU上的`PreparedL3Context`不得进入CPU ComputeCache，固定只保留最近2个窗口。
+- L3相邻320 ms窗口复用29/33个STFT帧，只计算新4帧；若latest-wins造成1～15个20 ms hop跳跃，仍按绝对sample复用`31-2N`个重叠内部帧，并只搬运新增N个IMCRA hop、滚动更新对应协方差贡献。达到320 ms无重叠、非hop对齐、时间倒退或身份/配置变化才完整重建。频率轴、Hann窗、频带mask、steering及空间可分度查询有界复用；GPU上的`PreparedL3Context`不得进入CPU ComputeCache，固定只保留最近2个窗口。
 - L4只复用不可变模型artifact和适配器；候选音频、响度补偿数组和推理batch按窗口释放。
 - session、epoch、时间连续性、配置、几何、设备或算法版本改变时，对应缓存必须整体失效。已提交窗口由Joiner完成后立即从跨层缓存退休，禁止被重新发布或复活。
 
-默认队列容量为L2=4、L3=3、L4=3、completion=8，最大Joiner在途窗口16，全局CPU计算缓存64 MiB。所有可配置值来自唯一`config/config.yaml`并由schema限制；不得通过扩大队列掩盖持续算力不足，也不得保留无界320 ms音频或CUDA张量。
+默认队列容量为L2=10000、L3=10000、L4=10000、completion=8，最大Joiner在途窗口30003（覆盖三层等待队列及每层1个正在执行的窗口），全局CPU计算缓存64 MiB。所有可配置值来自唯一`config/config.yaml`并由schema限制。按50窗/s计算，单层10000窗约对应200秒等待工作，端到端累计等待可能更长。大队列不会预分配窗口内存，但窗口数上限对应的原始8通道float32音频下限已约13.7 GiB，IMCRA快照、StageResult和对象开销还会继续增加；ResultJoiner的独立字节硬限可能更早拒绝接纳。它只提供有界过载缓冲，不代表持续算力不足已经解决，也不得保留CUDA张量或形成无界缓存。
 
 ResultJoiner在窗口数和估算字节两个维度均有硬上限。若在正式注册前已无法接纳新窗口，Runtime不保留其320 ms音频，只在有界范围表中压缩保留session/epoch、首尾window/sample及原因。commit遇到该window_id时，再逐条展开为轻量`error` DecisionRecord（L2/L3/L4均`DROPPED`）和ResultWatermark。这是**pre-joiner容量拒绝审计**，不是无记录丢弃，也不能为它保留波形或空间谱。
 

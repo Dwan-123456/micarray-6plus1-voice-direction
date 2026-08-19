@@ -22,6 +22,21 @@
 
 ---
 
+## 2026-08-19 — 修复L3多声源BF丢窗级联并扩容阶段队列
+
+- **版本/标签**：`v1.1.1`发布后的L3性能修复；不创建或移动版本标签。
+- **类型**：L3滚动缓存与矩阵求解性能、Runtime容量配置、1/2/3声源基准、文档和回归测试。
+- **涉及文件**：`layer3_direction_signal/adaptive_separation.py`、`hybrid.py`、`noise_context.py`、`shared_stft.py`及L3说明，`common/config.py`、`config/config.yaml`、Runtime/项目架构说明、`scripts/benchmark_l3_l4.py`和对应测试。
+- **跳窗滚动修复**：L3不再要求DecisionWindow严格相邻才复用。相同session/epoch且按960 sample对齐、仍有320 ms上下文重叠的`1～15` hop跳跃，按绝对sample复用`31-2N`个STFT内部帧，只计算`2+2N`个反射边界/新增帧；IMCRA只搬运新增N个hop，噪声协方差按对应过期/新增帧贡献滚动。达到16 hop无重叠、时间倒退、非hop对齐或身份/配置变化仍完整安全重建。
+- **BF求解优化**：保持Dual LCMV、soft-null loaded MVDR、loaded MVDR、三档loading顺序和逐频DAS回退不变；用批量`cholesky_ex/cholesky_solve`复用同一加载协方差的LCMV/MVDR多右端，将两个soft-null目标合并求解，固定批量计算retry并统一选择首个有效结果。Hermitian正定矩阵的通用SVD条件数改为等价的特征值范围校验，核心retry循环移除逐档`bool/nonzero/item`主机同步，诊断计数合并为末尾一次传输。
+- **Runtime容量**：按用户明确要求将L2/L3/L4等待队列默认值与schema上限均改为10000；为避免旧16窗门限遮蔽队列，`max_inflight_windows`改为30003，completion主队列和后备backlog仍各为8，单worker、L2→L3→L4依赖、latest-wins、ResultJoiner和有界缓存架构均不变。50窗/秒时每层最多约200秒等待；30003个窗口仅原始8通道float32音频的理论下限约13.7 GiB，另有IMCRA/StageResult开销，扩大队列不等于吞吐问题已解决。
+- **基准与性能**：基准schema升级为`l3_l4_benchmark_v2`并真正生成三声源批次。本机RTX 5060 Laptop GPU、连续滚动窗口、每档120个样本的隔离L3端到端P95为1/2/3声源约`9.23/15.96/9.52 ms`，平均吞吐约`146.63/86.26/136.15窗/秒`；双声源P99约`17.33 ms`。gap=1/2/7/15时双声源滚动基准P95均低于15 ms。该结果不包含真实麦克风和L1/L2/L4/UI并发，仍需新的v4正式session验证真实丢窗率与端到端延迟。
+- **契约与未改变项**：没有修改steering cache、角度key/量化、空间`p`表、候选排序、track ID、公开DTO、L1、L2算法、L4模型、Development Test UI、Production/Log UI、录音数据格式、模型或音频资产。基准JSON增加三声源字段且schema版本变化；Runtime配置默认容量及合法上限发生兼容性可见变化。
+- **验证**：L3/cache/adaptive/benchmark/config/parallel Runtime重点回归`94 passed`；完整自动测试`375 passed`；全仓Ruff通过；`git diff --check`通过。新增1/2/3候选直接求解等价、首个有效retry、批处理形状、2/7/15 hop STFT与协方差等价、320 ms无重叠重建及CUDA多hop验证。
+- **Git LFS资产**：无变化；未新增或修改模型、音频、阵列表或运行数据。
+
+---
+
 ## 2026-08-19 — L2 MUSIC MDL试验范围扩展为0～6阶
 
 - **版本/标签**：`v1.1.1`发布后的L2试验性修复；不创建或移动版本标签。

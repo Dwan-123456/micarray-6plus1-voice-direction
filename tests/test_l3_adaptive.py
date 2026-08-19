@@ -102,3 +102,118 @@ def test_all_three_solvers_depend_on_the_supplied_noise_covariance():
         assert not torch.allclose(
             first.weights_mfc[:, frequency_index], second.weights_mfc[:, frequency_index],
         )
+
+
+@pytest.mark.parametrize("candidate_count", (1, 3))
+def test_loaded_mvdr_cholesky_path_matches_direct_solve(candidate_count: int):
+    generator = torch.Generator().manual_seed(20260819 + candidate_count)
+    frequency_count = 5
+    random_matrix = (
+        torch.randn(frequency_count, 7, 7, generator=generator)
+        + 1j * torch.randn(frequency_count, 7, 7, generator=generator)
+    ).to(torch.complex64)
+    covariance = random_matrix @ random_matrix.mH / 7.0 + 0.2 * torch.eye(7)
+    steering = (
+        torch.randn(candidate_count, frequency_count, 7, generator=generator)
+        + 1j * torch.randn(candidate_count, frequency_count, 7, generator=generator)
+    ).to(torch.complex64)
+    steering *= np.sqrt(7.0) / torch.linalg.vector_norm(steering, dim=-1, keepdim=True)
+    config = replace(_config(), loading_retry_factors=(0.01,))
+    frequencies = torch.full((frequency_count,), 2_000.0)
+
+    result = adaptive_separation_weights(
+        covariance, steering, frequencies, torch.ones(frequency_count), config,
+    )
+
+    scale = torch.diagonal(covariance, dim1=-2, dim2=-1).real.mean(dim=-1)
+    loaded = covariance + 0.01 * scale[:, None, None] * torch.eye(7)
+    constraints = steering.permute(1, 2, 0).contiguous()
+    solved = torch.linalg.solve(loaded, constraints)
+    denominator = torch.einsum("fcm,fcm->fm", constraints.conj(), solved)
+    expected = (solved / denominator[:, None, :]).permute(2, 0, 1)
+
+    assert result.fallback_bins == (0,) * candidate_count
+    assert torch.allclose(result.weights_mfc, expected, atol=2e-5, rtol=2e-5)
+
+
+def test_two_candidate_cholesky_paths_match_direct_lcmv_soft_null_and_mvdr_solves():
+    steering = _steering_for_correlations((0.1, 0.5, 0.9))
+    covariance = torch.eye(7, dtype=torch.complex64).expand(3, 7, 7).clone()
+    covariance[:, 0, 0] = 4.0
+    covariance[:, 1, 1] = 2.0
+    config = replace(_config(), loading_retry_factors=(0.01,))
+    result = adaptive_separation_weights(
+        covariance,
+        steering,
+        torch.full((3,), 2_000.0),
+        torch.ones(3),
+        config,
+        spatial_p_f=torch.tensor((0.1, 0.5, 0.9)),
+    )
+
+    covariance_scale = torch.diagonal(covariance, dim1=-2, dim2=-1).real.mean(dim=-1)
+    loaded = covariance + 0.01 * covariance_scale[:, None, None] * torch.eye(7)
+    expected = torch.empty_like(steering)
+
+    constraints = steering[:, 0].T.contiguous()
+    solved = torch.linalg.solve(loaded[0], constraints)
+    gram = constraints.mH @ solved
+    expected[:, 0] = (solved @ torch.linalg.solve(gram, torch.eye(2, dtype=torch.complex64))).T
+
+    loaded_scale = torch.diagonal(loaded, dim1=-2, dim2=-1).real.mean(dim=-1)
+    for target, interferer in ((0, 1), (1, 0)):
+        interference = steering[interferer, 1]
+        penalty = interference[:, None] * interference.conj()[None, :]
+        soft_covariance = loaded[1] + config.soft_null_strength * loaded_scale[1] * penalty
+        soft_solved = torch.linalg.solve(soft_covariance, steering[target, 1])
+        expected[target, 1] = soft_solved / torch.vdot(steering[target, 1], soft_solved)
+
+    mvdr_constraints = steering[:, 2].T.contiguous()
+    mvdr_solved = torch.linalg.solve(loaded[2], mvdr_constraints)
+    mvdr_denominator = torch.einsum("cm,cm->m", mvdr_constraints.conj(), mvdr_solved)
+    expected[:, 2] = (mvdr_solved / mvdr_denominator[None, :]).T
+
+    assert result.fallback_bins == (0, 0)
+    assert torch.allclose(result.weights_mfc, expected, atol=2e-5, rtol=2e-5)
+
+
+def test_fixed_shape_retries_select_the_first_numerically_valid_loading():
+    covariance = torch.diag(torch.tensor((1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))).to(torch.complex64)[None]
+    steering = torch.ones((1, 1, 7), dtype=torch.complex64)
+    config = replace(_config(), condition_number_limit=100.0)
+
+    result = adaptive_separation_weights(
+        covariance, steering, torch.tensor((2_000.0,)), torch.ones(1), config,
+    )
+
+    scale = torch.diagonal(covariance, dim1=-2, dim2=-1).real.mean(dim=-1)
+    loaded = covariance + 0.1 * scale[:, None, None] * torch.eye(7)
+    solved = torch.linalg.solve(loaded, steering.permute(1, 2, 0))
+    expected = (solved / torch.einsum("fcm,fcm->fm", steering.permute(1, 2, 0).conj(), solved))
+    expected = expected.permute(2, 0, 1)
+
+    assert result.fallback_bins == (0,)
+    assert torch.allclose(result.weights_mfc, expected, atol=2e-5, rtol=2e-5)
+
+
+def test_two_candidate_solver_batches_retry_and_soft_null_dimensions(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[int, ...]] = []
+    original = torch.linalg.cholesky_ex
+
+    def recording_cholesky(matrix: torch.Tensor, *args, **kwargs):
+        calls.append(tuple(matrix.shape))
+        return original(matrix, *args, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "cholesky_ex", recording_cholesky)
+    steering = _steering_for_correlations((0.1, 0.5, 0.9))
+    covariance = torch.eye(7, dtype=torch.complex64).expand(3, 7, 7).clone()
+    adaptive_separation_weights(
+        covariance,
+        steering,
+        torch.full((3,), 2_000.0),
+        torch.ones(3),
+        _config(),
+        spatial_p_f=torch.tensor((0.1, 0.5, 0.9)),
+    )
+
+    assert calls == [(3, 3, 7, 7), (3, 3, 2, 2), (3, 2, 3, 7, 7)]

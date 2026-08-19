@@ -17,7 +17,7 @@ session/epoch/window/decision_sample
 algorithm/fallback diagnostics
 ```
 
-BF用`1-SPP`加权当前7麦STFT外积得到完整空间噪声协方差，并用IMCRA `noise_psd`收缩其对角线。逐频点计算两个导向矢量的空间相关度：`rho<0.3`使用Dual LCMV，`0.3<=rho<0.7`使用soft-null loaded MVDR，`rho>=0.7`使用loaded MVDR；单候选使用loaded MVDR。矩阵病态、求解失败或结果非有限的频点回退DAS。IMCRA缺失、未ready或时间不连续时整窗回退DAS。
+BF用`1-SPP`加权当前7麦STFT外积得到完整空间噪声协方差，并用IMCRA `noise_psd`收缩其对角线。逐频点计算两个导向矢量的空间相关度：`rho<0.3`使用Dual LCMV，`0.3<=rho<0.7`使用soft-null loaded MVDR，`rho>=0.7`使用loaded MVDR；单候选和三候选使用loaded MVDR。三档diagonal loading按固定retry维批量执行；同一加载协方差的Cholesky分解由LCMV/MVDR多右端复用，两个soft-null目标也批量求解。Hermitian正定矩阵的条件数使用特征值范围校验，分支阈值、首个有效retry和DAS回退语义不变。矩阵病态、求解失败或结果非有限的频点回退DAS。IMCRA缺失、未ready或时间不连续时整窗回退DAS。
 
 IMCRA的先验/后验SNR形成有下限的频点软增益；噪声置信度和4.3 kHz以上混叠保护共同提高diagonal loading。所有阈值均来自唯一配置文件。
 
@@ -27,9 +27,9 @@ IMCRA的先验/后验SNR形成有下限的频点软增益；噪声置信度和4.
 
 ## 有界滚动计算缓存
 
-L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、reflect`定义及完整320 ms输出。连续DecisionWindow每前进960点时，新33帧STFT中的1～29号帧逐元素复用上一窗口3～31号帧，只重新计算0、30、31、32号帧。IMCRA插值状态和加权空间协方差分子/分母同步滚动，BF权重仍按当前窗口和候选角度重新求解，不改变算法选择或公共输出。
+L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、reflect`定义及完整320 ms输出。DecisionWindow按绝对sample前进`N=1～15`个20 ms hop且仍有上下文重叠时，新33帧STFT复用`31-2N`个对齐内部帧，只重算当前反射边界和新增的`2+2N`帧；正常`N=1`时仍复用29帧、重算4帧。IMCRA插值状态只搬运新增N个hop，加权空间协方差分子/分母按相同过期/新增帧集合滚动。BF权重仍按当前窗口和候选角度重新求解，不改变算法选择或公共输出。
 
-所有时间相关缓存使用固定容量状态：正常只保留当前320 ms（16个20 ms hop），绝不超过1000 ms（50 hop）。steering vector与空间`p`结果采用16项LRU。session、epoch、sample连续性、STFT配置、IMCRA版本/频率轴、阵列几何或处理设备变化时不得沿用不兼容状态；时间跳跃直接全量重建。缓存张量驻留处理设备，不向其他层发布。
+所有时间相关缓存使用固定容量状态：正常只保留当前320 ms（16个20 ms hop），绝不超过1000 ms（50 hop）。steering vector与空间`p`结果继续采用原有16项LRU，本次不修改其精确角度key或量化策略。session、epoch、非960 sample对齐、时间倒退、跳跃达到320 ms、STFT配置、IMCRA版本/频率轴、阵列几何或处理设备变化时不得沿用不兼容状态并全量重建。缓存张量驻留处理设备，不向其他层发布。
 
 ## 契约测试
 
@@ -41,8 +41,8 @@ L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、refl
 - 平滑候选数量、顺序、角度和时间身份原样继承，不做第二次追踪；
 - 每方向输出固定48 kHz `float32[15360]`、只读且finite；
 - 主链不再输出或依赖`[33,169]`；
-- 0/1/2候选及`rho`三分支；
+- 0/1/2/3候选及`rho`三分支；
 - LCMV约束、两种MVDR无失真约束和逐频点DAS降级；
 - PSD/SPP确实改变噪声协方差与三种求解权重；
 - 音频重建和跨窗口连续性。
-- 连续窗口29帧STFT逐元素复用等价、滚动协方差数值等价、时间/流身份失效边界及缓存容量上限。
+- 连续窗口29帧STFT逐元素复用等价、2/7/15 hop跳窗复用与滚动协方差数值等价、达到320 ms无重叠时的失效边界及缓存容量上限。

@@ -305,11 +305,11 @@ class RuntimeConfig(StrictModel):
     # Kept for configuration compatibility.  The staged runtime uses the
     # per-stage capacities below rather than one shared serial queue.
     processing_queue_windows: int = Field(gt=0)
-    l2_queue_windows: int = Field(default=4, gt=0, le=64)
-    l3_queue_windows: int = Field(default=3, gt=0, le=64)
-    l4_queue_windows: int = Field(default=3, gt=0, le=64)
+    l2_queue_windows: int = Field(default=10_000, gt=0, le=10_000)
+    l3_queue_windows: int = Field(default=10_000, gt=0, le=10_000)
+    l4_queue_windows: int = Field(default=10_000, gt=0, le=10_000)
     completion_queue_windows: int = Field(default=8, gt=0, le=128)
-    max_inflight_windows: int = Field(default=16, gt=0, le=64)
+    max_inflight_windows: int = Field(default=30_003, gt=0, le=30_003)
     compute_cache_max_bytes: int = Field(default=67_108_864, ge=8_388_608)
     overflow_policy: Literal["drop_oldest"] = "drop_oldest"
     graceful_shutdown_timeout_seconds: float = Field(default=10.0, gt=0.0, le=120.0)

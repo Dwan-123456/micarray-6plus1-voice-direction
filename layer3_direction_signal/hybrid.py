@@ -310,7 +310,7 @@ class ImcraSpatialSeparationBeamformer:
                     frequencies,
                     config,
                     stft,
-                    allow_rolling=reused_frames == 29,
+                    allow_rolling=reused_frames > 0,
                 )
                 covariance_rolled = self._noise_cache.snapshot().rolled
             except (Layer3Error, RuntimeError) as exc:
@@ -595,7 +595,7 @@ class ImcraSpatialSeparationBeamformer:
                 frequencies,
                 config,
                 stft,
-                allow_rolling=stft_reused_frames == 29,
+                allow_rolling=stft_reused_frames > 0,
             )
             solved = adaptive_separation_weights(
                 noise.covariance_fcc, steering, frequencies, noise.noise_confidence_f, config,

@@ -136,6 +136,8 @@ def _l3_windows(total: int, seed: int) -> tuple[DecisionWindow, ...]:
 
 
 def _candidates(window: DecisionWindow, count: int) -> tuple[CandidateDirection, ...]:
+    if count not in {1, 2, 3}:
+        raise ValueError("L3 benchmark candidate count must be one, two, or three")
     return tuple(
         CandidateDirection(
             window.session_id,
@@ -148,7 +150,7 @@ def _candidates(window: DecisionWindow, count: int) -> tuple[CandidateDirection,
             1.0,
             0.8,
         )
-        for theta in (20.0, 120.0)[:count]
+        for theta in (20.0, 120.0, 240.0)[:count]
     )
 
 
@@ -352,7 +354,7 @@ def main() -> int:
         config.hardware.ring_radius_m,
     )
     report: dict[str, object] = {
-        "schema_version": "l3_l4_benchmark_v1",
+        "schema_version": "l3_l4_benchmark_v2",
         "device": device,
         "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
         "torch": torch.__version__,
@@ -385,6 +387,16 @@ def main() -> int:
             args.repeats,
             args.seed + 1_000,
         ),
+        "l3_triple_candidate": _benchmark_l3(
+            config,
+            geometry,
+            device,
+            3,
+            args.warmup,
+            args.iterations,
+            args.repeats,
+            args.seed + 2_000,
+        ),
     }
     engine = _primary_l4_engine(config, root, device)
     report["l4_single_candidate"] = _benchmark_l4(
@@ -394,7 +406,7 @@ def main() -> int:
         args.warmup,
         args.iterations,
         args.repeats,
-        args.seed + 2_000,
+        args.seed + 3_000,
     )
     report["l4_double_candidate"] = _benchmark_l4(
         engine,
@@ -403,7 +415,16 @@ def main() -> int:
         args.warmup,
         args.iterations,
         args.repeats,
-        args.seed + 3_000,
+        args.seed + 4_000,
+    )
+    report["l4_triple_candidate"] = _benchmark_l4(
+        engine,
+        device,
+        3,
+        args.warmup,
+        args.iterations,
+        args.repeats,
+        args.seed + 5_000,
     )
     serialized = json.dumps(report, ensure_ascii=False, indent=2)
     print(serialized)

@@ -831,7 +831,7 @@ continuous 30 min:
 
 启动前的应用级顺序仍为：加载/校验配置与hash → 环境/GPU检查 → 加载并验证模型artifact（development允许明确Unavailable，production必须成功）→ 创建Catalog/RecordingStore和ApplicationRuntime。当前Runtime的实际启动顺序固定为：重置IngestCoordinator/WindowAssembler、缓存和有界队列 → 建立RecordingStore session并启用录音模式 → 按`commit→L4→L3→L2`启动stage worker → 打开CDC/UAC pipeline → 启动L1读取线程。UI只在Runtime已创建后订阅公开状态。任一步失败按相反顺序停止pipeline、唤醒并join已启动worker、封闭失败录音session，不得留下串口、音频stream、writer、stage线程或CUDA任务。
 
-每个`DecisionWindow`先冻结配置，在有容量时注册唯一`WindowKey`，再进入有界L2队列。默认L2/L3/L4/completion容量分别为4/3/3/8，最大Joiner在途窗口16；L2、L3、L4各自使用latest-wins，仅终止本层尚未开始的最旧等待任务。Joiner注册前容量不足时新窗口用轻量有界审计拒绝，不保留音频。completion队列和后备backlog均不超过8，commit乱序表软限16、硬限`2*16+2*8=48`；它们拥塞时拒绝新接纳，不延伸为无界队列。三个stage可乱序完成，但ResultJoiner/commit只按window ID发布完整终态。epoch切换前必须封闭旧epoch全部已接纳窗口；迟到旧结果不得污染新epoch的UI、DecisionRecord或watermark。
+每个`DecisionWindow`先冻结配置，在有容量时注册唯一`WindowKey`，再进入有界L2队列。默认L2/L3/L4/completion容量分别为10000/10000/10000/8，最大Joiner在途窗口30003，覆盖三层等待队列及每层1个正在执行的窗口；L2、L3、L4各自使用latest-wins，仅终止本层尚未开始的最旧等待任务。Joiner注册前容量不足时新窗口用轻量有界审计拒绝，不保留音频。completion队列和后备backlog均不超过8，commit乱序表软限30003、硬限`2*30003+2*8=60022`；它们拥塞时拒绝新接纳，不延伸为无界队列。按50窗/s计算，单层满队列约对应200秒等待工作，端到端累计等待可能更长；大队列只提供有界过载缓冲，积压会增加CPU内存和排队延迟。三个stage可乱序完成，但ResultJoiner/commit只按window ID发布完整终态。epoch切换前必须封闭旧epoch全部已接纳窗口；迟到旧结果不得污染新epoch的UI、DecisionRecord或watermark。
 
 正常关闭顺序固定为：停止UAC/CDC pipeline产生新块 → L1刷出已延迟预降噪hop并声明输入结束 → 以EOS依次drain L2、L3、L4和completion/commit → Joiner提交所有完成/跳过/失败/取消终态并通过原子result+watermark推进最终水位 → finalize scratch与RecordingStore → 停止播放/UI订阅 → 清空有界缓存并释放GPU和Catalog。drain受`graceful_shutdown_timeout_seconds`限制；超时时已注册未完成项明确标记`CANCELLED/error`并唤醒worker。只有全部worker真正退出后才关闭RecordingStore；否则保留资源并报错，不能假装停机完成。崩溃恢复只恢复第12节已写资产，不伪造未完成算法结果。
 
@@ -1587,11 +1587,11 @@ runtime:
   max_candidate_batch: 3
   capture_handoff_blocks: 100
   processing_queue_windows: 1  # legacy launch-profile compatibility only
-  l2_queue_windows: 4
-  l3_queue_windows: 3
-  l4_queue_windows: 3
+  l2_queue_windows: 10000
+  l3_queue_windows: 10000
+  l4_queue_windows: 10000
   completion_queue_windows: 8
-  max_inflight_windows: 16
+  max_inflight_windows: 30003
   compute_cache_max_bytes: 67108864
   overflow_policy: drop_oldest
   graceful_shutdown_timeout_seconds: 10.0

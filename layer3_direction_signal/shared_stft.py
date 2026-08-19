@@ -14,9 +14,8 @@ from .interface import Layer3Error
 
 MAX_TEMPORAL_CACHE_HOPS = 50
 _CONTEXT_HOPS = 16
-_ROLLING_REUSED_FRAME_INDICES = slice(1, 30)
-_PREVIOUS_REUSED_FRAME_INDICES = slice(3, 32)
-_ROLLING_RECOMPUTED_FRAME_INDICES = (0, 30, 31, 32)
+_HOP_SAMPLES = 960
+_STFT_FRAMES_PER_HOP = 2
 
 
 @lru_cache(maxsize=8)
@@ -72,6 +71,7 @@ class RollingStftCache:
         self._settings: StftSettings | None = None
         self._spectrum: torch.Tensor | None = None
         self._recomputed_indices: torch.Tensor | None = None
+        self._recomputed_hop_gap: int | None = None
         self._last_reused_frames = 0
         self._last_recomputed_frames = 33
 
@@ -80,6 +80,7 @@ class RollingStftCache:
         self._settings = None
         self._spectrum = None
         self._recomputed_indices = None
+        self._recomputed_hop_gap = None
         self._last_reused_frames = 0
         self._last_recomputed_frames = 33
 
@@ -91,26 +92,36 @@ class RollingStftCache:
             window.context_end_sample,
         )
         previous = self._identity
-        sequential = (
+        sample_delta = 0 if previous is None else identity[2] - previous[2]
+        hop_gap = sample_delta // _HOP_SAMPLES if sample_delta > 0 else 0
+        has_overlapping_history = (
             self._spectrum is not None
             and self._settings == settings
             and previous is not None
             and identity[0:2] == previous[0:2]
-            and identity[2] == previous[2] + 960
-            and identity[3] == previous[3] + 960
+            and identity[3] - previous[3] == sample_delta
+            and sample_delta % _HOP_SAMPLES == 0
+            and 1 <= hop_gap < _CONTEXT_HOPS
         )
-        if not sequential:
+        if not has_overlapping_history:
             spectrum = shared_stft(window, settings, device=self.device)
             self._last_reused_frames = 0
             self._last_recomputed_frames = 33
         else:
             samples = _input_tensor(window, device=self.device)
-            if self._recomputed_indices is None:
+            # The locked 480-sample STFT hop advances two frames per 20 ms.
+            # Frame 0 of the current window and frame 32 of the previous one
+            # depend on their respective reflected boundary, so only the
+            # aligned interior frames are reusable across the overlap.
+            first_new_frame = 32 - _STFT_FRAMES_PER_HOP * hop_gap
+            recomputed_frame_indices = (0, *range(first_new_frame, 33))
+            if self._recomputed_indices is None or self._recomputed_hop_gap != hop_gap:
                 self._recomputed_indices = torch.tensor(
-                    _ROLLING_RECOMPUTED_FRAME_INDICES,
+                    recomputed_frame_indices,
                     dtype=torch.long,
                     device=self.device,
                 )
+                self._recomputed_hop_gap = hop_gap
             recomputed = _selected_stft_frames(
                 samples,
                 settings,
@@ -118,12 +129,14 @@ class RollingStftCache:
                 device=self.device,
             )
             spectrum = torch.empty_like(self._spectrum)
-            spectrum[:, :, _ROLLING_REUSED_FRAME_INDICES] = self._spectrum[
-                :, :, _PREVIOUS_REUSED_FRAME_INDICES
+            current_reused = slice(1, first_new_frame)
+            previous_reused = slice(1 + _STFT_FRAMES_PER_HOP * hop_gap, 32)
+            spectrum[:, :, current_reused] = self._spectrum[
+                :, :, previous_reused
             ]
             spectrum[:, :, self._recomputed_indices] = recomputed
-            self._last_reused_frames = 29
-            self._last_recomputed_frames = 4
+            self._last_reused_frames = 31 - _STFT_FRAMES_PER_HOP * hop_gap
+            self._last_recomputed_frames = len(recomputed_frame_indices)
         if spectrum.shape != (7, 513, 33) or not torch.isfinite(spectrum).all():
             self.clear()
             raise Layer3Error("rolling STFT output is invalid")

@@ -11,6 +11,11 @@ from .configuration import SpatialSeparationConfig, StftSettings
 from .interface import Layer3Error
 
 
+_HOP_SAMPLES = 960
+_CONTEXT_HOPS = 16
+_STFT_FRAMES_PER_HOP = 2
+
+
 @dataclass(frozen=True, slots=True)
 class BeamformerNoiseContext:
     session_id: str
@@ -181,23 +186,24 @@ def _full_interpolated_context(
     )
 
 
-def _append_interpolated_hop(
+def _append_interpolated_hops(
     previous: _InterpolatedNoiseContext,
     context: BeamformerNoiseContext,
     frequencies_hz: torch.Tensor,
     plan: _InterpolationPlan,
+    hop_gap: int,
 ) -> _InterpolatedNoiseContext:
     device = frequencies_hz.device
 
     def append(values: torch.Tensor, raw: np.ndarray, *, probability: bool = False) -> torch.Tensor:
         newest = _interpolate_last_axis(
-            torch.as_tensor(raw[-1:].copy(), device=device), plan,
+            torch.as_tensor(raw[-hop_gap:].copy(), device=device), plan,
         )
         if probability:
             newest = newest.clamp(0.0, 1.0)
         else:
             newest = newest.clamp_min(0.0)
-        return torch.cat((values[1:], newest), dim=0)
+        return torch.cat((values[hop_gap:], newest), dim=0)
 
     return _InterpolatedNoiseContext(
         append(previous.noise_psd_hmf, context.noise_psd),
@@ -209,8 +215,8 @@ def _append_interpolated_hop(
         append(previous.prior_snr_hmf, context.prior_snr),
         append(previous.posterior_snr_hmf, context.posterior_snr),
         torch.cat((
-            previous.noise_level_db[1:],
-            torch.as_tensor(context.noise_level_db[-1:].copy(), device=device),
+            previous.noise_level_db[hop_gap:],
+            torch.as_tensor(context.noise_level_db[-hop_gap:].copy(), device=device),
         ), dim=0),
     )
 
@@ -243,37 +249,43 @@ def _full_interpolated_hops(
     )
 
 
-def _append_interpolated_snapshot(
+def _append_interpolated_snapshots(
     previous: _InterpolatedNoiseContext,
-    hop: ImcraHopSnapshot,
+    hops: tuple[ImcraHopSnapshot, ...],
     plan: _InterpolationPlan,
+    hop_gap: int,
     *,
     device: torch.device,
 ) -> _InterpolatedNoiseContext:
-    """Advance a warm cache by transferring only the newly arrived 20 ms hop."""
+    """Advance a warm cache by transferring only the newly arrived hops."""
 
     def append(
         values: torch.Tensor,
-        raw: np.ndarray,
+        name: str,
         *,
         probability: bool = False,
     ) -> torch.Tensor:
+        raw = np.stack([getattr(item, name) for item in hops[-hop_gap:]])
+        if name == "spp":
+            raw = 1.0 - raw
         newest = _interpolate_last_axis(
-            torch.as_tensor(raw[None, ...].copy(), dtype=torch.float32, device=device),
+            torch.as_tensor(raw, dtype=torch.float32, device=device),
             plan,
         )
         newest = newest.clamp(0.0, 1.0) if probability else newest.clamp_min(0.0)
-        return torch.cat((values[1:], newest), dim=0)
+        return torch.cat((values[hop_gap:], newest), dim=0)
 
     return _InterpolatedNoiseContext(
-        append(previous.noise_psd_hmf, hop.noise_psd),
-        append(previous.noise_probability_hmf, 1.0 - hop.spp, probability=True),
-        append(previous.prior_snr_hmf, hop.prior_snr),
-        append(previous.posterior_snr_hmf, hop.posterior_snr),
+        append(previous.noise_psd_hmf, "noise_psd"),
+        append(previous.noise_probability_hmf, "spp", probability=True),
+        append(previous.prior_snr_hmf, "prior_snr"),
+        append(previous.posterior_snr_hmf, "posterior_snr"),
         torch.cat((
-            previous.noise_level_db[1:],
+            previous.noise_level_db[hop_gap:],
             torch.as_tensor(
-                hop.noise_level_db[None, ...].copy(), dtype=torch.float32, device=device,
+                np.stack([item.noise_level_db for item in hops[-hop_gap:]]),
+                dtype=torch.float32,
+                device=device,
             ),
         ), dim=0),
     )
@@ -340,8 +352,6 @@ def _finalize_noise_statistics(
 class RollingNoiseStatisticsCache:
     """Exact rolling IMCRA interpolation and covariance state for one 320 ms window."""
 
-    _PREVIOUS_EXPIRED = (0, 1, 2, 32)
-    _CURRENT_ADDED = (0, 30, 31, 32)
     max_temporal_hops = 50
 
     def __init__(self) -> None:
@@ -355,12 +365,13 @@ class RollingNoiseStatisticsCache:
         self._interpolated: _InterpolatedNoiseContext | None = None
         self._numerator: torch.Tensor | None = None
         self._denominator: torch.Tensor | None = None
-        self._edge_spectrum: torch.Tensor | None = None
-        self._edge_weights: torch.Tensor | None = None
+        self._previous_spectrum: torch.Tensor | None = None
+        self._previous_weights: torch.Tensor | None = None
         self._interpolation_plan_key: tuple[bytes, str, int, int] | None = None
         self._interpolation_plan: _InterpolationPlan | None = None
         self._current_indices: torch.Tensor | None = None
         self._previous_indices: torch.Tensor | None = None
+        self._rolling_index_hop_gap: int | None = None
         self._frame_hop_indices_key: tuple[int, int, str, int] | None = None
         self._frame_hop_indices: torch.Tensor | None = None
         self._last_rolled = False
@@ -371,7 +382,7 @@ class RollingNoiseStatisticsCache:
         frequencies_hz: torch.Tensor,
         spectrum_fct: torch.Tensor,
         stft: StftSettings,
-    ) -> tuple[_InterpolationPlan, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[_InterpolationPlan, torch.Tensor]:
         device = frequencies_hz.device
         device_key = (device.type, -1 if device.index is None else int(device.index))
         interpolation_key = (
@@ -384,9 +395,6 @@ class RollingNoiseStatisticsCache:
             source = torch.as_tensor(source_frequencies_np.copy(), device=device)
             self._interpolation_plan_key = interpolation_key
             self._interpolation_plan = _build_interpolation_plan(source, frequencies_hz)
-        if self._current_indices is None or self._current_indices.device != device:
-            self._current_indices = torch.tensor(self._CURRENT_ADDED, dtype=torch.long, device=device)
-            self._previous_indices = torch.tensor(self._PREVIOUS_EXPIRED, dtype=torch.long, device=device)
         frame_key = (
             spectrum_fct.shape[-1],
             stft.hop_length,
@@ -396,14 +404,45 @@ class RollingNoiseStatisticsCache:
         if self._frame_hop_indices_key != frame_key or self._frame_hop_indices is None:
             centres = torch.arange(spectrum_fct.shape[-1], device=device) * stft.hop_length
             self._frame_hop_indices_key = frame_key
-            self._frame_hop_indices = torch.div(centres, 960, rounding_mode="floor").clamp(0, 15)
+            self._frame_hop_indices = torch.div(
+                centres,
+                _HOP_SAMPLES,
+                rounding_mode="floor",
+            ).clamp(0, _CONTEXT_HOPS - 1)
+        return self._interpolation_plan, self._frame_hop_indices
+
+    def _rolling_indices(
+        self,
+        hop_gap: int,
+        *,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if (
+            self._rolling_index_hop_gap != hop_gap
+            or self._current_indices is None
+            or self._current_indices.device != device
+        ):
+            # These complements match RollingStftCache's aligned interior:
+            # remove the previous left edge/right reflected frame, then add
+            # the current left reflected frame/right edge and all new frames.
+            previous_expired = (*range(0, _STFT_FRAMES_PER_HOP * hop_gap + 1), 32)
+            current_added = (
+                0,
+                *range(32 - _STFT_FRAMES_PER_HOP * hop_gap, 33),
+            )
+            self._current_indices = torch.tensor(
+                current_added,
+                dtype=torch.long,
+                device=device,
+            )
+            self._previous_indices = torch.tensor(
+                previous_expired,
+                dtype=torch.long,
+                device=device,
+            )
+            self._rolling_index_hop_gap = hop_gap
         assert self._previous_indices is not None
-        return (
-            self._interpolation_plan,
-            self._current_indices,
-            self._previous_indices,
-            self._frame_hop_indices,
-        )
+        return self._current_indices, self._previous_indices
 
     def estimate(
         self,
@@ -422,40 +461,59 @@ class RollingNoiseStatisticsCache:
             context.context_end_sample,
         )
         context_key = (context.algorithm_version, context.frequencies_hz.tobytes())
-        interpolation_plan, current_indices, previous_indices, frame_hop_indices = self._plans(
+        interpolation_plan, frame_hop_indices = self._plans(
             context.frequencies_hz, frequencies_hz, spectrum_fct, stft,
         )
         previous = self._identity
+        sample_delta = 0 if previous is None else identity[2] - previous[2]
+        hop_gap = sample_delta // _HOP_SAMPLES if sample_delta > 0 else 0
         can_roll = (
             allow_rolling
             and previous is not None
             and identity[:2] == previous[:2]
-            and identity[2] == previous[2] + 960
-            and identity[3] == previous[3] + 960
+            and identity[3] - previous[3] == sample_delta
+            and sample_delta % _HOP_SAMPLES == 0
+            and 1 <= hop_gap < _CONTEXT_HOPS
             and context_key == self._context_key
             and config == self._config
             and stft == self._stft
             and self._interpolated is not None
             and self._numerator is not None
             and self._denominator is not None
-            and self._edge_spectrum is not None
-            and self._edge_weights is not None
+            and self._previous_spectrum is not None
+            and self._previous_weights is not None
         )
         interpolated = (
-            _append_interpolated_hop(self._interpolated, context, frequencies_hz, interpolation_plan)
+            _append_interpolated_hops(
+                self._interpolated,
+                context,
+                frequencies_hz,
+                interpolation_plan,
+                hop_gap,
+            )
             if can_roll
             else _full_interpolated_context(context, frequencies_hz, interpolation_plan)
         )
         weights = _frame_weights(interpolated, spectrum_fct, stft, frame_hop_indices)
         if can_roll:
+            current_indices, previous_indices = self._rolling_indices(
+                hop_gap,
+                device=spectrum_fct.device,
+            )
             current_edge_spectrum = spectrum_fct.index_select(-1, current_indices)
             current_edge_weights = weights.index_select(-1, current_indices)
+            previous_edge_spectrum = self._previous_spectrum.index_select(-1, previous_indices)
+            previous_edge_weights = self._previous_weights.index_select(-1, previous_indices)
             numerator = (
                 self._numerator
-                - _covariance_numerator(self._edge_spectrum, self._edge_weights)
+                - _covariance_numerator(previous_edge_spectrum, previous_edge_weights)
                 + _covariance_numerator(current_edge_spectrum, current_edge_weights)
             )
-            denominator = self._denominator - self._edge_weights.sum(dim=-1) + current_edge_weights.sum(dim=-1)
+            denominator = (
+                self._denominator
+                - previous_edge_weights.sum(dim=-1)
+                + current_edge_weights.sum(dim=-1)
+            )
         else:
             numerator = _covariance_numerator(spectrum_fct, weights)
             denominator = weights.sum(dim=-1)
@@ -468,8 +526,8 @@ class RollingNoiseStatisticsCache:
         self._interpolated = interpolated
         self._numerator = numerator
         self._denominator = denominator
-        self._edge_spectrum = spectrum_fct.index_select(-1, previous_indices).clone()
-        self._edge_weights = weights.index_select(-1, previous_indices).clone()
+        self._previous_spectrum = spectrum_fct.clone()
+        self._previous_weights = weights.clone()
         self._last_rolled = can_roll
         return result
 
@@ -483,11 +541,11 @@ class RollingNoiseStatisticsCache:
         *,
         allow_rolling: bool,
     ) -> tuple[NoiseStatistics, str]:
-        """Estimate directly from a DecisionWindow with a one-hop warm update.
+        """Estimate directly from a DecisionWindow with an overlapping-window update.
 
         Unlike ``BeamformerNoiseContext.from_window`` this path does not stack
-        and copy all 16 CPU hop arrays on every 20 ms advance.  A cold window
-        transfers all hops; a sequential window transfers only its newest hop.
+        and copy all 16 CPU hop arrays on every advance. A cold window transfers
+        all hops; an overlapping window transfers only its newly arrived hops.
         """
         hops, algorithm_version, source_frequencies = _validated_window_hops(window)
         identity = (
@@ -497,30 +555,34 @@ class RollingNoiseStatisticsCache:
             window.context_end_sample,
         )
         context_key = (algorithm_version, source_frequencies.tobytes())
-        interpolation_plan, current_indices, previous_indices, frame_hop_indices = self._plans(
+        interpolation_plan, frame_hop_indices = self._plans(
             source_frequencies, frequencies_hz, spectrum_fct, stft,
         )
         previous = self._identity
+        sample_delta = 0 if previous is None else identity[2] - previous[2]
+        hop_gap = sample_delta // _HOP_SAMPLES if sample_delta > 0 else 0
         can_roll = (
             allow_rolling
             and previous is not None
             and identity[:2] == previous[:2]
-            and identity[2] == previous[2] + 960
-            and identity[3] == previous[3] + 960
+            and identity[3] - previous[3] == sample_delta
+            and sample_delta % _HOP_SAMPLES == 0
+            and 1 <= hop_gap < _CONTEXT_HOPS
             and context_key == self._context_key
             and config == self._config
             and stft == self._stft
             and self._interpolated is not None
             and self._numerator is not None
             and self._denominator is not None
-            and self._edge_spectrum is not None
-            and self._edge_weights is not None
+            and self._previous_spectrum is not None
+            and self._previous_weights is not None
         )
         interpolated = (
-            _append_interpolated_snapshot(
+            _append_interpolated_snapshots(
                 self._interpolated,
-                hops[-1],
+                hops,
                 interpolation_plan,
+                hop_gap,
                 device=frequencies_hz.device,
             )
             if can_roll
@@ -532,16 +594,22 @@ class RollingNoiseStatisticsCache:
         )
         weights = _frame_weights(interpolated, spectrum_fct, stft, frame_hop_indices)
         if can_roll:
+            current_indices, previous_indices = self._rolling_indices(
+                hop_gap,
+                device=spectrum_fct.device,
+            )
             current_edge_spectrum = spectrum_fct.index_select(-1, current_indices)
             current_edge_weights = weights.index_select(-1, current_indices)
+            previous_edge_spectrum = self._previous_spectrum.index_select(-1, previous_indices)
+            previous_edge_weights = self._previous_weights.index_select(-1, previous_indices)
             numerator = (
                 self._numerator
-                - _covariance_numerator(self._edge_spectrum, self._edge_weights)
+                - _covariance_numerator(previous_edge_spectrum, previous_edge_weights)
                 + _covariance_numerator(current_edge_spectrum, current_edge_weights)
             )
             denominator = (
                 self._denominator
-                - self._edge_weights.sum(dim=-1)
+                - previous_edge_weights.sum(dim=-1)
                 + current_edge_weights.sum(dim=-1)
             )
         else:
@@ -558,8 +626,8 @@ class RollingNoiseStatisticsCache:
         self._interpolated = interpolated
         self._numerator = numerator
         self._denominator = denominator
-        self._edge_spectrum = spectrum_fct.index_select(-1, previous_indices).clone()
-        self._edge_weights = weights.index_select(-1, previous_indices).clone()
+        self._previous_spectrum = spectrum_fct.clone()
+        self._previous_weights = weights.clone()
         self._last_rolled = can_roll
         return result, algorithm_version
 
@@ -575,7 +643,8 @@ class RollingNoiseStatisticsCache:
             ))
         tensors.extend(
             item for item in (
-                self._numerator, self._denominator, self._edge_spectrum, self._edge_weights,
+                self._numerator, self._denominator,
+                self._previous_spectrum, self._previous_weights,
                 self._current_indices, self._previous_indices, self._frame_hop_indices,
             ) if item is not None
         )

@@ -11,7 +11,8 @@ from common.config import load_config
 from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapshot
 from common.geometry import physical_6plus1_geometry
 from layer3_direction_signal import Layer3Processor, PreparedL3Context
-from layer3_direction_signal.configuration import StftSettings
+from layer3_direction_signal.configuration import SpatialSeparationConfig, StftSettings
+from layer3_direction_signal.noise_context import BeamformerNoiseContext, RollingNoiseStatisticsCache
 from layer3_direction_signal.shared_stft import RollingStftCache, shared_stft
 
 
@@ -114,11 +115,14 @@ def test_rolling_stft_reuses_29_frames_and_is_bit_exact():
     assert snapshot.max_temporal_hops == 50
 
 
-def test_rolling_l3_matches_a_fresh_full_recalculation():
+@pytest.mark.parametrize("hop_gap", (1, 2, 7, 15))
+def test_rolling_l3_matches_a_fresh_full_recalculation(hop_gap: int):
     rng = np.random.default_rng(991)
-    continuous = rng.normal(0.0, 0.02, (16_320, 8)).astype(np.float32)
-    hops = tuple(_hop(index) for index in range(17))
-    first, second = _window(continuous, hops, 0), _window(continuous, hops, 1)
+    total_hops = 16 + hop_gap
+    continuous = rng.normal(0.0, 0.02, (total_hops * 960, 8)).astype(np.float32)
+    hops = tuple(_hop(index) for index in range(total_hops))
+    first = _window(continuous, hops, 0)
+    second = _window(continuous, hops, hop_gap)
     config = load_config(CONFIG, environ={})
     geometry = physical_6plus1_geometry()
 
@@ -130,27 +134,168 @@ def test_rolling_l3_matches_a_fresh_full_recalculation():
     for cached, full in zip(actual.enhanced_audio, expected.enhanced_audio):
         np.testing.assert_allclose(cached.enhanced_audio, full.enhanced_audio, rtol=2e-4, atol=2e-5)
     snapshot = rolling.cache_snapshot()
-    assert snapshot.stft_reused_frames == 29
-    assert snapshot.stft_recomputed_frames == 4
+    assert snapshot.stft_reused_frames == 31 - 2 * hop_gap
+    assert snapshot.stft_recomputed_frames == 2 + 2 * hop_gap
     assert snapshot.covariance_rolled
     assert snapshot.stft_temporal_hops == snapshot.imcra_temporal_hops == 16
     assert snapshot.max_temporal_hops == 50
 
 
-def test_stream_identity_and_time_discontinuity_force_complete_rebuild():
+@pytest.mark.parametrize("hop_gap", (2, 7, 15))
+def test_rolling_stft_reuses_absolute_sample_overlap(hop_gap: int):
     rng = np.random.default_rng(12)
-    continuous = rng.normal(0.0, 0.02, (17_280, 8)).astype(np.float32)
-    hops = tuple(_hop(index) for index in range(18))
+    total_hops = 16 + hop_gap
+    continuous = rng.normal(0.0, 0.02, (total_hops * 960, 8)).astype(np.float32)
+    hops = tuple(_hop(index) for index in range(total_hops))
     settings = StftSettings.from_project(load_config(CONFIG, environ={}))
     cache = RollingStftCache(device=torch.device("cpu"))
 
     cache.process(_window(continuous, hops, 0), settings)
-    cache.process(_window(continuous, hops, 2), settings)
+    current = _window(continuous, hops, hop_gap)
+    actual = cache.process(current, settings)
+    expected = shared_stft(current, settings, device=torch.device("cpu"))
+
+    assert torch.equal(actual, expected)
+    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (
+        31 - 2 * hop_gap,
+        2 + 2 * hop_gap,
+    )
+
+
+@pytest.mark.parametrize("hop_gap", (2, 7, 15))
+def test_rolling_noise_statistics_match_fresh_recalculation_after_gap(hop_gap: int):
+    rng = np.random.default_rng(212)
+    total_hops = 16 + hop_gap
+    continuous = rng.normal(0.0, 0.02, (total_hops * 960, 8)).astype(np.float32)
+    hops = tuple(_hop(index) for index in range(total_hops))
+    first = _window(continuous, hops, 0)
+    current = _window(continuous, hops, hop_gap)
+    project = load_config(CONFIG, environ={})
+    settings = StftSettings.from_project(project)
+    config = SpatialSeparationConfig.from_project(project)
+    device = torch.device("cpu")
+    frequencies = torch.fft.rfftfreq(settings.n_fft, 1.0 / 48_000, device=device)
+    first_spectrum = shared_stft(first, settings, device=device).permute(1, 0, 2).contiguous()
+    current_spectrum = shared_stft(current, settings, device=device).permute(1, 0, 2).contiguous()
+
+    rolling = RollingNoiseStatisticsCache()
+    rolling.estimate_window(
+        first, first_spectrum, frequencies, config, settings, allow_rolling=True,
+    )
+    actual, actual_version = rolling.estimate_window(
+        current, current_spectrum, frequencies, config, settings, allow_rolling=True,
+    )
+    expected, expected_version = RollingNoiseStatisticsCache().estimate_window(
+        current, current_spectrum, frequencies, config, settings, allow_rolling=True,
+    )
+
+    assert rolling.snapshot().rolled
+    assert actual_version == expected_version
+    torch.testing.assert_close(actual.covariance_fcc, expected.covariance_fcc, rtol=2e-5, atol=2e-6)
+    torch.testing.assert_close(actual.noise_confidence_f, expected.noise_confidence_f)
+    torch.testing.assert_close(actual.frequency_gain_f, expected.frequency_gain_f)
+
+
+@pytest.mark.parametrize("hop_gap", (2, 15))
+def test_explicit_noise_context_rolls_across_multi_hop_gap(hop_gap: int):
+    rng = np.random.default_rng(313)
+    total_hops = 16 + hop_gap
+    continuous = rng.normal(0.0, 0.02, (total_hops * 960, 8)).astype(np.float32)
+    hops = tuple(_hop(index) for index in range(total_hops))
+    first = _window(continuous, hops, 0)
+    current = _window(continuous, hops, hop_gap)
+    project = load_config(CONFIG, environ={})
+    settings = StftSettings.from_project(project)
+    config = SpatialSeparationConfig.from_project(project)
+    device = torch.device("cpu")
+    frequencies = torch.fft.rfftfreq(settings.n_fft, 1.0 / 48_000, device=device)
+    first_spectrum = shared_stft(first, settings, device=device).permute(1, 0, 2).contiguous()
+    current_spectrum = shared_stft(current, settings, device=device).permute(1, 0, 2).contiguous()
+    first_context = BeamformerNoiseContext.from_window(first)
+    current_context = BeamformerNoiseContext.from_window(current)
+
+    rolling = RollingNoiseStatisticsCache()
+    rolling.estimate(
+        first_context, first_spectrum, frequencies, config, settings, allow_rolling=True,
+    )
+    actual = rolling.estimate(
+        current_context, current_spectrum, frequencies, config, settings, allow_rolling=True,
+    )
+    expected = RollingNoiseStatisticsCache().estimate(
+        current_context, current_spectrum, frequencies, config, settings, allow_rolling=True,
+    )
+
+    assert rolling.snapshot().rolled
+    torch.testing.assert_close(actual.covariance_fcc, expected.covariance_fcc, rtol=2e-5, atol=2e-6)
+    torch.testing.assert_close(actual.noise_confidence_f, expected.noise_confidence_f)
+    torch.testing.assert_close(actual.frequency_gain_f, expected.frequency_gain_f)
+
+
+def test_no_overlap_or_stream_identity_change_forces_complete_rebuild():
+    rng = np.random.default_rng(121)
+    continuous = rng.normal(0.0, 0.02, (32 * 960, 8)).astype(np.float32)
+    hops = tuple(_hop(index) for index in range(32))
+    settings = StftSettings.from_project(load_config(CONFIG, environ={}))
+    cache = RollingStftCache(device=torch.device("cpu"))
+
+    cache.process(_window(continuous, hops, 0), settings)
+    cache.process(_window(continuous, hops, 16), settings)
     assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (0, 33)
 
-    changed_stream = _window(continuous, hops, 2, session_id="new-session", epoch=1)
+    changed_stream = _window(continuous, hops, 16, session_id="new-session", epoch=1)
     cache.process(changed_stream, settings)
     assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (0, 33)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device unavailable")
+def test_cuda_rolling_caches_reuse_a_multi_hop_gap():
+    hop_gap = 7
+    rng = np.random.default_rng(717)
+    continuous = rng.normal(0.0, 0.02, ((16 + hop_gap) * 960, 8)).astype(np.float32)
+    hops = tuple(_hop(index) for index in range(16 + hop_gap))
+    project = load_config(CONFIG, environ={})
+    settings = StftSettings.from_project(project)
+    config = SpatialSeparationConfig.from_project(project)
+    device = torch.device("cuda")
+    cache = RollingStftCache(device=device)
+
+    first = _window(continuous, hops, 0)
+    first_spectrum = cache.process(first, settings).permute(1, 0, 2).contiguous()
+    current = _window(continuous, hops, hop_gap)
+    actual = cache.process(current, settings)
+    expected = shared_stft(current, settings, device=device)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (17, 16)
+
+    frequencies = torch.fft.rfftfreq(settings.n_fft, 1.0 / 48_000, device=device)
+    noise_cache = RollingNoiseStatisticsCache()
+    noise_cache.estimate_window(
+        first, first_spectrum, frequencies, config, settings, allow_rolling=True,
+    )
+    actual_noise, _ = noise_cache.estimate_window(
+        current,
+        actual.permute(1, 0, 2).contiguous(),
+        frequencies,
+        config,
+        settings,
+        allow_rolling=True,
+    )
+    expected_noise, _ = RollingNoiseStatisticsCache().estimate_window(
+        current,
+        expected.permute(1, 0, 2).contiguous(),
+        frequencies,
+        config,
+        settings,
+        allow_rolling=True,
+    )
+    assert noise_cache.snapshot().rolled
+    torch.testing.assert_close(
+        actual_noise.covariance_fcc,
+        expected_noise.covariance_fcc,
+        rtol=2e-5,
+        atol=2e-6,
+    )
 
 
 def test_temporal_and_angle_caches_have_hard_bounded_capacity():
