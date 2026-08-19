@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
-from common.data_types import IngestedAudioBlock
+from common.data_types import CalibrationMetadata, IngestedAudioBlock
 from layer1_input.continuity import continuity_decision
 from layer1_input.interface import DecodedAudio, InputHealthEvent
 
@@ -82,6 +82,7 @@ class IngestCoordinator:
             frame.hotmap,
             frame.noise_spectrum,
             None,
+            frame.calibration or CalibrationMetadata.unverified_identity(),
         )
         self._next_sample = end
         self._previous = frame

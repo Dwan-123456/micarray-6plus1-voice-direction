@@ -1,0 +1,362 @@
+"""Rolling broadband frequency-normalized MUSIC for the L2 runtime.
+
+This is a project-specific implementation of Schmidt's MUSIC formulation,
+Wax/Kailath MDL model-order selection, and the per-frequency normalization
+described by Pyroomacoustics NormMUSIC (MIT). No Israel Cohen MUSIC source is
+claimed or copied; his material is used only for the separately documented
+noise-estimation background.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from time import perf_counter
+
+import numpy as np
+from scipy.signal import find_peaks
+
+from common.data_types import CandidateDirection, DecisionWindow, ModelOrderEstimate, SpatialResponse
+from common.geometry import MicGeometry
+
+from .configuration import DirectionScanConfig
+from .interface import DirectionScanError
+
+
+@dataclass(frozen=True, slots=True)
+class MusicPeakEvidence:
+    theta_deg: float
+    search_iteration: int
+    residual_raw_score: float
+    fixed_reference_normalized_score: float
+    supporting_pairs: int
+    supporting_frequency_bins: int
+
+
+@dataclass(frozen=True, slots=True)
+class MusicStateDiagnostic:
+    state: str
+    previous_decision_sample: int | None
+    decision_sample: int
+    gap_samples: int
+    reused_frames: int
+    added_frames: int
+    removed_frames: int
+    steering_cache_rebuilt: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class MusicDiagnostics:
+    mode: str
+    algorithm_version: str
+    config_revision: int
+    model_order: ModelOrderEstimate
+    state: MusicStateDiagnostic
+    valid_frequency_bins: int
+    covariance_quality: str
+    iterations_used: int = 1
+    stop_reason: str = "model_order_applied"
+    remaining_weight_ratio: float = 1.0
+    fallback_reason: str | None = None
+    evidence: tuple[MusicPeakEvidence, ...] = ()
+    eligible_peak_count: int = 0
+    candidate_limit: int = 3
+    candidate_limit_applied: bool = False
+    covariance_update_ms: float = 0.0
+    eigensolve_ms: float = 0.0
+    spectrum_ms: float = 0.0
+    total_ms: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.mode != "frequency_normalized_music" or self.config_revision < 0:
+            raise ValueError("invalid MUSIC diagnostics identity")
+        if self.valid_frequency_bins < 0 or self.covariance_quality not in {
+            "ready", "degraded", "failed",
+        }:
+            raise ValueError("invalid MUSIC covariance diagnostics")
+        timings = (self.covariance_update_ms, self.eigensolve_ms, self.spectrum_ms, self.total_ms)
+        if not all(np.isfinite(value) and value >= 0.0 for value in timings):
+            raise ValueError("invalid MUSIC timing diagnostics")
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+
+
+class RollingNormMusicScanner:
+    """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
+
+    algorithm_version = "frequency_normalized_music_mdl_v1"
+
+    def __init__(self) -> None:
+        self._stream_key: tuple[str, int] | None = None
+        self._last_sample: int | None = None
+        self._frame_covariances: deque[np.ndarray] = deque()
+        self._covariance_sum: np.ndarray | None = None
+        self._frequency_indices: np.ndarray | None = None
+        self._frequencies_hz: np.ndarray | None = None
+        self._steering: np.ndarray | None = None
+        self._steering_key: tuple[object, ...] | None = None
+        self._last_model_order: ModelOrderEstimate | None = None
+        self._last_mdl_sample: int | None = None
+        self.last_state_diagnostic: MusicStateDiagnostic | None = None
+
+    def reset(self) -> None:
+        self._stream_key = None
+        self._last_sample = None
+        self._frame_covariances.clear()
+        self._covariance_sum = None
+        self._last_model_order = None
+        self._last_mdl_sample = None
+        self.last_state_diagnostic = None
+
+    @staticmethod
+    def _periodic_hann(length: int) -> np.ndarray:
+        return np.hanning(length + 1)[:-1].astype(np.float64)
+
+    def _prepare_frequency_axis(self, config: DirectionScanConfig) -> None:
+        frequencies = np.fft.rfftfreq(config.n_fft, 1.0 / 48_000.0)
+        indices = np.flatnonzero(
+            (frequencies >= config.frequency_min_hz)
+            & (frequencies <= config.frequency_max_hz)
+        )
+        if indices.size < config.min_valid_frequency_bins:
+            raise DirectionScanError("MUSIC has too few configured frequency bins")
+        self._frequency_indices = indices
+        self._frequencies_hz = frequencies[indices]
+
+    def _frame_covariance(self, frame: np.ndarray, config: DirectionScanConfig) -> np.ndarray:
+        if self._frequency_indices is None:
+            self._prepare_frequency_axis(config)
+        assert self._frequency_indices is not None
+        physical = np.asarray(frame[:, :7], dtype=np.float64)
+        physical = physical - physical.mean(axis=0, keepdims=True)
+        spectrum = np.fft.rfft(
+            physical * self._periodic_hann(config.win_length)[:, None],
+            n=config.n_fft,
+            axis=0,
+        )[self._frequency_indices]
+        return np.einsum("fc,fd->fcd", spectrum, spectrum.conj(), optimize=True)
+
+    def _rebuild(self, window: DecisionWindow, config: DirectionScanConfig, reason: str) -> None:
+        history_samples = config.context_ms * 48
+        audio = window.samples[-history_samples:, :]
+        frames = []
+        for start in range(0, len(audio) - config.win_length + 1, config.hop_length):
+            frames.append(self._frame_covariance(audio[start : start + config.win_length], config))
+        if not frames:
+            raise DirectionScanError("MUSIC history does not contain one complete STFT frame")
+        self._frame_covariances = deque(frames)
+        self._covariance_sum = np.sum(np.stack(frames), axis=0)
+        previous = self._last_sample
+        gap = 0 if previous is None else window.decision_sample - previous - 960
+        self.last_state_diagnostic = MusicStateDiagnostic(
+            "rebuilt", previous, window.decision_sample, max(0, gap), 0,
+            len(frames), 0, False, reason,
+        )
+
+    def _advance(self, window: DecisionWindow, config: DirectionScanConfig) -> None:
+        # Two 50%-overlapped frames become available per 20 ms decision hop.
+        new_audio = window.samples[-1_440:, :]
+        added = [
+            self._frame_covariance(new_audio[start : start + config.win_length], config)
+            for start in (0, config.hop_length)
+        ]
+        assert self._covariance_sum is not None
+        old_count = len(self._frame_covariances)
+        for covariance in added:
+            self._frame_covariances.append(covariance)
+            self._covariance_sum += covariance
+        max_frames = 1 + (config.context_ms * 48 - config.win_length) // config.hop_length
+        removed = 0
+        while len(self._frame_covariances) > max_frames:
+            self._covariance_sum -= self._frame_covariances.popleft()
+            removed += 1
+        self.last_state_diagnostic = MusicStateDiagnostic(
+            "advanced", self._last_sample, window.decision_sample, 0,
+            old_count, len(added), removed, False, "sample_continuous",
+        )
+
+    def _steering_tensor(
+        self, geometry: MicGeometry, config: DirectionScanConfig, revision: int
+    ) -> tuple[np.ndarray, bool]:
+        if self._frequencies_hz is None:
+            self._prepare_frequency_axis(config)
+        assert self._frequencies_hz is not None
+        key = (
+            geometry.version, geometry.speed_of_sound_mps,
+            tuple(np.asarray(geometry.positions_m).ravel()),
+            config.frequency_min_hz, config.frequency_max_hz, config.n_fft, revision,
+        )
+        rebuilt = key != self._steering_key
+        if rebuilt:
+            theta = np.deg2rad(np.arange(360, dtype=np.float64))
+            direction = np.stack((np.cos(theta), np.sin(theta)), axis=1)
+            # Project convention: a wave arriving from theta has microphone
+            # delay -(position dot unit_direction)/c.
+            delays = -(direction @ np.asarray(geometry.positions_m).T) / geometry.speed_of_sound_mps
+            self._steering = np.exp(
+                -2j * np.pi * self._frequencies_hz[:, None, None] * delays[None, :, :]
+            )
+            self._steering_key = key
+        assert self._steering is not None
+        return self._steering, rebuilt
+
+    @staticmethod
+    def _mdl_order(eigenvalues: np.ndarray, snapshots: int) -> tuple[int, float]:
+        orders: list[int] = []
+        for values in eigenvalues:
+            values = np.maximum(np.real(values), 1.0e-12)
+            scores = []
+            for k in range(4):
+                noise = values[: 7 - k]
+                ratio = np.exp(np.mean(np.log(noise))) / np.mean(noise)
+                score = -snapshots * (7 - k) * np.log(max(ratio, 1.0e-12))
+                score += 0.5 * k * (14 - k) * np.log(max(snapshots, 2))
+                scores.append(score)
+            orders.append(int(np.argmin(scores)))
+        if not orders:
+            return 0, 0.0
+        counts = np.bincount(orders, minlength=4)
+        order = int(np.argmax(counts))
+        return order, float(counts[order] / len(orders))
+
+    def scan_detailed(
+        self,
+        window: DecisionWindow,
+        geometry: MicGeometry,
+        config: DirectionScanConfig,
+        config_revision: int = 0,
+    ) -> tuple[SpatialResponse, tuple[CandidateDirection, ...], MusicDiagnostics]:
+        started = perf_counter()
+        stream_key = (window.session_id, window.stream_epoch)
+        continuous = self._stream_key == stream_key and self._last_sample is not None and (
+            window.decision_sample == self._last_sample + 960
+        )
+        if not continuous:
+            reason = "new_stream" if self._stream_key != stream_key else "sample_discontinuity"
+            self._rebuild(window, config, reason)
+            self._last_model_order = None
+            self._last_mdl_sample = None
+        else:
+            self._advance(window, config)
+        self._stream_key = stream_key
+        self._last_sample = window.decision_sample
+        covariance_updated = perf_counter()
+        assert self._covariance_sum is not None
+        snapshots = len(self._frame_covariances)
+        covariance = self._covariance_sum / max(snapshots, 1)
+        trace = np.real(np.trace(covariance, axis1=1, axis2=2)) / 7.0
+        identity = np.eye(7, dtype=np.complex128)[None, :, :]
+        covariance = (
+            (1.0 - config.covariance_shrinkage) * covariance
+            + config.covariance_shrinkage * trace[:, None, None] * identity
+            + config.diagonal_loading * np.maximum(trace, config.eigenvalue_floor)[:, None, None] * identity
+        )
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        eigensolved = perf_counter()
+        valid = np.isfinite(eigenvalues).all(axis=1) & (eigenvalues[:, -1] > config.eigenvalue_floor)
+        if int(valid.sum()) < config.min_valid_frequency_bins:
+            raise DirectionScanError("MUSIC covariance quality left too few valid frequency bins")
+        eigenvalues = eigenvalues[valid]
+        eigenvectors = eigenvectors[valid]
+        steering, rebuilt = self._steering_tensor(geometry, config, config_revision)
+        steering = steering[valid]
+        refresh_mdl = self._last_mdl_sample is None or (
+            window.decision_sample - self._last_mdl_sample >= config.mdl_max_age_ms * 48
+        )
+        if refresh_mdl:
+            order, consistency = self._mdl_order(eigenvalues, snapshots)
+            status = "ready" if consistency >= config.min_cross_frequency_consistency else "degraded"
+            self._last_model_order = ModelOrderEstimate(
+                order, int(valid.sum()), snapshots, consistency, 0, status,
+            )
+            self._last_mdl_sample = window.decision_sample
+        else:
+            assert self._last_model_order is not None and self._last_mdl_sample is not None
+            old = self._last_model_order
+            self._last_model_order = ModelOrderEstimate(
+                old.estimated_sources, int(valid.sum()), snapshots,
+                old.cross_frequency_consistency,
+                window.decision_sample - self._last_mdl_sample, old.status,
+            )
+        model_order = self._last_model_order
+        assert model_order is not None
+        if model_order.estimated_sources == 0:
+            raw = np.zeros(360, dtype=np.float64)
+        else:
+            noise = eigenvectors[:, :, : 7 - model_order.estimated_sources]
+            projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
+            denominator = np.sum(np.abs(projection) ** 2, axis=2)
+            per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
+            per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
+            raw = per_frequency.mean(axis=0)
+        normalized = np.asarray(
+            (raw - raw.min()) / max(float(raw.max() - raw.min()), 1.0e-12), dtype=np.float32
+        )
+        raw32 = np.asarray(raw, dtype=np.float32)
+        spectrum_built = perf_counter()
+        response = SpatialResponse(
+            window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
+            window.doa_start_sample, window.doa_end_sample,
+            np.arange(360, dtype=np.float32), raw32, normalized,
+            model_order,
+            int(valid.sum()),
+            "ready" if model_order.status == "ready" else "degraded",
+            self.algorithm_version,
+        )
+        tiled = np.tile(normalized, 3)
+        peaks, _ = find_peaks(tiled, prominence=config.peak_prominence)
+        ranked = sorted(
+            {int(index - 360) for index in peaks if 360 <= index < 720},
+            key=lambda index: (-float(normalized[index]), index),
+        )
+        chosen: list[int] = []
+        limit = min(config.max_candidates, model_order.estimated_sources)
+        for index in ranked:
+            if normalized[index] < config.direction_threshold:
+                continue
+            if any(abs(((index - old + 180) % 360) - 180) < config.min_peak_distance_deg for old in chosen):
+                continue
+            chosen.append(index)
+            if len(chosen) == limit:
+                break
+        candidates = tuple(
+            CandidateDirection(
+                window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
+                window.doa_start_sample, window.doa_end_sample, float(index),
+                float(raw32[index]), float(normalized[index]),
+            )
+            for index in chosen
+        )
+        state = self.last_state_diagnostic
+        if state is not None and rebuilt:
+            self.last_state_diagnostic = MusicStateDiagnostic(
+                state.state, state.previous_decision_sample, state.decision_sample,
+                state.gap_samples, state.reused_frames, state.added_frames,
+                state.removed_frames, True, state.reason,
+            )
+        evidence = tuple(
+            MusicPeakEvidence(item.theta_deg, 0, item.raw_score, item.normalized_score, 7, int(valid.sum()))
+            for item in candidates
+        )
+        assert self.last_state_diagnostic is not None
+        diagnostics = MusicDiagnostics(
+            "frequency_normalized_music", self.algorithm_version, config_revision,
+            model_order, self.last_state_diagnostic, int(valid.sum()),
+            "ready" if model_order.status == "ready" else "degraded",
+            evidence=evidence,
+            eligible_peak_count=len(ranked), candidate_limit=limit or 3,
+            candidate_limit_applied=bool(limit and len(candidates) == limit and len(ranked) > limit),
+            covariance_update_ms=(covariance_updated - started) * 1_000.0,
+            eigensolve_ms=(eigensolved - covariance_updated) * 1_000.0,
+            spectrum_ms=(spectrum_built - eigensolved) * 1_000.0,
+            total_ms=(perf_counter() - started) * 1_000.0,
+        )
+        return response, candidates, diagnostics
+
+    def scan(self, window: DecisionWindow, geometry: MicGeometry, config: DirectionScanConfig):
+        response, candidates, _ = self.scan_detailed(window, geometry, config)
+        return response, candidates
+
+    @property
+    def model_order(self) -> ModelOrderEstimate | None:
+        return self._last_model_order

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from common.data_types import CalibrationMetadata
+
 FloatArray = NDArray[np.float32]
 UInt8Array = NDArray[np.uint8]
 
@@ -190,6 +192,8 @@ class DecodedAudio:
     # Deprecated block-level field. Formal v0.3 IMCRA hops are emitted after
     # IngestCoordinator assigns the authoritative sample interval.
     noise_spectrum: NoiseSpectrumRecord | None = None
+    # Set by ChannelCalibrator. Sources may leave it unset before correction.
+    calibration: CalibrationMetadata | None = None
 
     def __post_init__(self) -> None:
         data = np.asarray(self.samples)
@@ -223,6 +227,8 @@ class DecodedAudio:
                 or self.noise_spectrum.timestamp != float(self.timestamp)
             ):
                 raise ValueError("noise_spectrum must align with the audio block")
+        if self.calibration is not None and not isinstance(self.calibration, CalibrationMetadata):
+            raise TypeError("calibration must be CalibrationMetadata or None")
         self.sequence_id = int(self.sequence_id)
         self.timestamp = float(self.timestamp)
 

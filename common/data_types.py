@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
-
-from .window_key import WindowKey
 
 
 _IMCRA_FREQUENCIES_HZ = np.fft.rfftfreq(2048, 1.0 / 48_000).astype(np.float32)
@@ -13,6 +12,57 @@ _IMCRA_FREQUENCIES_HZ = _IMCRA_FREQUENCIES_HZ[
     (_IMCRA_FREQUENCIES_HZ >= 80.0) & (_IMCRA_FREQUENCIES_HZ <= 8_000.0)
 ]
 _IMCRA_BIN_COUNT = int(_IMCRA_FREQUENCIES_HZ.size)
+
+
+def _valid_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationAssetIdentity:
+    """Versioned identity for a future calibration asset; payloads stay outside audio DTOs."""
+
+    uri: str
+    version: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if not self.uri or not self.version or not _valid_sha256(self.sha256):
+            raise ValueError("calibration asset requires uri, version, and lowercase SHA-256")
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationMetadata:
+    """Immutable L1 correction boundary propagated with every calibrated stream."""
+
+    status: str
+    version: str
+    calibration_hash: str
+    correction_model: str
+    report_hash: str | None = None
+    fractional_delay_asset: CalibrationAssetIdentity | None = None
+    frequency_response_asset: CalibrationAssetIdentity | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"verified", "unverified"}:
+            raise ValueError("calibration status must be verified or unverified")
+        if not self.version or not self.correction_model or not _valid_sha256(self.calibration_hash):
+            raise ValueError("calibration metadata requires version, model, and lowercase SHA-256")
+        if self.report_hash is not None and not _valid_sha256(self.report_hash):
+            raise ValueError("calibration report hash must be lowercase SHA-256 or None")
+        for asset in (self.fractional_delay_asset, self.frequency_response_asset):
+            if asset is not None and not isinstance(asset, CalibrationAssetIdentity):
+                raise TypeError("calibration extension identity has an invalid type")
+
+    @classmethod
+    def unverified_identity(cls) -> "CalibrationMetadata":
+        payload = b"unverified_identity_gain_polarity_integer_delay_v1"
+        return cls(
+            "unverified",
+            "unverified_identity_v1",
+            hashlib.sha256(payload).hexdigest(),
+            "gain_polarity_integer_delay_v1",
+        )
 
 
 def _readonly_float32(value: object, shape: tuple[int | None, ...], name: str) -> NDArray[np.float32]:
@@ -140,6 +190,7 @@ class IngestedAudioBlock:
     hotmap: object | None = None
     noise_spectrum: object | None = None
     imcra_hop: ImcraHopSnapshot | None = None
+    calibration: CalibrationMetadata = CalibrationMetadata.unverified_identity()
 
     def __post_init__(self) -> None:
         if not self.session_id:
@@ -157,6 +208,8 @@ class IngestedAudioBlock:
         object.__setattr__(self, "samples", samples)
         object.__setattr__(self, "native_samples", native)
         object.__setattr__(self, "timestamp", float(self.timestamp))
+        if not isinstance(self.calibration, CalibrationMetadata):
+            raise TypeError("IngestedAudioBlock calibration must be CalibrationMetadata")
         if self.imcra_hop is not None:
             hop = self.imcra_hop
             if (
@@ -183,12 +236,15 @@ class DecisionWindow:
     samples: NDArray[np.float32]
     source_sequence_ids: tuple[int, ...]
     imcra_hops: tuple[ImcraHopSnapshot, ...] = ()
+    calibration: CalibrationMetadata = CalibrationMetadata.unverified_identity()
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
             raise ValueError("DecisionWindow标识和边界无效")
         if self.sample_rate != 48_000:
             raise ValueError("DecisionWindow采样率必须为48000")
+        if not isinstance(self.calibration, CalibrationMetadata):
+            raise TypeError("DecisionWindow calibration must be CalibrationMetadata")
         if self.doa_end_sample != self.context_end_sample or self.context_end_sample != self.decision_sample:
             raise ValueError("DOA、context与decision endpoint必须相同")
         if self.doa_end_sample - self.doa_start_sample != 1_920:
@@ -221,6 +277,34 @@ class DecisionWindow:
             raise ValueError("DecisionWindow IMCRA hops must be unique and chronological")
         object.__setattr__(self, "imcra_hops", hops)
 
+    @property
+    def physical_samples(self) -> NDArray[np.float32]:
+        """Continuous calibrated MIC0..MIC5+Center history; HardwareMix is excluded."""
+
+        return self.samples[:, :7]
+
+    @property
+    def hardware_mix(self) -> NDArray[np.float32]:
+        return self.samples[:, 7]
+
+    @property
+    def available_history_samples(self) -> int:
+        return self.context_end_sample - self.context_start_sample
+
+    @property
+    def rolling_update_start_sample(self) -> int:
+        """Start of the newest 20 ms that an incremental L2 state should append."""
+
+        return self.decision_sample - 960
+
+    def physical_history(self, context_ms: int) -> NDArray[np.float32]:
+        """Return one configured MUSIC comparison history without HardwareMix."""
+
+        if context_ms not in {160, 240, 320}:
+            raise ValueError("MUSIC context_ms must be one of 160/240/320")
+        sample_count = context_ms * 48
+        return self.physical_samples[-sample_count:]
+
 
 def _readonly_exact_float32(value: object, shape: tuple[int, ...], name: str) -> NDArray[np.float32]:
     raw = np.asarray(value)
@@ -242,6 +326,10 @@ class SpatialResponse:
     theta_degrees: NDArray[np.float32]
     raw_scores: NDArray[np.float32]
     normalized_scores: NDArray[np.float32]
+    model_order: ModelOrderEstimate | None = None
+    valid_frequency_bins: int | None = None
+    numerical_status: str | None = None
+    algorithm_version: str | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.doa_start_sample) < 0:
@@ -255,6 +343,16 @@ class SpatialResponse:
             raise ValueError("theta_degrees必须严格为0..359")
         if np.any((normalized < 0.0) | (normalized > 1.0)):
             raise ValueError("normalized_scores必须位于[0,1]")
+        if self.model_order is not None and not isinstance(self.model_order, ModelOrderEstimate):
+            raise TypeError("SpatialResponse model_order must be ModelOrderEstimate")
+        if self.valid_frequency_bins is not None and self.valid_frequency_bins < 0:
+            raise ValueError("SpatialResponse valid_frequency_bins must be non-negative")
+        if self.numerical_status is not None and self.numerical_status not in {
+            "warming_up", "ready", "degraded", "failed"
+        }:
+            raise ValueError("SpatialResponse numerical_status is invalid")
+        if self.algorithm_version is not None and not self.algorithm_version:
+            raise ValueError("SpatialResponse algorithm_version cannot be empty")
         object.__setattr__(self, "theta_degrees", theta)
         object.__setattr__(self, "raw_scores", raw)
         object.__setattr__(self, "normalized_scores", normalized)
@@ -286,7 +384,11 @@ class CandidateDirection:
 
 @dataclass(frozen=True, slots=True)
 class TrackedDirection:
-    """L2-owned direction ID; downstream layers must preserve it verbatim."""
+    """Authoritative Layer-2 direction-track result.
+
+    ``track_id`` identifies a spatial direction trajectory within one session;
+    it is deliberately not a person or speaker identity.
+    """
 
     session_id: str
     stream_epoch: int
@@ -307,64 +409,57 @@ class TrackedDirection:
     last_observed_sample: int
     missed_samples: int
     kalman_applied: bool
-    allow_l3_prediction: bool = False
 
     def __post_init__(self) -> None:
         if not self.session_id or min(
             self.stream_epoch, self.window_id, self.doa_start_sample,
-            self.first_seen_sample, self.last_observed_sample, self.missed_samples,
+            self.track_id, self.rank, self.first_seen_sample,
+            self.last_observed_sample, self.missed_samples,
         ) < 0:
-            raise ValueError("TrackedDirection identity, rank, or lifetime is invalid")
-        if (
-            type(self.track_id) is not int or self.track_id <= 0
-            or type(self.rank) is not int or self.rank <= 0
-        ):
-            raise ValueError("TrackedDirection track_id and rank must be positive integers")
+            raise ValueError("TrackedDirection identity/lifetime is invalid")
+        if self.track_id == 0 or self.rank == 0:
+            raise ValueError("TrackedDirection track_id and rank are one-based")
         if self.doa_end_sample != self.decision_sample or self.doa_end_sample - self.doa_start_sample != 1_920:
             raise ValueError("TrackedDirection DOA boundary is invalid")
-        if not all(np.isfinite(value) for value in (
-            self.theta_deg, self.raw_score, self.normalized_score,
-        )):
-            raise ValueError("TrackedDirection angle and scores must be finite")
-        if not 0.0 <= self.theta_deg < 360.0 or not 0.0 <= self.normalized_score <= 1.0:
-            raise ValueError("TrackedDirection angle or normalized score is out of range")
-        if self.measured_theta_deg is not None and (
-            not np.isfinite(self.measured_theta_deg)
-            or not 0.0 <= self.measured_theta_deg < 360.0
+        values = (self.theta_deg, self.raw_score, self.normalized_score)
+        if self.measured_theta_deg is not None:
+            values += (self.measured_theta_deg,)
+        if not all(np.isfinite(value) for value in values):
+            raise ValueError("TrackedDirection angle/score must be finite")
+        if not 0.0 <= self.theta_deg < 360.0 or (
+            self.measured_theta_deg is not None and not 0.0 <= self.measured_theta_deg < 360.0
         ):
-            raise ValueError("TrackedDirection measured angle must be missing or in [0,360)")
+            raise ValueError("TrackedDirection angle must be in [0,360)")
+        if not 0.0 <= self.normalized_score <= 1.0:
+            raise ValueError("TrackedDirection normalized_score must be in [0,1]")
         if self.track_state not in {"tentative", "confirmed", "coasting"}:
             raise ValueError("TrackedDirection state is invalid")
-        if any(type(value) is not bool for value in (
-            self.is_observed, self.is_new_track, self.kalman_applied, self.allow_l3_prediction,
-        )):
-            raise TypeError("TrackedDirection flags must be bool")
-        if not self.first_seen_sample <= self.last_observed_sample <= self.decision_sample:
-            raise ValueError("TrackedDirection lifecycle samples are not monotonic")
-        if self.is_observed:
-            if (
-                self.measured_theta_deg is None
-                or self.last_observed_sample != self.decision_sample
-                or self.missed_samples != 0
-                or self.track_state == "coasting"
-                or self.allow_l3_prediction
-            ):
-                raise ValueError("observed TrackedDirection lifecycle is inconsistent")
-        elif (
-            self.measured_theta_deg is not None
-            or self.track_state != "coasting"
-            or self.missed_samples != self.decision_sample - self.last_observed_sample
-            or self.is_new_track
-        ):
-            raise ValueError("unobserved TrackedDirection must be a consistent coasting track")
+        if self.is_observed != (self.measured_theta_deg is not None):
+            raise ValueError("TrackedDirection observed state is inconsistent")
+        if self.last_observed_sample > self.decision_sample:
+            raise ValueError("TrackedDirection observation cannot be in the future")
+        if self.missed_samples != self.decision_sample - self.last_observed_sample:
+            raise ValueError("TrackedDirection missed_samples must use absolute samples")
 
-    @property
-    def window_key(self) -> WindowKey:
-        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
 
-    @property
-    def eligible_for_l3(self) -> bool:
-        return self.is_observed or self.allow_l3_prediction
+@dataclass(frozen=True, slots=True)
+class ModelOrderEstimate:
+    estimated_sources: int
+    valid_frequency_bins: int
+    snapshot_count: int
+    cross_frequency_consistency: float
+    mdl_age_samples: int
+    status: str
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.estimated_sources <= 3:
+            raise ValueError("MUSIC model order must be 0..3")
+        if min(self.valid_frequency_bins, self.snapshot_count, self.mdl_age_samples) < 0:
+            raise ValueError("MUSIC model order counts must be non-negative")
+        if not np.isfinite(self.cross_frequency_consistency) or not 0.0 <= self.cross_frequency_consistency <= 1.0:
+            raise ValueError("MUSIC cross-frequency consistency must be in [0,1]")
+        if self.status not in {"warming_up", "ready", "degraded", "failed"}:
+            raise ValueError("MUSIC model-order status is invalid")
 
 
 def _readonly_exact_complex64(value: object, shape: tuple[int, ...], name: str) -> NDArray[np.complex64]:
@@ -382,8 +477,6 @@ class DirectionalSignal:
     stream_epoch: int
     window_id: int
     decision_sample: int
-    track_id: int
-    rank: int
     context_start_sample: int
     context_end_sample: int
     theta_deg: float
@@ -391,6 +484,7 @@ class DirectionalSignal:
     beamformer_backend: str
     fallback_reason: str | None
     stft_complex: NDArray[np.complex64]
+    track_id: int | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
@@ -404,13 +498,9 @@ class DirectionalSignal:
             "constant_beamwidth_baseline",
         }:
             raise ValueError("DirectionalSignal后端无效")
-        if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
-            raise ValueError("DirectionalSignal track_id or original rank is invalid")
+        if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
+            raise ValueError("DirectionalSignal track_id must be a positive integer")
         object.__setattr__(self, "stft_complex", _readonly_exact_complex64(self.stft_complex, (513, 33), "stft_complex"))
-
-    @property
-    def window_key(self) -> WindowKey:
-        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,14 +509,13 @@ class SpectrogramFeature:
     stream_epoch: int
     window_id: int
     decision_sample: int
-    track_id: int
-    rank: int
     context_start_sample: int
     context_end_sample: int
     theta_deg: float
     beamformer_backend: str
     preprocessing_version: str
     spectrogram: NDArray[np.float32]
+    track_id: int | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
@@ -435,13 +524,9 @@ class SpectrogramFeature:
             raise ValueError("SpectrogramFeature上下文边界无效")
         if not np.isfinite(self.theta_deg) or not 0 <= self.theta_deg < 360:
             raise ValueError("SpectrogramFeature角度无效")
-        if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
-            raise ValueError("SpectrogramFeature track_id or original rank is invalid")
+        if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
+            raise ValueError("SpectrogramFeature track_id must be a positive integer")
         object.__setattr__(self, "spectrogram", _readonly_exact_float32(self.spectrogram, (33, 169), "spectrogram"))
-
-    @property
-    def window_key(self) -> WindowKey:
-        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
 
 
 @dataclass(frozen=True, slots=True)
@@ -452,8 +537,6 @@ class EnhancedAudio:
     stream_epoch: int
     window_id: int
     decision_sample: int
-    track_id: int
-    rank: int
     context_start_sample: int
     context_end_sample: int
     theta_deg: float
@@ -462,6 +545,7 @@ class EnhancedAudio:
     fallback_reason: str | None
     diagnostics: tuple[str, ...]
     enhanced_audio: NDArray[np.float32]
+    track_id: int | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
@@ -472,15 +556,11 @@ class EnhancedAudio:
             raise ValueError("EnhancedAudio采样率或角度无效")
         if not self.algorithm:
             raise ValueError("EnhancedAudio算法标识不能为空")
-        if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
-            raise ValueError("EnhancedAudio track_id or original rank is invalid")
+        if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
+            raise ValueError("EnhancedAudio track_id must be a positive integer")
         waveform = _readonly_exact_float32(self.enhanced_audio, (15_360,), "enhanced_audio")
         object.__setattr__(self, "diagnostics", tuple(str(item) for item in self.diagnostics))
         object.__setattr__(self, "enhanced_audio", waveform)
-
-    @property
-    def window_key(self) -> WindowKey:
-        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
 
 
 @dataclass(frozen=True, slots=True)

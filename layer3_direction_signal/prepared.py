@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import torch
-
-from common.window_key import WindowKey
 
 from .configuration import SpatialSeparationConfig, StftSettings
 from .interface import (
@@ -92,8 +89,8 @@ class PreparedL3Context:
                 raise ValueError("PreparedL3Context张量必须同设备且禁用梯度")
 
     @property
-    def window_key(self) -> WindowKey:
-        return WindowKey(self.session_id, self.stream_epoch, self.window_id, self.decision_sample)
+    def window_key(self) -> tuple[str, int, int, int]:
+        return self.session_id, self.stream_epoch, self.window_id, self.decision_sample
 
     @property
     def persistent_tensor_bytes(self) -> int:
@@ -122,19 +119,15 @@ class PreparedL3Context:
 class BeamformedL3Batch:
     """Device-resident candidate-dependent spectra and their public metadata."""
 
-    window_key: WindowKey
     spectra_mft: torch.Tensor
-    track_ids: tuple[int, ...]
-    ranks: tuple[int, ...]
     theta_degrees: tuple[float, ...]
     backends: tuple[str, ...]
     fallback_reasons: tuple[str | None, ...]
     diagnostics: tuple[tuple[str, ...], ...]
+    track_ids: tuple[int | None, ...] = ()
 
     def __post_init__(self) -> None:
         count = len(self.theta_degrees)
-        if not isinstance(self.window_key, WindowKey):
-            raise Layer3Error("L3 beamformed batch requires a WindowKey")
         if (
             self.spectra_mft.shape != (count, 513, 33)
             or self.spectra_mft.dtype != torch.complex64
@@ -143,17 +136,16 @@ class BeamformedL3Batch:
         ):
             raise Layer3Error("L3候选频谱批次无效")
         if not (
-            len(self.track_ids) == len(self.ranks) == len(self.backends)
-            == len(self.fallback_reasons) == len(self.diagnostics) == count
+            len(self.backends) == len(self.fallback_reasons) == len(self.diagnostics) == count
         ):
             raise Layer3Error("L3候选频谱元数据长度不一致")
-        if len(set(self.track_ids)) != count or any(
-            type(item) is not int or item <= 0 for item in self.track_ids
+        track_ids = self.track_ids or (None,) * count
+        if len(track_ids) != count or any(
+            item is not None and (type(item) is not int or item <= 0) for item in track_ids
         ):
-            raise Layer3Error("L3 beamformed batch track_ids are invalid or duplicated")
-        if len(set(self.ranks)) != count or any(
-            type(item) is not int or item <= 0 for item in self.ranks
+            raise Layer3Error("L3 track IDs must align with the candidate spectra")
+        if len({item for item in track_ids if item is not None}) != sum(
+            item is not None for item in track_ids
         ):
-            raise Layer3Error("L3 beamformed batch original ranks are invalid or duplicated")
-        if any(not np.isfinite(item) or not 0.0 <= item < 360.0 for item in self.theta_degrees):
-            raise Layer3Error("L3 beamformed batch angles are invalid")
+            raise Layer3Error("L3 track IDs must be unique")
+        object.__setattr__(self, "track_ids", tuple(track_ids))

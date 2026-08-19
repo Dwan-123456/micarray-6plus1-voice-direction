@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import threading
@@ -11,7 +10,7 @@ from time import monotonic
 
 from PySide6.QtCore import QObject, Signal
 
-from common.config import config_hash, load_config
+from common.config import calibration_config_hash, config_hash, load_config
 from data_management import RecordingStore, SessionMetadata
 from data_management.dedicated_recording import WizardPhase
 from ingest import IngestCoordinator
@@ -123,12 +122,9 @@ class CaptureHost(QObject):
             self.error.emit(str(exc))
 
     def _metadata(self) -> SessionMetadata:
-        calibration_payload = json.dumps(
-            self.config.calibration.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
         return SessionMetadata(
             config_hash(self.config),
-            hashlib.sha256(calibration_payload).hexdigest(),
+            calibration_config_hash(self.config.calibration),
             geometry_version=self.config.hardware.geometry_version,
             runtime={"host": "standalone_audio_data_manager"},
             algorithm_versions={

@@ -127,15 +127,13 @@ def build_window(
     from .audio_id_tracker import AudioIdTracker
     from .panels import (
         GateProbabilityThresholdControl,
-        DirectionIdTrackingControl,
         DirectionKalmanControl,
-        IterativePeakSearchControl,
         KalmanNoiseScaleControl,
         ProbabilityGateReadout,
         SrpThresholdControl,
     )
     from .settings import DevUiSettings
-    from .srp_panel import SrpPanelSnapshot, SrpPolarPanel
+    from .srp_panel import DirectionTrackTable, MusicPanelSnapshot, MusicPolarPanel
 
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
@@ -182,8 +180,6 @@ def build_window(
     audio_id_tracker = AudioIdTracker(
         f"data/dev_test_ui/l3_audio_cache/current/run_{uuid4().hex}",
         project_root=project_root,
-        wait_seconds=3.0,
-        formal_id_rollover_wait_seconds=5.0,
     )
     runtime = ApplicationRuntime(
         config, project_root=project_root, pipeline=pipeline,
@@ -192,19 +188,9 @@ def build_window(
     ui_settings = DevUiSettings(config_path.parent.parent)
     persisted_threshold = ui_settings.load_direction_threshold(config.layer2.direction_threshold)
     runtime.set_direction_threshold(persisted_threshold)
-    persisted_iterative = ui_settings.load_iterative_peak_search_enabled(
-        config.layer2.iterative_peak_search_enabled
-    )
-    runtime.set_iterative_peak_search_enabled(persisted_iterative)
-    persisted_id_tracking = ui_settings.load_direction_id_tracking_enabled(
-        config.layer2.direction_id_tracking.enabled
-    )
-    runtime.set_direction_id_tracking_enabled(persisted_id_tracking)
     persisted_kalman = ui_settings.load_direction_kalman_enabled(
         config.layer2.direction_kalman.enabled
     )
-    if persisted_kalman and not persisted_id_tracking:
-        persisted_kalman = ui_settings.save_direction_kalman_enabled(False)
     runtime.set_direction_kalman_enabled(persisted_kalman)
     runtime.set_direction_kalman_q_scale(ui_settings.load_direction_kalman_q_scale(
         config.layer2.direction_kalman.process_noise_scale
@@ -254,7 +240,7 @@ def build_window(
             outer.setContentsMargins(0, 0, 0, 0)
             outer.setSpacing(0)
             self.global_status = QLabel(
-                f"STOPPED | input drop 0 | processing drop 0 | CPU SRP + {runtime.processing_device.upper()} L3 | queue 0"
+                f"STOPPED | input drop 0 | processing drop 0 | CPU MUSIC + {runtime.processing_device.upper()} L3 | queue 0"
             )
             self.global_status.setFixedHeight(28)
             self.global_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -269,7 +255,7 @@ def build_window(
                 grid.setRowStretch(index, 1)
                 grid.setColumnStretch(index, 1)
             grid.addWidget(self._l1_panel(), 0, 0)
-            grid.addWidget(self._srp_panel(), 0, 1)
+            grid.addWidget(self._doa_panel(), 0, 1)
             self.bf_panel = BeamformPanel(config)
             self.preview_player = PreviewPlayer(
                 sample_rate=config.device.sample_rate, volume=config.dev_test_ui.preview_volume,
@@ -394,6 +380,11 @@ def build_window(
             denoise.addWidget(self.pre_denoise_label)
             denoise.addStretch()
             layout.addLayout(denoise)
+            self.calibration_label = QLabel("校准: UNVERIFIED")
+            self.calibration_label.setStyleSheet(
+                "QLabel { background:#7a3f00; color:white; padding:4px 8px; font-weight:600; }"
+            )
+            layout.addWidget(self.calibration_label)
             self.imcra_label = QLabel("IMCRA: WAITING | noise MIC0— MIC1— MIC2— MIC3— MIC4— MIC5— Center—")
             self.imcra_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.imcra_label.setStyleSheet("font-family:Consolas")
@@ -420,14 +411,14 @@ def build_window(
             self._set_record_buttons("idle")
             return box
 
-        def _srp_panel(self):
-            box = QGroupBox("L2 · SRP-PHAT")
+        def _doa_panel(self):
+            box = QGroupBox("L2 · DOA / MUSIC")
             layout = QVBoxLayout(box)
             self.srp_header = QLabel("UNAVAILABLE | session — | epoch 0 | window — | sample — | age N/A")
             self.srp_header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             layout.addWidget(self.srp_header)
             splitter = QSplitter(Qt.Orientation.Horizontal)
-            self.srp_polar = SrpPolarPanel(config.dev_test_ui.stale_after_ms)
+            self.srp_polar = MusicPolarPanel(config.dev_test_ui.stale_after_ms)
             right = QWidget()
             right_layout = QVBoxLayout(right)
             right_layout.setContentsMargins(0, 0, 0, 0)
@@ -436,25 +427,21 @@ def build_window(
                 runtime.gate_probability_threshold
             )
             self.srp_threshold = SrpThresholdControl(runtime.direction_threshold)
-            self.srp_iterative = IterativePeakSearchControl(runtime.iterative_peak_search_enabled)
             self.srp_kalman = DirectionKalmanControl(runtime.direction_kalman_enabled)
-            self.srp_id_tracking = DirectionIdTrackingControl(runtime.direction_id_tracking_enabled)
             self.srp_kalman_q = KalmanNoiseScaleControl("Q倍率", runtime.direction_kalman_q_scale)
             self.srp_kalman_r = KalmanNoiseScaleControl("R倍率", runtime.direction_kalman_r_scale)
-            self.srp_kalman.setEnabled(runtime.direction_id_tracking_enabled)
             self.srp_kalman.setToolTip(
-                "Requires Private direction ID tracking" if not runtime.direction_id_tracking_enabled else ""
+                "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
             )
             self.gate_readout = ProbabilityGateReadout()
+            self.direction_table = DirectionTrackTable()
             right_layout.addWidget(self.gate_threshold)
-            right_layout.addWidget(self.srp_iterative)
-            right_layout.addWidget(self.srp_id_tracking)
             right_layout.addWidget(self.srp_kalman)
             right_layout.addWidget(self.srp_kalman_q)
             right_layout.addWidget(self.srp_kalman_r)
             right_layout.addWidget(self.gate_readout)
             right_layout.addWidget(self.srp_threshold)
-            right_layout.addStretch(1)
+            right_layout.addWidget(self.direction_table, 1)
             splitter.addWidget(self.srp_polar)
             splitter.addWidget(right)
             splitter.setSizes((700, 300))
@@ -462,9 +449,7 @@ def build_window(
             self.srp_polar.candidate_selected.connect(self._select_candidate)
             self.srp_threshold.threshold_changed.connect(self._set_srp_threshold)
             self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
-            self.srp_iterative.enabled_changed.connect(self._set_iterative_peak_search)
             self.srp_kalman.enabled_changed.connect(self._set_direction_kalman)
-            self.srp_id_tracking.enabled_changed.connect(self._set_direction_id_tracking)
             self.srp_kalman_q.apply_requested.connect(self._apply_kalman_q_scale)
             self.srp_kalman_r.apply_requested.connect(self._apply_kalman_r_scale)
             return box
@@ -502,32 +487,14 @@ def build_window(
                     self.pre_denoise_switch.setChecked(previous)
                 self.statusBar().showMessage(f"L1预降噪切换失败: {exc}", 8000)
 
-        def _set_iterative_peak_search(self, enabled: bool):
-            previous = runtime.iterative_peak_search_enabled
-            try:
-                enabled = ui_settings.save_iterative_peak_search_enabled(enabled)
-                runtime.set_iterative_peak_search_enabled(enabled)
-                self.srp_iterative.set_enabled(enabled, pending=True)
-                self.statusBar().showMessage(
-                    f"L2 iterative multi-peak {'enabled' if enabled else 'disabled'}; next window applies", 3500
-                )
-            except Exception as exc:
-                runtime.set_iterative_peak_search_enabled(previous)
-                with QSignalBlocker(self.srp_iterative):
-                    self.srp_iterative.set_enabled(previous)
-                self.statusBar().showMessage(f"Failed to save L2 iterative switch: {exc}", 8000)
-
         def _set_srp_threshold(self, threshold: float):
             try:
                 threshold = runtime.set_direction_threshold(threshold)
                 ui_settings.save_direction_threshold(threshold)
                 self.statusBar().showMessage(f"L2 candidate threshold已保存为 {threshold:.2f}", 2500)
-                if runtime.iterative_peak_search_enabled:
-                    self.statusBar().showMessage(
-                        f"L2 threshold saved as {threshold:.2f}; next iterative window applies", 3500
-                    )
-                else:
-                    self._refilter_retained_srp(threshold)
+                self.statusBar().showMessage(
+                    f"L2 MUSIC candidate threshold saved as {threshold:.2f}; next window applies", 3500
+                )
             except Exception as exc:
                 self.statusBar().showMessage(f"保存L2 threshold失败: {exc}", 8000)
 
@@ -538,38 +505,13 @@ def build_window(
                 runtime.set_direction_kalman_enabled(enabled)
                 self.srp_kalman.set_enabled(enabled, pending=True)
                 self.statusBar().showMessage(
-                    f"L2 Circular Kalman {'enabled' if enabled else 'disabled'}; next window applies", 3500
+                    f"L2 Kalman smoothing {'enabled' if enabled else 'disabled'}; ID lifecycle is unchanged", 3500
                 )
             except Exception as exc:
                 runtime.set_direction_kalman_enabled(previous)
                 with QSignalBlocker(self.srp_kalman):
                     self.srp_kalman.set_enabled(previous)
                 self.statusBar().showMessage(f"Failed to save L2 Kalman switch: {exc}", 8000)
-
-        def _set_direction_id_tracking(self, enabled: bool):
-            previous = runtime.direction_id_tracking_enabled
-            previous_kalman = runtime.direction_kalman_enabled
-            try:
-                enabled = ui_settings.save_direction_id_tracking_enabled(enabled)
-                runtime.set_direction_id_tracking_enabled(enabled)
-                if not enabled:
-                    ui_settings.save_direction_kalman_enabled(False)
-                self.srp_id_tracking.set_enabled(enabled, pending=True)
-                with QSignalBlocker(self.srp_kalman):
-                    self.srp_kalman.set_enabled(runtime.direction_kalman_enabled, pending=True)
-                self.srp_kalman.setEnabled(enabled)
-                self.srp_kalman.setToolTip("" if enabled else "Requires Private direction ID tracking")
-                self.statusBar().showMessage(
-                    f"L2 private ID tracking {'enabled' if enabled else 'disabled'}; next window applies", 3500
-                )
-            except Exception as exc:
-                runtime.set_direction_id_tracking_enabled(previous)
-                if previous_kalman:
-                    runtime.set_direction_kalman_enabled(True)
-                with QSignalBlocker(self.srp_id_tracking):
-                    self.srp_id_tracking.set_enabled(previous)
-                self.srp_kalman.setEnabled(previous)
-                self.statusBar().showMessage(f"Failed to save L2 ID tracking switch: {exc}", 8000)
 
         def _apply_kalman_q_scale(self, value: float):
             previous = runtime.direction_kalman_q_scale
@@ -598,34 +540,6 @@ def build_window(
                 runtime.set_direction_kalman_r_scale(previous)
                 self.srp_kalman_r.commit(previous)
                 self.statusBar().showMessage(f"Failed to apply L2 Kalman R scale: {exc}", 8000)
-
-        def _refilter_retained_srp(self, threshold: float):
-            if self._frame is None or self._frame.spatial_response is None:
-                return
-            from dataclasses import replace
-
-            from common.data_types import CandidateDirection
-            from layer2_source_detection import select_candidate_indices
-
-            response = self._frame.spatial_response
-            scan_config = replace(runtime.direction_scan_config, direction_threshold=threshold)
-            candidates = tuple(
-                CandidateDirection(
-                    response.session_id, response.stream_epoch, response.window_id, response.decision_sample,
-                    response.doa_start_sample, response.doa_end_sample, float(index),
-                    float(response.raw_scores[index]), float(response.normalized_scores[index]),
-                )
-                for index in select_candidate_indices(response.normalized_scores, scan_config)
-            )
-            snapshot = SrpPanelSnapshot(
-                response, candidates, self._frame.spatial_published_monotonic,
-                self._frame.search_diagnostics,
-                (None,) * len(candidates),
-                (False,) * len(candidates),
-                (False,) * len(candidates),
-                (False,) * len(candidates),
-            )
-            self.srp_polar.set_snapshot(snapshot, live=runtime.running)
 
         def _submit_command(self, name, command, on_success=None):
             if self._pending_command is not None:
@@ -829,7 +743,6 @@ def build_window(
             self.light_on.setEnabled(not busy)
             self.light_off.setEnabled(not busy)
             self._set_record_buttons(runtime.scratch.state)
-            self.srp_kalman.setEnabled(runtime.direction_id_tracking_enabled)
             self._refresh_replay_controls()
 
         def _select_candidate(self, theta: float, window_id: int):
@@ -842,7 +755,7 @@ def build_window(
             # Release mapped playback files before the comparison cache is reset.
             self.preview_player.close()
             self._audio_source_key = None
-            audio_id_tracker.reset()
+            audio_id_tracker.seal_mode(None)
             self.bf_panel.reset_for_mode_change(applied)
             self._last_l4_frame = None
             self._last_l4_seen = 0.0
@@ -985,7 +898,7 @@ def build_window(
             self._set_text(
                 self.global_status,
                 f"{state:<7} | input drop {runtime.fanout.dropped_by_subscriber:06d} | "
-                f"processing drop {runtime.processing_drops:06d} | CPU SRP | "
+                f"processing drop {runtime.processing_drops:06d} | CPU MUSIC | "
                 f"{runtime.processing_device.upper()} L3 {runtime.l3_processing_mode} | "
                 f"{pipeline_status} | "
                 f"scratch queue {runtime.scratch.queued_blocks:03d}",
@@ -1089,7 +1002,6 @@ def build_window(
                 and applied_revision != runtime.direction_scan_config_revision
             )
             applied_kalman = getattr(frame, "direction_kalman_enabled", None)
-            applied_id_tracking = getattr(frame, "direction_id_tracking_enabled", None)
             applied_q_scale = getattr(frame, "direction_kalman_q_scale", None)
             applied_r_scale = getattr(frame, "direction_kalman_r_scale", None)
             with QSignalBlocker(self.srp_kalman):
@@ -1100,19 +1012,9 @@ def build_window(
                         and applied_kalman != runtime.direction_kalman_enabled
                     ),
                 )
-            self.srp_kalman.setEnabled(runtime.direction_id_tracking_enabled)
             self.srp_kalman.setToolTip(
-                "" if runtime.direction_id_tracking_enabled
-                else "Requires Private direction ID tracking"
+                "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
             )
-            with QSignalBlocker(self.srp_id_tracking):
-                self.srp_id_tracking.set_enabled(
-                    runtime.direction_id_tracking_enabled,
-                    pending=revision_pending or (
-                        applied_id_tracking is not None
-                        and applied_id_tracking != runtime.direction_id_tracking_enabled
-                    ),
-                )
             self.srp_kalman_q.set_applied_value(
                 runtime.direction_kalman_q_scale,
                 pending=revision_pending or (
@@ -1138,6 +1040,21 @@ def build_window(
                     )
                 else:
                     self._set_text(self.pre_denoise_label, "预降噪: OFF | 原始音频直通")
+                if l1.calibration_status == "verified":
+                    self.calibration_label.setStyleSheet(
+                        "QLabel { background:#16794b; color:white; padding:4px 8px; font-weight:600; }"
+                    )
+                    calibration_text = "校准: VERIFIED"
+                else:
+                    self.calibration_label.setStyleSheet(
+                        "QLabel { background:#9a3d24; color:white; padding:4px 8px; font-weight:700; }"
+                    )
+                    calibration_text = "警告：校准 UNVERIFIED，MUSIC方向结果不得作为实机验收"
+                self._set_text(
+                    self.calibration_label,
+                    f"{calibration_text} | {l1.calibration_version} | {l1.calibration_hash[:12]}",
+                )
+                self.calibration_label.setToolTip(f"calibration_sha256={l1.calibration_hash}")
                 self._set_text(self.l1_header,
                     f"{frame.pipeline_status.state.upper()} | session {l1.session_id[:8]} | epoch {l1.stream_epoch} | "
                     f"sample {l1.end_sample:012d} | seq {l1.sequence_id:08d} | age 000 ms"
@@ -1168,13 +1085,17 @@ def build_window(
                     )
                     self._set_text(self.imcra_label, f"IMCRA: {hop.state.upper()} | {levels}")
             if frame.spatial_response is not None and frame.spatial_published_monotonic is not None:
-                snapshot = SrpPanelSnapshot(
-                    frame.spatial_response, frame.candidates, frame.spatial_published_monotonic,
-                    frame.search_diagnostics,
-                    frame.candidate_track_ids,
-                    frame.candidate_is_prediction,
-                    frame.candidate_track_is_formal,
-                    frame.candidate_track_is_new,
+                probabilities = {
+                    detection.track_id: detection.probability
+                    for detection in (() if frame.l4_result is None else frame.l4_result.detections)
+                    if getattr(detection, "track_id", None) is not None
+                }
+                snapshot = MusicPanelSnapshot(
+                    frame.spatial_response,
+                    getattr(frame, "directions", ()),
+                    getattr(frame, "active_tracks", ()),
+                    frame.spatial_published_monotonic,
+                    probabilities,
                 )
                 window_key = (
                     frame.spatial_response.session_id,
@@ -1183,23 +1104,15 @@ def build_window(
                 )
                 if window_key != self._last_rendered_window:
                     self.srp_polar.set_snapshot(snapshot, live=True)
+                    self.direction_table.set_snapshot(snapshot)
                     self._last_rendered_window = window_key
                 search_suffix = ""
-                if frame.search_diagnostics is not None:
-                    applied = frame.search_diagnostics.mode == "iterative_rank1_projection_v1"
-                    pending = (
-                        frame.scan_config_revision is not None
-                        and frame.scan_config_revision != runtime.direction_scan_config_revision
-                    )
-                    with QSignalBlocker(self.srp_iterative):
-                        self.srp_iterative.set_enabled(
-                            runtime.iterative_peak_search_enabled,
-                            pending=pending or applied != runtime.iterative_peak_search_enabled,
-                        )
-                    mode = "Iterative" if applied else "Single-pass"
+                diagnostics = getattr(frame, "music_diagnostics", None)
+                if diagnostics is not None:
                     search_suffix = (
-                        f" | {mode} {frame.search_diagnostics.iterations_used} pass"
-                        f" | {frame.search_diagnostics.stop_reason}"
+                        f" | model order {diagnostics.model_order}"
+                        f" | valid bins {diagnostics.valid_frequency_bins}"
+                        f" | {diagnostics.numerical_status.upper()}"
                     )
                 self._set_text(self.srp_header,
                     f"LIVE | session {frame.spatial_response.session_id[:8]} | epoch {frame.spatial_response.stream_epoch} | "
@@ -1210,6 +1123,7 @@ def build_window(
             elif "srp" in frame.missing_reasons:
                 self.srp_header.setText(frame.missing_reasons["srp"])
                 self.srp_polar.set_snapshot(None)
+                self.direction_table.set_snapshot(None)
                 self._last_rendered_window = None
             now = monotonic()
             if now - self._last_performance_refresh >= 1.0 / config.dev_test_ui.performance_refresh_hz:

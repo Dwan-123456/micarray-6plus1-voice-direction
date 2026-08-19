@@ -38,7 +38,7 @@ class FeatureExtractor:
             raise Layer3Error("CNN输入特征不是finite float32 [33,169]")
         return SpectrogramFeature(
             signal.session_id, signal.stream_epoch, signal.window_id, signal.decision_sample,
-            signal.track_id, signal.rank,
             signal.context_start_sample, signal.context_end_sample, signal.theta_deg,
             signal.beamformer_backend, self.settings.preprocessing_version, feature,
+            signal.track_id,
         )

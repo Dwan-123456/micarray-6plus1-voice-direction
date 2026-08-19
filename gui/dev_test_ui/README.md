@@ -1,6 +1,6 @@
-# Development Test UI：项目1.0.1 / Layer 2 1.1
+# Development Test UI：项目1.1.0分支
 
-> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)：删除 iterative 和 ID 开关，保留独立 Kalman 开关，显示 MUSIC 伪谱/公共 ID，并只按 L2 权威 `(session_id, stream_epoch, track_id)` 拼接试听。下文描述当前 1.0.1 界面。
+> 当前分支已按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)删除iterative与ID开关，保留独立Kalman开关，显示MUSIC伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；项目整体尚未发布1.1.0。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**本README描述当前已迁移界面。**
 
@@ -17,7 +17,7 @@
 ## 四象限
 
 - 左上L1：MIC0～MIC5、Center、HardwareMix共8路电平；显示IMCRA预热状态与7个物理麦的80～8000 Hz噪声dB摘要，并提供持久化“IMCRA预降噪”开关和当前平均频率增益；不在L1显示20/40 ms概率；保留灯控与scratch录音。
-- 右上L2：显示500～4000 Hz Gate概率、状态和原始SRP 360°响应；候选点严格使用L2最终输出角度。首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点；正式ID使用红/绿/琥珀三种稳定颜色，观测为大点、预测为小点。
+- 右上L2：显示500～4000 Hz Gate概率、状态和原始MUSIC 360°伪谱；候选点严格使用L2最终输出角度。首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点；正式ID使用稳定颜色，观测为大点、预测为小点。
 - 左下L3：连续试听首行固定为预降噪前LogicalAudio第7路Center Mic原音参考。方向轨从L2声明临时ID已建立卡尔曼状态、能够持续预测时开始缓存，转为正式ID后沿用同一缓存；首次出现但尚未Kalman-ready的临时ID和无ID候选不写入。累计至少2秒后显示，候选消失等待3秒。模式切换清空旧模式试听缓存；跳窗按48 kHz绝对sample补真实音频或等时静音。所有处理只影响试听，不改变L2/L3/L4正式结果或录音。
 - 右下L4：显示逐方向CNN概率与Voice结果；优先使用`latest_l4_dev_ui`的真正完成帧，保留独立的L4分类阈值滑动条。有序DROPPED/SKIPPED/缺失帧不立即清掉上一个有效CNN结果；超过`dev_test_ui.stale_after_ms`仍没有新完成帧才显示`STALE`。
 
@@ -25,7 +25,7 @@ L2 Gate滑条范围`0.00～1.00`、建议步长`0.01`。拖动后在下一完整
 
 所有算法信息按session、epoch、window和sample endpoint对齐。缺少任一20 ms IMCRA概率、跨epoch或尚未预热时，右上明确显示`WARMING_UP/UNAVAILABLE`，不能拼接旧数据或显示假SRP结果。
 
-L2内部ID不进入公共`CandidateDirection`，但Runtime会向Test UI传递与候选对齐的私有ID、预测、正式、首次分配和Kalman-ready标志。右上SRP面板只据此绘制诊断样式；左下试听sidecar接收Kalman-ready临时ID与正式ID的已有L3音频，用于本地拼接、缓存和播放。ID换号仅在3秒等待期内、20°以内且唯一可续接时合并，同时出现的近角双ID不得合并。这些投影不能改变候选角度、L2租约、L3/L4结果或正式录音。
+L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和Kalman应用状态。右上MUSIC面板只据此绘制；左下试听按同一公共ID拼接L3音频，不执行第二套角度关联或换号补救。这些显示逻辑不能改变L2轨迹、L3/L4结果或正式录音。
 
 ## 回归测试
 
@@ -33,8 +33,8 @@ L2内部ID不进入公共`CandidateDirection`，但Runtime会向Test UI传递与
 - IMCRA 20 ms与Gate 40 ms值显示一致；
 - L1预降噪开关持久化、开启后等待替换且不重复/跳过sample区间；
 - L2滑条动态revision、L4滑条只重判、二者互不影响；
-- Gate关闭时SRP显示Blocked且候选为空；
-- 原始SRP圆环和平滑候选点同窗显示，UI不执行二次滤波；私有ID状态只进入本机SRP诊断显示与试听sidecar，不进入公共DTO和正式记录；
+- Gate关闭时MUSIC显示Blocked且公开方向为空；
+- 原始MUSIC圆环和公共轨迹点同窗显示，UI不执行二次滤波或二次ID关联；
 - Test UI试听ID不产生正式候选之外的L3预测波束批次，普通Runtime不创建该旁路；Center Mic参考、2秒显示门槛、3秒等待、唯一换号续接、近角双ID隔离、跳窗等时补洞和关闭清理均有回归测试；
 - L3只有音频视图，无旧`[33,169]`依赖；
 - L3三档循环切换、Runtime模式透传、模式切换后试听缓存隔离；恒定波束档固定30° FNBW并在不安全频点回退DAS；

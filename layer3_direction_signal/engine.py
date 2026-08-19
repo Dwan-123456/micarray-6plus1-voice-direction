@@ -4,19 +4,12 @@ import numpy as np
 import torch
 
 from common.config import ProjectConfig
-from common.data_types import DecisionWindow, EnhancedAudio, TrackedDirection
+from common.data_types import CandidateDirection, DecisionWindow, EnhancedAudio
 from common.geometry import MicGeometry
-from common.window_key import WindowKey
 
 from .configuration import SpatialSeparationConfig, StftSettings
 from .hybrid import ImcraSpatialSeparationBeamformer
-from .interface import (
-    L3_MODE_OPTIMIZED,
-    L3_PROCESSING_MODES,
-    Layer3Error,
-    Layer3Output,
-    validate_l3_directions,
-)
+from .interface import L3_MODE_OPTIMIZED, L3_PROCESSING_MODES, Layer3Output
 from .prepared import BeamformedL3Batch, PreparedL3Context
 from .shared_stft import inverse_stft
 
@@ -37,18 +30,16 @@ class Layer3Processor:
         return self.beamformer.cache_snapshot()
 
     def process(
-        self, window: DecisionWindow, directions: tuple[TrackedDirection, ...], geometry: MicGeometry,
+        self, window: DecisionWindow, candidates: tuple[CandidateDirection, ...], geometry: MicGeometry,
         *, mode: str = L3_MODE_OPTIMIZED,
     ) -> Layer3Output:
         self._validate_input(window)
         if mode not in L3_PROCESSING_MODES:
             raise ValueError(f"未知L3处理模式: {mode}")
-        window_key = WindowKey.from_window(window)
-        directions = validate_l3_directions(window_key, directions)
-        if not directions:
-            return Layer3Output(window_key, ())
+        if not candidates:
+            return Layer3Output(())
         prepared = self.prepare(window, mode=mode)
-        return self.process_prepared(prepared, directions, geometry)
+        return self.process_prepared(prepared, candidates, geometry)
 
     def prepare(
         self,
@@ -65,15 +56,12 @@ class Layer3Processor:
     def process_prepared(
         self,
         prepared: PreparedL3Context,
-        directions: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: MicGeometry,
     ) -> Layer3Output:
         """Finish steering/BF and one batched ISTFT without a device round trip."""
-        directions = validate_l3_directions(prepared.window_key, directions)
-        batch = self.beamformer.process_prepared_batch(prepared, directions, geometry)
-        audio = self._synthesize_prepared(prepared, batch)
-        self._validate_output_alignment(prepared.window_key, directions, batch, audio)
-        return Layer3Output(prepared.window_key, audio)
+        batch = self.beamformer.process_prepared_batch(prepared, candidates, geometry)
+        return Layer3Output(self._synthesize_prepared(prepared, batch))
 
     @staticmethod
     def _validate_input(window: DecisionWindow) -> None:
@@ -103,8 +91,6 @@ class Layer3Processor:
                 prepared.stream_epoch,
                 prepared.window_id,
                 prepared.decision_sample,
-                batch.track_ids[index],
-                batch.ranks[index],
                 prepared.context_start_sample,
                 prepared.context_end_sample,
                 theta,
@@ -113,36 +99,7 @@ class Layer3Processor:
                 batch.fallback_reasons[index],
                 batch.diagnostics[index],
                 host[index],
+                batch.track_ids[index],
             )
             for index, theta in enumerate(batch.theta_degrees)
         )
-
-    @staticmethod
-    def _validate_output_alignment(
-        window_key: WindowKey,
-        directions: tuple[TrackedDirection, ...],
-        batch: BeamformedL3Batch,
-        audio: tuple[EnhancedAudio, ...],
-    ) -> None:
-        expected_ids = tuple(item.track_id for item in directions)
-        expected_ranks = tuple(item.rank for item in directions)
-        expected_angles = tuple(item.theta_deg for item in directions)
-        if batch.window_key != window_key or any(item.window_key != window_key for item in audio):
-            raise Layer3Error("L3 output WindowKey does not match its input")
-        if not (
-            batch.track_ids == expected_ids
-            == tuple(item.track_id for item in audio)
-        ):
-            raise Layer3Error("L3 output track_id set or order does not match its input")
-        if not (
-            batch.ranks == expected_ranks
-            == tuple(item.rank for item in audio)
-        ):
-            raise Layer3Error("L3 output original direction order does not match its input")
-        if not (
-            batch.theta_degrees == expected_angles
-            == tuple(item.theta_deg for item in audio)
-        ):
-            raise Layer3Error("L3 output angles do not match its input")
-        if len(audio) != len(directions):
-            raise Layer3Error("L3 output audio count does not match its input")

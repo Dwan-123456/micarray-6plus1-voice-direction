@@ -13,7 +13,11 @@ import pytest
 
 from app.runtime import ApplicationRuntime
 from common.config import load_config
-from common.data_types import DecisionWindow, IngestedAudioBlock, TrackedDirection
+from common.data_types import (
+    DecisionWindow,
+    IngestedAudioBlock,
+    TrackedDirection,
+)
 from layer1_input.interface import DecodedAudio
 from layer3_direction_signal import (
     L3_MODE_CONSTANT_BEAMWIDTH,
@@ -103,48 +107,58 @@ def test_runtime_direction_threshold_is_live_and_validated(tmp_path):
         runtime.set_direction_threshold(1.01)
 
 
-def test_runtime_iterative_switch_is_strict_and_revisioned(tmp_path):
+def test_runtime_has_no_obsolete_iterative_peak_search_switch(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path, pipeline=StubPipeline([]), serial_device=StubSerial()
     )
-    assert runtime.iterative_peak_search_enabled is False
-    revision = runtime.direction_scan_config_revision
-    assert runtime.set_iterative_peak_search_enabled(True) is True
-    assert runtime.iterative_peak_search_enabled is True
-    assert runtime.direction_scan_config_revision == revision + 1
-    runtime.set_iterative_peak_search_enabled(True)
-    assert runtime.direction_scan_config_revision == revision + 1
-    for invalid in (1, 0, "true", None):
-        with pytest.raises(ValueError):
-            runtime.set_iterative_peak_search_enabled(invalid)
+    assert not hasattr(runtime, "iterative_peak_search_enabled")
+    assert not hasattr(runtime, "set_iterative_peak_search_enabled")
 
 
-def test_runtime_kalman_and_id_switches_are_independent_and_revisioned(tmp_path):
+def test_runtime_processing_snapshot_freezes_music_id_lifecycle_and_kalman_revisions(tmp_path):
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+    snapshot = runtime._capture_processing_config()
+    values = snapshot.values
+    assert "iterative_peak_search_enabled" not in values
+    assert "direction_id_tracking_enabled" not in values
+    assert values["music_history_ms"] in {160, 240, 320}
+    assert values["music_stft"] == {
+        "n_fft": 1024, "win_length": 960, "hop_length": 480, "window": "hann_periodic",
+    }
+    assert values["music_frequency_band_hz"] == (2_000.0, 4_000.0)
+    assert values["mdl"]["max_age_ms"] <= 100
+    assert values["association_lifecycle"]["coasting_ttl_ms"] > 0
+    assert values["association_config_revision"] == 0
+    assert values["kalman_config_revision"] == 0
+
+    runtime.set_direction_kalman_enabled(True)
+    updated = runtime._capture_processing_config()
+    assert updated.values["kalman_config_revision"] == 1
+    assert updated.values["direction_kalman_enabled"] is True
+
+
+def test_runtime_kalman_switch_is_revisioned_and_id_tracking_is_always_on(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
     )
     assert runtime.direction_kalman_enabled is False
-    assert runtime.direction_id_tracking_enabled is False
+    assert not hasattr(runtime, "direction_id_tracking_enabled")
+    assert not hasattr(runtime, "set_direction_id_tracking_enabled")
     revision = runtime.direction_scan_config_revision
-    with pytest.raises(ValueError, match="ID tracking"):
-        runtime.set_direction_kalman_enabled(True)
-    runtime.set_direction_id_tracking_enabled(True)
-    assert runtime.direction_scan_config_revision == revision + 1
     runtime.set_direction_kalman_enabled(True)
     assert runtime.direction_kalman_enabled is True
-    assert runtime.direction_id_tracking_enabled is True
-    assert runtime.direction_scan_config_revision == revision + 2
-    runtime.set_direction_id_tracking_enabled(False)
-    assert runtime.direction_id_tracking_enabled is False
+    assert runtime.direction_scan_config_revision == revision + 1
+    runtime.set_direction_kalman_enabled(True)
+    assert runtime.direction_scan_config_revision == revision + 1
+    runtime.set_direction_kalman_enabled(False)
     assert runtime.direction_kalman_enabled is False
-    assert runtime.direction_scan_config_revision == revision + 3
-    for setter in (
-        runtime.set_direction_kalman_enabled,
-        runtime.set_direction_id_tracking_enabled,
-    ):
-        with pytest.raises(ValueError):
-            setter(1)
+    assert runtime.direction_scan_config_revision == revision + 2
+    with pytest.raises(ValueError):
+        runtime.set_direction_kalman_enabled(1)
 
 
 def test_runtime_kalman_q_r_scales_are_live_validated_and_revisioned(tmp_path):
@@ -367,7 +381,7 @@ def test_runtime_connects_l1_l2_formal_recording_and_ui_control(tmp_path):
     manifest = json.loads((roots[0] / "session_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
     assert manifest["algorithm_versions"]["layer2_direction_kalman"] == "damped_circular_kalman_v2"
-    assert manifest["algorithm_versions"]["layer2_direction_id_tracking"] == "confidence_id_tracker_v2"
+    assert manifest["algorithm_versions"]["layer2_direction_id_tracking"] == "global_assignment_v1"
     assert manifest["recorded_intervals"]
     assert manifest["chunks"][0]["result_count"] >= 1
     results_asset = next(x for x in manifest["chunks"][0]["assets"] if x["kind"] == "results")
@@ -385,9 +399,8 @@ def _listening_window_and_candidate():
         np.zeros((15_360, 8), np.float32), (0,),
     )
     candidate = TrackedDirection(
-        "s", 0, 0, 15_360, 13_440, 15_360, 7, 1,
-        30.0, 30.0, 1.0, 0.8, "confirmed", True, False,
-        0, 15_360, 0, True,
+        "s", 0, 0, 15_360, 13_440, 15_360, 7, 1, 28.0, 30.0, 1.0, 0.8,
+        "confirmed", True, False, 13_440, 15_360, 0, True,
     )
     return window, candidate
 
@@ -406,11 +419,11 @@ class _CapturingLayer3:
             outputs.append(SimpleNamespace(
                 session_id=window.session_id, stream_epoch=window.stream_epoch,
                 window_id=window.window_id, decision_sample=window.decision_sample,
-                track_id=candidate.track_id, rank=candidate.rank,
                 theta_deg=candidate.theta_deg, sample_rate=48_000,
                 algorithm=("ds_baseline" if mode == L3_MODE_DS_BASELINE else "imcra_spatial_separation"),
                 fallback_reason=None, diagnostics=(),
                 enhanced_audio=np.zeros(15_360, np.float32),
+                track_id=candidate.track_id,
             ))
         return SimpleNamespace(enhanced_audio=tuple(outputs))
 
@@ -428,14 +441,13 @@ def test_runtime_passes_only_formal_smoothed_candidates_to_l3_once():
     layer3 = _CapturingLayer3()
     runtime = _runtime_with_layer3(layer3)
 
-    formal, l4_inputs = runtime._process_l3(window, (candidate,), (7,))
+    formal, l4_inputs = runtime._process_l3(window, (candidate,))
 
     assert len(layer3.calls) == 1
     assert tuple(item.theta_deg for item in layer3.calls[0][0]) == (30.0,)
     assert layer3.calls[0][1] == L3_MODE_OPTIMIZED
     assert len(formal) == 1 and formal[0].theta_deg == 30.0
     assert len(l4_inputs) == 1 and l4_inputs[0].waveform.shape == (15_360,)
-    assert l4_inputs[0].track_id == 7
     assert l4_inputs[0].array_source_probabilities_20ms == (None,) * 16
 
 
@@ -455,7 +467,7 @@ def test_runtime_aligns_all_sixteen_context_imcra_probabilities_to_l4_audio():
     window = replace(window, imcra_hops=hops)
     runtime = _runtime_with_layer3(_CapturingLayer3())
 
-    _, l4_inputs = runtime._process_l3(window, (candidate,), (7,))
+    _, l4_inputs = runtime._process_l3(window, (candidate,))
 
     assert l4_inputs[0].array_source_probabilities_20ms == pytest.approx(
         tuple(index / 15.0 for index in range(16))
@@ -466,7 +478,7 @@ def test_runtime_does_not_hide_a_formal_l3_failure():
     window, candidate = _listening_window_and_candidate()
     runtime = _runtime_with_layer3(_CapturingLayer3(fail=True))
     with pytest.raises(RuntimeError, match="formal L3 failure"):
-        runtime._process_l3(window, (candidate,), (17,))
+        runtime._process_l3(window, (candidate,))
 
 
 def test_runtime_passes_selected_ds_baseline_mode_to_l3():
@@ -475,24 +487,7 @@ def test_runtime_passes_selected_ds_baseline_mode_to_l3():
     runtime = _runtime_with_layer3(layer3)
     runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE)
 
-    previews, _l4_inputs = runtime._process_l3(window, (candidate,), (7,))
+    previews, _l4_inputs = runtime._process_l3(window, (candidate,))
 
     assert layer3.calls[0][1] == L3_MODE_DS_BASELINE
     assert previews[0].runtime_backend == "ds_baseline"
-
-
-def test_runtime_mode_switch_never_changes_authoritative_l2_id():
-    window, direction = _listening_window_and_candidate()
-    layer3 = _CapturingLayer3()
-    runtime = _runtime_with_layer3(layer3)
-
-    for mode in (
-        L3_MODE_OPTIMIZED,
-        L3_MODE_DS_BASELINE,
-        L3_MODE_CONSTANT_BEAMWIDTH,
-    ):
-        runtime.set_l3_processing_mode(mode)
-        runtime._process_l3(window, (direction,))
-
-    assert [call[0][0].track_id for call in layer3.calls] == [7, 7, 7]
-    assert [call[0][0].rank for call in layer3.calls] == [1, 1, 1]

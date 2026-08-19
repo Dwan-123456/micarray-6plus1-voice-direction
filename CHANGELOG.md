@@ -21,6 +21,103 @@
 
 ---
 
+## 2026-08-19 — Runtime、时间线与公共方向ID跨层集成
+
+- **版本/标签**：项目`1.1.0`迁移集成；未创建发布标签，已发布的`v1.0.1`不移动。
+- **类型**：Runtime并行调度、公共DTO与跨层校验、滚动MUSIC状态、DecisionRecord v4、测试与界面契约。
+- **涉及文件**：`app/`、`common/`、`config/`、`layer1_input/`、`layer2_source_detection/`、`layer3_direction_signal/`、`layer4_voice_classifier/`、`windowing/`、`gui/`、`data_management/`及对应测试。
+
+### L1与Windowing
+
+- 保留唯一48 kHz sample时间轴、8通道逻辑布局、20 ms发布节拍和`WindowKey(session_id, stream_epoch, window_id, decision_sample)`；DecisionWindow继续提供最多320 ms连续上下文。
+- 校准元数据增加verified/unverified状态并随窗口传递；HardwareMix仍不进入L2物理麦定位输入。IMCRA、可选预降噪和既有通道顺序算法无变化。
+
+### L2
+
+- 正式定位主链改为滚动frequency-normalized MUSIC：`1024/960/480` STFT、2～4 kHz频带、逐频协方差、MDL 0～3阶、360点圆周谱和45° NMS；删除Runtime可达的SRP-PHAT与iterative multiple-peak路径。
+- L2单worker按session/epoch/绝对sample维护滚动STFT/协方差及预计算导向缓存；连续窗口仅增删新旧帧，sample不连续、epoch/config/calibration变化时安全重建，并发布gap、复用帧、增删帧和导向缓存诊断。
+- ID关联改为永久开启的全局一对一分配，公共`TrackedDirection`携带轨迹生命周期、观测/输出角和Kalman状态。同一session跨epoch保持单调ID计数；TTL、coasting和删除按绝对sample推进，Kalman revision只控制平滑而不控制ID存在。
+
+### L3与L4
+
+- L3方向信号、批次、频谱特征和增强音频继承L2的`track_id`、角度、顺序及WindowKey；三种波束模式和信号处理算法无变化。
+- L4音频段、检测与重新阈值结果原样保留同一公共ID；CNN模型、48→16 kHz适配、响度补偿及primary/shadow边界无变化。
+- 删除angle-only L4→L2反馈；L4不再确认、续租或创建方向ID。
+
+### Runtime、跨层契约与时间线
+
+- 保留L2/L3/L4各自单worker、有界latest-wins队列、分区ComputeCache、跨窗口并行和ResultJoiner按WindowKey有序提交。
+- `ProcessingConfigSnapshot`删除iterative和ID-enable语义，冻结MUSIC历史、STFT/频点、MDL、关联生命周期以及独立Kalman/config revision。
+- 每个`StageResult`导出有序公共ID/角度对齐信息；Joiner严格拒绝L2 directions、L3 enhanced和L4 detections之间的ID集合、顺序、角度或WindowKey不一致。
+- 队列替换、超时、跳窗、epoch变化和停机drain继续为每个已接纳窗口生成唯一终态并推进watermark，不重置同一session的方向ID计数器。
+- 正式记录装配升级为`DecisionRecord v4`，保存MUSIC/model-order/配置revision、公共方向生命周期、逐ID增强与L4结果；旧v3仅只读兼容，不原地迁移。
+
+### Development Test UI、Production UI与数据管理
+
+- Development Test UI删除iterative/ID开关和私有角度ID投影，只按L2权威`(session_id, stream_epoch, track_id)`维护试听缓存；Kalman文案明确仅平滑角度。
+- Production UI和Catalog/服务增加逐ID时间线、持续时间、角度、L4概率及增强资产查询/试听；L1-only测试录音明确无算法方向ID。既有QA、标注、hash、恢复、Trash和本地数据边界无变化。
+
+### 验证与资产
+
+- 新增或更新跨层ID、WindowKey/顺序/角度拒绝、latest-wins丢弃、sample跳跃、MUSIC滚动重建、配置revision、epoch ID连续、停机drain、唯一终态/watermark、DecisionRecord v4及旧v3只读兼容测试。
+- 自动测试：全量`310 passed`；Runtime/MUSIC/记录/UI重点回归`75 passed`；Ruff与`git diff --check`通过。未进行真实麦克风、目标设备p95、长时间录音或诊室多声源实机验收。
+- `data/`、实际录音、Catalog、日志、缓存、临时文件和本地配置未纳入提交；Git LFS管理资产无变化。
+
+---
+
+## 2026-08-19 — 完成项目1.1.0分支的L2 Rolling NormMUSIC重构
+
+- **版本/标签**：项目`1.1.0`开发分支；未发布、未创建`v1.1.0`标签，已发布`v1.0.1`不移动。
+- **类型**：L2定位主链、公共方向轨迹、运行时/跨层DTO、Test UI诊断、DecisionRecord v4适配及回归测试。
+- **涉及文件**：`layer2_source_detection/`、`common/config.py`、`common/data_types.py`、`config/config.yaml`、`app/`、`gui/dev_test_ui/`、L3/L4公共track_id透传、数据管理适配、README和相关测试。
+
+### L1与Windowing
+
+- L1采集、7物理麦音频质量、IMCRA概率/噪声算法及预降噪算法无变化；MUSIC仍只读原有DecisionWindow，不重采样、不修改PCM，第8路HardwareMix不参与定位。
+- Windowing继续提供320 ms历史和20 ms决策步进；为Rolling MUSIC保留160/240/320 ms比较配置，当前正式运行候选为240 ms。
+
+### L2
+
+- 正式定位由SRP-PHAT替换为2～4 kHz宽带frequency-normalized MUSIC：多帧STFT、逐频7×7协方差、收缩/对角加载、Hermitian `eigh`、MDL 0～3源估计、跨频一致性及NormMUSIC式逐频归一化融合。
+- 连续20 ms窗口只加入两个新增50%重叠STFT帧并移出两个过期帧；session/epoch/sample跳跃时从当前历史重建。导向张量按几何/频率/config revision缓存；伪谱和ID每20 ms更新，MDL最多复用100 ms。
+- 0～359°逐度扫描，最多3个候选并执行45°圆周NMS；新增协方差更新、特征分解、谱融合和总耗时诊断。
+- 删除iterative multiple peak算法、SRP正式扫描器、运行配置、setter、UI开关和旧专属测试路径；包不再公开旧实现。
+- ID追踪永久开启，使用含birth/miss dummy行列的`scipy.optimize.linear_sum_assignment`做确定性全局一对一关联。内部使用unwrapped angle处理359°↔0°，按绝对sample维护tentative/confirmed/coasting/deleted；同一session ID单调且不复用，epoch清轨但不重置session计数。
+- Kalman保持独立可选，只平滑同一ID的输出角；运行时切换不重置、创建、删除或改变ID。公共权威输出新增`TrackedDirection`与`active_tracks`，ID明确表示方向轨迹而非人物身份。
+
+### L3、L4与跨层接口
+
+- L3波束形成数学算法和L4 CNN分类算法无变化；输入/输出DTO改为继承L2公共track_id，禁止下游按rank猜测或重新分配ID。
+- Runtime、Joiner、Development Test UI和DecisionRecord v4同步保存/校验MUSIC模型阶数、空间谱质量、轨迹状态与Kalman应用状态；L4不再向L2回送角度来改变ID生命周期。
+
+### Development Test UI、录音与数据管理
+
+- 删除iterative与ID enable控件，只保留独立Kalman控制；L2圆环显示MUSIC伪谱和公共方向轨迹，试听缓存按`session + epoch + track_id`拼接，不执行第二套角度关联。
+- 正式记录、Catalog和Production UI适配公共轨迹与逐ID增强资产；录音事务、恢复、QA及原始音频格式无算法变化。
+
+### 验证、性能与资产
+
+- 自动测试覆盖0～3源、全角度/跨0°、45°NMS、HardwareMix隔离、滚动增量与全量重建等价、rank交换、birth/miss/短漏检/TTL、Gate关闭、丢窗/sample跳跃、epoch/session、确定性tie-break、Kalman运行切换、跨层ID和DecisionRecord v4。
+- 完整自动测试：`302 passed`。本机Rolling MUSIC性能测试满足稳态p95不高于15 ms且单窗低于20 ms；尚未完成真实麦克风、诊室混响、三声源和长时间目标机实机验收。
+- Git LFS资产、CNN模型、精选音频和运行数据无变化；`data/`、录音、Catalog、日志和缓存未纳入提交。
+
+---
+
+## 2026-08-19 — Development Test UI迁移到DOA/MUSIC与权威方向ID
+
+- **版本/标签**：项目`1.1.0`并行迁移分支；未创建发布标签，`v1.0.1`不移动。
+- **类型**：Development Test UI、Runtime调试接口、MUSIC可视化与逐ID试听缓存。
+- 删除Iterative Multiple Peak和ID追踪开关、持久化键及Runtime setter；旧设置加载时会被清除。保留Kalman开关和Q/R参数，并在界面中明确其只控制方向平滑、不决定ID创建、续存或删除。
+- 右上区域改为`DOA / MUSIC`：绘制原始360点归一化MUSIC伪谱，展示model order、有效频点和数值状态；方向表按L2公开`track_id`展示观测角、输出角、score、tentative/confirmed/coasting、新建/观测标志及同ID的L4概率，颜色稳定绑定权威ID。
+- 左下试听只按`(session_id, stream_epoch, track_id)`接收L2/L3结果；移除角度贪心关联、formal alias和换号合并。coasting由L2生命周期维护，默认等待3秒后由L2删除并封存；Kalman开关不改变该生命周期。
+- 保留Center Mic全采集参考、内部稳定20 ms hop、可恢复真实音频补洞、过旧缺口等时静音、跨hop交叉淡化、至少2秒显示、有界10秒分段/3段保留、三档L3模式隔离，以及关闭窗口删除Test UI缓存。
+- 新增/更新控件删除、MUSIC 360点与状态、权威ID字段/L4概率、精确ID拼接、跨0°不换轨、缺口回填、coasting等待/删除封存、模式隔离及Center参考测试。
+- **未由本UI子变更调整**：L1采集/IMCRA/录音控制算法、MUSIC/MDL数值算法、L3波束形成算法、L4模型推理、Production UI和RecordingStore事务规则；这些1.1前置契约的并行变更另行记录。
+- 验证：Development Test UI定向测试`31 passed`；集成工作树全量测试`303 passed`。未进行真实阵列、声卡播放或诊室实机验收。
+- `data/`、运行录音、试听缓存、日志和本地设置未纳入提交；Git LFS资产无变化。
+
+---
+
 ## 2026-08-19 — Recording/Data/Production UI迁移到DecisionRecord v4
 
 - **版本/标签**：项目`1.1.0`并行迁移分支；未创建发布标签，`v1.0.1`不移动。
@@ -34,7 +131,7 @@
 
 ### L2
 
-- 定位、跟踪与Kalman算法实现无变化；本分支只冻结并消费其v4持久化字段。
+- MUSIC、MDL、全局方向追踪与Kalman算法实现无变化；本分支只冻结并消费其v4持久化字段。
 - DecisionRecord v4可保存MUSIC算法版本、model order、有效频点/协方差诊断、公共track_id、观测角/输出角、轨迹状态、active_tracks和Kalman应用状态。
 
 ### L3与L4
@@ -61,90 +158,8 @@
 ### 验证与资产
 
 - 新增DecisionRecord v4对齐、旧v3只读、逐ID文件防覆盖、Catalog/服务查询、增强事务恢复、页面展示/试听、Center参考、重叠去除和L1-only无ID测试。
-- 干净集成分支完整自动测试`369 passed`，改动范围Ruff和`git diff --check`通过，并完成Production UI运行录音页离屏渲染检查。未进行真实麦克风、长时间录音或诊室实机验收。
+- 本分支相关自动测试`83 passed`，Ruff与Git差异检查通过，并完成Production UI运行录音页离屏渲染检查。全仓库并行验证为`282 passed, 12 failed`；12项均属于尚未完成的L2/Test UI迁移测试（旧开关参数或缺少公共ID的测试桩），不属于本分支新增测试。未进行真实麦克风、长时间录音或诊室实机验收。
 - `data/`、实际录音、Catalog、日志、缓存和临时文件未纳入提交；Git LFS资产无变化。
-
----
-
-## 2026-08-19 — L3迁移到公开方向ID与严格批次对齐契约
-
-- **版本/标签**：项目`1.1.0`并行迁移的L3分支；未创建发布标签，已发布`v1.0.1`不移动。
-- **类型**：公共DTO、L3接口、Runtime阶段契约、文档与自动测试。
-- **涉及文件**：`common/window_key.py`、`common/data_types.py`、`common/__init__.py`、`app/processing_contracts.py`、`app/runtime.py`、`layer2_source_detection/pipeline.py`、`layer3_direction_signal/{interface,prepared,engine,hybrid,feature}.py`、L3 README及相关测试。
-
-### L1与Windowing
-
-- 采集、8通道顺序、校准、IMCRA、预降噪、DecisionWindow尺寸和20 ms发布时间轴均无变化。
-
-### L2
-
-- MUSIC/SRP、模型阶数、跟踪算法、Kalman和生命周期实现均无变化；本分支不分配、猜测或修补方向ID。
-- `Layer2PipelineResult`增加公开`directions`与`active_tracks`承接字段及WindowKey/ID唯一性校验，供L2 Tracking分支输出权威`TrackedDirection`；旧私有候选元数据不再被L3用于构造ID。
-
-### L3
-
-- 公共输入由`CandidateDirection`切换为0～3个`TrackedDirection`。新增共享`WindowKey`类型；`DirectionalSignal`、`BeamformedL3Batch`、`SpectrogramFeature`和`EnhancedAudio`携带`track_id`、原始`rank`、`theta_deg`及WindowKey身份。
-- 入口严格校验同窗、类型、数量、ID唯一、rank唯一及处理许可；L3保持输入元组顺序，不按角度排序、分配、合并或修补ID。
-- 观测目标可处理；coasting目标只有在L2明确设置`allow_l3_prediction=True`时才可作为短时预测目标处理。长coasting轨仅留在`active_tracks`时间线，误送入L3时明确失败，不生成增强音频。
-- 波束形成批次和音频合成出口逐项校验WindowKey、ID集合与顺序、rank、角度和数量。错误转为Runtime L3 `FAILED`终态，L4按既有阶段规则跳过。
-- `optimized`、`ds_baseline`和`constant_beamwidth_baseline`算法、数值参数、缓存、输出音频shape与fallback行为无变化；运行时模式切换不改变权威L2 ID。
-
-### L4
-
-- CNN、重采样、响度补偿、模型和阈值逻辑无变化。L4公开ID契约由独立L4迁移分支负责，本次未提前修改其DTO。
-
-### Development Test UI、录音与数据管理
-
-- Test UI和Production UI的正式界面行为、试听关联实现、录音schema、Catalog、manifest、恢复和本地数据均无变化；仅更新集成测试夹具以显式提供L2权威ID。
-- 未修改或新增模型、音频、空间表格、录音或其他二进制资产。
-
-### 跨层接口与兼容性
-
-- `WindowKey`从Runtime内部定义提升为`common.window_key`公共类型，并由`app.processing_contracts`继续导出，保持原导入路径兼容。
-- L3公共入口不兼容旧无ID`CandidateDirection`；缺失ID、重复ID、跨窗ID和出口顺序损坏均拒绝，而不是静默兼容。
-- 本分支需要与L2 Tracking、L4、Runtime/Recording和UI的其余1.1.0并行分支整合后才能发布，不单独创建`v1.1.0`。
-
-### 测试与验收
-
-- 增加0～3方向、359.5°/0.5°跨0°、非排序输入、重复/缺失ID、跨窗、短预测许可、长coasting拒绝、出口ID篡改、三BF模式一致性、模式切换ID稳定及L3失败终态覆盖。
-- 完整自动测试353项通过；全部改动文件的Ruff检查和`git diff --check`通过。未进行新的真实麦克风、诊室三声源或长时间实机验收。
-
-### Git与Git LFS
-
-- 仅Python、Markdown普通文本发生变化；Git LFS资产无变化，未创建或移动版本标签。
-
----
-
-## 2026-08-19 — L4公共方向ID透传与语义边界
-
-- **版本/标签**：当前项目版本与`v1.0.1`标签保持不变；未创建、移动或预发布`v1.1.0`标签。
-- **类型**：L4公共契约、Runtime阶段对齐、Test UI/记录消费映射与自动测试。
-- **涉及文件**：`layer4_voice_classifier/contracts.py`、`layer4_voice_classifier/engine.py`、`layer4_voice_classifier/README.md`、`app/processing_contracts.py`、`app/result_joiner.py`、`app/runtime.py`、`gui/dev_test_ui/contracts.py`、`scripts/benchmark_l3_l4.py`、L4/Runtime/Joiner/Test UI相关测试及`CHANGELOG.md`。
-
-### L1、L2与L3
-
-- L1采集、通道映射、IMCRA、预降噪、Windowing和时间轴无变化。
-- L2定位/跟踪算法和几何生命周期无变化；L4不再调用L2按角度的语音反馈入口。L2旧反馈API本身由L2迁移分支负责清理，本分支不改写L2算法。
-- L3波束形成、三种模式、增强波形和缓存无变化。L3公共DTO尚未合并时，L3阶段结果携带同一有序ID并在L4入口逐项绑定；未在L4生成或按角度猜测ID。
-
-### L4
-
-- `Layer4AudioSegment`、`VoiceDetection`和`Layer4Result`增加/公开`track_id`与有序`track_ids`，限制同窗0～3个唯一正整数ID。
-- L4严格保持输入的WindowKey、ID顺序和`theta_deg`；重新阈值只重算`is_voice`，不改变概率、模型、ID、角度或关联。
-- CNN插件接口保持ID无关的概率向量，兼容旧模型输出；NVIDIA Frame-VAD Multilingual MarbleNet v2.0权重/推理、48→16 kHz多相重采样、连续峰值聚合、IMCRA响度补偿、primary/shadow和0.70分类边界均无变化。
-
-### Runtime、Development Test UI与录音数据
-
-- L2/L3/L4 `StageResult`均携带有序`track_ids`；ResultJoiner在接收时拒绝缺失或错序ID，阶段失败、跳过、丢弃和取消终态继承已知ID并继续推进watermark。
-- Runtime校验候选、L3音频和L4检测的数量、ID顺序与角度，删除L4按角度调用`submit_classification_feedback`/`submit_voice_feedback`的路径。
-- Runtime向DecisionRecord候选、增强音频元数据、L4检测及L4嵌套结果写入同一`track_id`；当前写入映射可供DecisionRecord v4/录音管理分支直接消费，本L4分支不提前改动存储schema版本。
-- Test UI契约校验L2/L4的ID、方向数、顺序和角度逐项一致。Production UI布局、Catalog查询和按ID试听实现无变化，由各自v1.1分支合并。
-
-### 测试、资产与验收
-
-- 新增ID透传、0～3个方向、空批次、重复/缺失/错序ID、角度错位、重新阈值、阶段失败终态、旧模型输出兼容及Runtime/Record/Test UI同ID消费测试。
-- 相关L4、Runtime、Joiner和Test UI测试84项通过，包含旧Runtime内部调用迁移的相邻集成测试102项通过；完整自动测试355项通过，Ruff和`git diff --check`通过。
-- 模型权重、音频fixture和Git LFS资产无变化；未进行新的麦克风、三声源、远场、长时运行或目标设备实机验收。
 
 ---
 

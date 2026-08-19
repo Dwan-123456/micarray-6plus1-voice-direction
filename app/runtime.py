@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import queue
-import hashlib
-import json
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, replace
@@ -13,7 +11,7 @@ from typing import Callable
 import numpy as np
 import torch
 
-from common.config import ProjectConfig, config_hash, load_config
+from common.config import ProjectConfig, calibration_config_hash, config_hash, load_config
 from common.data_types import DecisionWindow, PipelineStatus
 from common.geometry import physical_6plus1_geometry
 from data_management import DecisionRecord, RecordingStore, ResultWatermark, SessionMetadata
@@ -217,8 +215,8 @@ class ApplicationRuntime:
         self._scan_config = DirectionScanConfig.from_project(config)
         self._scan_config_lock = threading.Lock()
         self._scan_config_revision = 0
+        self._kalman_config_revision = 0
         self._direction_kalman_enabled = config.layer2.direction_kalman.enabled
-        self._direction_id_tracking_enabled = config.layer2.direction_id_tracking.enabled
         self._direction_kalman_q_scale = config.layer2.direction_kalman.process_noise_scale
         self._direction_kalman_r_scale = config.layer2.direction_kalman.measurement_noise_scale
         self._geometry = physical_6plus1_geometry(
@@ -278,12 +276,7 @@ class ApplicationRuntime:
             "l2": 0, "l3": 0, "l4": 0, "commit": 0,
         }
         self._project_config_hash = config_hash(config=config)
-        calibration_payload = json.dumps(
-            config.calibration.model_dump(mode="json"),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        self._calibration_hash = hashlib.sha256(calibration_payload).hexdigest()
+        self._calibration_hash = calibration_config_hash(config.calibration)
         self._compute_cache: ComputeCache
         self._result_joiner: ResultJoiner
         self._reset_processing_graph()
@@ -603,7 +596,6 @@ class ApplicationRuntime:
                     "l3_admission_queue_overflow",
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
-                    track_ids=displaced.l2.track_ids,
                 )
                 l4 = L4StageResult.terminal(
                     displaced.work_item.key,
@@ -611,7 +603,6 @@ class ApplicationRuntime:
                     "l3_admission_queue_overflow",
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
-                    track_ids=displaced.l2.track_ids,
                 )
                 self._joiner_submit(lambda: self._result_joiner.submit_l3(l3))
                 self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
@@ -642,7 +633,6 @@ class ApplicationRuntime:
                     "l4_admission_queue_overflow",
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
-                    track_ids=displaced.l3.track_ids,
                 )
                 self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
                 self._stage_completed_counts["l4"] += 1
@@ -802,23 +792,9 @@ class ApplicationRuntime:
         return threshold
 
     @property
-    def iterative_peak_search_enabled(self) -> bool:
-        with self._scan_config_lock:
-            return self._scan_config.iterative_peak_search_enabled
-
-    @property
     def direction_scan_config_revision(self) -> int:
         with self._scan_config_lock:
             return self._scan_config_revision
-
-    def set_iterative_peak_search_enabled(self, value: bool) -> bool:
-        if type(value) is not bool:
-            raise ValueError("Layer 2 iterative peak search setting must be bool")
-        with self._scan_config_lock:
-            if value != self._scan_config.iterative_peak_search_enabled:
-                self._scan_config = replace(self._scan_config, iterative_peak_search_enabled=value)
-                self._scan_config_revision += 1
-        return value
 
     @property
     def direction_kalman_enabled(self) -> bool:
@@ -829,30 +805,10 @@ class ApplicationRuntime:
         if type(value) is not bool:
             raise ValueError("Layer 2 Kalman setting must be bool")
         with self._scan_config_lock:
-            if value and not self._direction_id_tracking_enabled:
-                raise ValueError("Enable Layer 2 private ID tracking before Circular Kalman")
             if value != self._direction_kalman_enabled:
                 self._direction_kalman_enabled = value
                 self._scan_config_revision += 1
-        return value
-
-    @property
-    def direction_id_tracking_enabled(self) -> bool:
-        with self._scan_config_lock:
-            return self._direction_id_tracking_enabled
-
-    def set_direction_id_tracking_enabled(self, value: bool) -> bool:
-        if type(value) is not bool:
-            raise ValueError("Layer 2 private ID tracking setting must be bool")
-        with self._scan_config_lock:
-            changed = value != self._direction_id_tracking_enabled
-            if not value and self._direction_kalman_enabled:
-                self._direction_kalman_enabled = False
-                changed = True
-            if value != self._direction_id_tracking_enabled:
-                self._direction_id_tracking_enabled = value
-            if changed:
-                self._scan_config_revision += 1
+                self._kalman_config_revision += 1
         return value
 
     @property
@@ -885,6 +841,7 @@ class ApplicationRuntime:
             if scale != self._direction_kalman_q_scale:
                 self._direction_kalman_q_scale = scale
                 self._scan_config_revision += 1
+                self._kalman_config_revision += 1
         return scale
 
     def set_direction_kalman_r_scale(self, value: float) -> float:
@@ -893,6 +850,7 @@ class ApplicationRuntime:
             if scale != self._direction_kalman_r_scale:
                 self._direction_kalman_r_scale = scale
                 self._scan_config_revision += 1
+                self._kalman_config_revision += 1
         return scale
 
 
@@ -1021,9 +979,8 @@ class ApplicationRuntime:
             return
         values = item.work_item.config.values
         scan = DirectionScanConfig(**dict(values["scan_config"]))
-        candidates = tuple(l2_output.candidates)
-        directions = tuple(l2_output.directions)
-        previews = self._beamform_previews(l3_output, 0, len(directions))
+        candidates = tuple(getattr(l2_output, "directions", ()) or l2_output.candidates)
+        previews = self._beamform_previews(l3_output, 0, len(candidates))
         window = item.work_item.window
         status = PipelineStatus(
             "running",
@@ -1050,32 +1007,20 @@ class ApplicationRuntime:
         )
         published = monotonic()
         frame = DevUiFrame(
-            None,
-            response,
-            candidates,
-            previews,
-            (),
-            l2_output.gate_decision,
-            float(values["gate_threshold"]),
-            int(values["gate_config_revision"]),
-            scan.direction_threshold,
-            scan.iterative_peak_search_enabled,
-            bool(values["direction_kalman_enabled"]),
-            bool(values["direction_id_tracking_enabled"]),
-            float(values["direction_kalman_q_scale"]),
-            float(values["direction_kalman_r_scale"]),
-            int(values["scan_config_revision"]),
-            status,
-            performance,
-            published,
-            published,
-            diagnostics,
-            {},
-            output,
-            tuple(item.track_id for item in directions),
-            tuple(not item.is_observed for item in directions),
-            (True,) * len(directions),
-            tuple(item.is_new_track for item in directions),
+            l1=None, spatial_response=response, candidates=candidates,
+            previews=previews, tracked_audio=(), gate_decision=l2_output.gate_decision,
+            gate_threshold=float(values["gate_threshold"]),
+            gate_config_revision=int(values["gate_config_revision"]),
+            direction_threshold=scan.direction_threshold,
+            direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
+            direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
+            direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
+            scan_config_revision=int(values["scan_config_revision"]),
+            pipeline_status=status, performance=performance,
+            published_monotonic=published, spatial_published_monotonic=published,
+            search_diagnostics=diagnostics, missing_reasons={}, l4_result=output,
+            directions=getattr(l2_output, "directions", ()),
+            active_tracks=getattr(l2_output, "active_tracks", ()),
         )
         with self._ui_lock:
             current_stream = getattr(self._ui_aggregator, "current_stream", None)
@@ -1102,7 +1047,7 @@ class ApplicationRuntime:
             scan_config = self._scan_config
             scan_revision = self._scan_config_revision
             kalman_enabled = self._direction_kalman_enabled
-            tracking_enabled = self._direction_id_tracking_enabled
+            kalman_revision = self._kalman_config_revision
             q_scale = self._direction_kalman_q_scale
             r_scale = self._direction_kalman_r_scale
         with self._l3_mode_lock:
@@ -1122,8 +1067,26 @@ class ApplicationRuntime:
                 "gate_config_revision": gate_revision,
                 "scan_config": asdict(scan_config),
                 "scan_config_revision": scan_revision,
+                "music_config_revision": scan_revision,
+                "music_history_ms": scan_config.context_ms,
+                "music_stft": {
+                    "n_fft": scan_config.n_fft,
+                    "win_length": scan_config.win_length,
+                    "hop_length": scan_config.hop_length,
+                    "window": scan_config.window,
+                },
+                "music_frequency_band_hz": (
+                    scan_config.frequency_min_hz, scan_config.frequency_max_hz,
+                ),
+                "mdl": {
+                    "max_age_ms": scan_config.mdl_max_age_ms,
+                    "min_valid_frequency_bins": scan_config.min_valid_frequency_bins,
+                    "min_cross_frequency_consistency": scan_config.min_cross_frequency_consistency,
+                },
+                "association_lifecycle": self.config.layer2.direction_id_tracking.model_dump(),
+                "association_config_revision": 0,
                 "direction_kalman_enabled": kalman_enabled,
-                "direction_id_tracking_enabled": tracking_enabled,
+                "kalman_config_revision": kalman_revision,
                 "direction_kalman_q_scale": q_scale,
                 "direction_kalman_r_scale": r_scale,
                 "l3_mode": l3_mode,
@@ -1211,7 +1174,7 @@ class ApplicationRuntime:
                     except queue.Empty:
                         break
         metadata = SessionMetadata(
-            self._project_config_hash,
+            config_hash(config=self.config),
             self._calibration_hash,
             config_revision=0,
             calibration_revision=0,
@@ -1546,18 +1509,15 @@ class ApplicationRuntime:
                         gate_config_revision=int(values["gate_config_revision"]),
                         scan_config_revision=int(values["scan_config_revision"]),
                         direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
-                        direction_id_tracking_enabled=bool(values["direction_id_tracking_enabled"]),
                         direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                         direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     )
-                    if len(output.directions) > 3:
-                        raise RuntimeError("Layer 2 contract violation: more than 3 tracked directions")
-                    track_ids = self._ordered_l2_track_ids(output)
+                    if len(output.candidates) > 3:
+                        raise RuntimeError("Layer 2 contract violation: more than 3 candidates")
                     diagnostics = self._l2_diagnostics(output, values)
                     stage = L2StageResult.completed(
                         item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(), diagnostics=diagnostics,
-                        track_ids=track_ids,
                     )
                     self._stage_errors["l2"] = None
                 except Exception as exc:
@@ -1611,30 +1571,31 @@ class ApplicationRuntime:
                 started_ns = monotonic_ns()
                 try:
                     assert item.l2.output is not None
-                    directions = item.l2.output.directions
+                    candidates = tuple(
+                        getattr(item.l2.output, "directions", ()) or item.l2.output.candidates
+                    )
                     mode = str(item.work_item.config.values["l3_mode"])
-                    if not directions:
+                    if not candidates:
                         # A valid SRP response can have no accepted peaks.  Do
                         # not pay the 320 ms STFT/covariance preparation cost
                         # when there is no direction to synthesize.
-                        output = Layer3Output(item.work_item.key, ())
+                        output = Layer3Output(())
                     elif self._l3_cuda_stream is None:
                         prepared = self._layer3.prepare(item.work_item.window, mode=mode)
-                        output = self._layer3.process_prepared(prepared, directions, self._geometry)
+                        output = self._layer3.process_prepared(prepared, candidates, self._geometry)
                     else:
                         with torch.cuda.stream(self._l3_cuda_stream):
                             prepared = self._layer3.prepare(item.work_item.window, mode=mode)
                             output = self._layer3.process_prepared(
-                                prepared, directions, self._geometry
+                                prepared, candidates, self._geometry
                             )
                         self._l3_cuda_stream.synchronize()
                     self._validate_direction_outputs(
-                        "L3", directions, output.enhanced_audio, item.l2.track_ids
+                        "L3", candidates, output.enhanced_audio
                     )
                     stage = L3StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
-                        track_ids=item.l2.track_ids,
                     )
                     self._stage_errors["l3"] = None
                 except Exception as exc:
@@ -1643,7 +1604,6 @@ class ApplicationRuntime:
                         item.work_item.key, StageState.FAILED, "l3_failed",
                         started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(), error=str(exc),
-                        track_ids=item.l2.track_ids,
                     )
                 self._stage_completed_counts["l3"] += 1
                 try:
@@ -1662,7 +1622,6 @@ class ApplicationRuntime:
                         item.work_item.key, StageState.SKIPPED, "l3_failed",
                         started_monotonic_ns=monotonic_ns(),
                         finished_monotonic_ns=monotonic_ns(),
-                        track_ids=item.l2.track_ids,
                     )
                     self._record_l4_terminal(StageState.SKIPPED)
                     self._joiner_submit(lambda: self._result_joiner.submit_l4(skipped))
@@ -1690,10 +1649,12 @@ class ApplicationRuntime:
                 started_ns = monotonic_ns()
                 try:
                     assert item.l2.output is not None and item.l3.output is not None
-                    formal_count = len(item.l2.output.directions)
+                    formal_directions = tuple(
+                        getattr(item.l2.output, "directions", ()) or item.l2.output.candidates
+                    )
+                    formal_count = len(formal_directions)
                     inputs = self._layer4_inputs_from_output(
-                        item.work_item.window, item.l3.output, item.l3.track_ids,
-                        formal_count,
+                        item.work_item.window, item.l3.output, formal_count
                     )
                     if self._l4_cuda_stream is None:
                         output = self._layer4.process(inputs)
@@ -1705,13 +1666,11 @@ class ApplicationRuntime:
                     if output.threshold != frozen_threshold:
                         output = self._layer4.rethreshold(output, frozen_threshold)
                     self._validate_direction_outputs(
-                        "L4", item.l2.output.directions, output.detections,
-                        item.l3.track_ids,
+                        "L4", formal_directions, output.detections
                     )
                     stage = L4StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
-                        track_ids=item.l3.track_ids,
                     )
                     self._stage_errors["l4"] = None
                 except Exception as exc:
@@ -1720,7 +1679,6 @@ class ApplicationRuntime:
                         item.work_item.key, StageState.FAILED, "l4_failed",
                         started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(), error=str(exc),
-                        track_ids=item.l3.track_ids,
                     )
                 self._stage_completed_counts["l4"] += 1
                 self._record_l4_terminal(stage.state)
@@ -1856,6 +1814,9 @@ class ApplicationRuntime:
 
     def _l2_diagnostics(self, layer2_result, values) -> tuple[str, ...]:
         gate = layer2_result.gate_decision
+        music = getattr(layer2_result, "search_diagnostics", None)
+        is_music = music is not None and hasattr(music, "model_order")
+        music_state = None if not is_music else getattr(music, "state", None)
         return (
             f"l2_pipeline_state={layer2_result.state.value}",
             f"l2_gate_backend={gate.backend}",
@@ -1870,9 +1831,25 @@ class ApplicationRuntime:
             f"l2_direction_kalman_r_scale={values['direction_kalman_r_scale']}",
             f"l2_direction_kalman_error={self._layer2.last_kalman_error}",
             f"l2_direction_id_tracking_backend={self.config.layer2.direction_id_tracking.backend}",
-            f"l2_direction_id_tracking_enabled={values['direction_id_tracking_enabled']}",
+            "l2_direction_identity=authoritative_always_on",
             f"l2_direction_id_active_tracks={self._layer2.id_tracker.active_track_count}",
             f"l2_direction_id_tracking_error={self._layer2.last_id_tracking_error}",
+            *(() if not is_music else (
+                f"l2_music_algorithm={music.algorithm_version}",
+                f"l2_music_valid_frequency_bins={music.valid_frequency_bins}",
+                f"l2_music_covariance_quality={music.covariance_quality}",
+                f"l2_music_model_order={music.model_order.estimated_sources}",
+                f"l2_music_mdl_age_samples={music.model_order.mdl_age_samples}",
+            )),
+            *(() if music_state is None else (
+                f"l2_music_rolling_state={music_state.state}",
+                f"l2_music_gap_samples={music_state.gap_samples}",
+                f"l2_music_state_reason={music_state.reason}",
+                f"l2_music_reused_frames={music_state.reused_frames}",
+                f"l2_music_added_frames={music_state.added_frames}",
+                f"l2_music_removed_frames={music_state.removed_frames}",
+                f"l2_music_steering_cache_rebuilt={music_state.steering_cache_rebuilt}",
+            )),
             *(f"l2_gate_diagnostic={item}" for item in gate.diagnostics),
         )
 
@@ -1890,12 +1867,33 @@ class ApplicationRuntime:
         l3_output = joined.l3.output if joined.l3.state is StageState.COMPLETED else None
         l4_result = joined.l4.output if joined.l4.state is StageState.COMPLETED else None
         response = None if l2_output is None else l2_output.spatial_response
-        candidates = () if l2_output is None else l2_output.candidates
-        directions = () if l2_output is None else l2_output.directions
+        candidates = () if l2_output is None else tuple(
+            getattr(l2_output, "directions", ()) or l2_output.candidates
+        )
+        candidate_track_ids = () if l2_output is None else tuple(
+            getattr(l2_output, "candidate_track_ids", ())
+        )
+        candidate_track_ids = candidate_track_ids or (None,) * len(candidates)
+        candidate_is_prediction = () if l2_output is None else tuple(
+            getattr(l2_output, "candidate_is_prediction", ())
+        )
+        candidate_is_prediction = candidate_is_prediction or (False,) * len(candidates)
+        candidate_is_formal = () if l2_output is None else tuple(
+            getattr(l2_output, "candidate_track_is_formal", ())
+        )
+        candidate_is_formal = candidate_is_formal or (False,) * len(candidates)
+        candidate_is_new = () if l2_output is None else tuple(
+            getattr(l2_output, "candidate_track_is_new", ())
+        )
+        candidate_is_new = candidate_is_new or (False,) * len(candidates)
+        candidate_kalman_ready = () if l2_output is None else tuple(
+            getattr(l2_output, "candidate_track_is_kalman_ready", ())
+        )
+        candidate_kalman_ready = candidate_kalman_ready or (False,) * len(candidates)
         search_diagnostics = None if l2_output is None else l2_output.search_diagnostics
         gate_decision = None if l2_output is None else l2_output.gate_decision
         previews = () if l3_output is None else self._beamform_previews(
-            l3_output, 0, len(directions)
+            l3_output, 0, len(candidates)
         )
         # Test-UI listening state is projected only after the formal result is
         # accepted below.  Slow preview disk/player work must never delay the
@@ -1948,16 +1946,20 @@ class ApplicationRuntime:
             "evidence": [
                 {"theta_deg": evidence.theta_deg,
                  "search_iteration": evidence.search_iteration,
-                 "search_raw": evidence.search_raw,
-                 "search_norm": evidence.search_norm,
-                 "pair_support": evidence.pair_support,
-                 "frequency_support": evidence.frequency_support}
+                 "residual_raw_score": evidence.residual_raw_score,
+                 "fixed_reference_normalized_score": evidence.fixed_reference_normalized_score,
+                 "supporting_pairs": evidence.supporting_pairs,
+                 "supporting_frequency_bins": evidence.supporting_frequency_bins}
                 for evidence in search_diagnostics.evidence
             ],
         }
         enhanced_records = tuple(
             {
-                "track_id": track_id,
+                **(
+                    {"track_id": int(preview.track_id)}
+                    if type(getattr(preview, "track_id", None)) is int and preview.track_id > 0
+                    else {}
+                ),
                 "theta_deg": preview.theta_deg,
                 "backend": preview.runtime_backend,
                 "fallback_reason": preview.fallback_reason,
@@ -1966,11 +1968,11 @@ class ApplicationRuntime:
                 "start_sample": window.context_start_sample,
                 "end_sample": window.context_end_sample,
             }
-            for track_id, preview in zip(
-                joined.l3.track_ids if l3_output is not None else (),
-                previews,
-                strict=True,
-            )
+            for preview in previews
+        )
+        enhanced_waveforms = tuple(
+            item.enhanced_audio
+            for item in (() if l3_output is None else l3_output.enhanced_audio[:len(candidates)])
         )
         l4_record = None if l4_result is None else {
             "primary_model_id": l4_result.primary_model_id,
@@ -1983,7 +1985,6 @@ class ApplicationRuntime:
                 for prediction in l4_result.predictions
             ],
             "input_gain_compensation": [asdict(item) for item in l4_result.input_gain_compensation],
-            "track_ids": list(l4_result.track_ids),
         }
         stage_statuses = {
             "l2": joined.l2.state.value, "l3": joined.l3.state.value,
@@ -2042,18 +2043,34 @@ class ApplicationRuntime:
             for name, stage in (("l2", joined.l2), ("l3", joined.l3), ("l4", joined.l4))
             if stage.state is not StageState.COMPLETED
         )
+        candidate_records = tuple(asdict(item) for item in candidates)
+        active_track_records = tuple(
+            asdict(item) for item in (
+                () if l2_output is None else getattr(l2_output, "active_tracks", ())
+            )
+        )
+        detection_records = tuple(
+            {
+                **(
+                    {"track_id": int(item.track_id)}
+                    if type(getattr(item, "track_id", None)) is int
+                    and item.track_id > 0
+                    else {}
+                ),
+                "theta_deg": item.theta_deg,
+                "probability": item.probability,
+                "is_voice": item.is_voice,
+                "model_id": item.model_id,
+                "threshold": l4_result.threshold,
+            }
+            for index, item in enumerate(() if l4_result is None else l4_result.detections)
+        )
         record = DecisionRecord(
             window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
             (window.doa_start_sample, window.doa_end_sample),
             (window.context_start_sample, window.context_end_sample), status,
-            candidates=tuple(asdict(item) for item in directions),
-            detections=tuple(
-                {"track_id": item.track_id,
-                 "theta_deg": item.theta_deg, "probability": item.probability,
-                 "is_voice": item.is_voice, "model_id": item.model_id,
-                 "threshold": l4_result.threshold}
-                for item in (() if l4_result is None else l4_result.detections)
-            ),
+            candidates=candidate_records,
+            detections=detection_records,
             voice_direction_count=0 if l4_result is None else l4_result.voice_direction_count,
             diagnostics=joined.l2.diagnostics + search_record_diagnostics + l4_diagnostics
             + terminal_diagnostics,
@@ -2062,20 +2079,17 @@ class ApplicationRuntime:
             normalized_scores=None if response is None else response.normalized_scores,
             gate_decision=gate_record, search_diagnostics=search_record,
             enhanced_audio=enhanced_records,
-            enhanced_waveforms=tuple(
-                item.enhanced_audio
-                for item in (() if l3_output is None else l3_output.enhanced_audio[:len(directions)])
-            ),
+            enhanced_waveforms=enhanced_waveforms,
             l4_result=l4_record,
             stage_statuses=stage_statuses,
             stage_timings_ms=stage_timings,
             stage_queue_wait_ms=stage_waits,
             terminal_reason=joined.terminal_reason,
-            active_tracks=tuple(
-                asdict(item)
-                for item in (() if l2_output is None else l2_output.active_tracks)
+            active_tracks=active_track_records,
+            kalman_applied=any(
+                bool(values["direction_kalman_enabled"] and ready)
+                for ready in candidate_kalman_ready
             ),
-            kalman_applied=any(item.kalman_applied for item in directions),
             config_revision=work.config.revision,
             config_hash=work.config.config_hash,
             calibration_revision=0,
@@ -2085,14 +2099,11 @@ class ApplicationRuntime:
                 None if search_diagnostics is None else search_diagnostics.algorithm_version
             ),
             model_order=(
-                None
-                if l2_output is None or getattr(l2_output, "model_order", None) is None
+                None if l2_output is None or getattr(l2_output, "model_order", None) is None
                 else asdict(l2_output.model_order)
             ),
             music_diagnostics=(
-                None
-                if search_diagnostics is None or not hasattr(search_diagnostics, "state")
-                else {
+                None if search_diagnostics is None or not hasattr(search_diagnostics, "state") else {
                     "state": asdict(search_diagnostics.state),
                     "valid_frequency_bins": search_diagnostics.valid_frequency_bins,
                     "covariance_quality": search_diagnostics.covariance_quality,
@@ -2141,17 +2152,17 @@ class ApplicationRuntime:
                 if l3_output is not None:
                     tracked_audio = self.dev_audio_tracker.update(
                         window,
-                        directions,
+                        getattr(l2_output, "directions", ()),
                         previews,
-                        track_ids=tuple(item.track_id for item in directions),
-                        prediction_flags=tuple(not item.is_observed for item in directions),
-                        formal_flags=(True,) * len(directions),
-                        kalman_ready_flags=tuple(item.kalman_applied for item in directions),
+                        active_tracks=getattr(l2_output, "active_tracks", ()),
                     )
-                elif l2_output is not None and not candidates:
-                    # A formal empty L2 result advances the listening tracks
-                    # into COASTING/ENDED without inventing any L3 audio.
-                    tracked_audio = self.dev_audio_tracker.update(window, (), ())
+                elif l2_output is not None:
+                    tracked_audio = self.dev_audio_tracker.update(
+                        window,
+                        getattr(l2_output, "directions", ()),
+                        (),
+                        active_tracks=getattr(l2_output, "active_tracks", ()),
+                    )
                 else:
                     # A dropped/failed L3 window is not evidence that every
                     # listening ID disappeared.  Retain the last snapshot so
@@ -2205,7 +2216,6 @@ class ApplicationRuntime:
         stage_timings,
     ) -> None:
         window = joined.work_item.window
-        directions = () if l2_output is None else tuple(l2_output.directions)
         with self._ui_lock:
             current_stream = getattr(self._ui_aggregator, "current_stream", None)
             if current_stream is not None and current_stream != (
@@ -2230,9 +2240,7 @@ class ApplicationRuntime:
                     gate_threshold=float(values["gate_threshold"]),
                     gate_config_revision=int(values["gate_config_revision"]),
                     direction_threshold=scan.direction_threshold,
-                    iterative_peak_search_enabled=scan.iterative_peak_search_enabled,
                     direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
-                    direction_id_tracking_enabled=bool(values["direction_id_tracking_enabled"]),
                     direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                     direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     scan_config_revision=int(values["scan_config_revision"]),
@@ -2244,16 +2252,12 @@ class ApplicationRuntime:
                     gate_threshold=float(values["gate_threshold"]),
                     gate_config_revision=int(values["gate_config_revision"]),
                     direction_threshold=scan.direction_threshold,
-                    iterative_peak_search_enabled=scan.iterative_peak_search_enabled,
                     direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
-                    direction_id_tracking_enabled=bool(values["direction_id_tracking_enabled"]),
                     direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                     direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     scan_config_revision=int(values["scan_config_revision"]),
-                    candidate_track_ids=tuple(item.track_id for item in directions),
-                    candidate_is_prediction=tuple(not item.is_observed for item in directions),
-                    candidate_track_is_formal=(True,) * len(directions),
-                    candidate_track_is_new=tuple(item.is_new_track for item in directions),
+                    directions=getattr(l2_output, "directions", ()),
+                    active_tracks=getattr(l2_output, "active_tracks", ()),
                 )
             self._ui_aggregator.update_l3(
                 previews, None if l3_output is not None else f"L3 {joined.l3.state.value}",
@@ -2275,6 +2279,7 @@ class ApplicationRuntime:
                 item.algorithm,
                 item.fallback_reason,
                 item.diagnostics,
+                track_id=getattr(item, "track_id", None),
             )
             for item in l3_output.enhanced_audio[start:stop]
         )
@@ -2282,28 +2287,23 @@ class ApplicationRuntime:
     @staticmethod
     def _layer4_audio_segments(
         l3_output,
-        track_ids: tuple[int, ...],
         stop: int | None = None,
         probabilities_20ms: tuple[float | None, ...] = (),
     ) -> tuple[Layer4AudioSegment, ...]:
         """Adapt the formal immutable L3 audio batch to L4's audio contract."""
-        outputs = tuple(l3_output.enhanced_audio[:stop])
-        track_ids = tuple(track_ids[:stop])
-        if len(outputs) != len(track_ids):
-            raise RuntimeError("L4 adapter requires one ordered track ID per L3 audio output")
         return tuple(
             Layer4AudioSegment(
                 item.session_id,
                 item.stream_epoch,
                 item.window_id,
                 item.decision_sample,
-                track_id,
                 item.theta_deg,
                 item.sample_rate,
                 item.enhanced_audio,
                 probabilities_20ms,
+                getattr(item, "track_id", None),
             )
-            for track_id, item in zip(track_ids, outputs, strict=True)
+            for item in l3_output.enhanced_audio[:stop]
         )
 
     @staticmethod
@@ -2324,46 +2324,23 @@ class ApplicationRuntime:
             raise RuntimeError("L4 requires exactly 16 context-aligned 20 ms probability slots")
         return probabilities
 
-    def _layer4_inputs_from_output(
-        self, window, l3_output, track_ids: tuple[int, ...], formal_count: int
-    ):
+    def _layer4_inputs_from_output(self, window, l3_output, formal_count: int):
         return self._layer4_audio_segments(
-            l3_output, track_ids, formal_count, self._context_probabilities_20ms(window)
+            l3_output, formal_count, self._context_probabilities_20ms(window)
         )
 
     @staticmethod
-    def _validate_direction_outputs(
-        layer: str, candidates, outputs, expected_track_ids: tuple[int, ...]
-    ) -> None:
+    def _validate_direction_outputs(layer: str, candidates, outputs) -> None:
         """Enforce exact, ordered one-output-per-candidate stage contracts."""
 
         candidates = tuple(candidates)
         outputs = tuple(outputs)
-        expected_track_ids = tuple(expected_track_ids)
         if len(outputs) != len(candidates):
             raise RuntimeError(
                 f"{layer} contract violation: expected {len(candidates)} ordered outputs, "
                 f"received {len(outputs)}"
             )
-        if len(expected_track_ids) != len(candidates):
-            raise RuntimeError(
-                f"{layer} contract violation: expected one track ID per candidate"
-            )
-        if len(expected_track_ids) != len(set(expected_track_ids)) or any(
-            type(track_id) is not int or track_id <= 0 for track_id in expected_track_ids
-        ):
-            raise RuntimeError(f"{layer} contract violation: invalid or duplicate track IDs")
         for index, (candidate, output) in enumerate(zip(candidates, outputs, strict=True)):
-            output_track_id = getattr(output, "track_id", expected_track_ids[index])
-            if output_track_id != expected_track_ids[index]:
-                raise RuntimeError(
-                    f"{layer} contract violation: output {index} track ID "
-                    f"{output_track_id} does not match expected {expected_track_ids[index]}"
-                )
-            if layer == "L3" and getattr(output, "rank", None) != candidate.rank:
-                raise RuntimeError(
-                    f"L3 contract violation: output {index} rank does not match input"
-                )
             delta = abs(
                 ((float(output.theta_deg) - float(candidate.theta_deg) + 180.0) % 360.0)
                 - 180.0
@@ -2373,41 +2350,23 @@ class ApplicationRuntime:
                     f"{layer} contract violation: output {index} angle "
                     f"{output.theta_deg} does not match candidate {candidate.theta_deg}"
                 )
+            if getattr(output, "track_id", None) != getattr(candidate, "track_id", None):
+                raise RuntimeError(
+                    f"{layer} contract violation: output {index} track_id "
+                    f"{getattr(output, 'track_id', None)} does not match candidate "
+                    f"{getattr(candidate, 'track_id', None)}"
+                )
 
-    @staticmethod
-    def _ordered_l2_track_ids(output) -> tuple[int, ...]:
-        """Read public L2 IDs without inventing or angle-matching an identity."""
-
-        directions = tuple(output.directions)
-        if all(hasattr(direction, "track_id") for direction in directions):
-            track_ids = tuple(direction.track_id for direction in directions)
-        else:
-            track_ids = tuple(getattr(output, "candidate_track_ids", ()))
-        if len(track_ids) != len(directions):
-            raise RuntimeError("Layer 2 contract violation: one public track ID is required per direction")
-        if len(track_ids) != len(set(track_ids)) or any(
-            type(track_id) is not int or track_id <= 0 for track_id in track_ids
-        ):
-            raise RuntimeError("Layer 2 contract violation: track IDs must be unique positive integers")
-        return track_ids
-
-    def _process_l3(self, window, directions, track_ids: tuple[int, ...] | None = None):
+    def _process_l3(self, window, candidates):
         """Run L3 exactly once for the formal, already-smoothed L2 candidates."""
-        directions = tuple(directions)
-        track_ids = tuple(
-            direction.track_id for direction in directions
-        ) if track_ids is None else tuple(track_ids)
+        candidates = tuple(candidates)
         with self._l3_mode_lock:
             mode = self._l3_processing_mode
-        l3_output = self._layer3.process(window, directions, self._geometry, mode=mode)
-        formal_count = len(directions)
-        self._validate_direction_outputs(
-            "L3", directions, l3_output.enhanced_audio, track_ids
-        )
+        l3_output = self._layer3.process(window, candidates, self._geometry, mode=mode)
+        formal_count = len(candidates)
+        self._validate_direction_outputs("L3", candidates, l3_output.enhanced_audio)
         formal_previews = self._beamform_previews(l3_output, 0, formal_count)
-        l4_inputs = self._layer4_inputs_from_output(
-            window, l3_output, track_ids, formal_count
-        )
+        l4_inputs = self._layer4_inputs_from_output(window, l3_output, formal_count)
         return formal_previews, l4_inputs
 
     def set_light(self, enabled: bool) -> None:

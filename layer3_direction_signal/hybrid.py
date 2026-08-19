@@ -6,8 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from common.data_types import DecisionWindow, DirectionalSignal, TrackedDirection
-from common.window_key import WindowKey
+from common.data_types import CandidateDirection, DecisionWindow, DirectionalSignal
 from common.geometry import MicGeometry
 from spatial_separability import (
     P_FREQUENCY_BIN_INDICES,
@@ -25,7 +24,6 @@ from .interface import (
     L3_MODE_DS_BASELINE,
     L3_MODE_OPTIMIZED,
     Layer3Error,
-    validate_l3_directions,
 )
 from .noise_context import BeamformerNoiseContext, RollingNoiseStatisticsCache
 from .prepared import BeamformedL3Batch, PreparedL3Context
@@ -155,7 +153,7 @@ class ImcraSpatialSeparationBeamformer:
     def _steering_vectors(
         self,
         frequencies: torch.Tensor,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: MicGeometry,
     ) -> torch.Tensor:
         geometry_key = (
@@ -185,7 +183,7 @@ class ImcraSpatialSeparationBeamformer:
 
     def _spatial_p(
         self,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         frequencies: torch.Tensor,
     ) -> torch.Tensor:
         # lookup_p quantizes to nearest degree and is symmetric.  Use the same
@@ -212,7 +210,7 @@ class ImcraSpatialSeparationBeamformer:
     def _constant_beamwidth_weights(
         self,
         frequencies: torch.Tensor,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: MicGeometry,
         config: SpatialSeparationConfig,
     ) -> tuple[torch.Tensor, tuple[int, ...], tuple[float, ...]]:
@@ -347,7 +345,7 @@ class ImcraSpatialSeparationBeamformer:
     def process_prepared_batch(
         self,
         prepared: PreparedL3Context,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: MicGeometry,
     ) -> BeamformedL3Batch:
         """Run only candidate-dependent steering, BF weights and application."""
@@ -357,7 +355,7 @@ class ImcraSpatialSeparationBeamformer:
             empty = torch.empty(
                 (0, 513, 33), dtype=torch.complex64, device=prepared.spectrum_fct.device,
             )
-            return BeamformedL3Batch(prepared.window_key, empty, (), (), (), (), (), ())
+            return BeamformedL3Batch(empty, (), (), (), (), ())
         prepared_device = prepared.spectrum_fct.device
         if (
             prepared_device.type != self.device.type
@@ -481,20 +479,18 @@ class ImcraSpatialSeparationBeamformer:
             raise Layer3Error("方向分离频谱输出无效")
         self.last_diagnostics = diagnostics
         return BeamformedL3Batch(
-            prepared.window_key,
             output.detach(),
-            tuple(item.track_id for item in candidates),
-            tuple(item.rank for item in candidates),
             tuple(float(item.theta_deg) for item in candidates),
             backends,
             fallback_reasons,
             diagnostics,
+            tuple(getattr(item, "track_id", None) for item in candidates),
         )
 
     def process_batch(
         self,
         window: DecisionWindow,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: MicGeometry,
         config: SpatialSeparationConfig,
         stft: StftSettings,
@@ -512,7 +508,7 @@ class ImcraSpatialSeparationBeamformer:
     def process_ds_baseline_batch(
         self,
         window: DecisionWindow,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: MicGeometry,
         stft: StftSettings,
     ) -> tuple[DirectionalSignal, ...]:
@@ -544,8 +540,6 @@ class ImcraSpatialSeparationBeamformer:
                 window.stream_epoch,
                 window.window_id,
                 window.decision_sample,
-                candidate.track_id,
-                candidate.rank,
                 window.context_start_sample,
                 window.context_end_sample,
                 candidate.theta_deg,
@@ -553,6 +547,7 @@ class ImcraSpatialSeparationBeamformer:
                 "ds_baseline",
                 None,
                 np.ascontiguousarray(output[index].detach().cpu().numpy(), dtype=np.complex64),
+                getattr(candidate, "track_id", None),
             )
             for index, candidate in enumerate(candidates)
         )
@@ -562,7 +557,7 @@ class ImcraSpatialSeparationBeamformer:
     def process_batch_from_spectrum(
         self,
         window: DecisionWindow,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: MicGeometry,
         config: SpatialSeparationConfig,
         stft: StftSettings,
@@ -647,8 +642,6 @@ class ImcraSpatialSeparationBeamformer:
                 window.stream_epoch,
                 window.window_id,
                 window.decision_sample,
-                candidate.track_id,
-                candidate.rank,
                 window.context_start_sample,
                 window.context_end_sample,
                 candidate.theta_deg,
@@ -656,6 +649,7 @@ class ImcraSpatialSeparationBeamformer:
                 "das" if diagnostics[index][0] == "backend=das_fallback" else "imcra_spatial_separation",
                 fallback_reason,
                 np.ascontiguousarray(output[index].detach().cpu().numpy(), dtype=np.complex64),
+                getattr(candidate, "track_id", None),
             )
             for index, candidate in enumerate(candidates)
         )
@@ -664,9 +658,18 @@ class ImcraSpatialSeparationBeamformer:
 
     @staticmethod
     def _validate_candidates(
-        window: DecisionWindow, candidates: tuple[TrackedDirection, ...],
+        window: DecisionWindow, candidates: tuple[CandidateDirection, ...],
     ) -> None:
-        validate_l3_directions(WindowKey.from_window(window), candidates)
+        if len(candidates) > 3:
+            raise Layer3Error("L3只接受0、1、2或3个候选方向")
+        identity = (window.session_id, window.stream_epoch, window.window_id, window.decision_sample)
+        if any(
+            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample) != identity
+            for item in candidates
+        ):
+            raise Layer3Error("候选与DecisionWindow不属于同一窗口")
+        if len({item.theta_deg for item in candidates}) != len(candidates):
+            raise Layer3Error("L3候选方向不能重复")
 
     @staticmethod
     def _validate_window(window: DecisionWindow) -> None:
@@ -676,6 +679,20 @@ class ImcraSpatialSeparationBeamformer:
     @staticmethod
     def _validate_prepared_candidates(
         prepared: PreparedL3Context,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
     ) -> None:
-        validate_l3_directions(prepared.window_key, candidates)
+        if len(candidates) > 3:
+            raise Layer3Error("L3只接受0、1、2或3个候选方向")
+        if any(
+            (
+                item.session_id,
+                item.stream_epoch,
+                item.window_id,
+                item.decision_sample,
+            )
+            != prepared.window_key
+            for item in candidates
+        ):
+            raise Layer3Error("候选与PreparedL3Context不属于同一窗口")
+        if len({item.theta_deg for item in candidates}) != len(candidates):
+            raise Layer3Error("L3候选方向不能重复")

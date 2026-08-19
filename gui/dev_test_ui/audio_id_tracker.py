@@ -33,15 +33,14 @@ class _Track:
     authoritative_id: bool = False
     envelope_peaks: deque[float] = field(default_factory=deque)
     stream_key: tuple[str, int] | None = None
+    processing_mode: str = "optimized"
 
 
 class AudioIdTracker:
-    """Test-UI-only greedy IDs and bounded L3 listening caches.
+    """Test-UI cache keyed only by ``(session, epoch, authoritative track_id)``.
 
-    The input is a completed L3 preview batch. Kalman-ready temporary IDs and
-    formal IDs own cached audio; first-hit temporary and ID-less points do not.
-    exist only for listening in Development Test UI and are never fed back to
-    L2, L3, L4, or RecordingStore.
+    This sidecar never associates by angle, aliases IDs, or repairs L2
+    identity.  It only joins exact-ID L3 audio on the absolute sample timeline.
     """
 
     def __init__(
@@ -49,10 +48,6 @@ class AudioIdTracker:
         cache_root: str | Path,
         *,
         project_root: str | Path,
-        wait_seconds: float = 3.0,
-        association_distance_deg: float = 30.0,
-        formal_id_rollover_distance_deg: float = 20.0,
-        formal_id_rollover_wait_seconds: float = 5.0,
         segment_seconds: float = 10.0,
         retained_segments: int = 3,
         max_ended_tracks: int = 8,
@@ -62,30 +57,22 @@ class AudioIdTracker:
         self.cache_root = (self.project_root / root).resolve() if not root.is_absolute() else root.resolve()
         if self.cache_root == self.project_root or self.project_root not in self.cache_root.parents:
             raise ValueError("Test UI audio cache must be a child of project_root")
-        self.wait_samples = round(float(wait_seconds) * 48_000)
-        self.association_distance_deg = float(association_distance_deg)
-        self.formal_id_rollover_distance_deg = float(formal_id_rollover_distance_deg)
-        self.formal_id_rollover_wait_samples = round(
-            float(formal_id_rollover_wait_seconds) * 48_000
-        )
         self.segment_samples = round(float(segment_seconds) * 48_000)
         self.retained_segments = int(retained_segments)
         self.max_ended_tracks = int(max_ended_tracks)
         if min(
-            self.wait_samples,
-            self.formal_id_rollover_wait_samples,
             self.segment_samples,
             self.retained_segments,
             self.max_ended_tracks,
         ) <= 0:
             raise ValueError("invalid Test UI tracker retention configuration")
-        if not 0.0 < self.formal_id_rollover_distance_deg <= 180.0:
-            raise ValueError("formal ID rollover association distance must be in (0,180]")
         self._lock = threading.RLock()
         self._stream: tuple[str, int] | None = None
         self._processing_mode: str | None = None
+        self._mode_generation = 0
+        self._processing_partition = "optimized_000"
         self._tracks: dict[int, _Track] = {}
-        self._formal_aliases: dict[int, int] = {}
+        self._sealed_tracks: list[dict[int, _Track]] = []
         self._reference_track: _Track | None = None
         self._reference_stream = None
         self._reference_stream_path: Path | None = None
@@ -107,8 +94,10 @@ class AudioIdTracker:
             (self.cache_root / "playback").mkdir(exist_ok=True)
             self._stream = None
             self._processing_mode = None
+            self._mode_generation = 0
+            self._processing_partition = "optimized_000"
             self._tracks.clear()
-            self._formal_aliases.clear()
+            self._sealed_tracks.clear()
             self._reference_track = None
             self._next_track_id = 1
             self._snapshot_counter = 0
@@ -140,7 +129,6 @@ class AudioIdTracker:
             if track.state != "ended":
                 self._flush_pending(track, fade_out=True)
                 track.state = "ended"
-        self._formal_aliases.clear()
         self._stream = stream
         self._processing_mode = None
         if self._reference_track is not None:
@@ -191,7 +179,11 @@ class AudioIdTracker:
             self._update_envelope(track, center)
 
     def _segment_path(self, track: _Track) -> Path:
-        directory = self.cache_root / f"track_{track.track_id:03d}"
+        directory = (
+            self.cache_root / f"track_{track.track_id:03d}"
+            if track.track_id == 0
+            else self.cache_root / track.processing_mode / f"track_{track.track_id:03d}"
+        )
         directory.mkdir(parents=True, exist_ok=True)
         if not track.segments or track.segment_samples >= self.segment_samples:
             path = directory / f"segment_{track.segment_index:06d}.f32"
@@ -445,103 +437,37 @@ class AudioIdTracker:
             int(decision_sample),
             authoritative_id=track_id is not None,
             stream_key=self._stream,
+            processing_mode=self._processing_partition,
         )
         self._next_track_id = max(self._next_track_id + (track_id is None), resolved_id + 1)
         self._tracks[track.track_id] = track
         self._accept_preview(track, preview)
         return track
 
-    def _resolve_formal_track_id(
-        self,
-        formal_id: int,
-        preview: BeamformPreview,
-        decision_sample: int,
-        reserved_track_ids: set[int],
-    ) -> int:
-        """Map an L2 ID rollover onto one unambiguous continuous listening ID."""
-        aliased = self._formal_aliases.get(formal_id)
-        if aliased is not None and aliased in self._tracks:
-            if aliased not in reserved_track_ids or aliased == formal_id:
-                return aliased
-            self._formal_aliases.pop(formal_id, None)
-        existing = self._tracks.get(formal_id)
-        if (
-            existing is not None
-            and existing.stream_key == self._stream
-            and existing.state != "ended"
-        ):
-            self._formal_aliases[formal_id] = formal_id
-            return formal_id
-        if existing is not None:
-            resolved = self._next_track_id
-            while resolved in self._tracks:
-                resolved += 1
-            self._formal_aliases[formal_id] = resolved
-            return resolved
-        candidates = tuple(
-            track.track_id
-            for track in self._tracks.values()
-            if track.authoritative_id
-            and track.stream_key == self._stream
-            and track.track_id not in reserved_track_ids
-            and 0 < int(decision_sample) - track.last_seen_sample
-            <= self.formal_id_rollover_wait_samples
-            and self._distance(track.theta_deg, preview.theta_deg)
-            <= self.formal_id_rollover_distance_deg
-        )
-        # Ambiguous proximity is deliberately not merged: preserving two
-        # sources is safer than joining unrelated audio into one listening ID.
-        resolved = candidates[0] if len(candidates) == 1 else formal_id
-        self._formal_aliases[formal_id] = resolved
-        return resolved
-
     def update(
         self,
         window,
-        candidates,
+        directions,
         previews,
         *,
-        track_ids=(),
-        prediction_flags=(),
-        formal_flags=(),
-        kalman_ready_flags=(),
+        active_tracks=(),
     ) -> tuple[TrackedAudioSnapshot, ...]:
-        """Append L3 audio for formal or Kalman-ready temporary L2 IDs."""
-        candidates, previews = tuple(candidates), tuple(previews)
-        if len(candidates) != len(previews):
-            raise ValueError("Test UI tracker requires one L3 preview per formal candidate")
-        track_ids = tuple(track_ids)
-        prediction_flags = tuple(prediction_flags)
-        formal_flags = tuple(formal_flags)
-        kalman_ready_flags = tuple(kalman_ready_flags)
-        if not track_ids:
-            track_ids = (None,) * len(previews)
-        if not prediction_flags:
-            prediction_flags = (False,) * len(previews)
-        if formal_flags and len(formal_flags) != len(previews):
-            raise ValueError("Test UI formal-ID flags must align with L3 previews")
-        if kalman_ready_flags and len(kalman_ready_flags) != len(previews):
-            raise ValueError("Test UI Kalman-ready flags must align with L3 previews")
-        if len(track_ids) != len(previews) or len(prediction_flags) != len(previews):
-            raise ValueError("Test UI tracker metadata must align with L3 previews")
-        # Runtime supplies both flags. A first-hit temporary ID is excluded;
-        # its cache begins exactly when L2 declares the per-ID Kalman state
-        # ready, and continues seamlessly if that same ID becomes formal.
-        if formal_flags or kalman_ready_flags:
-            if not formal_flags:
-                formal_flags = (False,) * len(previews)
-            if not kalman_ready_flags:
-                kalman_ready_flags = (False,) * len(previews)
-            accepted_indices = tuple(
-                index for index, (is_formal, is_ready) in enumerate(
-                    zip(formal_flags, kalman_ready_flags, strict=True)
-                )
-                if (bool(is_formal) or bool(is_ready)) and track_ids[index] is not None
-            )
-            candidates = tuple(candidates[index] for index in accepted_indices)
-            previews = tuple(previews[index] for index in accepted_indices)
-            track_ids = tuple(track_ids[index] for index in accepted_indices)
-            prediction_flags = tuple(prediction_flags[index] for index in accepted_indices)
+        """Append exact-ID L3 audio and mirror the L2-owned lifecycle."""
+        directions, previews, active_tracks = tuple(directions), tuple(previews), tuple(active_tracks)
+        direction_by_id = {item.track_id: item for item in directions}
+        active_by_id = {item.track_id: item for item in active_tracks}
+        if len(direction_by_id) != len(directions) or len(active_by_id) != len(active_tracks):
+            raise ValueError("authoritative L2 track IDs must be unique")
+        preview_by_id = {}
+        for preview in previews:
+            track_id = getattr(preview, "track_id", None)
+            if track_id is None:
+                raise ValueError("L3 listening preview requires an authoritative L2 track_id")
+            if track_id in preview_by_id:
+                raise ValueError("L3 listening previews must have unique track IDs")
+            preview_by_id[track_id] = preview
+        if not set(preview_by_id).issubset(direction_by_id):
+            raise ValueError("L3 preview track_id must exist in L2 directions")
         backend_modes = {
             "ds_baseline": "ds_baseline",
             "constant_beamwidth_baseline": "constant_beamwidth_baseline",
@@ -560,106 +486,55 @@ class AudioIdTracker:
                 and self._processing_mode is not None
                 and incoming_mode != self._processing_mode
             ):
-                self.reset()
-                self._stream = stream
+                self.seal_mode(incoming_mode)
             if incoming_mode is not None:
                 self._processing_mode = incoming_mode
 
-            live_tracks = tuple(item for item in self._tracks.values() if item.state != "ended")
-            matched_tracks: set[int] = set()
-            matched_previews: set[int] = set()
-
-            incoming_formal_ids = tuple(
-                None if item is None else int(item) for item in track_ids
-            )
-            reserved_track_ids = {
-                resolved
-                for formal_id in incoming_formal_ids if formal_id is not None
-                for resolved in (
-                    self._formal_aliases.get(formal_id, formal_id),
-                )
-                if resolved in self._tracks
-            }
-
-            # L2's private IDs are authoritative whenever available.  This
-            # prevents a second 30-degree UI association from splitting one
-            # formal source into multiple listening files.
-            for index, formal_id in enumerate(track_ids):
-                if formal_id is None:
+            for track_id, authoritative in active_by_id.items():
+                if authoritative.track_state == "tentative":
                     continue
-                formal_id = int(formal_id)
-                listening_id = self._resolve_formal_track_id(
-                    formal_id,
-                    previews[index],
-                    int(window.decision_sample),
-                    (reserved_track_ids | matched_tracks) - {
-                        self._formal_aliases.get(formal_id, formal_id),
-                    },
-                )
-                track = self._tracks.get(listening_id)
+                track = self._tracks.get(track_id)
+                preview = preview_by_id.get(track_id)
                 if track is None:
+                    if preview is None:
+                        continue
                     track = self._new_track(
-                        window.decision_sample,
-                        previews[index],
-                        candidates[index].normalized_score,
-                        track_id=listening_id,
+                        window.decision_sample, preview,
+                        authoritative.normalized_score, track_id=track_id,
                     )
-                    self._formal_aliases[formal_id] = listening_id
                 else:
-                    preview = previews[index]
-                    track.theta_deg = float(preview.theta_deg)
-                    track.score = float(candidates[index].normalized_score)
+                    track.theta_deg = float(authoritative.theta_deg)
+                    track.score = float(authoritative.normalized_score)
                     track.last_seen_sample = int(window.decision_sample)
-                    track.state = "active"
-                    track.authoritative_id = True
+                track.state = "coasting" if authoritative.track_state == "coasting" else "active"
+                if preview is not None and track.pending_decision_sample != preview.decision_sample:
                     self._accept_preview(track, preview)
-                matched_tracks.add(listening_id)
-                matched_previews.add(index)
+                elif track.state == "coasting":
+                    self._advance_missing(track, int(window.decision_sample))
 
-            pairs = sorted(
-                (
-                    (self._distance(track.theta_deg, preview.theta_deg), track.track_id, index)
-                    for track in live_tracks if not track.authoritative_id
-                    for index, preview in enumerate(previews) if track_ids[index] is None
-                ),
-                key=lambda item: item[0],
-            )
-            for distance, track_id, preview_index in pairs:
-                if distance > self.association_distance_deg:
-                    break
-                if track_id in matched_tracks or preview_index in matched_previews:
-                    continue
-                track = self._tracks[track_id]
-                preview = previews[preview_index]
-                candidate = candidates[preview_index]
-                track.theta_deg = float(preview.theta_deg)
-                track.score = float(candidate.normalized_score)
-                track.last_seen_sample = int(window.decision_sample)
-                track.state = "active"
-                self._accept_preview(track, preview)
-                matched_tracks.add(track_id)
-                matched_previews.add(preview_index)
-
-            for index, preview in enumerate(previews):
-                if index not in matched_previews:
-                    track = self._new_track(
-                        window.decision_sample,
-                        preview,
-                        candidates[index].normalized_score,
-                    )
-                    matched_tracks.add(track.track_id)
-
-            for track in live_tracks:
-                if track.track_id in matched_tracks:
-                    continue
-                self._advance_missing(track, int(window.decision_sample))
-                elapsed = int(window.decision_sample) - track.last_seen_sample
-                track.state = "ended" if elapsed >= self.wait_samples else "coasting"
+            # Only an explicit omission from L2 active_tracks seals a row.
+            for track_id, track in self._tracks.items():
+                if track_id not in active_by_id and track.state != "ended":
+                    self._flush_pending(track, fade_out=True)
+                    track.state = "ended"
 
             # A visible row must remain playable for the complete capture
             # session.  Do not prune ENDED tracks behind the UI; reset()/close()
             # release every row and file together at the next session boundary.
             return self.snapshots()
+
+    def seal_mode(self, next_mode: str | None = None) -> None:
+        """Seal current exact-ID files and start an isolated L3 mode partition."""
+        with self._lock:
+            for track in self._tracks.values():
+                self._flush_pending(track, fade_out=True)
+                track.state = "ended"
+            if self._tracks:
+                self._sealed_tracks.append(self._tracks)
+                self._tracks = {}
+            self._mode_generation += 1
+            self._processing_mode = next_mode
+            self._processing_partition = f"{next_mode or 'unknown'}_{self._mode_generation:03d}"
 
     def snapshots(self) -> tuple[TrackedAudioSnapshot, ...]:
         with self._lock:
@@ -702,7 +577,7 @@ class AudioIdTracker:
         with self._lock:
             self._close_reference_stream()
             self._tracks.clear()
-            self._formal_aliases.clear()
+            self._sealed_tracks.clear()
             self._reference_track = None
             self._stream = None
             if delete_files and self.cache_root.exists():

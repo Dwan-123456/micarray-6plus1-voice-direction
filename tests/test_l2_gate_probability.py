@@ -15,7 +15,6 @@ from layer2_source_detection import (
     ProbabilityGateState,
     SourceProbability20ms,
     SourceProbabilityState,
-    SrpPhatScanner,
 )
 
 
@@ -87,7 +86,7 @@ def test_probability_gate_rejects_missing_warming_and_misaligned_hops() -> None:
 
 
 def test_probability_pipeline_skips_srp_when_closed_and_preserves_audio() -> None:
-    class ForbiddenScanner(SrpPhatScanner):
+    class ForbiddenScanner:
         def scan_detailed(self, *args, **kwargs):
             raise AssertionError("closed probability Gate must skip SRP-PHAT")
 

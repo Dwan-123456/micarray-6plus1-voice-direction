@@ -6,7 +6,6 @@ from common.data_types import CandidateDirection, DecisionWindow, SpatialRespons
 from common.geometry import MicGeometry
 
 from .configuration import DirectionScanConfig
-from .iterative import CandidateSearchDiagnostics
 
 
 class DirectionScanner(Protocol):
@@ -25,7 +24,7 @@ class DetailedDirectionScanner(Protocol):
         geometry: MicGeometry,
         config: DirectionScanConfig,
         config_revision: int = 0,
-    ) -> tuple[SpatialResponse, tuple[CandidateDirection, ...], CandidateSearchDiagnostics]: ...
+    ) -> tuple[SpatialResponse, tuple[CandidateDirection, ...], object]: ...
 
 
 class DirectionScanError(RuntimeError):

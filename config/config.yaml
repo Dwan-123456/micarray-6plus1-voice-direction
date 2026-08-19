@@ -30,9 +30,15 @@ device:
   light_service_url: null
 
 calibration:
+  version: gain_polarity_integer_delay_v1
+  correction_model: gain_polarity_integer_delay_v1
   gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   polarity: [1, 1, 1, 1, 1, 1, 1]
   delay_samples: [0, 0, 0, 0, 0, 0, 0]
+  # Reserved versioned asset boundaries. Current L1 rejects non-null values
+  # until fractional/frequency-domain correction is implemented and verified.
+  fractional_delay_asset: null
+  frequency_response_asset: null
 
 timing:
   decision_hop_samples: 960
@@ -82,6 +88,12 @@ layer2:
   probability_gate:
     backend: mean_2x20ms_v1
     threshold: 0.60
+  # L1/Windowing preparation for the future rolling MUSIC implementation.
+  # 240 ms is only the current comparison candidate, not a frozen final default.
+  music:
+    context_ms: 240
+    comparison_context_ms: [160, 240, 320]
+    max_history_ms: 320
   # Optional per-private-ID circular angle filter. Requires ID tracking; default OFF.
   direction_kalman:
     enabled: false
@@ -97,49 +109,37 @@ layer2:
     max_velocity_dps: 60.0
     # +inf keeps uncertainty freezing disabled until it is calibrated.
     prediction_freeze_std_deg: .inf
-  # Assigns private IDs before the optional Kalman filter; default OFF.
+  # Direction-track IDs are always enabled. This section has no enable switch.
   direction_id_tracking:
-    enabled: false
-    backend: confidence_id_tracker_v2
-    association_gate_deg: 20.0
-    # When Kalman is active, associate measurements against the forecast at
-    # the current decision sample rather than the last measured angle.
-    prediction_association_gate_deg: 30.0
-    max_missed_windows: 150
-    # A provisional ID must survive its first 100×20 ms (2 s), collect at
-    # least 5 natural-Gate candidate matches, and receive at least one matching
-    # L4 voice result in that interval. On formalization it receives a 3 s lease. Angle
-    # matches only update position; only a matching L4 voice result extends it.
-    confirmation_min_age_windows: 100
-    confirmation_min_matches: 5
-    prediction_hold_windows: 150
-  scanner_backend: srp_phat
+    backend: global_assignment_v1
+    association_gate_deg: 45.0
+    max_velocity_dps: 60.0
+    confirmation_observations: 2
+    confirmation_window_ms: 200
+    coasting_ttl_ms: 3000
+    miss_cost: 1.0
+    birth_cost: 1.0
+  scanner_backend: frequency_normalized_music
   angle_step_deg: 1.0
-  # SRP-PHAT定位只使用2～4 kHz；L1概率Gate仍独立使用500～4000 Hz。
+  # MUSIC定位只使用2～4 kHz；L1概率Gate仍独立使用500～4000 Hz。
   frequency_min_hz: 2000.0
   frequency_max_hz: 4000.0
-  n_fft: 2048
+  n_fft: 1024
+  win_length: 960
+  hop_length: 480
   window: hann_periodic
-  remove_channel_mean: true
-  gcc_interpolation: 16
-  phat_epsilon: 1.0e-12
-  normalization_backend: robust_z_sigmoid
-  normalization_alpha: 1.0
-  normalization_beta: 2.0
+  context_ms: 240
+  covariance_shrinkage: 0.05
+  diagonal_loading: 1.0e-3
+  eigenvalue_floor: 1.0e-10
+  mdl_max_age_ms: 100
+  min_valid_frequency_bins: 12
+  min_cross_frequency_consistency: 0.20
   direction_threshold: 0.35
   peak_prominence: 0.05
   # L2候选间的最小圆周角距；低于该角距的较低分峰会被NMS抑制。
   min_peak_distance_deg: 45.0
   max_candidates: 3
-  iterative_peak_search_enabled: false
-  iterative_max_sources: 2
-  iterative_suppression_strength: 0.75
-  iterative_phase_power: 2.0
-  iterative_pair_phase_threshold: 0.60
-  iterative_min_pair_support: 6
-  iterative_min_frequency_support: 24
-  iterative_min_remaining_weight_ratio: 0.10
-  iterative_min_residual_peak_ratio: 0.20
 
 stft:
   n_fft: 1024

@@ -5,13 +5,13 @@ from time import monotonic
 
 import numpy as np
 
-from common.data_types import CandidateDirection, IngestedAudioBlock, PipelineStatus, SpatialResponse
+from common.data_types import CandidateDirection, IngestedAudioBlock, PipelineStatus, SpatialResponse, TrackedDirection
 
 from .contracts import (
     AlgorithmPerformanceSnapshot, BeamformPreview, DevUiFrame, L1MeterSnapshot,
     TrackedAudioSnapshot,
 )
-from layer2_source_detection.iterative import CandidateSearchDiagnostics
+from layer2_source_detection.music import MusicDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
 from layer4_voice_classifier.contracts import Layer4Result
 
@@ -143,19 +143,15 @@ class DevUiAggregator:
         self._l1: L1MeterSnapshot | None = None
         self._response: SpatialResponse | None = None
         self._candidates: tuple[CandidateDirection, ...] = ()
-        self._candidate_track_ids: tuple[int | None, ...] = ()
-        self._candidate_is_prediction: tuple[bool, ...] = ()
-        self._candidate_track_is_formal: tuple[bool, ...] = ()
-        self._candidate_track_is_new: tuple[bool, ...] = ()
+        self._directions: tuple[TrackedDirection, ...] = ()
+        self._active_tracks: tuple[TrackedDirection, ...] = ()
         self._previews: tuple[BeamformPreview, ...] = ()
         self._tracked_audio: tuple[TrackedAudioSnapshot, ...] = ()
         self._gate_decision: ProbabilityGateDecision | None = None
         self._gate_threshold: float | None = None
         self._gate_config_revision: int | None = None
         self._direction_threshold: float | None = None
-        self._iterative_peak_search_enabled: bool | None = None
         self._direction_kalman_enabled: bool | None = None
-        self._direction_id_tracking_enabled: bool | None = None
         self._direction_kalman_q_scale: float | None = None
         self._direction_kalman_r_scale: float | None = None
         self._scan_config_revision: int | None = None
@@ -163,7 +159,7 @@ class DevUiAggregator:
         self._srp_error: str | None = None
         self._l3_error: str | None = None
         self._spatial_published: float | None = None
-        self._search_diagnostics: CandidateSearchDiagnostics | None = None
+        self._search_diagnostics: MusicDiagnostics | None = None
         self._l4_result: Layer4Result | None = None
 
     @property
@@ -215,14 +211,11 @@ class DevUiAggregator:
         self._response, self._candidates, self._previews = None, (), ()
         if clear_tracked_audio:
             self._tracked_audio = ()
-        self._candidate_track_ids = ()
-        self._candidate_is_prediction = ()
-        self._candidate_track_is_formal = ()
-        self._candidate_track_is_new = ()
+        self._directions = self._active_tracks = ()
         self._gate_decision = None
         self._gate_threshold = self._gate_config_revision = None
-        self._direction_threshold = self._iterative_peak_search_enabled = None
-        self._direction_kalman_enabled = self._direction_id_tracking_enabled = None
+        self._direction_threshold = None
+        self._direction_kalman_enabled = None
         self._direction_kalman_q_scale = self._direction_kalman_r_scale = None
         self._scan_config_revision = None
         self._search_diagnostics = None
@@ -233,21 +226,17 @@ class DevUiAggregator:
 
     def update_srp(
         self, response: SpatialResponse | None, candidates: tuple[CandidateDirection, ...], error: str | None = None,
-        search_diagnostics: CandidateSearchDiagnostics | None = None,
+        search_diagnostics: MusicDiagnostics | None = None,
         gate_decision: ProbabilityGateDecision | None = None,
         gate_threshold: float | None = None,
         gate_config_revision: int | None = None,
         direction_threshold: float | None = None,
-        iterative_peak_search_enabled: bool | None = None,
         direction_kalman_enabled: bool | None = None,
-        direction_id_tracking_enabled: bool | None = None,
         direction_kalman_q_scale: float | None = None,
         direction_kalman_r_scale: float | None = None,
         scan_config_revision: int | None = None,
-        candidate_track_ids: tuple[int | None, ...] = (),
-        candidate_is_prediction: tuple[bool, ...] = (),
-        candidate_track_is_formal: tuple[bool, ...] = (),
-        candidate_track_is_new: tuple[bool, ...] = (),
+        directions: tuple[TrackedDirection, ...] = (),
+        active_tracks: tuple[TrackedDirection, ...] = (),
     ) -> DevUiFrame:
         result_keys = {
             (item.session_id, item.stream_epoch)
@@ -268,18 +257,14 @@ class DevUiAggregator:
         previous = (
             self._response,
             self._candidates,
-            self._candidate_track_ids,
-            self._candidate_is_prediction,
-            self._candidate_track_is_formal,
-            self._candidate_track_is_new,
+            self._directions,
+            self._active_tracks,
             self._srp_error,
             self._gate_decision,
             self._gate_threshold,
             self._gate_config_revision,
             self._direction_threshold,
-            self._iterative_peak_search_enabled,
             self._direction_kalman_enabled,
-            self._direction_id_tracking_enabled,
             self._direction_kalman_q_scale,
             self._direction_kalman_r_scale,
             self._scan_config_revision,
@@ -291,17 +276,13 @@ class DevUiAggregator:
             self._spatial_published,
         )
         self._response, self._candidates, self._srp_error = response, tuple(candidates), error
-        self._candidate_track_ids = tuple(candidate_track_ids)
-        self._candidate_is_prediction = tuple(candidate_is_prediction)
-        self._candidate_track_is_formal = tuple(candidate_track_is_formal)
-        self._candidate_track_is_new = tuple(candidate_track_is_new)
+        self._directions = tuple(directions)
+        self._active_tracks = tuple(active_tracks)
         self._gate_decision = gate_decision
         self._gate_threshold = gate_threshold
         self._gate_config_revision = gate_config_revision
         self._direction_threshold = direction_threshold
-        self._iterative_peak_search_enabled = iterative_peak_search_enabled
         self._direction_kalman_enabled = direction_kalman_enabled
-        self._direction_id_tracking_enabled = direction_id_tracking_enabled
         self._direction_kalman_q_scale = direction_kalman_q_scale
         self._direction_kalman_r_scale = direction_kalman_r_scale
         self._scan_config_revision = scan_config_revision
@@ -318,18 +299,14 @@ class DevUiAggregator:
             (
                 self._response,
                 self._candidates,
-                self._candidate_track_ids,
-                self._candidate_is_prediction,
-                self._candidate_track_is_formal,
-                self._candidate_track_is_new,
+                self._directions,
+                self._active_tracks,
                 self._srp_error,
                 self._gate_decision,
                 self._gate_threshold,
                 self._gate_config_revision,
                 self._direction_threshold,
-                self._iterative_peak_search_enabled,
                 self._direction_kalman_enabled,
-                self._direction_id_tracking_enabled,
                 self._direction_kalman_q_scale,
                 self._direction_kalman_r_scale,
                 self._scan_config_revision,
@@ -407,30 +384,26 @@ class DevUiAggregator:
         if self._srp_error:
             missing["srp"] = self._srp_error
         return DevUiFrame(
-            self._l1,
-            self._response,
-            self._candidates,
-            self._previews,
-            self._tracked_audio,
-            self._gate_decision,
-            self._gate_threshold,
-            self._gate_config_revision,
-            self._direction_threshold,
-            self._iterative_peak_search_enabled,
-            self._direction_kalman_enabled,
-            self._direction_id_tracking_enabled,
-            self._direction_kalman_q_scale,
-            self._direction_kalman_r_scale,
-            self._scan_config_revision,
-            self._status,
-            self.performance.snapshot(self._status),
-            monotonic(),
-            self._spatial_published,
-            self._search_diagnostics,
-            missing,
-            self._l4_result,
-            self._candidate_track_ids,
-            self._candidate_is_prediction,
-            self._candidate_track_is_formal,
-            self._candidate_track_is_new,
+            l1=self._l1,
+            spatial_response=self._response,
+            candidates=self._candidates,
+            previews=self._previews,
+            tracked_audio=self._tracked_audio,
+            gate_decision=self._gate_decision,
+            gate_threshold=self._gate_threshold,
+            gate_config_revision=self._gate_config_revision,
+            direction_threshold=self._direction_threshold,
+            direction_kalman_enabled=self._direction_kalman_enabled,
+            direction_kalman_q_scale=self._direction_kalman_q_scale,
+            direction_kalman_r_scale=self._direction_kalman_r_scale,
+            scan_config_revision=self._scan_config_revision,
+            pipeline_status=self._status,
+            performance=self.performance.snapshot(self._status),
+            published_monotonic=monotonic(),
+            spatial_published_monotonic=self._spatial_published,
+            search_diagnostics=self._search_diagnostics,
+            missing_reasons=missing,
+            l4_result=self._l4_result,
+            directions=self._directions,
+            active_tracks=self._active_tracks,
         )

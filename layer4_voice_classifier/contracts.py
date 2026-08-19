@@ -18,24 +18,21 @@ class Layer4AudioSegment:
     stream_epoch: int
     window_id: int
     decision_sample: int
-    track_id: int
     theta_deg: float
     sample_rate: int
     waveform: NDArray[np.float32]
     array_source_probabilities_20ms: tuple[float | None, ...] = ()
+    track_id: int | None = None
 
     def __post_init__(self) -> None:
-        if (
-            not self.session_id
-            or min(self.stream_epoch, self.window_id, self.decision_sample) < 0
-            or type(self.track_id) is not int
-            or self.track_id <= 0
-        ):
+        if not self.session_id or min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
             raise ValueError("invalid L4 audio stream/window identity")
         if not np.isfinite(self.theta_deg) or not 0.0 <= self.theta_deg < 360.0:
             raise ValueError("L4 audio theta_deg must be finite and in [0,360)")
         if self.sample_rate != 48_000:
             raise ValueError("L4 audio must be sampled at 48 kHz")
+        if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
+            raise ValueError("L4 audio track_id must be a positive integer")
         waveform = np.asarray(self.waveform)
         if (
             waveform.shape != (15_360,)
@@ -64,19 +61,14 @@ class VoiceDetection:
     stream_epoch: int
     window_id: int
     decision_sample: int
-    track_id: int
     theta_deg: float
     probability: float
     is_voice: bool
     model_id: str
+    track_id: int | None = None
 
     def __post_init__(self) -> None:
-        if (
-            not self.session_id
-            or min(self.stream_epoch, self.window_id, self.decision_sample) < 0
-            or type(self.track_id) is not int
-            or self.track_id <= 0
-        ):
+        if not self.session_id or min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
             raise ValueError("invalid L4 stream/window identity")
         if not np.isfinite(self.theta_deg) or not 0.0 <= self.theta_deg < 360.0:
             raise ValueError("theta_deg must be finite and in [0,360)")
@@ -84,6 +76,8 @@ class VoiceDetection:
             raise ValueError("probability must be finite and in [0,1]")
         if type(self.is_voice) is not bool or not self.model_id:
             raise ValueError("is_voice must be bool and model_id must be non-empty")
+        if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
+            raise ValueError("VoiceDetection track_id must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,17 +115,12 @@ class Layer4Result:
         primary = next(item for item in self.predictions if item.model_id == self.primary_model_id)
         if len(primary.probabilities) != len(self.detections):
             raise ValueError("primary probabilities and detections must have equal length")
-        identities = {
-            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample)
-            for item in self.detections
-        }
-        if len(identities) > 1:
-            raise ValueError("L4 detections must belong to one WindowKey")
-        track_ids = tuple(item.track_id for item in self.detections)
-        if len(track_ids) > 3 or len(track_ids) != len(set(track_ids)):
-            raise ValueError("L4 detections require 0..3 unique track IDs")
         if self.input_gain_compensation and len(self.input_gain_compensation) != len(self.detections):
             raise ValueError("gain-compensation diagnostics must align with detections")
+        track_ids = tuple(item.track_id for item in self.detections)
+        if any(item is not None for item in track_ids):
+            if any(item is None for item in track_ids) or len(set(track_ids)) != len(track_ids):
+                raise ValueError("L4 detection track IDs must be complete and unique")
         object.__setattr__(self, "detections", tuple(self.detections))
         object.__setattr__(self, "predictions", tuple(self.predictions))
         object.__setattr__(self, "input_gain_compensation", tuple(self.input_gain_compensation))
@@ -139,7 +128,3 @@ class Layer4Result:
     @property
     def voice_direction_count(self) -> int:
         return sum(item.is_voice for item in self.detections)
-
-    @property
-    def track_ids(self) -> tuple[int, ...]:
-        return tuple(item.track_id for item in self.detections)

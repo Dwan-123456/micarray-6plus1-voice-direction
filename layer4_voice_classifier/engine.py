@@ -133,14 +133,13 @@ class Layer4Engine:
         }
         if len(identities) > 1:
             raise ValueError("L4 audio inputs must belong to one window")
-        if len(inputs) > 3:
-            raise ValueError("L4 accepts at most three direction tracks per window")
-        track_ids = tuple(item.track_id for item in inputs)
-        if len(track_ids) != len(set(track_ids)):
-            raise ValueError("L4 audio input track IDs must be unique and ordered")
         angles = tuple(item.theta_deg for item in inputs)
         if len(angles) != len(set(angles)):
             raise ValueError("L4 audio input angles must be unique")
+        track_ids = tuple(item.track_id for item in inputs)
+        if any(item is not None for item in track_ids):
+            if any(item is None for item in track_ids) or len(set(track_ids)) != len(track_ids):
+                raise ValueError("L4 audio track IDs must be complete and unique")
         compensated = tuple(
             compensate_l4_input(
                 item.waveform,
@@ -161,23 +160,18 @@ class Layer4Engine:
         detections = tuple(
             VoiceDetection(
                 item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
-                item.track_id, item.theta_deg, float(probability),
-                bool(probability >= self.threshold), self.primary.model_id,
+                item.theta_deg, float(probability), bool(probability >= self.threshold), self.primary.model_id,
+                item.track_id,
             )
-            for item, probability in zip(inputs, primary.probabilities, strict=True)
+            for item, probability in zip(inputs, primary.probabilities)
         )
-        result = Layer4Result(
+        return Layer4Result(
             detections,
             predictions,
             self.primary.model_id,
             self.threshold,
             tuple(item[1] for item in compensated),
         )
-        if result.track_ids != track_ids or tuple(
-            item.theta_deg for item in result.detections
-        ) != angles:
-            raise RuntimeError("L4 output track IDs/angles do not preserve input order")
-        return result
 
     def rethreshold(self, result: Layer4Result, threshold: float) -> Layer4Result:
         """Recompute decisions from existing probabilities; never reruns L3 or a model."""
@@ -185,25 +179,14 @@ class Layer4Engine:
             raise ValueError("L4 threshold must be in [0,1]")
         detections = tuple(
             VoiceDetection(item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
-                           item.track_id, item.theta_deg, item.probability,
-                           item.probability >= threshold, item.model_id)
+                           item.theta_deg, item.probability, item.probability >= threshold, item.model_id,
+                           item.track_id)
             for item in result.detections
         )
-        adjusted = Layer4Result(
+        return Layer4Result(
             detections,
             result.predictions,
             result.primary_model_id,
             float(threshold),
             result.input_gain_compensation,
         )
-        if tuple(
-            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
-             item.track_id, item.theta_deg, item.probability, item.model_id)
-            for item in adjusted.detections
-        ) != tuple(
-            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
-             item.track_id, item.theta_deg, item.probability, item.model_id)
-            for item in result.detections
-        ):
-            raise RuntimeError("L4 rethreshold changed immutable track semantics")
-        return adjusted

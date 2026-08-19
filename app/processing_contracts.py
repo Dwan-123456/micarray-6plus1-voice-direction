@@ -8,7 +8,6 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from common.data_types import DecisionWindow
-from common.window_key import WindowKey
 
 if TYPE_CHECKING:
     from layer2_source_detection.pipeline import Layer2PipelineResult
@@ -36,6 +35,39 @@ def _freeze_config_value(value: object) -> object:
     raise TypeError(
         "processing config snapshots may contain only mappings, sequences, sets, bytes, and scalar values"
     )
+
+
+@dataclass(frozen=True, slots=True)
+class WindowKey:
+    """Globally unique identity on the authoritative ingest sample timeline."""
+
+    session_id: str
+    stream_epoch: int
+    window_id: int
+    decision_sample: int
+
+    def __post_init__(self) -> None:
+        if not self.session_id:
+            raise ValueError("WindowKey session_id cannot be empty")
+        if min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
+            raise ValueError("WindowKey numeric fields cannot be negative")
+
+    @classmethod
+    def from_window(cls, window: DecisionWindow) -> WindowKey:
+        return cls(
+            session_id=window.session_id,
+            stream_epoch=window.stream_epoch,
+            window_id=window.window_id,
+            decision_sample=window.decision_sample,
+        )
+
+    @property
+    def stream_key(self) -> tuple[str, int]:
+        return self.session_id, self.stream_epoch
+
+    @property
+    def timeline_order(self) -> tuple[str, int, int, int]:
+        return self.session_id, self.stream_epoch, self.decision_sample, self.window_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +147,7 @@ def _payload_identities(value: object) -> tuple[WindowKey, ...]:
         identity = _identity_from_object(child) if child is not None else None
         if identity is not None:
             identities.append(identity)
-    for name in ("candidates", "directions", "active_tracks", "enhanced_audio", "detections"):
+    for name in ("candidates", "enhanced_audio", "detections"):
         for child in getattr(value, name, ()):
             identity = _identity_from_object(child)
             if identity is not None:
@@ -123,28 +155,38 @@ def _payload_identities(value: object) -> tuple[WindowKey, ...]:
     return tuple(identities)
 
 
-def _payload_track_ids(value: object) -> tuple[int, ...] | None:
-    """Return the authoritative ordered IDs published by a stage payload.
+@dataclass(frozen=True, slots=True)
+class DirectionIdentity:
+    track_id: int
+    theta_deg: float
 
-    ModelPrediction intentionally remains ID-agnostic for compatibility with
-    existing CNN plugins.  IDs live on the L2/L3/L4 public DTOs and their
-    stage result, never inside a model adapter.
-    """
-    if hasattr(value, "track_ids"):
-        return tuple(getattr(value, "track_ids"))
-    for name in ("directions", "candidates", "enhanced_audio", "detections"):
-        if not hasattr(value, name):
-            continue
-        children = tuple(getattr(value, name))
-        if not children:
-            return ()
-        if all(hasattr(child, "track_id") for child in children):
-            return tuple(child.track_id for child in children)
-    if hasattr(value, "candidate_track_ids"):
-        raw = tuple(getattr(value, "candidate_track_ids"))
-        if raw and all(type(track_id) is int and track_id > 0 for track_id in raw):
-            return raw
-    return None
+    def __post_init__(self) -> None:
+        if type(self.track_id) is not int or self.track_id <= 0:
+            raise ValueError("direction alignment track_id must be positive")
+        if not 0.0 <= float(self.theta_deg) < 360.0:
+            raise ValueError("direction alignment theta must be in [0,360)")
+
+
+def _payload_direction_alignment(value: object) -> tuple[DirectionIdentity, ...]:
+    children = getattr(value, "directions", None)
+    if children is None:
+        children = getattr(value, "enhanced_audio", None)
+    if children is None:
+        children = getattr(value, "detections", ())
+    children = tuple(children)
+    if not children:
+        return ()
+    ids = tuple(getattr(item, "track_id", None) for item in children)
+    if all(item is None for item in ids):
+        return ()
+    if any(type(item) is not int or item <= 0 for item in ids):
+        raise ValueError("stage direction identities must all carry positive track_id")
+    if len(set(ids)) != len(ids):
+        raise ValueError("stage direction identities must be unique")
+    return tuple(
+        DirectionIdentity(int(track_id), float(getattr(item, "theta_deg")))
+        for track_id, item in zip(ids, children, strict=True)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +203,7 @@ class StageResult(Generic[StageOutputT]):
     reason: str | None = None
     error: str | None = None
     diagnostics: tuple[str, ...] = ()
-    track_ids: tuple[int, ...] = ()
+    direction_alignment: tuple[DirectionIdentity, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, WindowKey):
@@ -199,23 +241,12 @@ class StageResult(Generic[StageOutputT]):
         identities = () if self.output is None else _payload_identities(self.output)
         if any(identity != self.key for identity in identities):
             raise ValueError("stage output identity does not match its WindowKey")
-        track_ids = tuple(self.track_ids)
-        if len(track_ids) > 3 or len(track_ids) != len(set(track_ids)) or any(
-            type(track_id) is not int or track_id <= 0 for track_id in track_ids
-        ):
-            raise ValueError("stage track_ids must contain 0..3 unique positive integers")
-        payload_track_ids = None if self.output is None else _payload_track_ids(self.output)
-        if payload_track_ids is not None:
-            if track_ids and payload_track_ids != track_ids:
-                raise ValueError("stage track IDs do not match output ID order")
-            if not track_ids:
-                track_ids = payload_track_ids
-        if len(track_ids) > 3 or len(track_ids) != len(set(track_ids)) or any(
-            type(track_id) is not int or track_id <= 0 for track_id in track_ids
-        ):
-            raise ValueError("stage output track IDs must contain 0..3 unique positive integers")
         object.__setattr__(self, "diagnostics", tuple(str(item) for item in self.diagnostics))
-        object.__setattr__(self, "track_ids", track_ids)
+        derived = () if self.output is None else _payload_direction_alignment(self.output)
+        supplied = tuple(self.direction_alignment)
+        if supplied and supplied != derived:
+            raise ValueError("stage direction_alignment does not match its output")
+        object.__setattr__(self, "direction_alignment", derived)
 
     @property
     def is_terminal(self) -> bool:
@@ -240,7 +271,6 @@ class StageResult(Generic[StageOutputT]):
         started_monotonic_ns: int = 0,
         finished_monotonic_ns: int | None = None,
         diagnostics: tuple[str, ...] = (),
-        track_ids: tuple[int, ...] = (),
     ) -> StageResult[StageOutputT]:
         return cls(
             key=key,
@@ -249,7 +279,6 @@ class StageResult(Generic[StageOutputT]):
             started_monotonic_ns=started_monotonic_ns,
             finished_monotonic_ns=time.monotonic_ns() if finished_monotonic_ns is None else finished_monotonic_ns,
             diagnostics=diagnostics,
-            track_ids=track_ids,
         )
 
     @classmethod
@@ -263,7 +292,6 @@ class StageResult(Generic[StageOutputT]):
         finished_monotonic_ns: int | None = None,
         error: str | None = None,
         diagnostics: tuple[str, ...] = (),
-        track_ids: tuple[int, ...] = (),
     ) -> StageResult[StageOutputT]:
         if state in {StageState.PENDING, StageState.COMPLETED}:
             raise ValueError("terminal() requires a non-completed terminal state")
@@ -275,7 +303,6 @@ class StageResult(Generic[StageOutputT]):
             reason=reason,
             error=error,
             diagnostics=diagnostics,
-            track_ids=track_ids,
         )
 
 
@@ -330,8 +357,16 @@ class JoinedWindowResult:
             raise ValueError("joined result requires terminal L2, L3, and L4 results")
         if any(item.key != self.work_item.key for item in results):
             raise ValueError("all joined stages must belong to the same WindowKey")
-        if not (self.l2.track_ids == self.l3.track_ids == self.l4.track_ids):
-            raise ValueError("joined L2/L3/L4 stage track ID order does not match")
+        completed = tuple(item for item in results if item.state is StageState.COMPLETED)
+        alignments = tuple(item.direction_alignment for item in completed)
+        nonempty = tuple(item for item in alignments if item)
+        if nonempty and any(item != nonempty[0] for item in nonempty[1:]):
+            raise ValueError(
+                "L2 directions, L3 enhanced audio, and L4 detections must have identical "
+                "ordered track IDs and angles"
+            )
+        if len(completed) == 3 and any(bool(item) != bool(alignments[0]) for item in alignments[1:]):
+            raise ValueError("completed stages must not omit public direction alignment")
         if self.completed_monotonic_ns < 0:
             raise ValueError("completed_monotonic_ns cannot be negative")
         state = _joined_state(results)

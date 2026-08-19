@@ -24,6 +24,12 @@ def continuity_decision(
         return ContinuityDecision(False)
     if current.sample_rate != previous.sample_rate:
         return ContinuityDecision(True, "sample_rate_change")
+    if (
+        previous.calibration is not None
+        and current.calibration is not None
+        and current.calibration != previous.calibration
+    ):
+        return ContinuityDecision(True, "calibration_change")
     if current.sequence_id != previous.sequence_id + 1:
         return ContinuityDecision(True, "sequence_gap")
     expected = previous.timestamp + previous.frame_count / previous.sample_rate

@@ -27,6 +27,15 @@ class HardwareConfig(StrictModel):
     hardware_calibration_status: Literal["unverified", "verified"]
     hardware_calibration_report_hash: str | None
 
+    @model_validator(mode="after")
+    def validate_calibration_report_hash(self) -> "HardwareConfig":
+        value = self.hardware_calibration_report_hash
+        if value is not None and (
+            len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError("hardware_calibration_report_hash必须为小写SHA-256或null")
+        return self
+
 
 class DeviceConfig(StrictModel):
     sample_rate: Literal[48000]
@@ -46,10 +55,20 @@ class DeviceConfig(StrictModel):
     light_service_url: str | None
 
 
+class CalibrationAssetConfig(StrictModel):
+    uri: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CalibrationConfig(StrictModel):
+    version: str = Field(min_length=1)
+    correction_model: Literal["gain_polarity_integer_delay_v1"]
     gains: tuple[float, ...]
     polarity: tuple[int, ...]
     delay_samples: tuple[int, ...]
+    fractional_delay_asset: CalibrationAssetConfig | None = None
+    frequency_response_asset: CalibrationAssetConfig | None = None
 
 
 class TimingConfig(StrictModel):
@@ -110,6 +129,20 @@ class Layer2ProbabilityGateConfig(StrictModel):
     threshold: float = Field(default=0.60, ge=0, le=1)
 
 
+class Layer2MusicPreparationConfig(StrictModel):
+    context_ms: Literal[160, 240, 320]
+    comparison_context_ms: tuple[Literal[160, 240, 320], ...]
+    max_history_ms: Literal[320]
+
+    @model_validator(mode="after")
+    def validate_history_candidates(self) -> "Layer2MusicPreparationConfig":
+        if self.comparison_context_ms != (160, 240, 320):
+            raise ValueError("MUSIC首轮历史比较必须固定包含160/240/320 ms")
+        if self.context_ms not in self.comparison_context_ms:
+            raise ValueError("music.context_ms必须来自comparison_context_ms")
+        return self
+
+
 class Layer2DirectionKalmanConfig(StrictModel):
     enabled: bool = False
     backend: Literal["circular_kalman_v1", "damped_circular_kalman_v2"]
@@ -125,55 +158,43 @@ class Layer2DirectionKalmanConfig(StrictModel):
 
 
 class Layer2DirectionIdTrackingConfig(StrictModel):
-    enabled: bool = False
-    backend: Literal["circular_id_tracker_v4", "confidence_id_tracker_v2"]
+    backend: Literal["global_assignment_v1"]
     association_gate_deg: float = Field(gt=0, le=180)
-    prediction_association_gate_deg: float = Field(gt=0, le=180)
-    max_missed_windows: int = Field(ge=0)
-    confirmation_min_age_windows: Literal[100]
-    confirmation_min_matches: Literal[5]
-    prediction_hold_windows: Literal[150]
+    max_velocity_dps: float = Field(gt=0, le=360)
+    confirmation_observations: int = Field(ge=1)
+    confirmation_window_ms: int = Field(gt=0)
+    coasting_ttl_ms: int = Field(gt=0)
+    miss_cost: float = Field(gt=0)
+    birth_cost: float = Field(gt=0)
 
 
 class Layer2Config(StrictModel):
     probability_gate: Layer2ProbabilityGateConfig
+    music: Layer2MusicPreparationConfig
     direction_kalman: Layer2DirectionKalmanConfig
     direction_id_tracking: Layer2DirectionIdTrackingConfig
-    scanner_backend: str
-    angle_step_deg: float
+    scanner_backend: Literal["frequency_normalized_music"]
+    angle_step_deg: Literal[1.0]
     frequency_min_hz: Literal[2000.0]
     frequency_max_hz: Literal[4000.0]
-    n_fft: int
-    window: str
-    remove_channel_mean: bool
-    gcc_interpolation: int
-    phat_epsilon: float
-    normalization_backend: str
-    normalization_alpha: float
-    normalization_beta: float
+    n_fft: Literal[1024]
+    win_length: Literal[960]
+    hop_length: Literal[480]
+    window: Literal["hann_periodic"]
+    context_ms: Literal[160, 240, 320]
+    covariance_shrinkage: float = Field(ge=0, lt=1)
+    diagonal_loading: float = Field(gt=0)
+    eigenvalue_floor: float = Field(gt=0)
+    mdl_max_age_ms: int = Field(gt=0, le=100)
+    min_valid_frequency_bins: int = Field(gt=0)
+    min_cross_frequency_consistency: float = Field(ge=0, le=1)
     direction_threshold: float
     peak_prominence: float
     min_peak_distance_deg: Literal[45.0]
     max_candidates: Literal[3]
-    iterative_peak_search_enabled: bool
-    iterative_max_sources: Literal[2]
-    iterative_suppression_strength: float = Field(gt=0, lt=1)
-    iterative_phase_power: float = Field(ge=1)
-    iterative_pair_phase_threshold: float = Field(ge=0, le=1)
-    iterative_min_pair_support: int = Field(ge=1, le=21)
-    iterative_min_frequency_support: int = Field(ge=1)
-    iterative_min_remaining_weight_ratio: float = Field(gt=0, le=1)
-    iterative_min_residual_peak_ratio: float = Field(gt=0, le=1)
 
     @model_validator(mode="after")
     def validate_direction_postprocessing(self) -> "Layer2Config":
-        if self.direction_kalman.enabled and not self.direction_id_tracking.enabled:
-            raise ValueError("Layer 2 Circular Kalman requires private ID tracking")
-        hold = self.direction_id_tracking.prediction_hold_windows
-        if self.direction_id_tracking.max_missed_windows < hold:
-            raise ValueError("Layer 2 ID lifetime must cover the prediction hold")
-        if self.direction_kalman.max_missed_windows < hold:
-            raise ValueError("Layer 2 Kalman lifetime must cover the prediction hold")
         for value in (
             self.direction_kalman.process_noise_scale,
             self.direction_kalman.measurement_noise_scale,
@@ -503,4 +524,13 @@ def load_config(path: str | Path = "config/config.yaml", *, environ: dict[str, s
 
 def config_hash(config: ProjectConfig) -> str:
     payload = json.dumps(config.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def calibration_config_hash(calibration: CalibrationConfig) -> str:
+    """Hash the versioned correction payload, independent of verification state/report."""
+
+    payload = json.dumps(
+        calibration.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

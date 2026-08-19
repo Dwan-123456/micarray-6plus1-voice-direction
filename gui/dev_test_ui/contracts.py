@@ -7,8 +7,11 @@ from typing import Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from common.data_types import CandidateDirection, ImcraHopSnapshot, PipelineStatus, SpatialResponse
-from layer2_source_detection.iterative import CandidateSearchDiagnostics
+from common.data_types import (
+    CandidateDirection, ImcraHopSnapshot, PipelineStatus, SpatialResponse,
+    TrackedDirection,
+)
+from layer2_source_detection.music import MusicDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
 from layer4_voice_classifier.contracts import Layer4Result
 
@@ -34,6 +37,9 @@ class L1MeterSnapshot:
     imcra_hop: ImcraHopSnapshot | None = None
     pre_denoise_enabled: bool = False
     pre_denoise_mean_gain_db: float = 0.0
+    calibration_status: str = "unverified"
+    calibration_version: str = "unversioned"
+    calibration_hash: str = "0" * 64
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.end_sample, self.sequence_id) < 0:
@@ -44,6 +50,12 @@ class L1MeterSnapshot:
             raise ValueError("recording_state无效")
         if type(self.pre_denoise_enabled) is not bool or not np.isfinite(self.pre_denoise_mean_gain_db):
             raise ValueError("L1 pre-denoise meter state is invalid")
+        if self.calibration_status not in {"verified", "unverified"}:
+            raise ValueError("L1 calibration status must be verified or unverified")
+        if not self.calibration_version or len(self.calibration_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in self.calibration_hash
+        ):
+            raise ValueError("L1 calibration version/hash is invalid")
         rms, peak = _readonly(self.rms_dbfs, np.float32, "rms_dbfs"), _readonly(self.peak_dbfs, np.float32, "peak_dbfs")
         if not np.isfinite(rms).all() or not np.isfinite(peak).all():
             raise ValueError("meter数值必须finite")
@@ -69,6 +81,8 @@ class BeamformPreview:
     runtime_backend: str
     fallback_reason: str | None = None
     diagnostics: tuple[str, ...] = ()
+    track_id: int | None = None
+    track_state: str | None = None
 
     def __post_init__(self) -> None:
         waveform = np.asarray(self.waveform)
@@ -76,6 +90,12 @@ class BeamformPreview:
             raise ValueError("BeamformPreview waveform必须为finite float32 [15360]")
         object.__setattr__(self, "waveform", np.frombuffer(np.ascontiguousarray(waveform).tobytes(), dtype=np.float32))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
+            raise ValueError("BeamformPreview track_id must be a positive integer")
+        if self.track_state is not None and self.track_state not in {
+            "tentative", "confirmed", "coasting"
+        }:
+            raise ValueError("BeamformPreview track_state is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,9 +199,7 @@ class DevUiFrame:
     gate_threshold: float | None
     gate_config_revision: int | None
     direction_threshold: float | None
-    iterative_peak_search_enabled: bool | None
     direction_kalman_enabled: bool | None
-    direction_id_tracking_enabled: bool | None
     direction_kalman_q_scale: float | None
     direction_kalman_r_scale: float | None
     scan_config_revision: int | None
@@ -189,46 +207,23 @@ class DevUiFrame:
     performance: AlgorithmPerformanceSnapshot
     published_monotonic: float
     spatial_published_monotonic: float | None
-    search_diagnostics: CandidateSearchDiagnostics | None
+    search_diagnostics: MusicDiagnostics | None
     missing_reasons: Mapping[str, str]
     l4_result: Layer4Result | None = None
-    candidate_track_ids: tuple[int | None, ...] = ()
-    candidate_is_prediction: tuple[bool, ...] = ()
-    candidate_track_is_formal: tuple[bool, ...] = ()
-    candidate_track_is_new: tuple[bool, ...] = ()
+    directions: tuple[TrackedDirection, ...] = ()
+    active_tracks: tuple[TrackedDirection, ...] = ()
 
     def __post_init__(self) -> None:
-        track_ids = tuple(self.candidate_track_ids)
-        prediction_flags = tuple(self.candidate_is_prediction)
-        formal_flags = tuple(self.candidate_track_is_formal)
-        new_flags = tuple(self.candidate_track_is_new)
-        if not track_ids:
-            track_ids = (None,) * len(self.candidates)
-        if not prediction_flags:
-            prediction_flags = (False,) * len(self.candidates)
-        if not formal_flags:
-            formal_flags = (False,) * len(self.candidates)
-        if not new_flags:
-            new_flags = (False,) * len(self.candidates)
-        if not (
-            len(track_ids) == len(prediction_flags) == len(formal_flags)
-            == len(new_flags) == len(self.candidates)
-        ):
-            raise ValueError("L2候选身份显示信息必须与候选逐项对齐")
-        if any(item is not None and (type(item) is not int or item <= 0) for item in track_ids):
-            raise ValueError("L2候选ID必须为正整数或None")
-        if any(type(item) is not bool for item in (*prediction_flags, *formal_flags, *new_flags)):
-            raise TypeError("L2候选预测/正式标志必须为bool")
-        if any(formal and track_id is None for formal, track_id in zip(formal_flags, track_ids)):
-            raise ValueError("正式L2候选必须携带ID")
-        if any(prediction and track_id is None for prediction, track_id in zip(prediction_flags, track_ids)):
-            raise ValueError("预测L2候选必须携带ID")
-        if any(prediction and is_new for prediction, is_new in zip(prediction_flags, new_flags)):
-            raise ValueError("首次出现的L2候选不能同时标记为预测")
-        object.__setattr__(self, "candidate_track_ids", track_ids)
-        object.__setattr__(self, "candidate_is_prediction", prediction_flags)
-        object.__setattr__(self, "candidate_track_is_formal", formal_flags)
-        object.__setattr__(self, "candidate_track_is_new", new_flags)
+        directions = tuple(self.directions)
+        active_tracks = tuple(self.active_tracks) or directions
+        if any((item.session_id, item.stream_epoch) != (
+            self.pipeline_status.session_id, self.pipeline_status.stream_epoch
+        ) for item in (*directions, *active_tracks)):
+            raise ValueError("TrackedDirection rows must match the pipeline stream")
+        if len({item.track_id for item in active_tracks}) != len(active_tracks):
+            raise ValueError("active_tracks must contain unique authoritative L2 IDs")
+        object.__setattr__(self, "directions", directions)
+        object.__setattr__(self, "active_tracks", active_tracks)
         if not np.isfinite(self.published_monotonic):
             raise ValueError("published_monotonic必须finite")
         if self.spatial_published_monotonic is not None and not np.isfinite(
@@ -297,20 +292,6 @@ class DevUiFrame:
                     or detection.decision_sample != self.spatial_response.decision_sample
                 ):
                     raise ValueError("DevUiFrame L4 result must match the SRP window")
-            detection_ids = tuple(item.track_id for item in self.l4_result.detections)
-            if detection_ids != track_ids:
-                raise ValueError("DevUiFrame L2/L4 track ID order must match exactly")
-            if len(self.l4_result.detections) != len(self.candidates):
-                raise ValueError("DevUiFrame requires one L4 detection per L2 direction")
-            for candidate, detection in zip(
-                self.candidates, self.l4_result.detections, strict=True
-            ):
-                delta = abs(
-                    ((float(detection.theta_deg) - float(candidate.theta_deg) + 180.0) % 360.0)
-                    - 180.0
-                )
-                if delta > 1e-6:
-                    raise ValueError("DevUiFrame L2/L4 theta order must match exactly")
         if self.gate_decision is not None:
             gate_identity = (
                 self.gate_decision.session_id,
@@ -329,9 +310,7 @@ class DevUiFrame:
                 raise ValueError("a blocked Gate cannot publish an SRP response")
         scan_fields = (
             self.direction_threshold,
-            self.iterative_peak_search_enabled,
             self.direction_kalman_enabled,
-            self.direction_id_tracking_enabled,
             self.direction_kalman_q_scale,
             self.direction_kalman_r_scale,
             self.scan_config_revision,
@@ -355,12 +334,8 @@ class DevUiFrame:
             or not 0.0 <= self.direction_threshold <= 1.0
         ):
             raise ValueError("DevUiFrame direction threshold must be finite and in [0,1]")
-        if self.iterative_peak_search_enabled is not None and type(self.iterative_peak_search_enabled) is not bool:
-            raise ValueError("DevUiFrame iterative setting must be bool")
         if self.direction_kalman_enabled is not None and type(self.direction_kalman_enabled) is not bool:
             raise ValueError("DevUiFrame Kalman setting must be bool")
-        if self.direction_id_tracking_enabled is not None and type(self.direction_id_tracking_enabled) is not bool:
-            raise ValueError("DevUiFrame ID tracking setting must be bool")
         for name, value in (
             ("Q", self.direction_kalman_q_scale),
             ("R", self.direction_kalman_r_scale),
@@ -377,16 +352,11 @@ class DevUiFrame:
             raise ValueError("DevUiFrame scan config revision must be a non-negative int")
         if self.spatial_response is not None and self.search_diagnostics is None:
             raise ValueError("DevUiFrame SRP response requires search diagnostics")
-        if self.search_diagnostics is not None:
-            if self.scan_config_revision != self.search_diagnostics.config_revision:
-                raise ValueError("DevUiFrame search diagnostics must match the applied scan revision")
-            expected_mode = (
-                "iterative_rank1_projection_v1"
-                if self.iterative_peak_search_enabled
-                else "single_pass"
-            )
-            if self.search_diagnostics.mode != expected_mode:
-                raise ValueError("DevUiFrame search diagnostics must match the applied iterative setting")
+        if self.search_diagnostics is not None and (
+            self.scan_config_revision != self.search_diagnostics.config_revision
+            or self.search_diagnostics.mode != "frequency_normalized_music"
+        ):
+            raise ValueError("DevUiFrame MUSIC diagnostics/config revision mismatch")
         object.__setattr__(self, "candidates", tuple(self.candidates))
         object.__setattr__(self, "previews", tuple(self.previews))
         object.__setattr__(self, "tracked_audio", tuple(self.tracked_audio))

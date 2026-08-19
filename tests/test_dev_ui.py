@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 import wave
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,20 +10,14 @@ import pytest
 
 from app.runtime import ApplicationRuntime
 from common.config import load_config
-from common.data_types import (
-    CandidateDirection,
-    IngestedAudioBlock,
-    PipelineStatus,
-    SpatialResponse,
-    TrackedDirection,
-)
+from common.data_types import CandidateDirection, IngestedAudioBlock, ModelOrderEstimate, PipelineStatus, SpatialResponse, TrackedDirection
 from common.geometry import MIC_POSITIONS_M
 from gui.dev_test_ui.aggregator import DevUiAggregator, PerformanceTracker
 from gui.dev_test_ui.contracts import L1MeterSnapshot, TrackedAudioSnapshot
 from gui.dev_test_ui.settings import DevUiSettings
 from layer1_input.interface import DecodedAudio
 from layer1_input.sources import LiveSipeedSource, WavAudioSource
-from layer2_source_detection.iterative import CandidateSearchDiagnostics
+from layer2_source_detection.music import MusicDiagnostics, MusicStateDiagnostic
 from layer2_source_detection.probability_gate import (
     ProbabilityGateDecision,
     ProbabilityGateState,
@@ -110,9 +103,11 @@ def _open_l2_result(
         "mean_2x20ms_v1", ProbabilityGateState.OPEN,
         0.70, 0.80, 0.75, 0.60, 2, True, "probability_at_or_above_threshold",
     )
-    diagnostics = CandidateSearchDiagnostics(
-        "single_pass", "srp_phat_single_pass_v1", revision,
-        1, "single_pass", 1.0,
+    model_order = ModelOrderEstimate(1, 43, 23, 1.0, 0, "ready")
+    diagnostics = MusicDiagnostics(
+        "frequency_normalized_music", "frequency_normalized_music_mdl_v1", revision,
+        model_order, MusicStateDiagnostic("advanced", decision_sample - 960, decision_sample, 0, 23, 2, 2, False, "sample_continuous"),
+        43, "ready",
     )
     return response, (candidate,), gate, diagnostics
 
@@ -126,7 +121,7 @@ def _l4_result(
         (
             VoiceDetection(
                 session_id, epoch, window_id, decision_sample,
-                1, 30.0, 0.9, True, "test-model",
+                30.0, 0.9, True, "test-model",
             ),
         ),
         (ModelPrediction("test-model", probability, 1.0, {}),),
@@ -138,18 +133,14 @@ def _l4_result(
 def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     settings = DevUiSettings(tmp_path)
     assert settings.load_direction_threshold(.35) == .35
-    assert settings.load_iterative_peak_search_enabled() is False
     assert settings.load_direction_kalman_enabled() is False
-    assert settings.load_direction_id_tracking_enabled() is False
     assert settings.load_gate_probability_threshold(0.60) == 0.60
     assert settings.load_l1_pre_denoise_enabled(False) is False
 
     settings.save_direction_threshold(.67)
-    assert settings.save_iterative_peak_search_enabled(True) is True
     assert settings.load_direction_threshold(.35) == .67
     settings.save_direction_threshold(.42)
     settings.save_direction_kalman_enabled(True)
-    settings.save_direction_id_tracking_enabled(True)
     assert settings.save_direction_kalman_q_scale(1.2) == 1.2
     assert settings.save_direction_kalman_r_scale(0.8) == 0.8
     assert settings.save_gate_probability_threshold(0.73) == 0.73
@@ -157,9 +148,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
 
     loaded = DevUiSettings(tmp_path)
     assert loaded.load_direction_threshold(.35) == .42
-    assert loaded.load_iterative_peak_search_enabled() is True
     assert loaded.load_direction_kalman_enabled() is True
-    assert loaded.load_direction_id_tracking_enabled() is True
     assert loaded.load_direction_kalman_q_scale(1.0) == 1.2
     assert loaded.load_direction_kalman_r_scale(1.0) == 0.8
     assert loaded.load_gate_probability_threshold(0.60) == 0.73
@@ -167,7 +156,8 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
 
     payload = loaded.path.read_text(encoding="utf-8")
     assert '"layer2_direction_threshold": 0.42' in payload
-    assert '"layer2_iterative_peak_search_enabled": true' in payload
+    assert "layer2_iterative_peak_search_enabled" not in payload
+    assert "layer2_direction_id_tracking_enabled" not in payload
 
 
 def test_operator_settings_reject_invalid_values(tmp_path):
@@ -272,8 +262,7 @@ def test_ui_aggregator_clears_old_and_ignores_late_l2_results_on_epoch_change():
     aggregator.update_srp(
         None, (), "BACKGROUND_ONLY", gate_decision=gate,
         gate_threshold=0.60, gate_config_revision=0,
-        direction_threshold=0.35, iterative_peak_search_enabled=False,
-        direction_kalman_enabled=False, direction_id_tracking_enabled=False,
+        direction_threshold=0.35, direction_kalman_enabled=False,
         direction_kalman_q_scale=1.0, direction_kalman_r_scale=1.0,
         scan_config_revision=0,
     )
@@ -286,8 +275,7 @@ def test_ui_aggregator_clears_old_and_ignores_late_l2_results_on_epoch_change():
     late = aggregator.update_srp(
         None, (), "BACKGROUND_ONLY", gate_decision=gate,
         gate_threshold=0.60, gate_config_revision=0,
-        direction_threshold=0.35, iterative_peak_search_enabled=False,
-        direction_kalman_enabled=False, direction_id_tracking_enabled=False,
+        direction_threshold=0.35, direction_kalman_enabled=False,
         direction_kalman_q_scale=1.0, direction_kalman_r_scale=1.0,
         scan_config_revision=0,
     )
@@ -313,13 +301,10 @@ def test_gate_unavailable_preserves_l3_listening_rows_across_epoch_recovery():
         gate_threshold=0.60,
         gate_config_revision=2,
         direction_threshold=0.35,
-        iterative_peak_search_enabled=False,
         direction_kalman_enabled=False,
-        direction_id_tracking_enabled=False,
         direction_kalman_q_scale=1.0,
         direction_kalman_r_scale=1.0,
         scan_config_revision=3,
-        candidate_track_ids=(1,),
     )
     row0 = TrackedAudioSnapshot(
         "aggregator-test", 0, 7, "active", 30.0, 0.8, 9_600,
@@ -366,13 +351,10 @@ def test_ui_aggregator_ignores_late_l4_from_old_epoch_and_old_window_without_sid
             gate_threshold=0.60,
             gate_config_revision=2,
             direction_threshold=0.35,
-            iterative_peak_search_enabled=False,
             direction_kalman_enabled=False,
-            direction_id_tracking_enabled=False,
             direction_kalman_q_scale=1.0,
             direction_kalman_r_scale=1.0,
             scan_config_revision=3,
-            candidate_track_ids=(1,),
         )
 
     response0, candidates0, gate0, diagnostics0 = _open_l2_result(window_id=0)
@@ -618,13 +600,6 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
             )
         )
     runtime_config = load_config(CONFIG, environ={})
-    runtime_config = runtime_config.model_copy(update={
-        "layer2": runtime_config.layer2.model_copy(update={
-            "direction_id_tracking": runtime_config.layer2.direction_id_tracking.model_copy(
-                update={"enabled": True}
-            )
-        })
-    })
 
     def open_probabilities(window):
         return (
@@ -643,26 +618,6 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
         pipeline=StubPipeline(frames), serial_device=StubSerial(),
         source_probability_provider=open_probabilities,
     )
-    # This branch tests the L3 public-ID boundary while the separate L2 branch
-    # owns production tracking. Supply explicit authoritative IDs in this
-    # integration fixture; L3 itself must never synthesize them.
-    original_l2_process = runtime._layer2.process
-
-    def process_with_public_ids(*args, **kwargs):
-        result = original_l2_process(*args, **kwargs)
-        directions = tuple(
-            TrackedDirection(
-                item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
-                item.doa_start_sample, item.doa_end_sample, index + 1, index + 1,
-                item.theta_deg, item.theta_deg, item.raw_score, item.normalized_score,
-                "confirmed", True, index == 0, item.doa_start_sample,
-                item.decision_sample, 0, False,
-            )
-            for index, item in enumerate(result.candidates)
-        )
-        return replace(result, directions=directions, active_tracks=directions)
-
-    runtime._layer2.process = process_with_public_ids
     runtime.start()
     deadline, frame = time.monotonic() + 8, None
     while time.monotonic() < deadline:
@@ -676,7 +631,13 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
     runtime.stop()
     runtime.recording_store.close()
 
-    assert frame is not None and frame.spatial_response is not None
+    assert frame is not None and frame.spatial_response is not None, (
+        runtime.last_error,
+        runtime.processing_error,
+        runtime.dev_ui_error,
+        runtime.dev_audio_tracking_error,
+        runtime._stage_errors,
+    )
     assert len(frame.previews) == len(frame.candidates) >= 1
     assert all(preview.window_id == frame.spatial_response.window_id for preview in frame.previews)
     assert all(preview.waveform.shape == (15_360,) for preview in frame.previews)
@@ -688,7 +649,7 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
         app.processEvents()
         assert "P 0.90" in window.gate_readout.text()
         assert "Gate OPEN" in window.gate_readout.text()
-        assert "L2内部平滑" in window.bf_panel.help.text()
+        assert "L2 confirmed权威ID" in window.bf_panel.help.text()
         assert "Directional Audio Preview" in window.bf_panel.title()
     finally:
         window.close()
@@ -819,14 +780,13 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert window.srp_threshold.parentWidget() is not window.srp_polar
         right_layout = window.srp_threshold.parentWidget().layout()
         assert right_layout.indexOf(window.gate_threshold) == 0
-        assert right_layout.indexOf(window.srp_iterative) == 1
-        assert right_layout.indexOf(window.srp_id_tracking) == 2
-        assert right_layout.indexOf(window.srp_kalman) == 3
-        assert right_layout.indexOf(window.srp_kalman_q) == 4
-        assert right_layout.indexOf(window.srp_kalman_r) == 5
-        assert right_layout.indexOf(window.gate_readout) == 6
-        assert right_layout.indexOf(window.srp_threshold) == 7
-        assert window.srp_iterative.parentWidget() is not window.srp_polar
+        assert not hasattr(window, "srp_iterative")
+        assert not hasattr(window, "srp_id_tracking")
+        assert right_layout.indexOf(window.srp_kalman) == 1
+        assert right_layout.indexOf(window.srp_kalman_q) == 2
+        assert right_layout.indexOf(window.srp_kalman_r) == 3
+        assert right_layout.indexOf(window.gate_readout) == 4
+        assert right_layout.indexOf(window.srp_threshold) == 5
         decision = ProbabilityGateDecision(
             "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
             0.55, 0.75, 0.65, 0.60, 4, True, "probability_at_or_above_threshold",
@@ -904,51 +864,47 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         app.processEvents()
 
 
-def test_srp_response_radius_maps_zero_near_center_and_one_near_rim(monkeypatch):
+def test_music_response_radius_maps_zero_near_center_and_one_near_rim(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from gui.dev_test_ui.srp_panel import SrpPolarPanel
+    from gui.dev_test_ui.srp_panel import MusicPolarPanel
 
     outer = 200.0
-    assert SrpPolarPanel._response_radius(outer, 0.0) == pytest.approx(7.0)
-    assert SrpPolarPanel._response_radius(outer, 1.0) == pytest.approx(193.0)
-    assert SrpPolarPanel._response_radius(outer, -1.0) == pytest.approx(7.0)
-    assert SrpPolarPanel._response_radius(outer, 2.0) == pytest.approx(193.0)
+    assert MusicPolarPanel._response_radius(outer, 0.0) == pytest.approx(7.0)
+    assert MusicPolarPanel._response_radius(outer, 1.0) == pytest.approx(193.0)
+    assert MusicPolarPanel._response_radius(outer, -1.0) == pytest.approx(7.0)
+    assert MusicPolarPanel._response_radius(outer, 2.0) == pytest.approx(193.0)
 
 
-def test_srp_candidate_style_encodes_identity_and_current_observation(monkeypatch):
+def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from gui.dev_test_ui.srp_panel import SrpPolarPanel
+    from PySide6.QtWidgets import QApplication
+    from gui.dev_test_ui.srp_panel import DirectionTrackTable, MusicPanelSnapshot, MusicPolarPanel
 
-    new_colour, new_size = SrpPolarPanel._candidate_style(
-        7, is_prediction=False, is_formal=False, is_new=True
+    app = QApplication.instance() or QApplication([])
+    del app
+    response, _, _, diagnostics = _open_l2_result()
+    response = SpatialResponse(
+        response.session_id, response.stream_epoch, response.window_id,
+        response.decision_sample, response.doa_start_sample, response.doa_end_sample,
+        response.theta_degrees, response.raw_scores, response.normalized_scores,
+        diagnostics.model_order, diagnostics.valid_frequency_bins,
+        diagnostics.covariance_quality, diagnostics.algorithm_version,
     )
-    pending_colour, pending_size = SrpPolarPanel._candidate_style(
-        7, is_prediction=False, is_formal=False, is_new=False
+    track = TrackedDirection(
+        "aggregator-test", 0, 0, 15_360, 13_440, 15_360,
+        7, 1, 30.0, 31.0, 0.2, 0.8, "confirmed", True, True,
+        14_400, 15_360, 0, True,
     )
-    pending_prediction_colour, pending_prediction_size = SrpPolarPanel._candidate_style(
-        7, is_prediction=True, is_formal=False, is_new=False
-    )
-    red_live, red_live_size = SrpPolarPanel._candidate_style(
-        1, is_prediction=False, is_formal=True, formal_color_slot=0
-    )
-    red_predicted, red_predicted_size = SrpPolarPanel._candidate_style(
-        1, is_prediction=True, is_formal=True, formal_color_slot=0
-    )
-    green_live, green_live_size = SrpPolarPanel._candidate_style(
-        3, is_prediction=False, is_formal=True, formal_color_slot=1
-    )
-    amber_live, amber_live_size = SrpPolarPanel._candidate_style(
-        5, is_prediction=False, is_formal=True, formal_color_slot=2
-    )
-
-    assert new_colour.name() == pending_colour.name() == pending_prediction_colour.name() == "#929daa"
-    assert new_size < pending_size
-    assert pending_prediction_size == new_size
-    assert red_live.name() == red_predicted.name() == "#ff3b30"
-    assert red_predicted_size == new_size < red_live_size
-    assert green_live.name() == "#2ecc71"
-    assert green_live_size == red_live_size
-    assert amber_live.name() == "#ffb000"
-    assert amber_live_size == red_live_size
+    snapshot = MusicPanelSnapshot(response, (track,), (track,), time.monotonic(), {7: 0.91})
+    panel = MusicPolarPanel()
+    table = DirectionTrackTable()
+    panel.set_snapshot(snapshot)
+    table.set_snapshot(snapshot)
+    assert panel._snapshot.active_tracks[0].track_id == 7
+    assert table.item(0, 0).text() == "7"
+    assert table.item(0, 1).text() == "30.0°"
+    assert table.item(0, 2).text() == "31.0°"
+    assert table.item(0, 4).text() == "confirmed"
+    assert table.item(0, 7).text() == "0.910"

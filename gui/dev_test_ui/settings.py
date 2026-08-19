@@ -9,10 +9,14 @@ import tempfile
 class DevUiSettings:
     """Atomic persistent store for operator-tuned Development Test UI values."""
 
-    SCHEMA_VERSION = "dev_test_ui_settings_v7"
-    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v6"
+    SCHEMA_VERSION = "dev_test_ui_settings_v8"
+    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v7"
     OLDER_SCHEMA_VERSION = "dev_test_ui_settings_v2"
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
+    OBSOLETE_KEYS = {
+        "layer2_iterative_peak_search_enabled",
+        "layer2_direction_id_tracking_enabled",
+    }
 
     def __init__(self, project_root: str | Path):
         self.path = Path(project_root).resolve() / "data" / "dev_test_ui" / "settings.json"
@@ -36,6 +40,8 @@ class DevUiSettings:
 
     def _save_update(self, **updates: object) -> None:
         payload = self._load_payload()
+        for key in self.OBSOLETE_KEYS:
+            payload.pop(key, None)
         payload.update(updates)
         payload["schema_version"] = self.SCHEMA_VERSION
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,18 +71,6 @@ class DevUiSettings:
         threshold = self._validate_threshold(value)
         self._save_update(layer2_direction_threshold=threshold)
         return threshold
-
-    def load_iterative_peak_search_enabled(self, default: bool = False) -> bool:
-        fallback = self._validate_bool(default)
-        try:
-            return self._validate_bool(self._load_payload()["layer2_iterative_peak_search_enabled"])
-        except (KeyError, TypeError, ValueError):
-            return fallback
-
-    def save_iterative_peak_search_enabled(self, value: bool) -> bool:
-        enabled = self._validate_bool(value)
-        self._save_update(layer2_iterative_peak_search_enabled=enabled)
-        return enabled
 
     def load_direction_kalman_enabled(self, default: bool = False) -> bool:
         fallback = self._validate_bool(default)
@@ -117,19 +111,6 @@ class DevUiSettings:
         scale = self._validate_kalman_scale(value)
         self._save_update(layer2_direction_kalman_r_scale=scale)
         return scale
-
-
-    def load_direction_id_tracking_enabled(self, default: bool = False) -> bool:
-        fallback = self._validate_bool(default)
-        try:
-            return self._validate_bool(self._load_payload()["layer2_direction_id_tracking_enabled"])
-        except (KeyError, TypeError, ValueError):
-            return fallback
-
-    def save_direction_id_tracking_enabled(self, value: bool) -> bool:
-        enabled = self._validate_bool(value)
-        self._save_update(layer2_direction_id_tracking_enabled=enabled)
-        return enabled
 
     def load_gate_probability_threshold(self, default: float = 0.60) -> float:
         fallback = self._validate_gate_threshold(default)

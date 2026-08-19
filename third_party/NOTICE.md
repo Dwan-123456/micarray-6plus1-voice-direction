@@ -1,5 +1,24 @@
 # Third-party algorithm references
 
+## Pyroomacoustics MUSIC / NormMUSIC
+
+- Repository: https://github.com/LCAV/pyroomacoustics
+- Reviewed files: `pyroomacoustics/doa/music.py`, `pyroomacoustics/doa/normmusic.py`, and `examples/doa_algorithms.py` on the upstream `master` branch during the 1.1.0 L2 design review.
+- License: MIT (https://github.com/LCAV/pyroomacoustics/blob/master/LICENSE)
+- Use: algorithmic and test reference for broadband MUSIC and per-frequency normalized MUSIC fusion.
+- Runtime dependency: none; this project contains an independent rolling implementation specialized for 7 physical microphones, 2--4 kHz, and a 360-point grid.
+
+## MUSIC and MDL papers
+
+- R. O. Schmidt, “Multiple Emitter Location and Signal Parameter Estimation”: https://codar.com/images/about/1986Schmidt_MUSIC.pdf
+- M. Wax and T. Kailath, “Detection of Signals by Information Theoretic Criteria”: https://doi.org/10.1109/TASSP.1985.1164557
+- Use: mathematical references for the noise-subspace pseudo-spectrum and 0--3 source model-order selection. No paper source code is copied.
+
+## Israel Cohen publications
+
+- Publications index: https://israelcohen.com/publications/all-publications/
+- Use: noise-estimation and robustness background only. No Cohen MUSIC open-source implementation was found, claimed, or copied.
+
 ## Voice-Separation-and-Enhancement
 
 - Repository: https://github.com/KyleZhang1118/Voice-Separation-and-Enhancement

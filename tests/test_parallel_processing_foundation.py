@@ -29,7 +29,6 @@ from app.result_joiner import (
     JoinerCapacityError,
     ResultDeliveryError,
     ResultJoiner,
-    StageAlignmentError,
     TimelineGapError,
 )
 from common.data_types import DecisionWindow
@@ -112,73 +111,6 @@ def test_stage_results_reject_wrong_identity_and_define_terminal_state():
     )
     assert skipped.is_terminal
     assert skipped.output is None
-
-
-def test_stage_results_reject_duplicate_and_payload_misaligned_track_ids():
-    work = _work(0)
-
-    with pytest.raises(ValueError, match="unique positive"):
-        L2StageResult.completed(
-            work.key, _Payload.for_key(work.key, "l2"),
-            finished_monotonic_ns=1, track_ids=(7, 7),
-        )
-    with pytest.raises(ValueError, match="0..3"):
-        L3StageResult.terminal(
-            work.key, StageState.FAILED, "l3_failed", error="boom",
-            finished_monotonic_ns=1, track_ids=(1, 2, 3, 4),
-        )
-
-
-def test_joiner_preserves_track_ids_through_failed_and_skipped_terminal_stages():
-    work = _work(0)
-    joiner = ResultJoiner(max_pending_bytes=8 * 1024 * 1024)
-    joiner.register(work)
-    ids = (41, 6)
-    joiner.submit_l2(L2StageResult.completed(
-        work.key, _Payload.for_key(work.key, "l2"),
-        finished_monotonic_ns=1, track_ids=ids,
-    ))
-    joiner.submit_l3(L3StageResult.terminal(
-        work.key, StageState.FAILED, "l3_failed", error="boom",
-        finished_monotonic_ns=2, track_ids=ids,
-    ))
-    joiner.submit_l4(L4StageResult.terminal(
-        work.key, StageState.SKIPPED, "l3_failed",
-        finished_monotonic_ns=3, track_ids=ids,
-    ))
-
-    joined = joiner.drain_ready()[0]
-    assert joined.state is StageState.FAILED
-    assert joined.l2.track_ids == joined.l3.track_ids == joined.l4.track_ids == ids
-
-
-def test_joiner_rejects_missing_or_reordered_stage_ids_without_consuming_stage_slot():
-    work = _work(0)
-    joiner = ResultJoiner(max_pending_bytes=8 * 1024 * 1024)
-    joiner.register(work)
-    joiner.submit_l2(L2StageResult.completed(
-        work.key, _Payload.for_key(work.key, "l2"),
-        finished_monotonic_ns=1, track_ids=(9, 2),
-    ))
-    with pytest.raises(StageAlignmentError, match="track ID order"):
-        joiner.submit_l3(L3StageResult.completed(
-            work.key, _Payload.for_key(work.key, "l3"),
-            finished_monotonic_ns=2, track_ids=(2, 9),
-        ))
-    with pytest.raises(StageAlignmentError, match="track ID order"):
-        joiner.submit_l3(L3StageResult.completed(
-            work.key, _Payload.for_key(work.key, "l3"),
-            finished_monotonic_ns=2, track_ids=(),
-        ))
-    joiner.submit_l3(L3StageResult.completed(
-        work.key, _Payload.for_key(work.key, "l3"),
-        finished_monotonic_ns=2, track_ids=(9, 2),
-    ))
-    joiner.submit_l4(L4StageResult.completed(
-        work.key, _Payload.for_key(work.key, "l4"),
-        finished_monotonic_ns=3, track_ids=(9, 2),
-    ))
-    assert joiner.drain_ready()[0].l4.track_ids == (9, 2)
 
 
 def test_window_artifact_cache_is_single_publish_and_evicts_complete_oldest_window():

@@ -18,16 +18,15 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.probability_gate.backend == "mean_2x20ms_v1"
     assert config.layer2.probability_gate.threshold == 0.60
     assert config.layer2.direction_kalman.backend == "damped_circular_kalman_v2"
-    assert config.layer2.direction_id_tracking.backend == "confidence_id_tracker_v2"
+    assert config.layer2.scanner_backend == "frequency_normalized_music"
+    assert config.layer2.direction_id_tracking.backend == "global_assignment_v1"
     assert config.layer2.direction_kalman.velocity_half_life_seconds == 0.5
     assert config.layer2.direction_kalman.max_velocity_dps == 60.0
     assert config.layer2.direction_kalman.enabled is False
-    assert config.layer2.direction_id_tracking.enabled is False
-    assert config.layer2.direction_id_tracking.association_gate_deg == 20.0
-    assert config.layer2.direction_id_tracking.prediction_association_gate_deg == 30.0
-    assert config.layer2.direction_id_tracking.confirmation_min_age_windows == 100
-    assert config.layer2.direction_id_tracking.confirmation_min_matches == 5
-    assert config.layer2.direction_id_tracking.prediction_hold_windows == 150
+    assert not hasattr(config.layer2.direction_id_tracking, "enabled")
+    assert config.layer2.direction_id_tracking.association_gate_deg == 45.0
+    assert config.layer2.direction_id_tracking.confirmation_observations == 2
+    assert config.layer2.direction_id_tracking.coasting_ttl_ms == 3000
     assert config.layer2.direction_kalman.max_missed_windows == 150
     assert config.layer2.direction_kalman.process_noise_scale == 1.0
     assert config.layer2.direction_kalman.measurement_noise_scale == 1.0
@@ -128,7 +127,7 @@ def test_probability_gate_threshold_must_be_in_unit_interval(tmp_path):
     ("source", "replacement"),
     (
         ("backend: damped_circular_kalman_v2", "backend: unknown_tracker_v9"),
-        ("association_gate_deg: 20.0", "association_gate_deg: 181.0"),
+        ("association_gate_deg: 45.0", "association_gate_deg: 181.0"),
         ("measurement_std_deg: 5.0", "measurement_std_deg: 0.0"),
         ("process_noise_scale: 1.00", "process_noise_scale: 0.03"),
         ("max_missed_windows: 150", "max_missed_windows: -1"),
@@ -142,7 +141,7 @@ def test_direction_postprocessing_configuration_is_strict(tmp_path, source, repl
         load_config(candidate, environ={})
 
 
-def test_kalman_cannot_be_enabled_without_id_tracking(tmp_path):
+def test_kalman_can_be_enabled_because_id_tracking_is_permanent(tmp_path):
     text = CONFIG.read_text(encoding="utf-8").replace(
         "direction_kalman:\n    enabled: false",
         "direction_kalman:\n    enabled: true",
@@ -150,8 +149,7 @@ def test_kalman_cannot_be_enabled_without_id_tracking(tmp_path):
     )
     candidate = tmp_path / "kalman-without-id.yaml"
     candidate.write_text(text, encoding="utf-8")
-    with pytest.raises(ValidationError, match="requires private ID tracking"):
-        load_config(candidate, environ={})
+    assert load_config(candidate, environ={}).layer2.direction_kalman.enabled is True
 
 
 @pytest.mark.parametrize(

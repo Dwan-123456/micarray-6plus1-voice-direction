@@ -18,6 +18,7 @@ from common.data_types import (
     CandidateDirection,
     DecisionWindow,
     EnhancedAudio,
+    ModelOrderEstimate,
     PipelineStatus,
     SpatialResponse,
     TrackedDirection,
@@ -25,12 +26,12 @@ from common.data_types import (
 from data_management import DecisionRecord, ResultWatermark
 from gui.dev_test_ui.contracts import DevUiFrame, L1MeterSnapshot
 from layer2_source_detection import (
-    CandidateSearchDiagnostics,
     Layer2ExecutionState,
     Layer2PipelineResult,
     ProbabilityGateDecision,
     ProbabilityGateState,
 )
+from layer2_source_detection.music import MusicDiagnostics, MusicStateDiagnostic
 from layer3_direction_signal import Layer3Output
 from layer4_voice_classifier import Layer4Result, ModelPrediction, VoiceDetection
 
@@ -241,29 +242,17 @@ def _open_l2_output(window: DecisionWindow) -> Layer2PipelineResult:
         1.0,
         0.9,
     )
-    direction = TrackedDirection(
-        window.session_id,
-        window.stream_epoch,
-        window.window_id,
-        window.decision_sample,
-        window.doa_start_sample,
-        window.doa_end_sample,
-        window.window_id + 1,
-        1,
-        candidate.theta_deg,
-        candidate.theta_deg,
-        candidate.raw_score,
-        candidate.normalized_score,
-        "confirmed",
-        True,
-        window.window_id == 0,
-        window.decision_sample,
-        window.decision_sample,
-        0,
-        False,
+    model_order = ModelOrderEstimate(1, 43, 23, 1.0, 0, "ready")
+    diagnostics = MusicDiagnostics(
+        "frequency_normalized_music", "parallel_runtime_music_v1", 0, model_order,
+        MusicStateDiagnostic("advanced", window.decision_sample - 960, window.decision_sample, 0, 23, 2, 2, False, "sample_continuous"),
+        43, "ready",
     )
-    diagnostics = CandidateSearchDiagnostics(
-        "single_pass", "parallel_runtime_test_v1", 0, 1, "single_pass", 1.0
+    direction = TrackedDirection(
+        window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
+        window.doa_start_sample, window.doa_end_sample, window.window_id + 1, 1,
+        candidate.theta_deg, candidate.theta_deg, candidate.raw_score, candidate.normalized_score,
+        "confirmed", True, True, window.decision_sample, window.decision_sample, 0, False,
     )
     return Layer2PipelineResult(
         Layer2ExecutionState.PROCESSED,
@@ -271,8 +260,8 @@ def _open_l2_output(window: DecisionWindow) -> Layer2PipelineResult:
         response,
         (candidate,),
         diagnostics,
-        directions=(direction,),
-        active_tracks=(direction,),
+        (direction.track_id,), (False,), (True,), (True,), (False,),
+        (direction,), (direction,), model_order,
     )
 
 
@@ -295,17 +284,14 @@ def _blocked_l2_output(window: DecisionWindow) -> Layer2PipelineResult:
     return Layer2PipelineResult(Layer2ExecutionState.BLOCKED, gate, None, (), None)
 
 
-def _l3_output(window: DecisionWindow, candidates: tuple[TrackedDirection, ...]) -> Layer3Output:
+def _l3_output(window: DecisionWindow, candidates: tuple[CandidateDirection, ...]) -> Layer3Output:
     return Layer3Output(
-        WindowKey.from_window(window),
         tuple(
             EnhancedAudio(
                 window.session_id,
                 window.stream_epoch,
                 window.window_id,
                 window.decision_sample,
-                candidate.track_id,
-                candidate.rank,
                 window.context_start_sample,
                 window.context_end_sample,
                 candidate.theta_deg,
@@ -314,6 +300,7 @@ def _l3_output(window: DecisionWindow, candidates: tuple[TrackedDirection, ...])
                 None,
                 (),
                 np.zeros(15_360, dtype=np.float32),
+                candidate.track_id,
             )
             for candidate in candidates
         )
@@ -327,11 +314,11 @@ def _l4_output(inputs: tuple[object, ...]) -> Layer4Result:
             item.stream_epoch,
             item.window_id,
             item.decision_sample,
-            item.track_id,
             item.theta_deg,
             0.8,
             True,
             "stub-primary",
+            item.track_id,
         )
         for item in inputs
     )
@@ -370,6 +357,7 @@ class _StubL2:
         self.last_kalman_error = None
         self.last_id_tracking_error = None
         self.id_tracker = SimpleNamespace(active_track_count=0)
+        self.voice_feedback: list[tuple[str, int, int, float]] = []
 
     @staticmethod
     def reset() -> None:
@@ -391,6 +379,13 @@ class _StubL2:
             return _blocked_l2_output(window) if self.blocked else _open_l2_output(window)
         finally:
             self.probe.add("l2", window.window_id, started, time.monotonic())
+
+    def submit_voice_feedback(
+        self, session_id: str, stream_epoch: int, decision_sample: int, theta_deg: float
+    ) -> bool:
+        self.voice_feedback.append((session_id, stream_epoch, decision_sample, theta_deg))
+        return True
+
 
 class _StubL3:
     def __init__(
@@ -419,7 +414,7 @@ class _StubL3:
     def process_prepared(
         self,
         window: DecisionWindow,
-        candidates: tuple[TrackedDirection, ...],
+        candidates: tuple[CandidateDirection, ...],
         geometry: object,
     ) -> Layer3Output:
         del geometry
@@ -610,16 +605,12 @@ def test_late_ordered_commit_from_old_epoch_cannot_update_new_epoch_ui(tmp_path:
     assert runtime.latest_dev_ui.empty()
 
 
-def test_completed_l4_does_not_send_angle_only_identity_feedback_to_l2(tmp_path: Path) -> None:
-    base = _config()
-    tracking = base.layer2.direction_id_tracking.model_copy(update={"enabled": True})
-    layer2 = base.layer2.model_copy(update={"direction_id_tracking": tracking})
-    config = base.model_copy(update={"layer2": layer2})
-    runtime, _store, _probe = _start_with_stubs(tmp_path, config=config)
+def test_completed_l4_does_not_feed_direction_lifecycle_back_to_l2(tmp_path: Path) -> None:
+    runtime, _store, _probe = _start_with_stubs(tmp_path)
     try:
         runtime._admit_window(_window(0))
         _wait_until(lambda: runtime.processing_status["l4_actual_completed"] >= 1)
-        assert not hasattr(runtime._layer2, "voice_feedback")
+        assert runtime._layer2.voice_feedback == []
     finally:
         runtime.stop()
 
@@ -651,18 +642,6 @@ def test_stages_overlap_across_windows_but_preserve_same_window_dependencies_and
         assert probe.get("l2", 1).started < probe.get("l3", 0).finished
         assert probe.get("l3", 1).started < probe.get("l4", 0).finished
         assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
-        for record in store.record_snapshot():
-            expected_track_id = record.window_id + 1
-            assert tuple(item["track_id"] for item in record.candidates) == (
-                expected_track_id,
-            )
-            assert tuple(item["track_id"] for item in record.enhanced_audio) == (
-                expected_track_id,
-            )
-            assert tuple(item["track_id"] for item in record.detections) == (
-                expected_track_id,
-            )
-            assert record.l4_result["track_ids"] == [expected_track_id]
         assert [item.sample for item in store.watermark_snapshot()] == [
             15_360,
             16_320,
@@ -1157,37 +1136,18 @@ def test_new_epoch_prunes_obsolete_preceding_gap_reason(tmp_path: Path) -> None:
 
 
 def test_direction_stage_contract_requires_exact_ordered_outputs() -> None:
-    candidates = (
-        SimpleNamespace(track_id=9, theta_deg=5.0),
-        SimpleNamespace(track_id=2, theta_deg=50.0),
-    )
+    candidates = (SimpleNamespace(theta_deg=5.0), SimpleNamespace(theta_deg=50.0))
 
     ApplicationRuntime._validate_direction_outputs(
-        "test", candidates,
-        (SimpleNamespace(track_id=9, theta_deg=5.0), SimpleNamespace(track_id=2, theta_deg=50.0)),
-        (9, 2),
+        "test", candidates, (SimpleNamespace(theta_deg=5.0), SimpleNamespace(theta_deg=50.0))
     )
     with pytest.raises(RuntimeError, match="expected 2 ordered outputs"):
         ApplicationRuntime._validate_direction_outputs(
-            "test", candidates, (SimpleNamespace(track_id=9, theta_deg=5.0),), (9, 2)
+            "test", candidates, (SimpleNamespace(theta_deg=5.0),)
         )
     with pytest.raises(RuntimeError, match="does not match candidate"):
         ApplicationRuntime._validate_direction_outputs(
-            "test", candidates,
-            (SimpleNamespace(track_id=9, theta_deg=50.0), SimpleNamespace(track_id=2, theta_deg=5.0)),
-            (9, 2),
-        )
-    with pytest.raises(RuntimeError, match="track ID"):
-        ApplicationRuntime._validate_direction_outputs(
-            "test", candidates,
-            (SimpleNamespace(track_id=2, theta_deg=5.0), SimpleNamespace(track_id=9, theta_deg=50.0)),
-            (9, 2),
-        )
-    with pytest.raises(RuntimeError, match="duplicate track IDs"):
-        ApplicationRuntime._validate_direction_outputs(
-            "test", candidates,
-            (SimpleNamespace(track_id=9, theta_deg=5.0), SimpleNamespace(track_id=2, theta_deg=50.0)),
-            (9, 9),
+            "test", candidates, (SimpleNamespace(theta_deg=50.0), SimpleNamespace(theta_deg=5.0))
         )
 
 

@@ -1,6 +1,6 @@
 # 项目文件分类
 
-> 当前文件分类继续对应项目 1.0.1。项目 1.1.0 的目标文件职责和迁移顺序以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为准；其中 L2 将由 MUSIC 和永久公共方向 ID 取代当前 SRP/私有可选 ID 路径，完成迁移后再更新本清单为已实现状态。
+> 当前分支正实现项目1.1.0，目标职责以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为准；L2已迁移到Rolling NormMUSIC和永久公共方向ID，但项目整体尚未发布。
 
 > 当前源码已迁移到v0.3主链，权威接口见[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)。ApplicationRuntime采用唯一WindowKey、L2/L3/L4逐层有界latest-wins、有界completion/backlog/commit以及有序ResultJoiner；同窗严格L2→L3→L4、稳态跨窗并行。实机标定和production入口的未完成项仍以权威架构文档为准。
 
@@ -15,10 +15,11 @@
 - `config/`：唯一业务配置。
 - `ingest/`、`windowing/`：统一时间轴、分发和分析窗口。
 - `layer1_input/`：当前新项目的Layer 1，与Layer 2、Layer 3、Layer 4在根目录并列。
-- `layer2_source_detection/`：Probability Gate、SRP-PHAT、可选私有ID追踪及其后置按ID圆周卡尔曼模块；两者默认关闭，卡尔曼依赖ID追踪，内部ID不进入公共DTO。
-  - `probability_gate.py`：消费L1对齐的两个20 ms声源概率，计算40 ms均值并按运行时门限决定是否放行SRP。
-  - `pipeline.py`：按Probability Gate → SRP-PHAT → Internal DirectionSmoother编排，并区分`BLOCKED / PROCESSED`。
-  - `iterative.py`：可切换迭代多峰搜索的逐窗口诊断契约；算法实现位于`srp_phat.py`，默认关闭。
+- `layer2_source_detection/`：Probability Gate、滚动frequency-normalized MUSIC、永久全局方向ID及可选Kalman输出平滑。
+  - `probability_gate.py`：消费L1对齐的两个20 ms声源概率，计算40 ms均值并按运行时门限决定是否运行MUSIC。
+  - `music.py`：维护增量STFT协方差、MDL 0～3源估计、NormMUSIC 360°伪谱和圆周峰值。
+  - `global_tracker.py`：使用带birth/miss dummy项的`linear_sum_assignment`维护公共方向轨迹。
+  - `pipeline.py`：按Probability Gate → Rolling NormMUSIC → Global ID → optional Kalman编排，并区分`BLOCKED / PROCESSED`。
 - `layer3_direction_signal/`：当前v0.2含共享STFT、DAS/MVDR和FeatureExtractor；v0.3公共输出将只保留逐方向48 kHz音频。
 - `layer4_voice_classifier/`：已实现MarbleNet基准的公共契约、插件引擎、artifact校验、CPU推理和运行时接线；目标域校准及CUDA门禁未完成。
 - `data_management/`：正式录音与数据管理；当前RecordingStore包含原子result+watermark、逐chunk结果释放、有界event pre-roll、hotmap流写入及增强WAV partial+journal恢复。

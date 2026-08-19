@@ -77,29 +77,6 @@ class SrpThresholdControl(QWidget):
         self.threshold_changed.emit(threshold)
 
 
-class IterativePeakSearchControl(QPushButton):
-    enabled_changed = Signal(bool)
-
-    def __init__(self, enabled: bool, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setCheckable(True)
-        self.setMinimumHeight(34)
-        self.toggled.connect(self._changed)
-        self.set_enabled(enabled)
-
-    def set_enabled(self, enabled: bool, *, pending: bool = False) -> None:
-        self.setChecked(bool(enabled))
-        state = "ON" if enabled else "OFF"
-        suffix = " · next window" if pending else ""
-        self.setText(f"Iterative multi-peak: {state}{suffix}")
-        color = "#9a6b00" if pending else ("#16794b" if enabled else "#5b6570")
-        self.setStyleSheet(f"QPushButton {{ background:{color}; color:white; font-weight:600; }}")
-
-    def _changed(self, enabled: bool) -> None:
-        self.set_enabled(bool(enabled), pending=True)
-        self.enabled_changed.emit(bool(enabled))
-
-
 class _RuntimeSwitchControl(QPushButton):
     enabled_changed = Signal(bool)
     label = "L2 switch"
@@ -125,10 +102,6 @@ class _RuntimeSwitchControl(QPushButton):
 
 class DirectionKalmanControl(_RuntimeSwitchControl):
     label = "Circular Kalman"
-
-
-class DirectionIdTrackingControl(_RuntimeSwitchControl):
-    label = "Private direction ID tracking"
 
 
 class KalmanNoiseScaleControl(QWidget):
@@ -279,7 +252,7 @@ class BeamformPanel(QGroupBox):
         preview_controls.addWidget(self.preview_play)
         preview_controls.addWidget(self.preview_stop)
         layout.addLayout(preview_controls)
-        self.help = QLabel("下方记录已进入卡尔曼持续跟踪的临时ID及正式ID音频；首次出现的小点不缓存。候选消失后等待3秒。")
+        self.help = QLabel("仅按L2权威ID缓存方向音频；Kalman只平滑角度，不控制ID存在。")
         layout.addWidget(self.help)
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
@@ -439,8 +412,8 @@ class BeamformPanel(QGroupBox):
             self.track_layout.insertWidget(index, row)
         if tracks or self._track_rows:
             self.help.setText(
-                "首行为Center Mic原始输入对照；其余显示已进入卡尔曼持续跟踪的临时/正式ID，并按缓存时长从长到短排列。"
-                "正式ID音频：ACTIVE实时追加，"
+                "首行为Center Mic原始输入对照；其余仅显示L2 confirmed/coasting权威ID，并按缓存时长从长到短排列。"
+                "权威ID音频：ACTIVE实时追加，"
                 "COASTING等待恢复，ENDED停止追加；"
                 f"仅显示≥{self._minimum_listening_track_seconds:.1f}s音频，"
                 "已显示ID保留至新会话或关闭窗口。"
@@ -451,7 +424,7 @@ class BeamformPanel(QGroupBox):
                 f"{self._minimum_listening_track_seconds:.1f}s后显示。"
             )
         else:
-            self.help.setText("等待L2内部平滑候选；检测到声源后将按Test UI ID拼接磁盘缓存。")
+            self.help.setText("等待L2 confirmed权威ID；UI不会按角度创建、合并或修补ID。")
 
     def _toggle_track(self, track_id: int) -> None:
         if self._playing_track_id == track_id:
