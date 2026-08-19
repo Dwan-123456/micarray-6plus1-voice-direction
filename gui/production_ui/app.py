@@ -44,6 +44,7 @@ from data_management.service import DataManagerService
 from data_management.contracts import Annotation
 from data_management.wizard import WizardInput, validate_wizard
 from gui.production_ui.capture_host import CaptureHost
+from gui.production_ui.channel_player import NativeChannelPlayer
 
 
 class _Signals(QObject):
@@ -221,6 +222,7 @@ class ImportMetadataDialog(QDialog):
             tuple(self.allowed_uses.currentData()),
             self._csv_float(self.fields["theta"].text()),
             self._csv_float(self.fields["distance"].text()),
+            recording_name=self.fields["dataset"].text().strip() or "导入录音",
         )
 
     def _validate(self):
@@ -251,6 +253,7 @@ class AudioDataManager(QMainWindow):
         self.capture_host.runtime_status.connect(self._apply_runtime_status)
         self.capture_host.wizard_status.connect(self._apply_wizard_status)
         self.capture_host.error.connect(self._capture_error)
+        self.channel_player = NativeChannelPlayer()
         self.recording_command.connect(self.capture_host.handle_command)
         self.setWindowTitle("麦克风阵列录音与数据管理")
         self.resize(1460, 900)
@@ -674,71 +677,36 @@ class AudioDataManager(QMainWindow):
         )
         box.addWidget(title)
         box.addWidget(intro)
-        filters = QHBoxLayout()
-        self.dataset_filter = QLineEdit()
-        self.dataset_filter.setPlaceholderText("按数据集编号筛选（可留空）")
-        self.status_filter = QComboBox()
-        for label, value in (
-            ("全部质量状态", ""),
-            ("待检查", "pending"),
-            ("检查通过", "passed"),
-            ("待处理区", "quarantine"),
-            ("已标注", "annotated"),
-            ("已纳入版本", "versioned"),
-        ):
-            self.status_filter.addItem(label, value)
-        self.split_filter = QComboBox()
-        for label, value in (
-            ("全部数据用途", ""),
-            ("训练集", "train"),
-            ("验证集", "validation"),
-            ("测试集", "test"),
-            ("校准集", "calibration"),
-            ("尚未分配", "unset"),
-        ):
-            self.split_filter.addItem(label, value)
-        for widget in (self.dataset_filter, self.status_filter, self.split_filter):
-            filters.addWidget(widget)
-        query = QPushButton("筛选")
-        query.clicked.connect(self.refresh_recordings)
-        filters.addWidget(query)
-        box.addLayout(filters)
         self.corpus_table = DataTable(
             [
-                ("id", "样本编号"),
-                ("dataset_id", "数据集"),
-                ("source_type", "来源"),
-                ("status", "质量"),
-                ("split", "数据用途"),
-                ("room_id", "房间"),
-                ("duration_samples", "时长"),
+                ("id", "内部编号"),
+                ("display_name", "音频名称"),
             ],
-            "测试语料库为空。可点击下方“导入外部WAV”，或使用“测试录制向导”采集第一条样本。",
+            "还没有录音，请先使用“测试录制向导”录制一条数据。",
         )
+        self.corpus_table.setColumnHidden(0, True)
         box.addWidget(self.corpus_table)
         actions = QHBoxLayout()
-        import_button = QPushButton("导入外部WAV")
-        import_button.clicked.connect(self._import_recording)
-        export_button = QPushButton("导出所选样本")
-        export_button.clicked.connect(self._export_recording)
+        self.listen_channel = QComboBox()
+        for index in range(8):
+            self.listen_channel.addItem(f"通道 {index + 1}", index)
+        listen_button = QPushButton("试听所选通道")
+        listen_button.clicked.connect(self._listen_selected_channel)
+        stop_listen_button = QPushButton("停止试听")
+        stop_listen_button.clicked.connect(self.channel_player.stop)
         simulate_button = QPushButton("用所选样本进行模拟测试")
         simulate_button.clicked.connect(self._simulate_selected_recording)
-        simulate_button.setToolTip("自动打开Test UI，并把所选7通道音频按实时速度送入同一套算法")
+        simulate_button.setToolTip("自动打开Test UI，并完整模拟录制时的8通道音频和热力图输入")
         trash_button = QPushButton("移到回收站")
         trash_button.setObjectName("destructiveButton")
         trash_button.clicked.connect(self._trash_recording)
-        actions.addWidget(import_button)
-        actions.addWidget(export_button)
+        actions.addWidget(self.listen_channel)
+        actions.addWidget(listen_button)
+        actions.addWidget(stop_listen_button)
         actions.addWidget(simulate_button)
         actions.addWidget(trash_button)
         actions.addStretch()
         box.addLayout(actions)
-        annotate_button = QPushButton("为所选样本添加标注")
-        annotate_button.clicked.connect(self._prepare_annotation)
-        actions.addWidget(annotate_button)
-        qa_button = QPushButton("检查所选样本质量")
-        qa_button.clicked.connect(self._open_selected_qa)
-        actions.addWidget(qa_button)
         self.tabs.addTab(page, "测试语料库")
 
     def _wizard_tab(self):
@@ -757,9 +725,8 @@ class AudioDataManager(QMainWindow):
         form = QFormLayout(formbox)
         self.wizard_fields = {}
         for key, label, placeholder in (
-            ("environment_id", "环境说明 *", "例如：安静办公室、空调开启"),
-            ("source_count", "声源数量（选填）", "不确定时可留空"),
-            ("notes", "备注（选填）", "补充说明，可留空"),
+            ("recording_name", "音频名称 *", "输入你希望显示的录音名称"),
+            ("notes", "备注（选填）", "手工填写本次录音备注"),
         ):
             edit = QLineEdit()
             edit.setPlaceholderText(placeholder)
@@ -789,7 +756,7 @@ class AudioDataManager(QMainWindow):
             "② 点击“开始录制”，程序自动连接麦克风并立即开始采集\n\n"
             "③ 录制期间可以暂停和继续，暂停部分不会写入数据集\n\n"
             "④ 点击“结束并保存”，程序自动统计实际录制时长\n\n"
-            "⑤ 系统保存7个麦克风的独立音频、标签和校验清单，并自动执行质量检查\n\n"
+            "⑤ 系统边录边保存麦克风传入电脑的原始8通道音频和热力图\n\n"
             "检查未通过的样本不会丢失，会进入“待处理区”。"
         )
         steps.setWordWrap(True)
@@ -989,12 +956,7 @@ class AudioDataManager(QMainWindow):
         )
 
     def refresh_recordings(self):
-        filters = {
-            "dataset_id": self.dataset_filter.text().strip() or None,
-            "status": self.status_filter.currentData() or None,
-            "split": self.split_filter.currentData() or None,
-        }
-        self._job(lambda: self.service.recordings(**filters), self.corpus_table.load)
+        self._job(self.service.recordings, self.corpus_table.load)
 
     def _load_sessions(self, rows):
         self._runtime_rows = rows
@@ -1165,19 +1127,19 @@ class AudioDataManager(QMainWindow):
         self.statusBar().showMessage("维护操作完成", 5000)
 
     def _wizard_input(self) -> WizardInput:
-        source_count_text = self.wizard_fields["source_count"].text().strip()
-        environment = self.wizard_fields["environment_id"].text().strip()
-        if not environment:
-            raise ValueError("请填写环境说明")
+        recording_name = self.wizard_fields["recording_name"].text().strip()
+        if not recording_name:
+            raise ValueError("请填写音频名称")
         return WizardInput(
             dataset_id="test-recordings",
             room_id="unspecified",
-            environment_id=environment,
+            environment_id="unspecified",
             array_pose_id="r6plus1-default",
-            source_count=int(source_count_text) if source_count_text else 0,
+            source_count=0,
             consent_status="not_applicable",
             allowed_uses=("internal_research",),
             notes=self.wizard_fields["notes"].text().strip(),
+            recording_name=recording_name,
         )
 
     def _validate_wizard(self):
@@ -1236,7 +1198,8 @@ class AudioDataManager(QMainWindow):
         self._job(self.service.wizard.finalize, self._wizard_complete)
 
     def _wizard_complete(self, recording_id):
-        self.wizard_status.setText(f"当前阶段：完成 · 样本编号 {recording_id}")
+        name = self.wizard_fields["recording_name"].text().strip()
+        self.wizard_status.setText(f"当前阶段：完成 · {name}")
         self.wizard_start.setEnabled(True)
         self.wizard_pause.setEnabled(False)
         self.wizard_stop.setEnabled(False)
@@ -1478,12 +1441,15 @@ class AudioDataManager(QMainWindow):
             return self._info("请先在测试语料库中选择一个样本，再点击模拟测试。")
         root = Path(row["path"])
         try:
-            manifest = json.loads((root / "recording_manifest.json").read_text(encoding="utf-8"))
-            asset = next(item for item in manifest.get("assets", []) if item.get("kind") == "physical_7ch")
-            audio_path = (root / asset["path"]).resolve(strict=True)
-        except (OSError, ValueError, StopIteration, KeyError, json.JSONDecodeError) as exc:
-            return QMessageBox.warning(self, "无法启动模拟测试", f"所选样本缺少有效的7通道音频：{exc}")
+            manifest_path = (root / "recording_manifest.json").resolve(strict=True)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            kinds = {item.get("kind") for item in manifest.get("assets", [])}
+            if not {"native_8ch", "cdc_hotmaps"}.issubset(kinds):
+                raise ValueError("该录音没有同时保存原始8通道音频和热力图")
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            return QMessageBox.warning(self, "无法启动模拟测试", f"所选录音不是完整麦克风输入：{exc}")
         project_root = Path(__file__).resolve().parents[2]
+        self.channel_player.stop()
         try:
             subprocess.Popen(
                 [
@@ -1492,8 +1458,8 @@ class AudioDataManager(QMainWindow):
                     "gui.dev_test_ui.app",
                     "--config",
                     str(project_root / "config" / "config.yaml"),
-                    "--input-wav",
-                    str(audio_path),
+                    "--replay-recording",
+                    str(manifest_path),
                     "--auto-start",
                 ],
                 cwd=project_root,
@@ -1501,6 +1467,24 @@ class AudioDataManager(QMainWindow):
         except OSError as exc:
             return QMessageBox.warning(self, "无法启动模拟测试", str(exc))
         self.statusBar().showMessage("Test UI已打开，正在实时模拟所选样本输入", 8000)
+
+    def _listen_selected_channel(self):
+        recording_id = self.corpus_table.selected_id()
+        row = next((item for item in self.service.recordings() if item["id"] == recording_id), None)
+        if row is None:
+            return self._info("请先选择一条录音。")
+        root = Path(row["path"])
+        try:
+            manifest = json.loads((root / "recording_manifest.json").read_text(encoding="utf-8"))
+            asset = next(item for item in manifest.get("assets", ()) if item.get("kind") == "native_8ch")
+            audio_path = (root / str(asset["path"])).resolve(strict=True)
+            self.channel_player.play(audio_path, int(self.listen_channel.currentData()))
+        except (OSError, ValueError, StopIteration, KeyError, json.JSONDecodeError) as exc:
+            return QMessageBox.warning(self, "无法试听", str(exc))
+        self.statusBar().showMessage(
+            f"正在试听 {row.get('display_name', recording_id)} · 通道 {int(self.listen_channel.currentData()) + 1}",
+            5000,
+        )
 
     def _import_recording(self):
         source, _ = QFileDialog.getOpenFileName(self, "导入7/8通道48 kHz WAV", "", "WAV audio (*.wav)")
@@ -1578,6 +1562,7 @@ class AudioDataManager(QMainWindow):
                 "录音仍在安全封存中，窗口暂时不能关闭。请稍候几秒后再试。",
             )
             return
+        self.channel_player.close()
         self.capture_host.close()
         self.pool.waitForDone(5000)
         self.service.close()

@@ -161,6 +161,83 @@ class CorpusStore:
         self.catalog.upsert_recording(manifest, root)
         return rid
 
+    def register_raw_recording(
+        self,
+        root: Path,
+        metadata: RecordingMetadata | dict,
+        *,
+        lineage: dict,
+        assets: list[dict],
+        duration_samples: int,
+    ) -> str:
+        """Register an already-streamed, lossless microphone-input recording."""
+
+        meta = public_mapping(metadata)
+        self._rights(meta)
+        if duration_samples <= 0:
+            raise ValueError("录音必须包含有效音频")
+        native = next((item for item in assets if item.get("kind") == "native_8ch"), None)
+        if native is None or int(native.get("channel_count", 0)) != 8:
+            raise ValueError("完整测试录音必须包含原始8通道音频")
+        for asset in assets:
+            path = root / str(asset["path"])
+            if not path.is_file() or sha256_file(path) != asset.get("sha256"):
+                raise ValueError(f"录音资产不完整：{asset.get('path')}")
+
+        labels_path = atomic_json(
+            root / "labels.json",
+            {
+                "schema_version": "test_recording_labels_v2",
+                "recording_name": meta.get("display_name", ""),
+                "notes": meta.get("notes", ""),
+                "duration_seconds": duration_samples / 48_000,
+                "recorded_intervals": list(lineage.get("recorded_intervals", ())),
+            },
+        )
+        assets.append(
+            {
+                "kind": "labels",
+                "path": labels_path.name,
+                "sha256": sha256_file(labels_path),
+            }
+        )
+        manifest = {
+            "schema_version": "raw_microphone_recording_v1",
+            "dataset_id": meta["dataset_id"],
+            "recording_id": root.name,
+            "display_name": str(meta.get("display_name", "")).strip(),
+            "capture_session_id": lineage.get("session_id"),
+            "source_type": "dedicated",
+            "lineage": lineage,
+            "capture_time_utc": meta["capture_time_utc"],
+            "environment_id": meta["environment_id"],
+            "room_id": meta["room_id"],
+            "array_pose_id": meta["array_pose_id"],
+            "source_count": meta["source_count"],
+            "source_categories": list(meta["source_categories"]),
+            "rights": meta["rights"],
+            "notes": meta.get("notes", ""),
+            "quality_status": "pending",
+            "split": "unset",
+            "assets": assets,
+            "duration_samples": int(duration_samples),
+            "input_contract": {
+                "sample_rate": 48_000,
+                "native_channel_count": 8,
+                "audio_kind": "native_8ch",
+                "hotmap_kind": "cdc_hotmaps",
+            },
+        }
+        append_audit(root, "raw_recording_created", {"display_name": manifest["display_name"]})
+        write_manifest(root / "recording_manifest.json", manifest)
+        report = qa_recording(root)
+        manifest["quality_status"] = report["status"] if report["status"] == "passed" else "quarantine"
+        write_manifest(root / "recording_manifest.json", manifest)
+        dataset_root = root.parents[1]
+        self.catalog.upsert_dataset(meta["dataset_id"], dataset_root)
+        self.catalog.upsert_recording(manifest, root)
+        return root.name
+
     def import_recording(self, source: str | Path, metadata: RecordingMetadata | dict) -> str:
         meta = public_mapping(metadata)
         self._rights(meta)

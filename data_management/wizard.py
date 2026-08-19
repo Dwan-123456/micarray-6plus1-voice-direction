@@ -20,10 +20,16 @@ class WizardInput:
     license_id: str = "internal"
     expires_at_utc: str | None = None
     notes: str = ""
+    recording_name: str = ""
 
 
 def validate_wizard(data: WizardInput) -> list[str]:
     errors = []
+    name = data.recording_name.strip()
+    if not name:
+        errors.append("请填写音频名称")
+    elif len(name) > 100 or any(ord(char) < 32 for char in name):
+        errors.append("音频名称必须在100个字符以内且不能包含控制字符")
     if not all((data.dataset_id, data.room_id, data.environment_id, data.array_pose_id)):
         errors.append("数据集、房间、环境和阵列姿态均必填")
     if data.consent_status not in {"granted", "not_applicable"}:

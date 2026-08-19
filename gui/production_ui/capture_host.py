@@ -16,10 +16,11 @@ from data_management import RecordingStore, SessionMetadata
 from data_management.dedicated_recording import WizardPhase
 from ingest import IngestCoordinator
 from layer1_input.calibration import ChannelCalibrator
-from layer1_input.configuration import AudioConfig, CalibrationConfig
+from layer1_input.configuration import AudioConfig, CalibrationConfig, CdcConfig
 from layer1_input.pipeline import InputPipeline
 from layer1_input.imcra import Layer1Imcra
 from layer1_input.sources import LiveSipeedSource
+from layer1_input.serial_device import SerialDevice
 
 
 class CaptureHost(QObject):
@@ -54,9 +55,13 @@ class CaptureHost(QObject):
         self._log_path = self.data_root / "logs" / "audio_data_manager_capture.log"
 
     def _make_pipeline(self) -> InputPipeline:
+        cdc = CdcConfig.from_project(self.config)
         return InputPipeline(
             LiveSipeedSource(AudioConfig.from_project(self.config)),
             ChannelCalibrator(CalibrationConfig.from_project(self.config)),
+            SerialDevice(cdc.port, cdc.baudrate) if cdc.enabled else None,
+            owns_hotmap_source=True,
+            hotmap_required=cdc.required,
             timestamp_tolerance_ms=self.config.timing.timestamp_tolerance_ms,
         )
 
@@ -158,6 +163,8 @@ class CaptureHost(QObject):
                 audio = pipeline.read(timeout=0.1)
                 if audio is None:
                     continue
+                take_hotmaps = getattr(pipeline, "take_hotmap_frames", None)
+                hotmap_frames = tuple(take_hotmaps()) if callable(take_hotmaps) else ()
                 block = coordinator.ingest(audio, tuple(pipeline.take_health_events()))
                 if self.config.layer1_imcra.enabled:
                     hops = imcra.process(block)
@@ -167,7 +174,7 @@ class CaptureHost(QObject):
                 phase = self.service.wizard.phase
                 if phase in self.CAPTURING_WIZARD_PHASES:
                     try:
-                        status = self.service.wizard.append(block)
+                        status = self.service.wizard.append(block, hotmap_frames)
                     except Exception as exc:
                         reason = f"测试录制已中止：{exc}。运行录音和麦克风采集仍在继续。"
                         status = self.service.wizard.abort(reason)

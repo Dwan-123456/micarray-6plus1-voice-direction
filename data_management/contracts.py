@@ -33,6 +33,7 @@ class RecordingMetadata:
     language_tags: tuple[str, ...] = ()
     snr_db: float | None = None
     notes: str = ""
+    display_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)

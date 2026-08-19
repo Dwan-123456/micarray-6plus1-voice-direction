@@ -820,14 +820,24 @@ def wizard_block(session: str, start: int, rng: np.random.Generator) -> Ingested
     mix = rng.normal(0, 0.02, 960).astype(np.float32)
     native = np.column_stack((physical[:, :6], mix, physical[:, 6]))
     logical = np.column_stack((physical, mix))
-    return IngestedAudioBlock(session, 0, start, start + 960, 48000, start // 960, start / 48000, logical, native)
+    from layer1_input.interface import CdcHotmapFrame
+
+    sequence = start // 960
+    hotmap = CdcHotmapFrame(np.full((16, 16), sequence, dtype=np.uint8), sequence, start / 48000)
+    return IngestedAudioBlock(
+        session, 0, start, start + 960, 48000, sequence, start / 48000,
+        logical, native, hotmap,
+    )
 
 
-def test_dedicated_recording_supports_pause_resume_and_saves_seven_microphones(tmp_path: Path):
+def test_dedicated_recording_streams_complete_raw_input_with_pause_resume(tmp_path: Path):
     catalog = Catalog(tmp_path / "catalog.sqlite")
     controller = DedicatedRecordingController(tmp_path, catalog)
     dataset = str(uuid.uuid4())
-    controller.begin(WizardInput(dataset, "room", "quiet", "pose", 1, "granted", ("research",), (30.0,), (1.0,)))
+    controller.begin(WizardInput(
+        dataset, "room", "quiet", "pose", 1, "granted", ("research",),
+        (30.0,), (1.0,), recording_name="手工命名录音",
+    ))
     rng = np.random.default_rng(42)
     session = str(uuid.uuid4())
     sample = 0
@@ -847,7 +857,15 @@ def test_dedicated_recording_supports_pause_resume_and_saves_seven_microphones(t
     recording_id = controller.finalize()
     root = tmp_path / "test_corpus" / dataset / "recordings" / recording_id
     assert controller.phase == WizardPhase.COMPLETE and (root / "qa_report.json").exists()
-    assert len(list((root / "microphones").glob("mic_*.wav"))) == 7
+    with wave.open(str(root / "native_8ch.wav"), "rb") as recorded:
+        assert recorded.getnchannels() == 8
+        assert recorded.getnframes() == 30 * 960
+    hotmaps = [json.loads(line) for line in (root / "hotmaps.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(hotmaps) == 30
+    assert hotmaps[20]["playback_sample"] == 20 * 960
+    manifest = json.loads((root / "recording_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["display_name"] == "手工命名录音"
+    assert {item["kind"] for item in manifest["assets"]} == {"native_8ch", "cdc_hotmaps", "labels"}
     labels = json.loads((root / "labels.json").read_text(encoding="utf-8"))
     assert labels["duration_seconds"] == 30 * 960 / 48_000
     assert len(labels["recorded_intervals"]) == 2

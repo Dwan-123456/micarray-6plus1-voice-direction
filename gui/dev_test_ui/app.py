@@ -17,6 +17,7 @@ from layer1_input.calibration import ChannelCalibrator
 from layer1_input.configuration import CalibrationConfig
 from layer1_input.pipeline import InputPipeline
 from layer1_input.sources import WavAudioSource
+from layer1_input.recording_replay import RecordingReplaySource
 
 
 def _time(value: float | None) -> str:
@@ -105,7 +106,13 @@ def _format_processing_pipeline_tooltip(runtime: object) -> str:
     )
 
 
-def build_window(config_path: str | Path, *, input_wav: str | Path | None = None, auto_start: bool = False):
+def build_window(
+    config_path: str | Path,
+    *,
+    input_wav: str | Path | None = None,
+    replay_recording: str | Path | None = None,
+    auto_start: bool = False,
+):
     try:
         from PySide6.QtCore import QSignalBlocker, QTimer, Qt
         from PySide6.QtWidgets import (
@@ -133,9 +140,28 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
     project_root = config_path.parent.parent
+    if input_wav is not None and replay_recording is not None:
+        raise ValueError("input_wav和replay_recording不能同时使用")
     replay_path = None if input_wav is None else Path(input_wav).resolve()
+    recording_manifest = None if replay_recording is None else Path(replay_recording).resolve()
+    replay_source = None
     pipeline = None
-    if replay_path is not None:
+    if recording_manifest is not None:
+        replay_source = RecordingReplaySource(
+            recording_manifest,
+            logical_channel_map=config.device.logical_channel_map,
+            block_size=config.device.block_size_samples,
+            autoplay=auto_start,
+        )
+        pipeline = InputPipeline(
+            replay_source,
+            ChannelCalibrator(CalibrationConfig.from_project(config)),
+            replay_source,
+            owns_hotmap_source=False,
+            hotmap_required=True,
+            timestamp_tolerance_ms=config.timing.timestamp_tolerance_ms,
+        )
+    elif replay_path is not None:
         with wave.open(str(replay_path), "rb") as source:
             channels = source.getnchannels()
             sample_rate = source.getframerate()
@@ -198,11 +224,12 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
         def __init__(self):
             super().__init__()
             self._runtime = runtime
-            self.setWindowTitle(
-                "6+1 Microphone Array — Development Test UI"
-                if replay_path is None
-                else f"Development Test UI — 模拟测试：{replay_path.name}"
-            )
+            if replay_source is not None:
+                self.setWindowTitle(f"Development Test UI — 模拟输入模式：{replay_source.display_name}")
+            elif replay_path is not None:
+                self.setWindowTitle(f"Development Test UI — 模拟测试：{replay_path.name}")
+            else:
+                self.setWindowTitle("6+1 Microphone Array — Development Test UI")
             self.setMinimumSize(1200, 700)
             self._frame = None
             self._last_l4_frame = None
@@ -220,6 +247,8 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
             self._last_runtime_state = "stopped"
             self._eof_stop_submitted = False
             self._audio_source_key = None
+            self._replay_previous_stream = None
+            self._replay_reset_pending = False
             root = QWidget()
             outer = QVBoxLayout(root)
             outer.setContentsMargins(0, 0, 0, 0)
@@ -287,6 +316,26 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
             self.l1_header = QLabel("Stopped | session — | epoch 0 | sample 0 | age N/A")
             self.l1_header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             layout.addWidget(self.l1_header)
+            if replay_source is not None:
+                replay_controls = QHBoxLayout()
+                self.replay_name = QLabel(f"模拟输入模式 · {replay_source.display_name}")
+                self.replay_start = QPushButton("开始/继续")
+                self.replay_pause = QPushButton("暂停")
+                self.replay_restart = QPushButton("从头重播")
+                self.replay_status = QLabel("准备中")
+                self.replay_start.clicked.connect(self._start_or_resume_replay)
+                self.replay_pause.clicked.connect(replay_source.pause)
+                self.replay_restart.clicked.connect(self._restart_replay)
+                for widget in (
+                    self.replay_name,
+                    self.replay_start,
+                    self.replay_pause,
+                    self.replay_restart,
+                    self.replay_status,
+                ):
+                    replay_controls.addWidget(widget)
+                replay_controls.addStretch()
+                layout.addLayout(replay_controls)
             controls = QHBoxLayout()
             self.start_button = QPushButton("启动采集")
             self.stop_button = QPushButton("停止采集")
@@ -301,6 +350,8 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
             self.light_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
             for widget in (self.start_button, self.stop_button, self.light_on, self.light_off, self.light_label):
                 controls.addWidget(widget)
+                if replay_source is not None:
+                    widget.setVisible(False)
             controls.addStretch()
             layout.addLayout(controls)
             recording = QHBoxLayout()
@@ -662,6 +713,81 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
             self.bf_panel.clear_tracks()
             self._submit_command("启动采集", runtime.start)
 
+        def _start_or_resume_replay(self):
+            if replay_source is None:
+                return
+            replay_source.resume()
+            if not runtime.active:
+                self._start_capture()
+
+        def _clear_replay_results(self):
+            current_l1 = None if self._frame is None else getattr(self._frame, "l1", None)
+            if current_l1 is not None:
+                self._replay_previous_stream = (
+                    current_l1.session_id,
+                    current_l1.stream_epoch,
+                )
+            else:
+                self._replay_previous_stream = None
+            self._replay_reset_pending = True
+            for mailbox in (runtime.latest_dev_ui, getattr(runtime, "latest_l4_dev_ui", None)):
+                if mailbox is None:
+                    continue
+                while True:
+                    try:
+                        mailbox.get_nowait()
+                    except queue.Empty:
+                        break
+            self.preview_player.close()
+            self._audio_source_key = None
+            audio_id_tracker.reset()
+            self.bf_panel.clear_tracks()
+            self._frame = None
+            self._last_l4_frame = None
+            self._last_l4_seen = 0.0
+            self._l4_is_stale = False
+            self._selected = None
+            self._last_rendered_window = None
+            self.srp_polar.set_snapshot(None, live=True)
+            self.gate_readout.set_unavailable("WARMING")
+            self.cnn_panel.set_unavailable("WARMING: replay restarted")
+            self.srp_header.setText("WARMING | replay restarted | waiting for new result")
+            self.l1_header.setText("WARMING | replay restarted | waiting for first block")
+
+        def _restart_replay(self):
+            if replay_source is None:
+                return
+            self._clear_replay_results()
+            replay_source.replay()
+            if not runtime.active:
+                self._start_capture()
+
+        @staticmethod
+        def _format_replay_time(seconds: float) -> str:
+            value = max(0, int(seconds * 10))
+            return f"{value // 600:02d}:{(value % 600) / 10:04.1f}"
+
+        def _refresh_replay_controls(self):
+            if replay_source is None:
+                return
+            status = replay_source.status()
+            names = {
+                "ready": "准备就绪",
+                "playing": "正在播放",
+                "paused": "已暂停",
+                "ended": "播放完成",
+                "stopped": "已停止",
+                "error": "错误",
+            }
+            self.replay_status.setText(
+                f"{names[status.state]} · {self._format_replay_time(status.current_seconds)} / "
+                f"{self._format_replay_time(status.total_seconds)}"
+            )
+            busy = self._pending_command is not None
+            self.replay_start.setEnabled(not busy and status.state in {"ready", "paused"})
+            self.replay_pause.setEnabled(not busy and status.state == "playing")
+            self.replay_restart.setEnabled(not busy and status.state not in {"ready", "stopped", "error"})
+
         def _begin_recording(self):
             def started(_result):
                 self._record_started, self._record_elapsed = monotonic(), 0.0
@@ -704,6 +830,7 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
             self.light_off.setEnabled(not busy)
             self._set_record_buttons(runtime.scratch.state)
             self.srp_kalman.setEnabled(runtime.direction_id_tracking_enabled)
+            self._refresh_replay_controls()
 
         def _select_candidate(self, theta: float, window_id: int):
             self._selected = (theta, window_id)
@@ -769,6 +896,7 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
 
         def _refresh(self):
             self._poll_command()
+            self._refresh_replay_controls()
             self.preview_player.validate_output()
             if not self.preview_player.playing:
                 self.bf_panel.sync_track_playback_stopped()
@@ -799,6 +927,15 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
                     except queue.Empty:
                         break
             if latest is not None:
+                if self._replay_reset_pending and self._replay_previous_stream is not None:
+                    identity = None if latest.l1 is None else (latest.l1.session_id, latest.l1.stream_epoch)
+                    if identity == self._replay_previous_stream:
+                        latest = None
+                    elif identity is not None:
+                        self._replay_reset_pending = False
+                elif self._replay_reset_pending and latest.l1 is not None:
+                    self._replay_reset_pending = False
+            if latest is not None:
                 self._frame = latest
                 self._last_l1_seen = monotonic()
                 # Render the ordered formal frame without allowing a terminal
@@ -807,6 +944,14 @@ def build_window(config_path: str | Path, *, input_wav: str | Path | None = None
                 self._render_frame(latest, render_l4=False)
             elif runtime.last_error:
                 self._set_text(self.l1_header, f"ERROR | {runtime.last_error}")
+            if latest_l4 is not None and self._frame is not None and self._frame.l1 is not None:
+                immediate_identity = None if latest_l4.l1 is None else (
+                    latest_l4.l1.session_id,
+                    latest_l4.l1.stream_epoch,
+                )
+                current_identity = (self._frame.l1.session_id, self._frame.l1.stream_epoch)
+                if immediate_identity != current_identity:
+                    latest_l4 = None
             self._update_l4_panel(latest, latest_l4)
             if runtime.running:
                 if self._frame is not None and monotonic() - self._last_l1_seen > config.dev_test_ui.stale_after_ms / 1000:
@@ -1129,9 +1274,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--input-wav", help="后台注入Test UI的7/8通道48 kHz测试WAV")
+    parser.add_argument("--replay-recording", help="完整模拟录音的recording_manifest.json")
     parser.add_argument("--auto-start", action="store_true")
     args = parser.parse_args()
-    app, _window = build_window(args.config, input_wav=args.input_wav, auto_start=args.auto_start)
+    app, _window = build_window(
+        args.config,
+        input_wav=args.input_wav,
+        replay_recording=args.replay_recording,
+        auto_start=args.auto_start,
+    )
     return app.exec()
 
 

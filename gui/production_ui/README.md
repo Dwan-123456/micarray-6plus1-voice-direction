@@ -1,10 +1,10 @@
 # 麦克风阵列录音与数据管理
 
-权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**当前程序仍按v0.2资产格式运行，v0.3界面与存储迁移尚未实施。**
+权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。专用测试录音使用`raw_microphone_recording_v1`：录制时直接流式保存主机收到的原始8通道PCM16与每一帧CDC热力图，不在内存累计整段录音，也不为新录音生成7通道派生音频。
 
 目标界面继续管理Runtime Sessions、Test Corpus、录制向导、质量与标注、系统维护及实验快照。新增内容包括：native/logical 8ch通道说明、HardwareMix标识、IMCRA/Gate时间线、原始SRP空间响应、L2平滑候选、逐方向L3音频和L4结果。内部追踪ID不显示、不检索也不写入资产。
 
-“用所选样本进行模拟测试”目标输入为已登记的logical 8ch 48 kHz音频，并通过同一个ApplicationRuntime实时注入。旧7ch语料必须通过显式兼容导入或迁移生成缺失通道说明，不能静默冒充新8ch资产。
+操作者为每条录音手工填写音频名称和备注。录音列表只提供原始8通道任选通道试听、用所选录音进行模拟测试、移到可恢复回收站三类操作。“模拟测试”必须同时存在`native_8ch`与`cdc_hotmaps`资产，Test UI按原始相对时序注入两路输入；只有普通WAV的旧样本不能冒充完整麦克风阵列。
 
 录制、查询、QA、hash、恢复和索引任务继续在后台执行，不得阻塞实时采集。音频只在本地保存，不自动上传；scratch录音与正式Catalog保持隔离。
 
@@ -14,4 +14,4 @@
 python scripts/run_audio_data_manager.py --data-root data
 ```
 
-在v0.3代码、manifest schema和迁移测试完成前，该命令仍启动当前v0.2实现。
+结束录音后，音频、热力图、名称、备注、录制区间与资产哈希共同写入独立Recording目录并登记到Catalog。

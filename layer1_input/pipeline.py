@@ -98,6 +98,12 @@ class InputPipeline:
         self._pending_health_events.clear()
         return events
 
+    def take_hotmap_frames(self) -> tuple[CdcHotmapFrame, ...]:
+        method = getattr(self.hotmap_source, "take_hotmap_frames", None)
+        if method is None:
+            return ()
+        return tuple(method())
+
     def stop(self) -> None:
         with self._lifecycle_lock:
             try:

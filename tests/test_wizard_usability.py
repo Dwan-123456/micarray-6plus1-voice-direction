@@ -16,6 +16,7 @@ def wizard_input(
         ("research",),
         theta,
         distance,
+        recording_name="诊室测试录音",
     )
 
 

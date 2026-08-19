@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import threading
 import uuid
+import wave
 from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from pathlib import Path
+from typing import Any, TextIO
 
 import numpy as np
 
 from common.data_types import IngestedAudioBlock
+from layer1_input.pcm import pcm16_bytes
 
 from .catalog import Catalog
 from .contracts import RecordingMetadata
 from .corpus_store import CorpusStore
-from .manifests import utc_now
+from .manifests import sha256_file, utc_now
 from .wizard import WizardInput, validate_wizard
 
 
@@ -49,6 +55,138 @@ class WizardStatus:
         return self.sample_count / 48_000
 
 
+class _RawInputWriter:
+    """Stream the exact host-side microphone inputs without retaining audio in RAM."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.root.mkdir(parents=True, exist_ok=False)
+        self.audio_partial = root / "native_8ch.wav.partial"
+        self.audio_path = root / "native_8ch.wav"
+        self.hotmap_partial = root / "hotmaps.jsonl.partial"
+        self.hotmap_path = root / "hotmaps.jsonl"
+        self._audio: wave.Wave_write | None = None
+        self._hotmaps: TextIO | None = None
+        self._hotmap_sequences: set[tuple[int, int]] = set()
+        self.sample_count = 0
+        self.hotmap_count = 0
+        self.closed = False
+
+    def _open_audio(self) -> wave.Wave_write:
+        if self._audio is None:
+            writer = wave.open(str(self.audio_partial), "wb")
+            writer.setnchannels(8)
+            writer.setsampwidth(2)
+            writer.setframerate(48_000)
+            self._audio = writer
+        return self._audio
+
+    def _write_hotmap(self, block: IngestedAudioBlock, playback_sample: int, hotmap: object) -> None:
+        if hotmap is None:
+            return
+        sequence_id = int(getattr(hotmap, "sequence_id", block.sequence_id))
+        key = (int(block.stream_epoch), sequence_id)
+        if key in self._hotmap_sequences:
+            return
+        matrix = np.asarray(getattr(hotmap, "matrix", hotmap))
+        if matrix.shape != (16, 16):
+            raise ValueError("热力图必须是16×16")
+        if self._hotmaps is None:
+            self._hotmaps = self.hotmap_partial.open("w", encoding="utf-8", newline="\n")
+        self._hotmaps.write(
+            json.dumps(
+                {
+                    "schema_version": "recorded_hotmap_v1",
+                    "sequence_id": sequence_id,
+                    "timestamp": float(getattr(hotmap, "timestamp", block.timestamp)),
+                    "received_at": getattr(hotmap, "received_at", None),
+                    "source_stream_epoch": int(block.stream_epoch),
+                    "source_start_sample": int(block.start_sample),
+                    "playback_sample": max(0, int(playback_sample)),
+                    "matrix": np.asarray(matrix, dtype=np.uint8).tolist(),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        self._hotmap_sequences.add(key)
+        self.hotmap_count += 1
+
+    def append(self, block: IngestedAudioBlock, hotmap_frames: tuple[object, ...] = ()) -> None:
+        if self.closed:
+            raise RuntimeError("录音写入器已经关闭")
+        native = block.native_samples
+        if native is None or native.shape[1] != 8:
+            raise ValueError("专用测试录音要求设备原始8通道输入")
+        playback_sample = self.sample_count
+        self._open_audio().writeframesraw(pcm16_bytes(native))
+        frames = hotmap_frames or (() if block.hotmap is None else (block.hotmap,))
+        for hotmap in frames:
+            timestamp = float(getattr(hotmap, "timestamp", block.timestamp))
+            aligned_sample = playback_sample + round((timestamp - block.timestamp) * 48_000)
+            aligned_sample = min(playback_sample + len(native) - 1, max(playback_sample, aligned_sample))
+            self._write_hotmap(block, aligned_sample, hotmap)
+        self.sample_count += len(native)
+
+    @staticmethod
+    def _sync(path: Path) -> None:
+        with path.open("rb+") as source:
+            os.fsync(source.fileno())
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        if self._audio is not None:
+            self._audio.close()
+            self._audio = None
+            self._sync(self.audio_partial)
+        if self._hotmaps is not None:
+            self._hotmaps.flush()
+            os.fsync(self._hotmaps.fileno())
+            self._hotmaps.close()
+            self._hotmaps = None
+        self.closed = True
+
+    def finalize(self) -> list[dict[str, Any]]:
+        self.close()
+        if self.sample_count <= 0 or not self.audio_partial.is_file():
+            raise RuntimeError("没有可保存的8通道音频")
+        self.audio_partial.replace(self.audio_path)
+        assets: list[dict[str, Any]] = [
+            {
+                "kind": "native_8ch",
+                "path": self.audio_path.name,
+                "sha256": sha256_file(self.audio_path),
+                "sample_count": self.sample_count,
+                "channel_count": 8,
+                "sample_rate": 48_000,
+                "dtype": "int16",
+            }
+        ]
+        if self.hotmap_partial.is_file():
+            self.hotmap_partial.replace(self.hotmap_path)
+            assets.append(
+                {
+                    "kind": "cdc_hotmaps",
+                    "path": self.hotmap_path.name,
+                    "sha256": sha256_file(self.hotmap_path),
+                    "frame_count": self.hotmap_count,
+                }
+            )
+        return assets
+
+    def quarantine(self, data_root: Path) -> Path | None:
+        self.close()
+        if not self.root.exists():
+            return None
+        target = data_root / "quarantine" / "dedicated_recordings" / self.root.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            target = target.with_name(f"{target.name}-{uuid.uuid4().hex[:8]}")
+        shutil.move(str(self.root), str(target))
+        return target
+
+
 class DedicatedRecordingController:
     """Operator-controlled formal recording on the authoritative ingest timeline."""
 
@@ -58,8 +196,8 @@ class DedicatedRecordingController:
         self._lock = threading.RLock()
         self.phase = WizardPhase.IDLE
         self.input: WizardInput | None = None
-        self._native: list[np.ndarray] = []
-        self._physical: list[np.ndarray] = []
+        self._writer: _RawInputWriter | None = None
+        self._recording_root: Path | None = None
         self._session_id: str | None = None
         self._recording_id: str | None = None
         self._stream_epoch: int | None = None
@@ -70,8 +208,8 @@ class DedicatedRecordingController:
         self._error_reason: str | None = None
 
     def _clear_capture(self) -> None:
-        self._native.clear()
-        self._physical.clear()
+        self._writer = None
+        self._recording_root = None
         self._session_id = None
         self._recording_id = None
         self._stream_epoch = None
@@ -90,12 +228,17 @@ class DedicatedRecordingController:
         self.input = data
         self._error_reason = None
         self._clear_capture()
+        recording_id = str(uuid.uuid4())
+        self._recording_root = (
+            self.data_root / "test_corpus" / data.dataset_id / "recordings" / recording_id
+        )
+        self._writer = _RawInputWriter(self._recording_root)
         self._resume_pending = True
         self.phase = WizardPhase.RECORDING
         return self.status()
 
     @_synchronized
-    def append(self, block: IngestedAudioBlock) -> WizardStatus:
+    def append(self, block: IngestedAudioBlock, hotmap_frames: tuple[object, ...] = ()) -> WizardStatus:
         if self.phase != WizardPhase.RECORDING:
             return self.status()
         if self._session_id is None:
@@ -110,11 +253,9 @@ class DedicatedRecordingController:
             self._error_reason = "录制期间音频时间轴不连续，请检查设备后重新开始"
             raise ValueError(self._error_reason)
 
-        # Formal ingest is logical 8ch; dedicated test assets remain the seven
-        # independent physical microphones and must exclude HardwareMix.
-        self._physical.append(block.samples[:, :7].copy())
-        if block.native_samples is not None:
-            self._native.append(block.native_samples.copy())
+        if self._writer is None:
+            raise RuntimeError("录音写入器不可用")
+        self._writer.append(block, hotmap_frames)
         if self._resume_pending or not self._recorded_intervals:
             self._recorded_intervals.append(
                 {"stream_epoch": block.stream_epoch, "start_sample": block.start_sample, "end_sample": block.end_sample}
@@ -158,8 +299,9 @@ class DedicatedRecordingController:
     def finalize(self) -> str:
         if self.phase != WizardPhase.FINALIZING or self.input is None:
             raise RuntimeError("请先结束录音，再进行保存")
-        physical = np.concatenate(self._physical)
-        native = np.concatenate(self._native) if self._native and sum(map(len, self._native)) == len(physical) else None
+        if self._writer is None or self._recording_root is None:
+            raise RuntimeError("录音写入器不可用")
+        assets = self._writer.finalize()
         data = self.input
         metadata = RecordingMetadata(
             dataset_id=data.dataset_id,
@@ -181,22 +323,19 @@ class DedicatedRecordingController:
             speaker_ids_anonymous=data.speaker_ids,
             language_tags=data.language_tags,
             notes=data.notes,
+            display_name=data.recording_name.strip(),
         )
         store = CorpusStore(self.data_root, catalog=self.catalog)
-        recording_id = str(uuid.uuid4())
-        root = store._root(data.dataset_id, recording_id)
-        payload = {name: getattr(metadata, name) for name in metadata.__slots__}
-        store._rights(payload)
-        self._recording_id = store._save(
-            root,
-            native,
-            physical,
-            payload,
-            {
+        self._recording_id = store.register_raw_recording(
+            self._recording_root,
+            metadata,
+            lineage={
                 "session_id": self._session_id,
                 "recorded_intervals": tuple(dict(item) for item in self._recorded_intervals),
                 "captured_sample_count": self._total_samples,
             },
+            assets=assets,
+            duration_samples=self._total_samples,
         )
         self.phase = WizardPhase.COMPLETE
         return self._recording_id
@@ -204,6 +343,8 @@ class DedicatedRecordingController:
     @_synchronized
     def abort(self, reason: str = "录制已中止，请重新开始") -> WizardStatus:
         if self.phase in {WizardPhase.RECORDING, WizardPhase.PAUSED, WizardPhase.FINALIZING, WizardPhase.ERROR}:
+            if self._writer is not None:
+                self._writer.quarantine(self.data_root)
             self.phase = WizardPhase.ERROR
             self._error_reason = str(reason).strip() or "录制已中止，请重新开始"
             self._clear_capture()
@@ -211,6 +352,13 @@ class DedicatedRecordingController:
 
     @_synchronized
     def reset(self) -> WizardStatus:
+        if self._writer is not None and self.phase in {
+            WizardPhase.RECORDING,
+            WizardPhase.PAUSED,
+            WizardPhase.FINALIZING,
+            WizardPhase.ERROR,
+        }:
+            self._writer.quarantine(self.data_root)
         self.phase = WizardPhase.IDLE
         self.input = None
         self._error_reason = None

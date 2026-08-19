@@ -228,6 +228,9 @@ class Layer1Tests(unittest.TestCase):
         self.assertEqual(latest.sequence_id, 1)
         self.assertEqual(int(latest.matrix[0, 0]), 255)
         self.assertEqual(device.latest_hotmap()["frame_count"], 2)
+        pending = device.take_hotmap_frames()
+        self.assertEqual([frame.sequence_id for frame in pending], [0, 1])
+        self.assertEqual(device.take_hotmap_frames(), ())
 
     def test_calibration_keeps_same_hotmap_object(self):
         hotmap = CdcHotmapFrame(np.arange(256, dtype=np.uint8).reshape(16, 16), 7, 1.5)

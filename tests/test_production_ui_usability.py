@@ -6,7 +6,7 @@ import wave
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from gui.production_ui.app import AudioDataManager, DataTable, ImportMetadataDialog
 
@@ -79,7 +79,7 @@ def test_annotation_form_uses_seconds_and_chinese_type_choices(tmp_path):
 def test_wizard_uses_chinese_allowed_use_choices(tmp_path):
     app_instance()
     window = AudioDataManager(tmp_path)
-    assert set(window.wizard_fields) == {"environment_id", "source_count", "notes"}
+    assert set(window.wizard_fields) == {"recording_name", "notes"}
     assert window.wizard_start.text() == "开始录制"
     assert window.wizard_pause.text() == "暂停录制"
     assert window.wizard_stop.text() == "结束并保存"
@@ -97,19 +97,55 @@ def test_wizard_start_shows_validation_errors_instead_of_starting(tmp_path, monk
     window.close()
 
 
-def test_selected_database_sample_launches_test_ui_with_backend_virtual_input(tmp_path, monkeypatch):
+def test_recording_page_has_only_requested_actions_and_can_listen_to_any_native_channel(tmp_path, monkeypatch):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    root = tmp_path / "test_corpus" / "test-recordings" / "recordings" / "sample-listen"
+    root.mkdir(parents=True)
+    audio = root / "native_8ch.wav"
+    with wave.open(str(audio), "wb") as output:
+        output.setnchannels(8)
+        output.setsampwidth(2)
+        output.setframerate(48_000)
+        output.writeframes(bytes(960 * 8 * 2))
+    (root / "recording_manifest.json").write_text(
+        json.dumps({"assets": [{"kind": "native_8ch", "path": audio.name}]}), encoding="utf-8"
+    )
+    row = {"id": "sample-listen", "display_name": "手工名称", "path": str(root)}
+    monkeypatch.setattr(window.service, "recordings", lambda **_filters: [row])
+    played = []
+    monkeypatch.setattr(window.channel_player, "play", lambda path, channel: played.append((path, channel)))
+    window.corpus_table.load([row])
+    window.corpus_table.selectRow(0)
+    window.listen_channel.setCurrentIndex(7)
+    window._listen_selected_channel()
+    assert played == [(audio.resolve(), 7)]
+    button_texts = {button.text() for button in window.pages["corpus"].findChildren(QPushButton)}
+    assert button_texts == {
+        "试听所选通道", "停止试听", "用所选样本进行模拟测试", "移到回收站",
+    }
+    window.close()
+
+
+def test_selected_database_sample_launches_complete_virtual_array_input(tmp_path, monkeypatch):
     app_instance()
     window = AudioDataManager(tmp_path)
     root = tmp_path / "test_corpus" / "test-recordings" / "recordings" / "sample-1"
     root.mkdir(parents=True)
-    audio = root / "physical_7ch.wav"
+    audio = root / "native_8ch.wav"
     with wave.open(str(audio), "wb") as output:
-        output.setnchannels(7)
+        output.setnchannels(8)
         output.setsampwidth(2)
         output.setframerate(48_000)
-        output.writeframes(bytes(960 * 7 * 2))
-    (root / "recording_manifest.json").write_text(
-        json.dumps({"assets": [{"kind": "physical_7ch", "path": audio.name}]}), encoding="utf-8"
+        output.writeframes(bytes(960 * 8 * 2))
+    hotmaps = root / "hotmaps.jsonl"
+    hotmaps.write_text("{}\n", encoding="utf-8")
+    manifest_path = root / "recording_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"assets": [
+            {"kind": "native_8ch", "path": audio.name},
+            {"kind": "cdc_hotmaps", "path": hotmaps.name},
+        ]}), encoding="utf-8"
     )
     row = {"id": "sample-1", "path": str(root)}
     monkeypatch.setattr(window.service, "recordings", lambda **_filters: [row])
@@ -123,7 +159,7 @@ def test_selected_database_sample_launches_test_ui_with_backend_virtual_input(tm
     assert launched
     command = launched[0][0]
     assert command[1:3] == ["-m", "gui.dev_test_ui.app"]
-    assert command[command.index("--input-wav") + 1] == str(audio.resolve())
+    assert command[command.index("--replay-recording") + 1] == str(manifest_path.resolve())
     assert "--auto-start" in command
     window.close()
 

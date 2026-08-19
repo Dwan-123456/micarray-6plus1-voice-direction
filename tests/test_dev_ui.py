@@ -726,6 +726,60 @@ def test_test_ui_accepts_backend_injected_wav_and_keeps_default_ui_input_hidden(
         app.processEvents()
 
 
+def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monkeypatch, tmp_path):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from data_management.manifests import sha256_file
+    from gui.dev_test_ui.app import build_window
+    from layer1_input.recording_replay import RecordingReplaySource
+    import json
+
+    root = tmp_path / "named-recording"
+    root.mkdir()
+    audio = root / "native_8ch.wav"
+    _write_test_wav(audio, np.zeros((18 * 960, 8), np.float32))
+    hotmaps = root / "hotmaps.jsonl"
+    hotmaps.write_text(
+        json.dumps({
+            "sequence_id": 0,
+            "timestamp": 0.0,
+            "received_at": None,
+            "playback_sample": 0,
+            "matrix": np.zeros((16, 16), dtype=np.uint8).tolist(),
+        }) + "\n",
+        encoding="utf-8",
+    )
+    manifest = root / "recording_manifest.json"
+    manifest.write_text(json.dumps({
+        "display_name": "我命名的阵列录音",
+        "assets": [
+            {"kind": "native_8ch", "path": audio.name, "sha256": sha256_file(audio)},
+            {"kind": "cdc_hotmaps", "path": hotmaps.name, "sha256": sha256_file(hotmaps)},
+        ],
+    }), encoding="utf-8")
+
+    app, window = build_window(CONFIG, replay_recording=manifest, auto_start=False)
+    try:
+        assert isinstance(window._runtime.pipeline.source, RecordingReplaySource)
+        assert "模拟输入模式" in window.windowTitle()
+        assert "我命名的阵列录音" in window.windowTitle()
+        assert window.replay_name.text().endswith("我命名的阵列录音")
+        assert window.replay_start.text() == "开始/继续"
+        assert window.replay_pause.text() == "暂停"
+        assert window.replay_restart.text() == "从头重播"
+        assert not window.start_button.isVisible()
+        assert not window.stop_button.isVisible()
+        window._frame = object()
+        window._last_l4_frame = object()
+        window._restart_replay()
+        assert window._frame is None
+        assert window._last_l4_frame is None
+        assert "replay restarted" in window.srp_header.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")

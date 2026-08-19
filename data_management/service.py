@@ -44,7 +44,14 @@ class DataManagerService:
         return self.catalog.list_sessions()
 
     def recordings(self, **filters: Any) -> list[dict[str, Any]]:
-        return self.catalog.list_recordings(**filters)
+        rows = self.catalog.list_recordings(**filters)
+        for row in rows:
+            try:
+                metadata = json.loads(row.get("metadata_json") or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            row["display_name"] = str(metadata.get("display_name") or row["id"])
+        return rows
 
     def datasets(self) -> list[dict[str, Any]]:
         return self.catalog.list_datasets()

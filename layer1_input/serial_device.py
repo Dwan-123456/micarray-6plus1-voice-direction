@@ -33,6 +33,7 @@ class SerialDevice:
         self._last_error: str | None = None
         self._frame_buffer = bytearray()
         self._hotmap: CdcHotmapFrame | None = None
+        self._pending_hotmaps: deque[CdcHotmapFrame] = deque()
 
     @property
     def running(self) -> bool:
@@ -60,6 +61,7 @@ class SerialDevice:
             with self._lock:
                 self._frame_buffer.clear()
                 self._hotmap = None
+                self._pending_hotmaps.clear()
                 self._hotmap_frames = 0
             import serial
             try:
@@ -159,6 +161,7 @@ class SerialDevice:
                 time.monotonic(),
                 time.time(),
             )
+            self._pending_hotmaps.append(self._hotmap)
             self._hotmap_frames += 1
 
     def write(self, data: bytes) -> int:
@@ -189,6 +192,13 @@ class SerialDevice:
         """Return the latest immutable snapshot, or ``None`` before a frame."""
         with self._lock:
             return self._hotmap
+
+    def take_hotmap_frames(self) -> tuple[CdcHotmapFrame, ...]:
+        """Drain every decoded CDC frame since the preceding consumer read."""
+        with self._lock:
+            frames = tuple(self._pending_hotmaps)
+            self._pending_hotmaps.clear()
+            return frames
 
     def latest_hotmap(self) -> dict[str, Any]:
         with self._lock:

@@ -28,7 +28,10 @@ def process_signals() -> None:
 
 
 def wizard_input() -> WizardInput:
-    return WizardInput("dataset", "room", "quiet", "pose", 1, "granted", ("research",))
+    return WizardInput(
+        "dataset", "room", "quiet", "pose", 1, "granted", ("research",),
+        recording_name="阵列原始输入",
+    )
 
 
 def test_wizard_abort_discards_take_and_allows_new_session(tmp_path):
@@ -38,14 +41,18 @@ def test_wizard_abort_discards_take_and_allows_new_session(tmp_path):
     samples = np.random.default_rng(7).normal(0, 0.02, (960, 8)).astype(np.float32)
     from common.data_types import IngestedAudioBlock
 
-    controller.append(IngestedAudioBlock("old", 0, 0, 960, 48_000, 0, 0.0, samples))
+    controller.append(IngestedAudioBlock(
+        "old", 0, 0, 960, 48_000, 0, 0.0, samples, native_samples=samples,
+    ))
     status = controller.abort("麦克风断开，本次录制已中止")
     assert status.phase == WizardPhase.ERROR
     assert "麦克风断开" in status.message
     assert status.sample_count == 0
 
     controller.begin(wizard_input())
-    status = controller.append(IngestedAudioBlock("new", 0, 0, 960, 48_000, 0, 0.0, samples))
+    status = controller.append(IngestedAudioBlock(
+        "new", 0, 0, 960, 48_000, 0, 0.0, samples, native_samples=samples,
+    ))
     assert status.phase == WizardPhase.RECORDING
     controller.reset()
     assert controller.status().phase == WizardPhase.IDLE
@@ -91,7 +98,16 @@ def _audio(sequence: int) -> DecodedAudio:
     mix = rng.normal(0, 0.02, 960).astype(np.float32)
     native = np.column_stack((physical[:, :6], mix, physical[:, 6]))
     logical = np.column_stack((physical, mix))
-    return DecodedAudio(logical, 48_000, sequence, sequence * 0.02, native_samples=native)
+    from layer1_input.interface import CdcHotmapFrame
+
+    return DecodedAudio(
+        logical,
+        48_000,
+        sequence,
+        sequence * 0.02,
+        native_samples=native,
+        hotmap=CdcHotmapFrame(np.full((16, 16), sequence, dtype=np.uint8), sequence, sequence * 0.02),
+    )
 
 
 def test_wizard_append_error_does_not_disconnect_runtime_capture(tmp_path):
@@ -99,7 +115,7 @@ def test_wizard_append_error_does_not_disconnect_runtime_capture(tmp_path):
     service.wizard.begin(wizard_input())
     calls = 0
 
-    def broken_append(_block):
+    def broken_append(_block, _hotmaps=()):
         nonlocal calls
         calls += 1
         raise ValueError("模拟向导错误")
