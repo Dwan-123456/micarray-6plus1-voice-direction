@@ -1,6 +1,6 @@
 # Layer 4：48 kHz音频到人声概率
 
-> 项目 1.1.0 待实现改动见[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#10-layer-4-改动)：音频段、检测和阶段结果贯通 `track_id`，删除按角度向 L2 回送正式化/续租证据的路径。下文描述当前 1.0.1 实现。
+> 项目1.1.1中，L4音频段、检测和阶段结果贯通`track_id`；L4不按角度创建或修补ID，语义概率反馈只按L2权威身份关联。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L4已迁移为独立48 kHz波形输入契约；L3自身的公共契约迁移不属于本层完成范围。
 

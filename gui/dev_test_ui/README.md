@@ -1,6 +1,6 @@
-# Development Test UI：项目1.1.0分支
+# Development Test UI：项目1.1.1
 
-> 当前分支已按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)删除iterative与ID开关，保留独立Kalman开关，显示MUSIC伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；项目整体尚未发布1.1.0。
+> 当前版本按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)显示MUSIC伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；ID追踪永久启用，Kalman保持可选。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**本README描述当前已迁移界面。**
 

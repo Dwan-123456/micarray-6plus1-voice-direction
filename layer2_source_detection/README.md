@@ -1,6 +1,6 @@
-# Layer 2 1.1.0 分支：Rolling NormMUSIC 与公共方向轨迹
+# Layer 2 1.1：Rolling NormMUSIC 与公共方向轨迹
 
-本目录已按根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)完成 L2 分支实现；项目整体仍未发布 `1.1.0`。
+本目录是项目`1.1.1`正式组成部分，L2公开版本为`1.1`，已实现Rolling NormMUSIC、公共方向ID与可选Kalman平滑。
 
 ## 正式主链
 

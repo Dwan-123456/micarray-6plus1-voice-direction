@@ -1,6 +1,6 @@
 # ApplicationRuntime：唯一时间轴与分阶段流水
 
-> 本分支已实现[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#11-runtime时间线与并行管理)中的Runtime目标；项目仍处于`1.1.0`迁移阶段，尚未创建发布标签。
+> 本目录实现项目`1.1.1`的唯一时间轴、分层并行Runtime、有界缓存与有序结果提交；真实设备长时间运行仍按根架构门禁验收。
 
 权威目标架构见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。**本页描述当前分支已实施的Runtime边界。**
 

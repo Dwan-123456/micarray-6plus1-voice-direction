@@ -1,10 +1,10 @@
-# 6+1 麦克风阵列项目 1.1.0：独立 Pipeline Log UI 目标架构
+# 6+1 麦克风阵列项目1.1.1：独立Pipeline Log UI架构
 
-状态：**规划已确认，代码尚未实现；当前可运行版本仍为项目 1.0.1。**
+状态：**代码、公共只读查询、五个页面与自动化测试已完成并纳入项目1.1.1；真实封存session人工回放和大规模实机数据验收仍需继续。**
 
-目标版本：项目 `1.1.0`。本文件定义 Log UI 的定位、只读边界、数据覆盖、页面与验收要求；在对应代码、测试和实机验收完成前，不得把这些内容描述成已实现功能。
+发布版本：项目`1.1.1`。本文件定义Log UI的定位、只读边界、数据覆盖、页面与验收要求；未通过的实机项目必须继续明确标注。
 
-上位架构：[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)。当前 1.0.1 的运行时与录音实现仍以[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)、[`app/README.md`](app/README.md)和[`data_management/README.md`](data_management/README.md)为准。
+上位架构：[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)。当前运行时与录音实现以[`app/README.md`](app/README.md)、[`data_management/README.md`](data_management/README.md)和代码为准；[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)仅保留历史迁移契约。
 
 ## 1. 定位
 
@@ -65,7 +65,7 @@ UI 所需字段尚未公开时，页面显示“接口未提供”，并在能�
 
 ### 3.3 禁止隐式写 Catalog
 
-当前 1.0.1 的 `DataManagerService(data_root)` 会构造 `Catalog`；Catalog 初始化会创建目录、打开 SQLite、启用 WAL 并执行 schema 初始化。因此，直接针对正式数据根目录实例化该服务不能被视为严格只读。
+通用`DataManagerService(data_root)`会构造`Catalog`；Catalog初始化会创建目录、打开SQLite、启用WAL并执行schema初始化。因此，Log UI不能直接针对正式数据根目录实例化该服务，而应使用专用公共只读查询端口。
 
 目标实现只能使用项目提供的稳定、显式只读查询端口，或由正式进程通过公共接口生成并返回的版本化只读快照/流。Log UI 自身不得复制、打开或解析 SQLite 主文件、WAL/SHM及其他内部存储格式来绕过公共接口。
 
@@ -91,11 +91,11 @@ Log UI 不得在项目 `data/` 中创建数据库、WAL、SHM、索引、缓存�
 
 未来若项目新增公共只读事件流，只增加新的 `LogSource` 适配器；不得让 Log UI 反向成为 Runtime 的依赖。
 
-### 4.4 1.0.1 与 1.1.0 能力
+### 4.4 历史记录与1.1.1能力
 
-- 当前 1.0.1 的稳定 `DataManagerService` 只能列出 runtime sessions，不能通过完整公共查询接口回看单个 session 的全部 DecisionRecord、方向轨和音频资产。
-- 1.1.0 目标是在 Recording/Data 边界稳定后，通过能力探测使用 session decisions、track timeline、track audio assets 和 session audio assets 等只读查询能力。
-- 文档中的目标查询能力不是对当前 1.0.1 已实现状态的声明；未探测到对应能力时，相关页面显示 `N/A`，而不是绕过接口读取内部文件。
+- 1.0.1历史记录可能缺少MUSIC、公共ID或完整逐ID资产，Log UI通过schema和能力探测降级展示。
+- 1.1.1通过公共接口提供session decisions、track timeline、track audio assets和session audio assets等只读查询能力。
+- 未探测到的能力显示`N/A`，不能绕过接口读取内部文件，也不能为旧记录补造不存在的数据。
 
 ## 5. 公开数据覆盖矩阵
 
@@ -233,7 +233,7 @@ actual_completed_hz = 所选范围内COMPLETED窗口数 / observed_duration_s
 
 ## 10. 实施阶段
 
-1. **P0：观察矩阵冻结**。确定字段 → 公开接口 → 页面 → 缺失行为；明确 1.0.1 与 1.1.0 capability。
+1. **P0：观察矩阵冻结**。确定字段 → 公开接口 → 页面 → 缺失行为；明确历史记录与1.1.1 capability。
 2. **P1：离线只读内核**。完成只读来源、v3/v4适配、标准模型、索引和统计公式。
 3. **P2：五个页面**。完成记录列表、总览、Pipeline时间线、单窗详情、ID与异常联动。
 4. **P3：可选同进程概览**。只显示公开 `processing_status` 聚合数据，不消费实时邮箱。
@@ -268,7 +268,7 @@ Log UI 可以在独立分支开发，但必须等待 Recording/Data 公共只读
 
 ## 12. 完成定义
 
-只有在以下条件同时满足后，才能把 Log UI 标记为 1.1.0 已实现组件：
+Log UI作为1.1.1已实现组件满足以下自动化与接口条件：
 
 1. 公共只读数据契约已经冻结并有版本化测试；
 2. 五个页面和统计口径完成；
@@ -276,4 +276,4 @@ Log UI 可以在独立分支开发，但必须等待 Recording/Data 公共只读
 4. 只读性测试证明项目数据、Catalog和运行队列均未改变；
 5. 文档、CHANGELOG、打包入口和发布验收同步完成。
 
-在此之前，本文件仅是目标架构，项目当前能力仍以 1.0.1 文档与代码为准。
+实机与真实大规模封存数据验收状态以CHANGELOG和测试报告为准，不得仅凭版本号推断已经通过。

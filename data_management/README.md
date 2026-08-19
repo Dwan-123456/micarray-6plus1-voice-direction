@@ -1,6 +1,6 @@
 # Audio Data Manager：DecisionRecord v4与公共方向ID存储
 
-本目录已完成[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#13-recordingstore数据管理与-production-ui)定义的录音/数据分支迁移：新结果写`decision_record_v4`，MUSIC诊断、公共`track_id`、逐ID增强资产和时间线进入正式存储；旧`decision_record_v3`只读兼容，不原地迁移或补造ID。项目其余1.1.0分支仍需按总架构合并验收。
+本目录已纳入项目`1.1.1`：新结果写`decision_record_v4`，MUSIC诊断、公共`track_id`、逐ID增强资产和时间线进入正式存储；旧`decision_record_v3`只读兼容，不原地迁移或补造ID。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1 IMCRA sidecar已按v0.3迁移；其余资产的状态以目标架构和当前代码为准。
 

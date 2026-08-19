@@ -1,6 +1,6 @@
 # 6+1 麦克风阵列 v0.3 目标架构与迁移契约
 
-> 本文件保留为项目 1.0.1 当前实现/历史迁移契约。下一目标版本 1.1.0 的 MUSIC、永久方向 ID 与跨层公开 ID 改造见[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)；在代码迁移完成前，两份文档不得混写为同一已实现状态。
+> 本文件保留为项目1.0.1历史迁移契约。1.1.1的MUSIC、永久方向ID与跨层公开ID架构见[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)；当前实现状态以1.1.1架构、配置和代码为准。
 
 状态：**主链迁移、L1可切换预降噪、L3三档对照模式及Test UI连续试听sidecar已完成；相关自动化门禁通过；实机动态参数标定待执行**  
 适用范围：Layer 1～Layer 4、Application Runtime、Development Test UI、RecordingStore 与数据资产。  

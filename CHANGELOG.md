@@ -17,8 +17,25 @@
 2. 每次提交前必须记录本次实际变化；没有变化的模块明确写“无变化”，防止遗漏跨层影响。
 3. 每条记录至少包含日期、版本/标签、变更类型、涉及文件、各模块具体变化、接口或兼容性影响、验证结果和Git LFS资产变化。
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
-5. 本文件记录“发生了什么”；1.1.0迁移以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
+5. 本文件记录“发生了什么”；当前1.1.1架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
+
+---
+
+## 2026-08-19 — 项目1.1.1整合发布
+
+- **版本/标签**：项目`1.1.1`，计划创建不可变标签`v1.1.1`；历史`v1.0.0`与`v1.0.1`标签保持原位，不移动、不覆盖、不重写。
+- **发布范围**：合并并版本化Layer 1～Layer 4、Windowing、Application Runtime、Development Test UI、独立Pipeline Log UI、RecordingStore、Audio Data Manager、Production UI、配置、文档、自动测试、模型与精选测试资产。
+- **Layer 1 / Windowing**：纳入校准后的7麦滚动输入、8通道记录边界、0～8 kHz IMCRA/预降噪、20 ms唯一时间步、320 ms历史窗口、采集回调减负、有界10秒handoff及连续性/epoch重置诊断。
+- **Layer 2**：公开版本保持`1.1`；正式方向主链采用Rolling NormMUSIC与MDL 0～3源估计，永久公共`track_id`、内部最多4轨/公共最多3轨、可选圆周Kalman、活动ID Gate保持、噪声干扰标记与按ID的L4语义反馈均纳入整合版本。
+- **Layer 3 / Layer 4**：L3按`(WindowKey, track_id)`消费权威方向并输出48 kHz增强音频；L4按同一身份完成补偿、重采样和MarbleNet推理，不按角度创建或修补ID。
+- **Runtime与记录契约**：同窗严格L2→L3→L4，跨窗分层并行；有界latest-wins、ComputeCache、ResultJoiner、有序watermark、显式丢弃审计与停机排空进入发布。正式结果升级为`decision_record_v4`并贯通公共方向ID。
+- **Development Test UI**：显示MUSIC伪谱与固定三行公共ID，按1秒窗口显示L4峰值，按L2权威ID拼接L3试听；增加Center参考、播放进度、低有效声音轨清理，并移除用户可关闭永久ID的旧控制。
+- **Pipeline Log UI**：独立只读五页观察与回放界面已实现，使用版本化公共查询读取封存session；不进入、不控制、不消费或反压实时主链。
+- **录音与数据管理**：RecordingStore、Catalog、崩溃恢复、流式chunk资产、逐ID增强音频、Production UI和专用测试录音流程均随项目上传；运行录音、scratch、Catalog、日志、缓存和本机`data/`仍只保存在本地，不进入Git。
+- **兼容性与未改变项**：保留旧`decision_record_v3`只读兼容；GitHub仓库、历史分支和历史标签不删除。真实阵列、诊室声场、小时级长时间运行与目标域CNN质量仍需按实机门禁继续验证，不能由自动测试替代。
+- **验证**：完整自动测试`349 passed`；核心源码与测试Ruff全部通过；全目录Python编译通过；项目元数据为`1.1.1`、L2公开版本为`1.1`；Git差异、冲突标记、敏感数据和LFS边界检查通过。根配置测试同步为当前已记录的`verified`硬件校准状态。
+- **Git LFS**：现有模型、精选测试音频和大型数组继续按`.gitattributes`管理；本次版本整合不新增运行录音或本机环境资产。
 
 ---
 

@@ -1,4 +1,4 @@
-"""Layer 2 1.1.0 target: rolling NormMUSIC and authoritative direction IDs."""
+"""Layer 2 1.1: rolling NormMUSIC and authoritative direction IDs."""
 
 from .configuration import DirectionScanConfig
 from .interface import DetailedDirectionScanner, DirectionScanError, DirectionScanner

@@ -1,6 +1,6 @@
-# WindowAssembler：1.1.0滚动输入准备契约
+# WindowAssembler：1.1.1滚动输入契约
 
-> 项目1.1.0的Windowing输入准备已按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#6-windowing-改动)迁移。窗口大小与20 ms节拍保持不变，320 ms只是可用历史上限；真正的滚动STFT、协方差、MUSIC和轨迹coasting仍由后续L2分支实现。
+> 项目1.1.1的Windowing已按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#6-windowing-改动)实现。窗口大小与20 ms节拍保持不变，320 ms是可用历史上限；滚动STFT、协方差、MUSIC和轨迹coasting由L2实现。
 
 权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。8通道窗口和IMCRA hop对齐已完成迁移。
 

@@ -41,7 +41,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     calibration = CalibrationConfig.from_project(config)
     assert calibration.delay_samples == (0,) * 7
     assert calibration.version == "gain_polarity_integer_delay_v1"
-    assert calibration.status == "unverified"
+    assert calibration.status == "verified"
     assert calibration.calibration_hash == calibration_config_hash(config.calibration)
     assert len(config_hash(config)) == 64
     assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v2"

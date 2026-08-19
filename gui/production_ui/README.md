@@ -1,6 +1,6 @@
 # 麦克风阵列录音与数据管理
 
-本目录已完成[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#13-recordingstore数据管理与-production-ui)中的录音管理页面分支改造。运行录音详情使用公共`(session_id, stream_epoch, track_id)`，显示轨迹时间线摘要并提供逐ID增强音频试听；旧v3和L1-only录音明确不含算法ID。项目1.1.0仍需等待其余分支合并和总体验收。
+本目录已纳入项目1.1.1。运行录音详情使用公共`(session_id, stream_epoch, track_id)`，显示轨迹时间线摘要并提供逐ID增强音频试听；旧v3和L1-only录音明确不含算法ID。
 
 权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。专用测试录音使用`raw_microphone_recording_v1`：录制时直接流式保存主机收到的原始8通道PCM16与每一帧CDC热力图，不在内存累计整段录音，也不为新录音生成7通道派生音频。
 
