@@ -152,7 +152,7 @@ def test_ended_track_above_thirty_percent_sound_is_retained(tmp_path):
     assert tracker.snapshots()[0].track_id == 13
 
 
-def test_ended_track_with_three_seconds_continuous_silence_is_deleted(tmp_path):
+def test_playable_track_survives_silent_tail_while_replay_queue_drains(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     for index in range(250):
         decision = 15_360 + index * 960
@@ -163,7 +163,10 @@ def test_ended_track_with_three_seconds_continuous_silence_is_deleted(tmp_path):
         )
         tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
     tracker.update(_window(15_360 + 250 * 960), (), (), active_tracks=())
-    assert tracker.snapshots() == ()
+    rows = tracker.snapshots()
+    assert len(rows) == 1
+    assert rows[0].track_id == 14
+    assert tracker.audio_cache_path(14) is not None
 
 
 def test_coasting_timeline_silence_does_not_delete_playable_observed_audio(tmp_path):
