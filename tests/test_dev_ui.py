@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -881,6 +882,7 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
+    import gui.dev_test_ui.srp_panel as music_panel
     from gui.dev_test_ui.srp_panel import DirectionTrackTable, MusicPanelSnapshot, MusicPolarPanel
 
     app = QApplication.instance() or QApplication([])
@@ -901,6 +903,8 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     snapshot = MusicPanelSnapshot(response, (track,), (track,), time.monotonic(), {7: 0.91})
     panel = MusicPolarPanel()
     table = DirectionTrackTable()
+    now = [100.0]
+    monkeypatch.setattr(music_panel, "monotonic", lambda: now[0])
     first_item = table.item(0, 0)
     panel.set_snapshot(snapshot)
     table.set_snapshot(snapshot)
@@ -911,8 +915,32 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     assert table.item(0, 4).text() == "confirmed"
     assert table.item(0, 7).text() == "0.910"
     assert table.rowCount() == 3
+    assert not table.alternatingRowColors()
     assert table.item(0, 0) is first_item
     assert table.item(1, 0).text() == table.item(2, 0).text() == ""
+
+    now[0] = 100.5
+    response2 = replace(response, window_id=1, decision_sample=16_320,
+                        doa_start_sample=14_400, doa_end_sample=16_320)
+    track2 = replace(track, window_id=1, decision_sample=16_320,
+                     doa_start_sample=14_400, doa_end_sample=16_320,
+                     first_seen_sample=14_400, last_observed_sample=16_320)
+    table.set_snapshot(MusicPanelSnapshot(
+        response2, (track2,), (track2,), now[0], {7: 0.40},
+    ))
+    assert table.item(0, 7).text() == "0.910"
+
+    now[0] = 101.1
+    response3 = replace(response2, window_id=2, decision_sample=17_280,
+                        doa_start_sample=15_360, doa_end_sample=17_280)
+    track3 = replace(track2, window_id=2, decision_sample=17_280,
+                     doa_start_sample=15_360, doa_end_sample=17_280,
+                     last_observed_sample=17_280)
+    table.set_snapshot(MusicPanelSnapshot(
+        response3, (track3,), (track3,), now[0], {7: 0.40},
+    ))
+    assert table.item(0, 7).text() == "0.400"
+
     table.set_snapshot(None)
     assert table.rowCount() == 3
     assert table.item(0, 0) is first_item

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from time import monotonic
 from types import MappingProxyType
@@ -179,13 +180,39 @@ if QWidget is not None:
             self.horizontalHeader().setStretchLastSection(True)
             self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-            self.setAlternatingRowColors(True)
+            self.setAlternatingRowColors(False)
+            self._probability_history: dict[
+                tuple[str, int, int], deque[tuple[float, int, float]]
+            ] = {}
             for row in range(self.ROW_COUNT):
                 for column in range(len(self.HEADERS)):
                     self.setItem(row, column, QTableWidgetItem(""))
 
         def set_snapshot(self, snapshot: MusicPanelSnapshot | None) -> None:
             tracks = () if snapshot is None else snapshot.active_tracks
+            now = monotonic()
+            cutoff = now - 1.0
+            if snapshot is not None:
+                stream = (snapshot.response.session_id, snapshot.response.stream_epoch)
+                self._probability_history = {
+                    key: values
+                    for key, values in self._probability_history.items()
+                    if key[:2] == stream
+                }
+                for track_id, probability in snapshot.l4_probability_by_track.items():
+                    key = (*stream, int(track_id))
+                    values = self._probability_history.setdefault(key, deque())
+                    window_id = snapshot.response.window_id
+                    if values and values[-1][1] == window_id:
+                        values[-1] = (values[-1][0], window_id, float(probability))
+                    else:
+                        values.append((now, window_id, float(probability)))
+            for key in tuple(self._probability_history):
+                values = self._probability_history[key]
+                while values and values[0][0] < cutoff:
+                    values.popleft()
+                if not values:
+                    del self._probability_history[key]
             self.setUpdatesEnabled(False)
             try:
                 for row in range(self.ROW_COUNT):
@@ -194,7 +221,16 @@ if QWidget is not None:
                         values = ("",) * len(self.HEADERS)
                         colour = self.palette().text().color()
                     else:
-                        probability = snapshot.l4_probability_by_track.get(track.track_id)
+                        key = (
+                            snapshot.response.session_id,
+                            snapshot.response.stream_epoch,
+                            track.track_id,
+                        )
+                        history = self._probability_history.get(key, ())
+                        probability = max(
+                            (value for _seen, _window, value in history),
+                            default=None,
+                        )
                         values = (
                             str(track.track_id),
                             "—" if track.measured_theta_deg is None else f"{track.measured_theta_deg:.1f}°",
