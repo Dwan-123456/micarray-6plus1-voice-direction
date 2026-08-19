@@ -1,0 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cu132
+
+# Windows x64 / Python 3.12 / RTX 5060 reproducible environment input.
+torch==2.12.1+cu132
+setuptools==80.10.2
+-r requirements-vscode.txt

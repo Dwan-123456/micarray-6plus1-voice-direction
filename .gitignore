@@ -1,0 +1,28 @@
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+build/
+dist/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+legacy_reference_only/
+# All runtime recordings, local corpora, catalogs, imported sources and UI
+# settings stay on this computer. Curated regression audio belongs under
+# tests/fixtures/audio/ instead.
+data/
+reports/
+*.partial
+*.log
+.env
+.env.*
+!.env.example
+Thumbs.db
+Desktop.ini
+.DS_Store

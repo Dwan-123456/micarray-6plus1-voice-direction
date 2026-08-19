@@ -1,0 +1,195 @@
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from common.config import config_hash, load_config
+from layer1_input.configuration import AudioConfig, CalibrationConfig, CdcConfig
+
+
+CONFIG = Path(__file__).parents[1] / "config" / "config.yaml"
+
+
+def test_root_config_is_valid_and_builds_layer1_adapters():
+    config = load_config(CONFIG, environ={})
+    assert config.device.physical_channel_map == (0, 1, 2, 3, 4, 5, 7)
+    assert config.device.logical_channel_map == (0, 1, 2, 3, 4, 5, 7, 6)
+    assert config.layer2.max_candidates == 2
+    assert config.layer2.probability_gate.backend == "mean_2x20ms_v1"
+    assert config.layer2.probability_gate.threshold == 0.60
+    assert config.layer2.direction_kalman.backend == "circular_kalman_v1"
+    assert config.layer2.direction_kalman.enabled is False
+    assert config.layer2.direction_id_tracking.backend == "circular_id_tracker_v4"
+    assert config.layer2.direction_id_tracking.enabled is False
+    assert config.layer2.direction_id_tracking.association_gate_deg == 20.0
+    assert config.layer2.direction_id_tracking.prediction_association_gate_deg == 30.0
+    assert config.layer2.direction_id_tracking.confirmation_min_age_windows == 150
+    assert config.layer2.direction_id_tracking.confirmation_min_matches == 5
+    assert config.layer2.direction_id_tracking.prediction_hold_windows == 150
+    assert config.layer2.direction_kalman.max_missed_windows == 150
+    assert config.layer2.direction_kalman.process_noise_scale == 1.0
+    assert config.layer2.direction_kalman.measurement_noise_scale == 1.0
+    assert config.layer2.min_peak_distance_deg == 45.0
+    assert config.runtime.max_candidate_batch == 2
+    assert AudioConfig.from_project(config).block_size == 960
+    assert CdcConfig.from_project(config).required is False
+    assert CalibrationConfig.from_project(config).delay_samples == (0,) * 7
+    assert len(config_hash(config)) == 64
+    assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v1"
+    assert config.layer1_imcra.hop_samples == 960
+    assert config.layer1_pre_denoise.enabled is False
+    assert config.layer1_pre_denoise.algorithm_version == "imcra_wiener_wola_v1"
+    assert config.layer1_pre_denoise.frame_samples == 1920
+    assert config.layer1_pre_denoise.hop_samples == 960
+    assert config.layer1_pre_denoise.minimum_gain_db == -18.0
+    assert config.recording.runtime.record_imcra is True
+    assert config.recording.runtime.record_noise_spectrum is True
+    gain = config.layer4.input_gain_compensation
+    assert gain.enabled is True
+    assert gain.algorithm_version == "imcra_probability_rms_v1"
+    assert gain.target_rms_dbfs == -23.0
+    assert gain.no_compensation_probability == 0.30
+    assert gain.full_compensation_probability == 0.80
+    assert gain.peak_ceiling_dbfs == -3.0
+
+
+def test_only_allowed_deployment_variables_override():
+    config = load_config(
+        CONFIG,
+        environ={
+            "MIC_DEVICE_NAME": "Board",
+            "MIC_SERIAL_REQUIRED": "true",
+            "MIC_SAMPLE_RATE": "44100",
+            "MIC_CHANNELS": "2",
+        },
+    )
+    assert config.device.device_name == "Board"
+    assert config.device.serial_required is True
+    assert (config.device.sample_rate, config.device.device_channels) == (48_000, 8)
+
+
+def test_unknown_config_field_is_rejected(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8") + "\nunknown_section: true\n"
+    candidate = tmp_path / "bad.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+def test_candidate_limit_is_fixed_to_two(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace("max_candidates: 2", "max_candidates: 3")
+    candidate = tmp_path / "bad-candidate-limit.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+def test_layer2_minimum_peak_distance_is_fixed_to_45_degrees(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "min_peak_distance_deg: 45.0", "min_peak_distance_deg: 30.0"
+    )
+    candidate = tmp_path / "bad-minimum-peak-distance.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+def test_layer2_srp_band_is_fixed_to_2000_4000_hz(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "frequency_min_hz: 2000.0", "frequency_min_hz: 500.0", 1
+    )
+    candidate = tmp_path / "bad-layer2-srp-band.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError, match="2000.0"):
+        load_config(candidate, environ={})
+
+
+def test_unknown_layer2_probability_gate_backend_is_rejected(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "backend: mean_2x20ms_v1", "backend: unknown_gate_v9", 1
+    )
+    candidate = tmp_path / "unimplemented-probability-gate.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+def test_probability_gate_threshold_must_be_in_unit_interval(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace("threshold: 0.60", "threshold: 1.01", 1)
+    candidate = tmp_path / "invalid-probability-gate-threshold.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+@pytest.mark.parametrize(
+    ("source", "replacement"),
+    (
+        ("backend: circular_kalman_v1", "backend: unknown_tracker_v9"),
+        ("association_gate_deg: 20.0", "association_gate_deg: 181.0"),
+        ("measurement_std_deg: 5.0", "measurement_std_deg: 0.0"),
+        ("process_noise_scale: 1.00", "process_noise_scale: 0.03"),
+        ("max_missed_windows: 150", "max_missed_windows: -1"),
+    ),
+)
+def test_direction_postprocessing_configuration_is_strict(tmp_path, source, replacement):
+    text = CONFIG.read_text(encoding="utf-8").replace(source, replacement, 1)
+    candidate = tmp_path / "invalid-direction-smoothing.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+def test_kalman_cannot_be_enabled_without_id_tracking(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "direction_kalman:\n    enabled: false",
+        "direction_kalman:\n    enabled: true",
+        1,
+    )
+    candidate = tmp_path / "kalman-without-id.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError, match="requires private ID tracking"):
+        load_config(candidate, environ={})
+
+
+@pytest.mark.parametrize(
+    ("source", "replacement"),
+    (
+        ("chunk_seconds: 60", "chunk_seconds: 0"),
+        ("audio_queue_seconds: 10", "audio_queue_seconds: 0"),
+        ("result_queue_capacity: 256", "result_queue_capacity: 0"),
+        ("pre_roll_seconds: 2", "pre_roll_seconds: -1"),
+        ("post_roll_seconds: 3", "post_roll_seconds: -1"),
+        ("retention_days: 30", "retention_days: 0"),
+        ("max_storage_gb: 200", "max_storage_gb: 0"),
+        ("min_free_storage_gb: 5", "min_free_storage_gb: -1"),
+    ),
+)
+def test_recording_queue_and_storage_limits_are_strict(
+    tmp_path, source, replacement
+):
+    text = CONFIG.read_text(encoding="utf-8").replace(source, replacement, 1)
+    candidate = tmp_path / "invalid-recording-limit.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
+
+
+def test_recording_minimum_free_space_must_be_below_total_budget(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "min_free_storage_gb: 5", "min_free_storage_gb: 200", 1
+    )
+    candidate = tmp_path / "invalid-recording-storage-budget.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError, match="min_free_storage_gb"):
+        load_config(candidate, environ={})
+
+
+def test_recording_result_queue_cannot_exceed_memory_budget(tmp_path):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "result_queue_capacity: 256", "result_queue_capacity: 257", 1
+    )
+    candidate = tmp_path / "oversized-recording-result-queue.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})

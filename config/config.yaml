@@ -1,0 +1,271 @@
+schema_version: project_config_v1
+
+paths:
+  data_root: data
+  models_root: models
+
+hardware:
+  physical_mic_count: 7
+  ring_radius_m: 0.04
+  speed_of_sound_mps: 343.0
+  geometry_version: r6plus1_mic_face_ccw_v1
+  hardware_calibration_status: unverified
+  hardware_calibration_report_hash: null
+
+device:
+  sample_rate: 48000
+  device_channels: 8
+  pcm_format: s16-le
+  layout: interleaved
+  block_size_samples: 960
+  physical_channel_map: [0, 1, 2, 3, 4, 5, 7]
+  hardware_mix_channel: 6
+  logical_channel_map: [0, 1, 2, 3, 4, 5, 7, 6]
+  device_name: MicArray
+  host_api: Windows WDM-KS
+  serial_enabled: true
+  serial_port: COM5
+  serial_baud: 115200
+  serial_required: false
+  light_service_url: null
+
+calibration:
+  gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  polarity: [1, 1, 1, 1, 1, 1, 1]
+  delay_samples: [0, 0, 0, 0, 0, 0, 0]
+
+timing:
+  decision_hop_samples: 960
+  doa_window_samples: 1920
+  context_samples: 15360
+  timestamp_tolerance_ms: 5
+
+layer1_imcra:
+  enabled: true
+  # Cohen 2003 IMCRA core; 48 kHz/20 ms/7-mic aggregation is the L1 adapter.
+  algorithm_version: cohen_imcra_2003_l1_v1
+  hop_samples: 960
+  n_fft: 2048
+  window: hann_periodic
+  output_frequency_min_hz: 80.0
+  output_frequency_max_hz: 8000.0
+  frequency_min_hz: 500.0
+  frequency_max_hz: 4000.0
+  # Paper Table I baseline. Recalibrating Bmin/window parameters requires a new version.
+  frequency_smoothing_half_width: 1
+  spectrum_smoothing: 0.90
+  noise_smoothing: 0.85
+  prior_snr_smoothing: 0.92
+  minimum_subwindow_frames: 15
+  minimum_history_subwindows: 8
+  minimum_bias: 1.66
+  gamma0: 4.60
+  gamma1: 3.00
+  zeta0: 1.67
+  bias_compensation: 1.47
+  warmup_seconds: 2.4
+  eps: 1.0e-12
+
+layer1_pre_denoise:
+  # Development Test UI can change this switch before or during capture.
+  enabled: false
+  algorithm_version: imcra_wiener_wola_v1
+  frame_samples: 1920
+  hop_samples: 960
+  n_fft: 2048
+  window: sqrt_hann_50pct
+  minimum_gain_db: -18.0
+  gain_smoothing: 0.80
+
+layer2:
+  # Average two aligned upstream 20 ms probabilities; `>=` opens the Gate.
+  probability_gate:
+    backend: mean_2x20ms_v1
+    threshold: 0.60
+  # Optional per-private-ID circular angle filter. Requires ID tracking; default OFF.
+  direction_kalman:
+    enabled: false
+    backend: circular_kalman_v1
+    # Required explicit initial multipliers; Test UI persists last applied values.
+    process_noise_scale: 1.00
+    measurement_noise_scale: 1.00
+    process_angle_std_deg: 1.5
+    process_velocity_std_dps: 25.0
+    measurement_std_deg: 5.0
+    max_missed_windows: 150
+  # Assigns private IDs before the optional Kalman filter; default OFF.
+  direction_id_tracking:
+    enabled: false
+    backend: circular_id_tracker_v4
+    association_gate_deg: 20.0
+    # When Kalman is active, associate measurements against the forecast at
+    # the current decision sample rather than the last measured angle.
+    prediction_association_gate_deg: 30.0
+    max_missed_windows: 150
+    # A provisional ID must survive its first 150×20 ms (3 s), collect at
+    # least 5 natural-Gate candidate matches, and receive at least one matching
+    # L4 voice result in that interval. On formalization it receives a 3 s lease. Angle
+    # matches only update position; only a matching L4 voice result extends it.
+    confirmation_min_age_windows: 150
+    confirmation_min_matches: 5
+    prediction_hold_windows: 150
+  scanner_backend: srp_phat
+  angle_step_deg: 1.0
+  # SRP-PHAT定位只使用2～4 kHz；L1概率Gate仍独立使用500～4000 Hz。
+  frequency_min_hz: 2000.0
+  frequency_max_hz: 4000.0
+  n_fft: 2048
+  window: hann_periodic
+  remove_channel_mean: true
+  gcc_interpolation: 16
+  phat_epsilon: 1.0e-12
+  normalization_backend: robust_z_sigmoid
+  normalization_alpha: 1.0
+  normalization_beta: 2.0
+  direction_threshold: 0.35
+  peak_prominence: 0.05
+  # L2候选间的最小圆周角距；低于该角距的较低分峰会被NMS抑制。
+  min_peak_distance_deg: 45.0
+  max_candidates: 2
+  iterative_peak_search_enabled: false
+  iterative_max_sources: 2
+  iterative_suppression_strength: 0.75
+  iterative_phase_power: 2.0
+  iterative_pair_phase_threshold: 0.60
+  iterative_min_pair_support: 6
+  iterative_min_frequency_support: 24
+  iterative_min_remaining_weight_ratio: 0.10
+  iterative_min_residual_peak_ratio: 0.20
+
+stft:
+  n_fft: 1024
+  win_length: 960
+  hop_length: 480
+  window: hann_periodic
+  center: true
+  pad_mode: reflect
+  normalized: false
+  onesided: true
+  return_complex: true
+
+layer3:
+  main_backend: imcra_spatial_separation
+  fallback_backend: das
+  frequency_min_hz: 80.0
+  frequency_max_hz: 8000.0
+  rho_lcmv_max: 0.30
+  rho_soft_null_max: 0.70
+  loading_retry_factors: [0.001, 0.01, 0.1]
+  noise_covariance_shrinkage: 0.25
+  uncertainty_loading_multiplier: 4.0
+  alias_guard_hz: 4300.0
+  alias_loading_multiplier: 3.0
+  soft_null_strength: 2.0
+  condition_number_limit: 1000000.0
+  constraint_tolerance: 0.002
+  min_frequency_gain: 0.25
+  # Test-UI comparison only. FNBW means first-null beamwidth, not HPBW.
+  constant_beamwidth_fnbw_deg: 30.0
+  constant_beamwidth_design_grid_deg: 1.0
+  constant_beamwidth_regularization: 0.01
+  constant_beamwidth_min_wng_db: -10.0
+
+feature:
+  preprocessing_version: voice_logmag_v1
+  frequency_min_hz: 80.0
+  frequency_max_hz: 8000.0
+  first_bin: 2
+  last_bin_inclusive: 170
+  log_epsilon: 1.0e-6
+  normalization: training_set_per_frequency_zscore
+  expected_shape: [33, 169]
+
+layer4:
+  primary_model_id: nv_marblenet_baseline_v1
+  models:
+    - model_id: nv_marblenet_baseline_v1
+      backend: nvidia_marblenet_window_v1
+      model_artifact: models/nv_marblenet_baseline_v1
+      role: primary
+      enabled: true
+  allow_mock: false
+  voice_probability_limit: 0.70
+  input_gain_compensation:
+    enabled: true
+    algorithm_version: imcra_probability_rms_v1
+    target_rms_dbfs: -23.0
+    no_compensation_probability: 0.30
+    full_compensation_probability: 0.80
+    peak_ceiling_dbfs: -3.0
+    silence_floor_dbfs: -100.0
+    time_interpolation: linear_db
+
+runtime:
+  mode: development
+  preferred_device: cuda
+  allow_cpu_fallback: true
+  max_candidate_batch: 2
+  capture_handoff_blocks: 100
+  # Legacy serial-queue field retained for old launch profiles.
+  processing_queue_windows: 1
+  # L2/L3/L4 are independent single-worker FIFO stages.  These small queues
+  # absorb short jitter without retaining an unbounded number of overlapping
+  # 320 ms windows or CUDA tensors.
+  l2_queue_windows: 4
+  l3_queue_windows: 3
+  l4_queue_windows: 3
+  completion_queue_windows: 8
+  max_inflight_windows: 16
+  compute_cache_max_bytes: 67108864
+  overflow_policy: drop_oldest
+  graceful_shutdown_timeout_seconds: 10.0
+
+dev_test_ui:
+  start_fullscreen: false
+  stale_after_ms: 500
+  performance_bar_height_px: 56
+  performance_refresh_hz: 1
+  performance_window_count: 500
+  sample_rate_window_seconds: 5
+  l1_meter_refresh_hz: 100
+  polar_refresh_hz: 100
+  waveform_refresh_hz: 100
+  snapshot_mailbox_capacity: 1
+  scratch_root: data/dev_test_ui/scratch/current
+  autoplay: true
+  loop_gap_ms: 100
+  follow_latest_window: false
+  preview_volume: 0.25
+  preview_peak_dbfs: -6.0
+  preview_fade_ms: 5
+  default_selected_backend: mvdr
+  # Hide Test-UI listening IDs until their stitched cache reaches this duration.
+  minimum_listening_track_seconds: 2.0
+
+recording:
+  runtime:
+    mode: manual
+    chunk_seconds: 60
+    audio_queue_seconds: 10
+    result_queue_capacity: 256
+    record_native_8ch: true
+    record_logical_8ch: true
+    record_physical_7ch: true
+    record_physical_float32: true
+    record_results_jsonl: true
+    record_spatial_response: true
+    record_hotmaps: true
+    record_imcra: true
+    # Deprecated compatibility asset; formal v0.3 noise data is the IMCRA sidecar.
+    record_noise_spectrum: true
+    retention_days: 30
+    max_storage_gb: 200
+    min_free_storage_gb: 5
+  event:
+    pre_roll_seconds: 2
+    post_roll_seconds: 3
+  trash_retention_days: 7
+
+privacy:
+  local_only: true
+  automatic_upload: false

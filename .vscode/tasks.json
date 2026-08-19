@@ -1,0 +1,62 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "环境：创建或更新 RTX 5060 专用环境",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\setup_vscode_env.ps1"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "环境：GPU 完整自检",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\scripts\\check_runtime_env.py", "--require-cuda"],
+      "problemMatcher": []
+    },
+    {
+      "label": "测试：当前规格全部自动测试",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "pytest", "-q"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}"
+        }
+      },
+      "group": {"kind": "test", "isDefault": true},
+      "problemMatcher": []
+    },
+    {
+      "label": "运行：L1 设备服务",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "uvicorn", "layer1_input.api:app", "--host", "127.0.0.1", "--port", "8765"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {"PYTHONPATH": "${workspaceFolder}"}
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "运行：Development Test UI",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "gui.dev_test_ui.app"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {"PYTHONPATH": "${workspaceFolder}"}
+      },
+      "problemMatcher": []
+    }
+  ]
+}

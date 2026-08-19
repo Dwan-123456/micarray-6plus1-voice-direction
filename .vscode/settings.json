@@ -1,0 +1,22 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [
+    "-q"
+  ],
+  "python.envFile": "${workspaceFolder}\\.vscode\\project.env",
+  "terminal.integrated.env.windows": {
+    "PYTHONPATH": "${workspaceFolder}",
+    "PYTHONUTF8": "1",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "files.encoding": "utf8",
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+  "ruff.nativeServer": "on",
+  "ruff.configuration": "${workspaceFolder}\\pyproject.toml"
+}
