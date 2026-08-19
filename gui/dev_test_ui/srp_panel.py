@@ -13,6 +13,11 @@ from common.data_types import SpatialResponse, TrackedDirection
 _TRACK_COLOURS = ("#ff3b30", "#2ecc71", "#ffb000", "#af7ac5", "#00bcd4", "#ff7f50")
 
 
+def track_colour_hex(track_id: int) -> str:
+    """Return the stable UI colour assigned to one authoritative L2 ID."""
+    return _TRACK_COLOURS[(int(track_id) - 1) % len(_TRACK_COLOURS)]
+
+
 @dataclass(frozen=True, slots=True)
 class MusicPanelSnapshot:
     """One immutable, authoritative Layer-2 MUSIC/UI projection."""
@@ -99,7 +104,7 @@ if QWidget is not None:
             return outer_radius * (0.035 + 0.93 * float(np.clip(score, 0.0, 1.0)))
 
         def _track_colour(self, track_id: int) -> QColor:
-            return QColor(_TRACK_COLOURS[(int(track_id) - 1) % len(_TRACK_COLOURS)])
+            return QColor(track_colour_hex(track_id))
 
         def paintEvent(self, _event) -> None:  # noqa: N802
             painter = QPainter(self)
@@ -230,7 +235,7 @@ if QWidget is not None:
                             "是" if track.is_observed else "否",
                             "—" if probability is None else f"{probability:.3f}",
                         )
-                        colour = QColor(_TRACK_COLOURS[(track.track_id - 1) % len(_TRACK_COLOURS)])
+                        colour = QColor(track_colour_hex(track.track_id))
                     for column, value in enumerate(values):
                         item = self.item(row, column)
                         item.setText(value)
