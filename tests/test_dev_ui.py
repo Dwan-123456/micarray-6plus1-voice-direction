@@ -777,6 +777,7 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert window.stop_button.text() == "停止采集"
         assert window.start_button.isEnabled() and not window.stop_button.isEnabled()
         assert window.light_on.isEnabled() and window.light_off.isEnabled()
+        assert not hasattr(window, "calibration_label")
         assert window.srp_threshold.parentWidget() is not window.srp_polar
         right_layout = window.srp_threshold.parentWidget().layout()
         assert right_layout.indexOf(window.gate_threshold) == 0
