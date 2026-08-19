@@ -11,7 +11,7 @@ DecisionWindow + 两个对齐的20 ms概率
          7路物理麦 / 2～4 kHz / 0～359°逐度
          20 ms增量加入/移除STFT协方差帧
          每频点7×7加载/收缩协方差 + Hermitian eigh
-         MDL与跨频一致性估计0～3源
+         MDL与跨频一致性估计0～6阶空间模态
          NormMUSIC逐频归一化后跨频融合
          最多3峰 + 45°圆周NMS
     → 永久开启的全局方向轨迹分配
@@ -45,4 +45,4 @@ L4按权威`track_id`异步回传该窗口的人声概率与判定，L2在下一
 
 实现依据Schmidt MUSIC、Wax/Kailath MDL以及Pyroomacoustics MUSIC/NormMUSIC的公开算法表达；Pyroomacoustics为MIT许可。本项目没有复制或声称存在“Israel Cohen MUSIC开源实现”，Israel Cohen资料只用于项目另行记录的噪声估计与鲁棒性背景。
 
-自动测试覆盖0～3源、跨0°、rank交换、新生/短漏检/TTL、Gate关闭、sample跳跃、epoch/session、确定性关联、Kalman切换、HardwareMix隔离、滚动增量等价性和实时性能。
+自动测试覆盖MDL 0～6阶、最多3个候选、跨0°、rank交换、新生/短漏检/TTL、Gate关闭、sample跳跃、epoch/session、确定性关联、Kalman切换、HardwareMix隔离、滚动增量等价性和实时性能。

@@ -470,8 +470,8 @@ class ModelOrderEstimate:
     status: str
 
     def __post_init__(self) -> None:
-        if not 0 <= self.estimated_sources <= 3:
-            raise ValueError("MUSIC model order must be 0..3")
+        if not 0 <= self.estimated_sources <= 6:
+            raise ValueError("MUSIC model order must be 0..6")
         if min(self.valid_frequency_bins, self.snapshot_count, self.mdl_age_samples) < 0:
             raise ValueError("MUSIC model order counts must be non-negative")
         if not np.isfinite(self.cross_frequency_consistency) or not 0.0 <= self.cross_frequency_consistency <= 1.0:

@@ -22,6 +22,20 @@
 
 ---
 
+## 2026-08-19 — L2 MUSIC MDL试验范围扩展为0～6阶
+
+- **版本/标签**：`v1.1.1`发布后的L2试验性修复；不创建或移动版本标签。
+- **类型**：L2 MUSIC模型阶数、公共数据契约、文档与回归测试。
+- **涉及文件**：`layer2_source_detection/music.py`、`common/data_types.py`、`tests/test_l2_music_tracking.py`、L2/项目README及`ARCHITECTURE_V1.1_TARGET.md`。
+- MDL候选阶数由`0～3`扩展为7麦阵列可保留至少一维噪声子空间的`0～6`，跨频众数及一致性统计同步覆盖七种阶数；`ModelOrderEstimate.estimated_sources`允许记录`0～6`。
+- 公共MUSIC候选和进入ID/L3的方向仍由`max_candidates=3`限制为最多3个；本次未增加并行声源输出上限，也未加入饱和拒绝、噪声白化或真实跨频峰支持。
+- 测试扩展为合成特征值下MDL `0～6`全覆盖，并保留最多3候选约束。
+- L1、Gate、ID匈牙利关联与Kalman、L3、L4、Development Test UI、Log UI、录音存储、Runtime调度、配置、模型和资产均无变化。
+- **验证**：`tests/test_l2_music_tracking.py` 29项通过；`tests/test_runtime_v11_contracts.py`、`tests/test_dev_ui.py`、`tests/test_dev_ui_pipeline_status.py`合计29项通过，共58项相关回归通过。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-19 — 修复录音移到回收站后仍显示且无法再次删除
 
 - **版本/标签**：`v1.1.1`发布后的分支修复；不创建或移动版本标签。

@@ -81,8 +81,8 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     assert scan.max_candidates == 3 and scan.min_peak_distance_deg == 45.0
 
 
-@pytest.mark.parametrize("source_count", range(4))
-def test_mdl_model_order_covers_zero_through_three_sources(source_count: int) -> None:
+@pytest.mark.parametrize("source_count", range(7))
+def test_mdl_model_order_covers_zero_through_six_sources(source_count: int) -> None:
     eigenvalues = np.r_[
         np.ones(7 - source_count),
         np.arange(1, source_count + 1, dtype=np.float64) * 20.0 + 20.0,
@@ -140,7 +140,7 @@ def test_music_two_sources_are_45_degree_nms_separated() -> None:
     response, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
         _window(_audio((40.0, 170.0), seed=13)), physical_6plus1_geometry(), config,
     )
-    assert 0 <= diagnostics.model_order.estimated_sources <= 3
+    assert 0 <= diagnostics.model_order.estimated_sources <= 6
     assert len(candidates) <= 3
     assert all(
         abs(((left.theta_deg - right.theta_deg + 180.0) % 360.0) - 180.0) >= 45.0

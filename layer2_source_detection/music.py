@@ -206,7 +206,7 @@ class RollingNormMusicScanner:
         for values in eigenvalues:
             values = np.maximum(np.real(values), 1.0e-12)
             scores = []
-            for k in range(4):
+            for k in range(7):
                 noise = values[: 7 - k]
                 ratio = np.exp(np.mean(np.log(noise))) / np.mean(noise)
                 score = -snapshots * (7 - k) * np.log(max(ratio, 1.0e-12))
@@ -215,7 +215,7 @@ class RollingNormMusicScanner:
             orders.append(int(np.argmin(scores)))
         if not orders:
             return 0, 0.0
-        counts = np.bincount(orders, minlength=4)
+        counts = np.bincount(orders, minlength=7)
         order = int(np.argmax(counts))
         return order, float(counts[order] / len(orders))
 
