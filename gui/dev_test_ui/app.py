@@ -1051,7 +1051,7 @@ def build_window(
                 if l1.pre_denoise_enabled:
                     self._set_text(
                         self.pre_denoise_label,
-                        f"预降噪: ON | 已替换7路 | 平均频率增益 {l1.pre_denoise_mean_gain_db:.1f} dB",
+                        f"预降噪: ON | 已替换7路 | 历史平均频率增益 {l1.pre_denoise_mean_gain_db:.1f} dB",
                     )
                 else:
                     self._set_text(self.pre_denoise_label, "预降噪: OFF | 原始音频直通")

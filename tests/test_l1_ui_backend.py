@@ -47,6 +47,27 @@ def test_meter_uses_eight_independent_latest_960_sample_channels():
     assert snapshot.clipped.tolist() == [True, False, False, False, False, False, False, False]
 
 
+def test_meter_reports_sample_weighted_historical_pre_denoise_gain_and_resets_epoch():
+    meter = L1Meter()
+    first = IngestedAudioBlock(
+        "session", 0, 0, 480, 48_000, 0, 0.0, np.zeros((480, 8), np.float32),
+    )
+    second = IngestedAudioBlock(
+        "session", 0, 480, 1_920, 48_000, 1, 0.01, np.zeros((1_440, 8), np.float32),
+    )
+    meter.add(first, pre_denoise_enabled=True, pre_denoise_mean_gain_db=-20.0)
+    history = meter.add(second, pre_denoise_enabled=True, pre_denoise_mean_gain_db=-6.0205999)
+    assert history.pre_denoise_mean_gain_db == pytest.approx(
+        20.0 * np.log10((0.1 * 480 + 0.5 * 1_440) / 1_920)
+    )
+
+    next_epoch = IngestedAudioBlock(
+        "session", 1, 0, 960, 48_000, 2, 0.04, np.zeros((960, 8), np.float32),
+    )
+    reset = meter.add(next_epoch, pre_denoise_enabled=True, pre_denoise_mean_gain_db=-12.0)
+    assert reset.pre_denoise_mean_gain_db == pytest.approx(-12.0)
+
+
 def test_scratch_record_pause_resume_finish_preserves_real_ranges(tmp_path):
     recorder = ScratchRecorder("data/dev_test_ui/scratch/current", project_root=tmp_path)
     recorder.record()
