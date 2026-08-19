@@ -7,6 +7,7 @@
 - Layer 3：方向波束形成、缓存及增强音频；
 - Layer 4：响度补偿、重采样、CNN与人声概率；
 - Development Test UI；
+- 独立 Pipeline Log UI；
 - 正式音频录制、数据管理与Production UI；
 - Application Runtime、唯一时间轴、跨层接口、缓存、测试和模型资产。
 
@@ -278,6 +279,58 @@
 - 新增DecisionRecord v4对齐、旧v3只读、逐ID文件防覆盖、Catalog/服务查询、增强事务恢复、页面展示/试听、Center参考、重叠去除和L1-only无ID测试。
 - 本分支相关自动测试`83 passed`，Ruff与Git差异检查通过，并完成Production UI运行录音页离屏渲染检查。全仓库并行验证为`282 passed, 12 failed`；12项均属于尚未完成的L2/Test UI迁移测试（旧开关参数或缺少公共ID的测试桩），不属于本分支新增测试。未进行真实麦克风、长时间录音或诊室实机验收。
 - `data/`、实际录音、Catalog、日志、缓存和临时文件未纳入提交；Git LFS资产无变化。
+
+---
+
+## 2026-08-19 — 规划与主链平行的独立只读 Pipeline Log UI
+
+- **版本/标签**：当前项目仍为`1.0.1` / `v1.0.1`；本次把 Log UI 纳入下一目标版本`1.1.0`，未创建`v1.1.0`标签。
+- **类型**：架构与界面规划；仅文档变化，无运行代码、配置或数据schema实现变化。
+- **涉及文件**：新增`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`；更新`ARCHITECTURE_V1.1_TARGET.md`、根`README.md`、`PROJECT_FILE_CLASSIFICATION.md`和`CHANGELOG.md`。
+
+### L1、L2、L3与L4
+
+- 明确 Log UI 与 L1～L4 平行，不是 Layer 5，不插入、控制、消费或反压 `L1 → L2 → L3 → L4` 实时处理链。
+- L1采集/校准/IMCRA、L2 Gate/SRP/ID/Kalman现有实现、L3波束形成、L4分类、跨层DTO与现有测试均无变化。
+
+### Development Test UI
+
+- 明确 Log UI 是独立观察与回放子系统，不是 Development Test UI 的面板。
+- Log UI 禁止消费`latest_dev_ui`、`latest_l4_dev_ui`等读取即移除的latest-only邮箱，避免抢走正式UI帧或改变被观察系统。
+- Development Test UI的界面、试听、Runtime控制、设置和测试均无变化。
+
+### Pipeline Log UI
+
+- 新增1.1.0权威目标文档，定义“公开只读接口 → 标准化读模型 → 统计引擎 → UI”的独立结构。
+- 规划五个页面：记录列表、会话总览、Pipeline时间线、单窗详情、ID与异常；以`WindowKey`对齐逐窗数据，以`(session_id, stream_epoch, track_id)`对齐方向轨、L3资产和L4结果。
+- 统一阶段数量、实际完成Hz、p50/p95/p99、缺失率和方向ID统计口径；只有`COMPLETED`计入实际完成频率，`SKIPPED/DROPPED/TIMED_OUT/FAILED/CANCELLED`分开显示。
+- 实际完成Hz以所选epoch/时间范围的完整权威观测区间为分母，包含首尾和非完成窗口；不能用首末completed sample简单相减，跨epoch按有效时长合并。
+- 规划v3/v4 capability适配、未知schema fail-closed、十万窗有界加载、按需音频和严格只读验收；接口未提供的数据必须显示`N/A`，不能推断为零。
+- 第一版定位为完成/封存session的离线回看，加可选同进程`processing_status`聚合概览；当前尚无公共跨进程逐窗事件流，不通过内部队列绕过限制。
+- **本次实现状态**：未新增Log UI程序、目录、依赖、配置、启动入口或自动测试，不能将规划描述为已实现UI。
+
+### 音频录制、数据管理与Production UI
+
+- Log UI 只读取未来稳定的公开查询能力，不调用标注、导出、删除、恢复、Catalog重建或其他写接口。
+- 记录当前1.0.1公共服务只能列出runtime sessions，尚不能完整公开回看单个session；`DataManagerService`构造Catalog会创建/初始化SQLite/WAL，因此不能作为严格零写入读取方式。目标实现只能使用显式只读端口，或由正式公共接口生成的版本化只读快照/流；Log UI不得自行复制、打开或解析Catalog文件。
+- RecordingStore、Catalog、manifest、录音格式、恢复、Audio Data Manager和Production UI代码均无变化；本次未读取、复制或提交任何运行录音和本地`data/`内容。
+
+### Runtime、接口、配置与兼容性
+
+- 规划可选同进程Live只在外部宿主能够注入现有Runtime只读引用时轮询公开`processing_status`聚合状态；在不修改主项目的独立进程范围内该能力仍延期。Log UI不得启动/停止Runtime、修改参数或成为ResultJoiner/录音提交的依赖。
+- 当前Runtime、队列容量、ResultJoiner、公开接口、DecisionRecord、配置schema和版本兼容代码均无变化。
+
+### 测试与资产
+
+- 新文档规定v3/v4、缺字段、坏记录、完整阶段终态、跨epoch、`359° ↔ 0°`、统计公式、资产校验、严格只读性和十万窗口性能门禁。
+- 封存静态fixture验证文件hash、Catalog行数和schema前后完全一致；Live场景通过调用审计与对照运行证明Log UI不消费邮箱、不调用写接口且不引入额外状态变化，不要求自然变化的运行队列或WAL字节静止。
+- 本次为纯Markdown规划，不运行pytest；以Markdown本地相对链接检查、`git diff --check`、最终Git差异和暂存文件范围检查验收。
+- 自动测试源码、精选测试音频、模型、阵列资产及其他二进制文件均无变化。
+
+### Git与Git LFS
+
+- 仅提交上述五个Markdown文件，不提交并行功能分支、运行数据、Catalog、日志、缓存或临时文件。
+- Git LFS资产无变化；不创建、移动或重写任何发布标签。
 
 ---
 

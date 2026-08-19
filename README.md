@@ -4,7 +4,7 @@
 
 > **下一目标版本：项目 `1.1.0`（分支实现中，尚未发布）。** L2 Rolling NormMUSIC、永久公共方向ID以及配套跨层/录音接口已在当前分支实现；项目整体发布仍以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为权威门禁，不得据此认为`1.1.0`已经发布。
 
-> 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L4、Development Test UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
+> 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L4、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
 ## 项目要解决什么问题
 本项目面向诊室环境下的医患对话记录，目标是根据声源的空间方向对音频进行分离和增强，并识别声源为人声的概率。诊室中通常同时存在医生、患者、陪同人员、设备噪声和墙面反射，单支麦克风虽然能够录音，却无法判断某段人声来自哪个方向，也难以将不同讲话人的声音分开。
@@ -139,6 +139,8 @@ Layer 4：判断各方向是否为人声
 所有队列和缓存均有上限；过载窗口产生error记录
 当前有效输出帧率偏低，主要受L3 BF吞吐限制，仍待优化
 ```
+
+上图继续描述当前 1.0.1 实现。1.1.0 计划在实时处理平面之外新增独立 Pipeline Log UI：它与 L1～L4、Development Test UI、录音存储/数据管理系统平行，只读取项目公开接口中的记录并做统计、时间线、单窗详情和逐 ID 回看；它不是 Layer 5，也不控制、消费或反压实时主链。详细边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
 
 ## 算法流程说明
 
@@ -327,6 +329,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 
 配置中的`privacy.local_only=true`、`automatic_upload=false`表示项目默认只在本机保存且不自动上传。但这只是软件默认行为，不等同于完成医疗数据合规。诊室采集前仍需要取得授权、限制访问权限、制定保留和删除策略，并根据所在地区要求进行去标识化和审计。
 
+## Pipeline Log UI（1.1.0规划）
+
+计划新增一个独立只读的 Pipeline Log UI，用于查看单次运行记录中的阶段性能、终态、MUSIC/方向 ID、L3增强资产、L4结果、丢窗和时间线。其项目地位与 L1～L4、Development Test UI、RecordingStore/Audio Data Manager 平行，不属于算法流水线的下一层。
+
+第一版优先完整回看已完成、已封存的 session；若由同一正式进程显式提供 Runtime 引用，只额外展示公开的聚合运行状态。当前 1.0.1 没有完整的单 session 公共回看接口或跨进程逐窗只读事件流，因此 Log UI 尚未实现，不能通过消费 Development Test UI 的 latest-only 邮箱或直接打开私有数据绕过这一限制。
+
+Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算法参数、标注/导出/删除数据、重建 Catalog，或在项目数据目录写缓存。公开接口未提供的数据明确显示 `N/A`。页面、数据覆盖、统计口径、兼容性和只读验收详见[`Log UI 1.1.0目标架构`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
+
 ## 当前完成情况
 
 以下主链已经接通并有自动化测试覆盖：
@@ -415,6 +425,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 
 - [总执行规格](CODEX_PROJECT_SPEC_6plus1_2D_voice_direction_v0.2.md)
 - [v0.3目标架构与迁移契约](ARCHITECTURE_V0.3_TARGET.md)
+- [1.1.0 MUSIC、公共方向ID与平行子系统目标架构](ARCHITECTURE_V1.1_TARGET.md)
+- [Pipeline Log UI 1.1.0目标架构](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)
 - [Windows与RTX 5060环境说明](ENVIRONMENT.md)
 - [Layer 1说明](layer1_input/README.md)
 - [Layer 2说明](layer2_source_detection/README.md)

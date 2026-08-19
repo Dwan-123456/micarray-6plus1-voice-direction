@@ -30,6 +30,14 @@
 - 根目录执行规格、环境说明、依赖锁定文件、`pyproject.toml`及VS Code设置均属于当前新项目。
 
 - `L1_NOISE_RECORDING_AND_L2_OPTIMIZATION.md`：L1动态噪声记录契约及未接入的L2后续优化路线。
+- `LOG_UI_ARCHITECTURE_V1.1_TARGET.md`：独立 Pipeline Log UI 的1.1.0目标架构；当前只有规划文档，不表示可执行UI已经存在。
+
+## 1.1.0计划新增的平行子系统
+
+- **Pipeline Log UI**：与`layer1_input/`、`layer2_source_detection/`、`layer3_direction_signal/`、`layer4_voice_classifier/`、Development Test UI和`data_management/`平行的项目级子系统。
+- 它只通过公共只读接口统计、展示和回放 session 的性能、阶段终态、方向 ID、L3/L4输出与音频资产；不是Layer 5，不参与实时处理、控制、录音提交或数据修改。
+- 实现目录和打包入口要在公共查询契约冻结后确定；当前项目中不新增空目录或占位运行代码。
+- 权威范围、数据模式、五个页面、统计公式和只读验收见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
 
 ## 旧项目与参考资料（仅供参考）
 
