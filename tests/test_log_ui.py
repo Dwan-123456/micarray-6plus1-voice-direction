@@ -8,6 +8,7 @@ import pytest
 from gui.log_ui import Availability, PublicApiAdapter, StageState, StatisticsEngine
 from gui.log_ui.cache import BoundedLru
 from gui.log_ui.controller import CancelledError, page
+from gui.log_ui.standalone import StandaloneUnavailableProvider
 
 
 def _direction(track_id: int, theta: float, *, new: bool = False) -> dict[str, object]:
@@ -139,6 +140,13 @@ def test_missing_capability_is_na_instead_of_zero() -> None:
     assert session.decision_availability == Availability.NOT_PROVIDED
     assert stats.track_count is None
     assert stats.stage["l2"].completed_hz is None
+
+
+def test_standalone_desktop_provider_opens_without_catalog_or_runtime_capabilities() -> None:
+    adapter = PublicApiAdapter(StandaloneUnavailableProvider())
+
+    assert not adapter.capabilities.offline_review
+    assert adapter.list_sessions() == ()
 
 
 def test_unknown_schema_fails_closed_and_does_not_enter_statistics() -> None:

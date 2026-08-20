@@ -2,7 +2,9 @@
 
 该目录实现项目1.1.2的独立只读 Pipeline Log UI。它是观察平面，不是Layer 5，也不是Development Test UI的面板。
 
-入口为 `launch_log_ui(provider)` 或 `PipelineLogWindow(provider)`。`provider` 必须由正式宿主显式注入，并提供已经存在的项目公开查询方法；Log UI 不接受 data root，不构造 `DataManagerService`，不打开 Catalog/SQLite/WAL，不消费 Runtime latest-only 邮箱，也没有启动、停止、参数修改、标注、导出、删除、恢复或重建控件。
+正式宿主入口为 `launch_log_ui(provider)` 或 `PipelineLogWindow(provider)`。`provider` 必须由正式宿主显式注入，并提供已经存在的项目公开查询方法；Log UI 不接受 data root，不构造 `DataManagerService`，不打开 Catalog/SQLite/WAL，不消费 Runtime latest-only 邮箱，也没有启动、停止、参数修改、标注、导出、删除、恢复或重建控件。
+
+桌面快捷方式使用 `.venv/Scripts/pythonw.exe -m gui.log_ui`，可以无控制台直接打开五页界面。独立进程当前没有跨进程公共只读端口，因此该入口使用无能力 provider，并在记录列表明确显示 `Unavailable`；它不会为了加载记录而绕过架构边界访问 Catalog。由正式宿主注入 provider 时使用完整离线回看能力。
 
 首版提供记录列表、会话总览、Pipeline 时间线、单窗详情、ID 与异常五页。v3/v4 通过 capability 与 schema 双重探测；缺失字段分别保留为 `N/A / 接口未提供 / 未记录 / 尚未封存 / 校验失败`。未知 schema fail-closed，不进入统计。完成频率只以明确 `COMPLETED` 窗口为分子，以各 epoch 完整公开 sample 区间之和为分母；compute、queue wait、end-to-end 分位数分别显示样本数和缺失数。
 

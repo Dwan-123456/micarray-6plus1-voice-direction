@@ -22,6 +22,19 @@
 
 ---
 
+## 2026-08-20 — Pipeline Log UI桌面无控制台启动入口
+
+- **版本/标签**：项目`1.1.2`维护改动；不创建或移动发布标签，既有`v1.1.2`保持不变。
+- **类型**：Pipeline Log UI桌面启动入口、只读边界说明、自动测试与本机快捷方式。
+- **涉及文件**：`gui/log_ui/{__main__,standalone}.py`、`gui/log_ui/README.md`、`tests/test_log_ui.py`；本机桌面新增快捷方式但不纳入Git。
+- 新增`.venv/Scripts/pythonw.exe -m gui.log_ui`无控制台入口，使桌面快捷方式可直接打开独立五页Log UI窗口。
+- 独立进程继续使用无能力provider并明确显示`Unavailable`；它不接受data root、不构造`DataManagerService`、不打开Catalog/SQLite/WAL，也不读取Runtime latest-only邮箱。完整封存session回看仍只在正式宿主注入公共只读查询provider时启用。
+- **未改变**：L1～L4、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore/Catalog、数据schema、配置、模型、音频和精选测试资产均无变化。
+- **验证**：Log UI及Recording v4公开查询边界聚焦测试`18 passed`；Ruff与`git diff --check`通过；桌面`.lnk`的target、arguments、工作目录和图标核验通过，并实际打开标题为`Pipeline Log UI — Read Only`的无控制台窗口。不构成真实封存session人工回放或诊室实机验收。
+- Git LFS管理资产无变化；`data/`、Catalog、录音、日志、缓存、临时文件和本地设置不纳入提交。
+
+---
+
 ## 2026-08-19 — 项目1.1.2整合发布
 
 - **版本/标签**：项目`1.1.2`，创建新的不可变标签`v1.1.2`；`v1.0.0`、`v1.0.1`、`v1.1.1`及全部历史分支保持原位，不移动、不覆盖、不删除。
