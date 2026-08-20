@@ -43,6 +43,7 @@ except ImportError as exc:  # pragma: no cover
 
 from data_management.service import DataManagerService
 from data_management.contracts import Annotation
+from data_management.corpus_naming import build_corpus_display_name
 from data_management.wizard import WizardInput, validate_wizard
 from gui.production_ui.capture_host import CaptureHost
 from gui.production_ui.channel_player import NativeChannelPlayer
@@ -1360,7 +1361,14 @@ class AudioDataManager(QMainWindow):
         noise_source = self.wizard_fields["noise_source"].text().strip()
         if not noise_source:
             raise ValueError("请填写噪音来源；没有噪音时请填写“无”")
-        recording_name = f"{environment} · {source_count}个声源 · {datetime.now():%Y%m%d-%H%M%S}"
+        recording_name = build_corpus_display_name(
+            environment,
+            datetime.now().astimezone(),
+            source_count,
+            source_categories,
+            source_movements,
+            noise_source,
+        )
         return WizardInput(
             dataset_id="test-recordings",
             room_id="unspecified",

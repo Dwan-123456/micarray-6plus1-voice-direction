@@ -22,6 +22,20 @@
 
 ---
 
+## 2026-08-20 — 测试语料名称包含完整录制标签
+
+- **版本/标签**：项目`1.1.2`维护修复；不创建或移动发布标签，既有`v1.1.2`保持不变。
+- **类型**：测试语料显示命名、已有本地标签迁移与Production UI可读性修复。
+- **涉及文件**：`data_management/corpus_naming.py`、`scripts/migrate_corpus_names.py`、`gui/production_ui/{app.py,README.md}`及对应测试。
+- 新录音名称统一为“环境 · 月日-时分 · 声源数 · 各声源类型（移动方式） · 噪音来源”；名称只作为可读展示字段，Recording UUID、资产目录、音频和热力图文件名保持不变。
+- 新增可重复执行的本地语料名称迁移工具；迁移同步更新`recording_manifest.json`、`labels.json`、labels资产SHA-256、manifest sidecar、Catalog投影和审计记录。旧式“环境-单人声固定声源-噪音背景噪音”名称可恢复为结构化标签后再命名。
+- **本地数据**：当前`data/test_corpus`内8条已有标记语料已完成迁移；本地录音和Catalog继续受忽略规则保护，不纳入Git或Git LFS。
+- **未改变**：L1～L4算法、Windowing、Application Runtime、Development Test UI、Pipeline Log UI、录音PCM/热力图资产内容、绝对sample轴、QA与数据集划分均无变化。
+- **验证**：语料命名/迁移与Production UI聚焦测试`19 passed`，全量自动测试`397 passed`，Ruff通过；实际迁移后二次预览为0条待更新，并核对8条manifest、labels SHA-256、manifest sidecar与Catalog显示名一致。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-20 — L2 tentative轨迹滚动确认修复
 
 - **版本/标签**：项目`1.1.2`维护修复；不创建或移动发布标签，既有`v1.1.2`保持不变。

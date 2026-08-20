@@ -232,7 +232,9 @@ def test_wizard_builds_one_type_and_movement_row_per_source(tmp_path):
     assert data.source_categories == ("医生人声", "患者人声")
     assert data.source_movements == ("静止", "左右走动")
     assert data.noise_source == "空调"
-    assert data.recording_name.startswith("诊室 · 2个声源 · ")
+    assert "诊室 · " in data.recording_name
+    assert " · 2个声源 · 声源1：医生人声（静止）；声源2：患者人声（左右走动）" in data.recording_name
+    assert data.recording_name.endswith(" · 噪音：空调")
     window.close()
 
 
