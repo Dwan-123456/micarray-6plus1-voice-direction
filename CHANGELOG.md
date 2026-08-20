@@ -22,6 +22,21 @@
 
 ---
 
+## 2026-08-20 — 按1.2.1实际实现维护项目总架构图
+
+- **版本/标签**：项目`1.2.1`文档维护；不创建或移动发布标签，既有`v1.2.1`保持不变。
+- **类型**：README总架构图、相关算法流程与完成边界校正。
+- **涉及文件**：`README.md`、`CHANGELOG.md`。
+- **架构图**：按当前代码、配置、测试和各模块说明重新核对L1→Ingest→Window→L2→L3→L4→ResultJoiner主链；主标题使用`【已完成】`标识已经接通的代码模块，下级分支不重复标记。补齐公共`track_id`、DecisionRecord v4、Production UI和独立只读Pipeline Log UI，并明确Log UI不是Layer 5、独立进程未注入公开provider时显示`Unavailable`。
+- **L2/Runtime契约**：移除旧SRP、迭代多峰、可关闭私有ID和L4转正/续租描述；改为240 ms Rolling NormMUSIC、MDL 0～6阶诊断、手动1/2/3阶上限、可选DPD/IMCRA白化、永久全局方向ID、可选Kalman、最多3个且两两至少45°的公共方向，以及当前统一`stage_queue_windows=1000`有界latest-wins队列。
+- **L3/L4与结果链**：架构图更新为按`WindowKey + track_id`严格对齐，说明双候选`rho`分支、单/三候选Loaded MVDR、DAS回退、L4多语言MarbleNet以及ResultJoiner逐ID校验和有序提交；历史75.78%丢窗仅保留为旧v3证据，不再写成当前1.2.1性能结论。
+- **界面与限制**：Development Test UI说明改为永久公共ID、MUSIC阶数上限及默认关闭的DPD/白化；完成清单纳入Production UI和Pipeline Log UI；限制部分改为当前最多3候选，但明确三候选能力不等于三人诊室分离已通过实机验收。
+- **未改变**：L1、L2、L3、L4算法代码，Windowing、Application Runtime、Development Test UI、Pipeline Log UI、Production UI、RecordingStore、Audio Data Manager、配置、测试、模型、音频、阵列表和其他Git LFS资产均无变化。
+- **验证**：README本地链接、代码围栏、关键配置/架构术语、Git空白与冲突标记静态检查通过；`tests/test_parallel_config_and_docs.py`与`tests/test_runtime_v11_contracts.py`共`7 passed`。文档核对不构成真实阵列、诊室声场、中文目标域或长时间负载验收。
+- **Git LFS**：无变化；`.venv/`、`data/`、运行录音、scratch、Catalog、日志、缓存、密钥和代理设置不纳入提交。
+
+---
+
 ## 2026-08-20 — 项目1.2.1整合发布
 
 - **版本/标签**：项目`1.2.1`，创建新的不可变标签`v1.2.1`；`v1.0.0`、`v1.0.1`、`v1.1.1`、`v1.1.2`及全部历史分支保持原位，不移动、不覆盖、不删除。
