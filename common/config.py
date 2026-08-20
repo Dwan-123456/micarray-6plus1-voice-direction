@@ -315,22 +315,34 @@ class RuntimeConfig(StrictModel):
     # Kept for configuration compatibility.  The staged runtime uses the
     # per-stage capacities below rather than one shared serial queue.
     processing_queue_windows: int = Field(gt=0)
-    l2_queue_windows: int = Field(default=1, gt=0, le=1)
-    l3_queue_windows: int = Field(default=1, gt=0, le=1)
-    l4_queue_windows: int = Field(default=1, gt=0, le=1)
+    # Normal deployments change only this shared value. Per-stage fields stay
+    # optional for focused tests and exceptional diagnostic profiles.
+    stage_queue_windows: int = Field(default=1_000, gt=0, le=10_000)
+    l2_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
+    l3_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
+    l4_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     completion_queue_windows: int = Field(default=8, gt=0, le=128)
-    max_inflight_windows: int = Field(default=6, gt=0, le=30_003)
+    max_inflight_windows: int | None = Field(default=None, gt=0, le=30_003)
     compute_cache_max_bytes: int = Field(default=67_108_864, ge=8_388_608)
     overflow_policy: Literal["drop_oldest"] = "drop_oldest"
     graceful_shutdown_timeout_seconds: float = Field(default=10.0, gt=0.0, le=120.0)
 
     @model_validator(mode="after")
     def validate_pipeline_capacity(self) -> "RuntimeConfig":
+        for name in ("l2_queue_windows", "l3_queue_windows", "l4_queue_windows"):
+            if getattr(self, name) is None:
+                object.__setattr__(self, name, self.stage_queue_windows)
+        assert self.l2_queue_windows is not None
+        assert self.l3_queue_windows is not None
+        assert self.l4_queue_windows is not None
         # Joiner retains every admitted window until L2/L3/L4 are terminal.
         # Its hard bound must therefore cover all stage queues plus one active
         # item per worker; otherwise a valid configured backlog could fail at
         # registration before the advertised queue policy is reached.
         minimum = self.l2_queue_windows + self.l3_queue_windows + self.l4_queue_windows + 3
+        if self.max_inflight_windows is None:
+            object.__setattr__(self, "max_inflight_windows", minimum)
+        assert self.max_inflight_windows is not None
         if self.max_inflight_windows < minimum:
             raise ValueError(
                 "runtime.max_inflight_windows must cover all staged queues and active workers "

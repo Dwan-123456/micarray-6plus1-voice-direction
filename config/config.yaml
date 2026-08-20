@@ -226,15 +226,12 @@ runtime:
   capture_handoff_blocks: 500
   # Legacy serial-queue field retained for old launch profiles.
   processing_queue_windows: 1
-  # L2/L3/L4 are independent single-worker latest-wins stages. Each stage may
-  # retain only one waiting window; overload replaces that waiting window so
-  # latency cannot grow into a long FIFO backlog.
-  l2_queue_windows: 1
-  l3_queue_windows: 1
-  l4_queue_windows: 1
+  # Change this single value to resize all L2/L3/L4 latest-wins waiting queues.
+  # 1000 windows represent about 20 s at 50 windows/s.
+  stage_queue_windows: 1000
   completion_queue_windows: 8
-  # Three waiting windows plus one active worker per stage.
-  max_inflight_windows: 6
+  # Per-stage queue overrides and max_inflight_windows are omitted deliberately;
+  # Runtime derives 1000/1000/1000 and 3*1000+3=3003 automatically.
   compute_cache_max_bytes: 67108864
   overflow_policy: drop_oldest
   graceful_shutdown_timeout_seconds: 10.0
