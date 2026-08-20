@@ -1,6 +1,6 @@
 # Layer 4：48 kHz音频到人声概率
 
-> 项目1.2.1中，L4音频段、检测和阶段结果贯通`track_id`；L4不按角度创建或修补ID，语义概率反馈只按L2权威身份关联。
+> 项目1.2.2中，L4音频段、检测和阶段结果贯通`track_id`；L4不按角度创建或修补ID，语义概率反馈只按L2权威身份关联。
 
 权威目标契约见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。L3仍按统一配置输出80/160 ms重叠增强窗；正式`TrackAudioStreamHub`在L3与L4之间按`(session_id, stream_epoch, track_id)`把它们变为连续20 ms时间轴。
 
