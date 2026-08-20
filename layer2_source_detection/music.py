@@ -109,7 +109,7 @@ class MusicDiagnostics:
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_dpd_whitening_v3"
+    algorithm_version = "frequency_normalized_music_dpd_whitening_v4"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -172,12 +172,17 @@ class RollingNormMusicScanner:
         source_frequencies: np.ndarray, values: np.ndarray, target_frequencies: np.ndarray
     ) -> np.ndarray:
         values = np.asarray(values, dtype=np.float64)
-        return np.mean(
-            np.stack([
-                np.interp(target_frequencies, source_frequencies, channel)
-                for channel in values
-            ]),
-            axis=0,
+        upper = np.searchsorted(source_frequencies, target_frequencies, side="left")
+        upper = np.clip(upper, 1, len(source_frequencies) - 1)
+        lower = upper - 1
+        lower_frequency = source_frequencies[lower]
+        fraction = (
+            (target_frequencies - lower_frequency)
+            / np.maximum(source_frequencies[upper] - lower_frequency, 1.0e-12)
+        )
+        return (
+            values[..., lower] * (1.0 - fraction)
+            + values[..., upper] * fraction
         )
 
     def _imcra_metrics(
@@ -188,21 +193,22 @@ class RollingNormMusicScanner:
         if not ready:
             ones = np.ones(frequencies.size, dtype=np.float64)
             return ones, ones, None
-        spp = np.mean(np.stack([
-            self._interpolate_imcra(hop.frequencies_hz, hop.spp, frequencies)
-            for hop in ready
-        ]), axis=0)
-        prior_snr = np.mean(np.stack([
-            self._interpolate_imcra(hop.frequencies_hz, hop.prior_snr, frequencies)
-            for hop in ready
-        ]), axis=0)
-        noise_psd = np.mean(np.stack([
-            np.stack([
-                np.interp(frequencies, hop.frequencies_hz, channel)
-                for channel in np.asarray(hop.noise_psd, dtype=np.float64)
-            ])
-            for hop in ready
-        ]), axis=0)
+        source_frequencies = ready[0].frequencies_hz
+        spp = np.mean(self._interpolate_imcra(
+            source_frequencies,
+            np.stack([hop.spp for hop in ready]),
+            frequencies,
+        ), axis=(0, 1))
+        prior_snr = np.mean(self._interpolate_imcra(
+            source_frequencies,
+            np.stack([hop.prior_snr for hop in ready]),
+            frequencies,
+        ), axis=(0, 1))
+        noise_psd = np.mean(self._interpolate_imcra(
+            source_frequencies,
+            np.stack([hop.noise_psd for hop in ready]),
+            frequencies,
+        ), axis=0)
         return np.clip(spp, 0.0, 1.0), np.maximum(prior_snr, 0.0), noise_psd
 
     def _whiten(
@@ -211,37 +217,43 @@ class RollingNormMusicScanner:
         steering: np.ndarray,
         window: DecisionWindow,
         config: DirectionScanConfig,
+        imcra_metrics: tuple[np.ndarray, np.ndarray, np.ndarray | None] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, str]:
         if not config.noise_whitening_enabled:
             return covariance, steering, "disabled"
-        _, _, noise_psd = self._imcra_metrics(window, config)
+        _, _, noise_psd = (
+            self._imcra_metrics(window, config)
+            if imcra_metrics is None
+            else imcra_metrics
+        )
         if noise_psd is None:
             return covariance, steering, "unavailable"
-        noise = np.zeros_like(covariance)
         diagonal = np.maximum(noise_psd.T, config.eigenvalue_floor)
-        indices = np.arange(7)
-        noise[:, indices, indices] = diagonal
         status = "imcra_psd"
-        trace = np.real(np.trace(noise, axis1=1, axis2=2)) / 7.0
-        identity = np.eye(7, dtype=np.complex128)[None, :, :]
-        noise = (
-            (1.0 - config.noise_covariance_shrinkage) * noise
-            + config.noise_covariance_shrinkage * trace[:, None, None] * identity
+        trace = np.mean(diagonal, axis=1)
+        # IMCRA publishes one PSD per microphone, so the L2 noise model is
+        # diagonal. Shrinkage toward the identity and diagonal loading keep it
+        # diagonal as well. Applying D^(-1/2) elementwise is therefore exactly
+        # equivalent to a batched Cholesky plus two generic matrix solves, but
+        # avoids dozens of 7x7 factorizations on every 20 ms decision window.
+        effective_diagonal = (
+            (1.0 - config.noise_covariance_shrinkage) * diagonal
+            + config.noise_covariance_shrinkage * trace[:, None]
             + config.diagonal_loading
-            * np.maximum(trace, config.eigenvalue_floor)[:, None, None]
-            * identity
+            * np.maximum(trace, config.eigenvalue_floor)[:, None]
         )
-        try:
-            factor = np.linalg.cholesky(noise)
-            left = np.linalg.solve(factor, covariance)
-            whitened_covariance = np.linalg.solve(
-                factor, left.conj().transpose(0, 2, 1)
-            ).conj().transpose(0, 2, 1)
-            whitened_steering = np.linalg.solve(
-                factor, steering.transpose(0, 2, 1)
-            ).transpose(0, 2, 1)
-        except np.linalg.LinAlgError:
+        if (
+            not np.isfinite(effective_diagonal).all()
+            or np.any(effective_diagonal <= 0.0)
+        ):
             return covariance, steering, "unavailable"
+        inverse_sqrt = 1.0 / np.sqrt(effective_diagonal)
+        whitened_covariance = (
+            covariance
+            * inverse_sqrt[:, :, None]
+            * inverse_sqrt[:, None, :]
+        )
+        whitened_steering = steering * inverse_sqrt[:, None, :]
         whitened_covariance = 0.5 * (
             whitened_covariance + whitened_covariance.conj().transpose(0, 2, 1)
         )
@@ -261,6 +273,7 @@ class RollingNormMusicScanner:
         window: DecisionWindow,
         config: DirectionScanConfig,
         frequency_mask: np.ndarray,
+        imcra_metrics: tuple[np.ndarray, np.ndarray, np.ndarray | None] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         noise = eigenvectors[:, :, :6]
         projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
@@ -278,7 +291,11 @@ class RollingNormMusicScanner:
         plane_fit = np.max(plane_fit_by_angle, axis=1)
         peak_angles = np.argmax(per_frequency, axis=1).astype(np.float64)
         eigen_ratio = eigenvalues[:, -1] / np.maximum(eigenvalues[:, -2], 1.0e-12)
-        spp, prior_snr, _ = self._imcra_metrics(window, config)
+        spp, prior_snr, _ = (
+            self._imcra_metrics(window, config)
+            if imcra_metrics is None
+            else imcra_metrics
+        )
         spp = spp[frequency_mask]
         prior_snr = prior_snr[frequency_mask]
         eig_weight = np.clip(
@@ -422,8 +439,13 @@ class RollingNormMusicScanner:
             + config.diagonal_loading * np.maximum(trace, config.eigenvalue_floor)[:, None, None] * identity
         )
         steering, rebuilt = self._steering_tensor(geometry, config, config_revision)
+        imcra_metrics = (
+            self._imcra_metrics(window, config)
+            if config.noise_whitening_enabled or config.dpd_rank1_enabled
+            else None
+        )
         covariance, steering, whitening_status = self._whiten(
-            covariance, steering, window, config
+            covariance, steering, window, config, imcra_metrics
         )
         eigenvalues, eigenvectors = np.linalg.eigh(covariance)
         eigensolved = perf_counter()
@@ -460,7 +482,7 @@ class RollingNormMusicScanner:
         plane_fit = np.zeros(int(valid.sum()), dtype=np.float64)
         if config.dpd_rank1_enabled:
             raw, per_frequency, selected, weights, plane_fit = self._dpd_rank1_spectrum(
-                eigenvalues, eigenvectors, steering, window, config, valid,
+                eigenvalues, eigenvectors, steering, window, config, valid, imcra_metrics,
             )
             effective_order = 1 if int(selected.sum()) else 0
             limit = config.effective_order_limit

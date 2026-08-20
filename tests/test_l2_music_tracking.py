@@ -272,6 +272,61 @@ def test_optional_imcra_noise_psd_whitening_is_independent_and_safe() -> None:
     assert candidates
 
 
+def test_diagonal_imcra_whitening_matches_generic_cholesky_reference() -> None:
+    base = DirectionScanConfig.from_project(load_config(CONFIG, environ={}))
+    config = replace(base, noise_whitening_enabled=True)
+    scanner = RollingNormMusicScanner()
+    geometry = physical_6plus1_geometry()
+    window = _window(
+        _audio((35.0,), seed=159),
+        imcra_hops=_imcra_hops(
+            noise_by_mic=np.asarray((1, 2, 3, 4, 5, 6, 7), np.float32)
+        ),
+    )
+    steering, _ = scanner._steering_tensor(geometry, config, 0)
+    frequencies = scanner._target_frequencies(config)
+    rng = np.random.default_rng(160)
+    matrix = rng.normal(size=(frequencies.size, 7, 7)) + 1j * rng.normal(
+        size=(frequencies.size, 7, 7)
+    )
+    covariance = np.einsum("fij,fkj->fik", matrix, matrix.conj())
+
+    actual_covariance, actual_steering, status = scanner._whiten(
+        covariance, steering, window, config
+    )
+    _, _, noise_psd = scanner._imcra_metrics(window, config)
+    assert noise_psd is not None
+    diagonal = np.maximum(noise_psd.T, config.eigenvalue_floor)
+    trace = np.mean(diagonal, axis=1)
+    effective = (
+        (1.0 - config.noise_covariance_shrinkage) * diagonal
+        + config.noise_covariance_shrinkage * trace[:, None]
+        + config.diagonal_loading
+        * np.maximum(trace, config.eigenvalue_floor)[:, None]
+    )
+    noise = np.zeros_like(covariance)
+    indices = np.arange(7)
+    noise[:, indices, indices] = effective
+    factor = np.linalg.cholesky(noise)
+    left = np.linalg.solve(factor, covariance)
+    expected_covariance = np.linalg.solve(
+        factor, left.conj().transpose(0, 2, 1)
+    ).conj().transpose(0, 2, 1)
+    expected_covariance = 0.5 * (
+        expected_covariance + expected_covariance.conj().transpose(0, 2, 1)
+    )
+    expected_steering = np.linalg.solve(
+        factor, steering.transpose(0, 2, 1)
+    ).transpose(0, 2, 1)
+    expected_steering /= np.maximum(
+        np.linalg.norm(expected_steering, axis=2, keepdims=True), 1.0e-12
+    )
+
+    assert status == "imcra_psd"
+    np.testing.assert_allclose(actual_covariance, expected_covariance, rtol=1e-11, atol=1e-11)
+    np.testing.assert_allclose(actual_steering, expected_steering, rtol=1e-11, atol=1e-11)
+
+
 def test_optional_whitening_without_ready_imcra_falls_back_without_failure() -> None:
     config = replace(
         DirectionScanConfig.from_project(load_config(CONFIG, environ={})),

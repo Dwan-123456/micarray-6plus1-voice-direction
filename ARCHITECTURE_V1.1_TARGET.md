@@ -154,7 +154,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 - 使用 MDL 估计 `0～6` 阶信号子空间维度；MDL诊断值不被Test UI覆盖。默认普通路径的实际MUSIC阶数取`min(MDL诊断阶数, 手动上限)`，手动上限只能为1、2、3且默认3。诊断阶数大于3时标记`saturated/model_mismatch`并禁止该窗创建新ID，只允许已有ID继续关联或coasting。
 - 可选`DPD + rank-1 MUSIC`默认关闭。开启后，逐频主特征值间隙与平面波steering拟合度先筛选直达声主导频点，IMCRA `spp/prior_snr`参与可靠性加权；每个可靠频点使用rank-1 MUSIC产生圆周方向票，候选必须满足真实的加权跨频局部峰支持。此路径由可靠方向簇决定0～手动上限个候选，MDL只作诊断，不直接规定候选数。
-- 可选`IMCRA噪声白化`默认关闭。开启后只消费DecisionWindow中READY的IMCRA逐麦`noise_psd`，构造对角`Rn(f)`并对白化后的协方差与steering执行MUSIC；因为当前IMCRA接口没有跨麦互谱，该实现不等同于完整的full-CSM白化。缺少READY快照或Cholesky失败时标记`unavailable`并退回未白化路径，不学习私有噪声模型，也不读取外部风扇录音。
+- 可选`IMCRA噪声白化`默认关闭。开启后只消费DecisionWindow中READY的IMCRA逐麦`noise_psd`，构造对角`Rn(f)`并对白化后的协方差与steering执行MUSIC；因为当前IMCRA接口没有跨麦互谱，该实现不等同于完整的full-CSM白化。对角噪声模型必须以逐麦逆平方根直接缩放，数学上等价于对角Cholesky白化但不得逐频调用通用7×7分解/求解；缺少READY快照或有效对角项时标记`unavailable`并退回未白化路径，不学习私有噪声模型，也不读取外部风扇录音。
 - 首版最多输出 3 个候选，圆周 NMS 最小间隔继续为 45°。
 - 峰值选择必须原生处理数组首尾相邻，`359°` 和 `0°` 属于相邻角度。
 - 无足够有效频点、协方差退化或模型阶数不可信时，返回可诊断的 blocked/degraded/failed 状态，不得静默复用上一窗伪谱冒充新观测。
@@ -222,6 +222,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 删除 “Iterative Multiple Peak” 开关、ID 追踪开关、相关持久化设置和运行时 setter。
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。
 - 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始360点MUSIC伪谱，分别显示MDL诊断阶数与实际MUSIC阶数，并提供1/2/3手动阶数上限、默认关闭的`DPD + rank-1 MUSIC`和`IMCRA噪声白化`按钮；三项设置均持久化到Test UI本地设置，L2在每次实际计算前读取最新revision。
+- L2接纳队列丢窗属于Runtime过载状态，不得显示成Gate或L1 IMCRA不可用。Test UI保留同一epoch最近一次成功的MUSIC/Gate快照及原始发布时间，以`STALE | L2 DROPPED`明确标记，下一次成功结果到达后恢复`LIVE`。
 - 候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed、L4 probability`；观测和预测样式可以不同，但颜色稳定绑定权威 ID。
 - 左下试听继续保留 Center Mic 原音参考、20 ms 稳定 hop 拼接、可恢复真实音频补洞、过旧缺口补等时静音、交叉淡化、至少 2 秒显示、3 秒等待、有界分段和三档 L3 模式隔离。
 - 方向音频只按 `(session_id, stream_epoch, track_id)` 拼接。删除 `_formal_aliases`、`_resolve_formal_track_id`、按角度贪心重关联和 ID 换号合并；UI 不再修补 L2 身份错误。

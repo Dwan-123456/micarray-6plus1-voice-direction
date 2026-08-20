@@ -22,6 +22,19 @@
 
 ---
 
+## 2026-08-20 — 优化IMCRA对角白化并区分L2丢窗状态
+
+- **版本/标签**：项目`1.1.2`维护修复；不创建或移动发布标签，既有`v1.1.2`保持不变。
+- **类型**：L2 MUSIC白化性能、Runtime到Development Test UI的丢窗诊断语义、文档与回归测试。
+- **涉及文件**：`layer2_source_detection/music.py`、`app/runtime.py`、`gui/dev_test_ui/{aggregator,app}.py`、项目/L2 README、`ARCHITECTURE_V1.1_TARGET.md`及对应测试。
+- L2继续只读DecisionWindow中的L1 IMCRA快照，不拥有、更新或重置IMCRA。逐麦PSD构成的对角噪声模型改用逆平方根逐通道缩放协方差与steering，数学上等价于原对角Cholesky白化；删除每20 ms逐频通用7×7 Cholesky和矩阵求解，并将16-hop频率插值改为批量向量化。DPD与白化同时开启时同窗复用一份IMCRA指标。
+- `l2_admission_queue_overflow`等L2接纳丢窗不再伪装成Gate/IMCRA不可用：同一epoch保留最近一次成功MUSIC、Gate、方向和原始发布时间，标题显示`STALE | L2 DROPPED | last completed`；真正的Gate warming/unavailable仍按原契约清空当前空间结果。
+- **未改变**：L1 IMCRA算法和状态机、概率Gate、MUSIC数学输出、ID/Kalman、L3、L4、Runtime latest-wins队列容量、录音/数据schema、Production UI、Log UI、配置、模型和音频资产均无变化。
+- **验证**：L2、Runtime、并行调度和Development Test UI直接相关测试`109 passed`；L2白化聚焦测试`41 passed`；Ruff与`git diff --check`通过。60窗独立短基准中白化开启路径约为平均`7.26 ms`、p95 `9.10 ms`、最大`9.59 ms`，关闭路径约为平均`4.44 ms`、p95 `6.41 ms`；尚未完成真实阵列全链并发长时间验收。
+- **Git LFS资产**：无变化；`data/`、录音、日志、Catalog和缓存不纳入提交。
+
+---
+
 ## 2026-08-20 — Production UI默认窗口适配当前屏幕
 
 - **版本/标签**：项目`1.1.2`维护修复；不创建或移动发布标签，既有`v1.1.2`保持不变。

@@ -322,6 +322,20 @@ class DevUiAggregator:
             ) = previous
             raise
 
+    def report_l2_drop(self, error: str) -> DevUiFrame:
+        """Publish a dropped-window diagnostic without erasing the last L2 result.
+
+        A queue drop happens before Probability Gate and MUSIC execute, so it
+        is not a Gate/IMCRA unavailable decision.  The retained response keeps
+        its original publication time and naturally ages as a stale snapshot.
+        """
+
+        reason = str(error).strip()
+        if not reason:
+            raise ValueError("Layer 2 drop reason must be non-empty")
+        self._srp_error = reason
+        return self.frame()
+
     def update_l3(
         self, previews: tuple[BeamformPreview, ...], error: str | None = None,
         tracked_audio: tuple[TrackedAudioSnapshot, ...] = (),

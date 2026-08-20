@@ -2358,9 +2358,14 @@ class ApplicationRuntime:
             )
             scan = DirectionScanConfig(**dict(values["scan_config"]))
             if l2_output is None:
-                self._ui_aggregator.update_srp(
-                    None, (), f"L2 {joined.l2.state.value.upper()}: {joined.l2.error or joined.l2.reason}"
+                l2_reason = (
+                    f"L2 {joined.l2.state.value.upper()}: "
+                    f"{joined.l2.error or joined.l2.reason}"
                 )
+                if joined.l2.state is StageState.DROPPED:
+                    self._ui_aggregator.report_l2_drop(l2_reason)
+                else:
+                    self._ui_aggregator.update_srp(None, (), l2_reason)
             elif response is None:
                 unavailable_reason = gate_decision.reason
                 reset_reason = self._epoch_reset_reason(

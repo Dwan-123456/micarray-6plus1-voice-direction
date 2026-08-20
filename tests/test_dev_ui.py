@@ -352,6 +352,47 @@ def test_gate_unavailable_preserves_l3_listening_rows_across_epoch_recovery():
     assert warming.tracked_audio == (row1,)
 
 
+def test_l2_drop_retains_last_music_and_gate_as_stale_snapshot():
+    performance = PerformanceTracker(
+        sample_rate=48_000, required_samples=15_360, window_count=10, rate_seconds=5,
+    )
+    aggregator = DevUiAggregator(performance)
+    status = PipelineStatus(
+        "running", "aggregator-test", 0, 15_360, 15_360, "Ready",
+    )
+    aggregator.update_l1(_aggregator_meter(), status)
+    response, candidates, gate, diagnostics = _open_l2_result(window_id=0)
+    completed = aggregator.update_srp(
+        response,
+        candidates,
+        gate_decision=gate,
+        search_diagnostics=diagnostics,
+        gate_threshold=0.60,
+        gate_config_revision=2,
+        direction_threshold=0.35,
+        direction_kalman_enabled=False,
+        direction_kalman_q_scale=1.0,
+        direction_kalman_r_scale=1.0,
+        scan_config_revision=3,
+    )
+
+    dropped = aggregator.report_l2_drop(
+        "L2 DROPPED: l2_admission_queue_overflow"
+    )
+
+    assert dropped.spatial_response is completed.spatial_response
+    assert dropped.candidates == completed.candidates
+    assert dropped.gate_decision is completed.gate_decision
+    assert dropped.search_diagnostics is completed.search_diagnostics
+    assert (
+        dropped.spatial_published_monotonic
+        == completed.spatial_published_monotonic
+    )
+    assert dropped.missing_reasons["srp"] == (
+        "L2 DROPPED: l2_admission_queue_overflow"
+    )
+
+
 def test_ui_aggregator_ignores_late_l4_from_old_epoch_and_old_window_without_side_effects():
     performance = PerformanceTracker(
         sample_rate=48_000, required_samples=15_360, window_count=10, rate_seconds=5

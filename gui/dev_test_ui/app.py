@@ -1213,8 +1213,14 @@ def build_window(
                         f" | WHITE {diagnostics.whitening_status.upper()}"
                         f" | {diagnostics.covariance_quality.upper()}"
                     )
+                dropped_reason = frame.missing_reasons.get("srp")
+                state_prefix = (
+                    f"STALE | {dropped_reason} | last completed"
+                    if dropped_reason is not None
+                    else "LIVE"
+                )
                 self._set_text(self.srp_header,
-                    f"LIVE | session {frame.spatial_response.session_id[:8]} | epoch {frame.spatial_response.stream_epoch} | "
+                    f"{state_prefix} | session {frame.spatial_response.session_id[:8]} | epoch {frame.spatial_response.stream_epoch} | "
                     f"window {frame.spatial_response.window_id:08d} | sample {frame.spatial_response.decision_sample:012d} | "
                     f"age {snapshot.age_ms:03.0f} ms"
                     f"{search_suffix}"
