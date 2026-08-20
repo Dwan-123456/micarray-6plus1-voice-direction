@@ -8,7 +8,10 @@ import pytest
 import torch
 
 from common.config import load_config
-from layer3_direction_signal.adaptive_separation import adaptive_separation_weights
+from layer3_direction_signal.adaptive_separation import (
+    adaptive_separation_weights,
+    loaded_mvdr_weights,
+)
 from layer3_direction_signal.configuration import SpatialSeparationConfig
 
 
@@ -102,6 +105,20 @@ def test_all_three_solvers_depend_on_the_supplied_noise_covariance():
         assert not torch.allclose(
             first.weights_mfc[:, frequency_index], second.weights_mfc[:, frequency_index],
         )
+
+
+def test_loaded_mvdr_baseline_uses_current_batched_cholesky_solver():
+    steering = _steering_for_correlations((0.2, 0.5, 0.8))
+    covariance = torch.eye(7, dtype=torch.complex64).expand(3, 7, 7).clone()
+    result = loaded_mvdr_weights(
+        covariance, steering, torch.full((3,), 2_000.0), torch.ones(3), _config(),
+    )
+
+    assert result.loaded_mvdr_bins == 3
+    assert result.fallback_bins == (0, 0)
+    target_response = torch.einsum("mfc,mfc->mf", result.weights_mfc.conj(), steering)
+    assert torch.allclose(target_response, torch.ones_like(target_response), atol=2e-3)
+    assert torch.isfinite(result.weights_mfc).all()
 
 
 @pytest.mark.parametrize("candidate_count", (1, 3))

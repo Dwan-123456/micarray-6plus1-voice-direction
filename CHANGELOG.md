@@ -22,6 +22,17 @@
 
 ---
 
+## 2026-08-20 — 修复Loaded MVDR模拟输入无方向预览音频
+
+- **L3根因与修复**：合并后的`loaded_mvdr_baseline`仍调用已被性能优化移除的旧`_mvdr`
+  内部求解器，每个有方向的窗口因`NameError`直接进入`L3 failed`，因而Test UI只有
+  Center Mic对照而没有方向预览。该基线现与当前优化路径一致，批量对所有loading重试
+  执行Cholesky分解/求解，选择首个数值有效权重，其余频点仍回退DAS。
+- **验证边界**：新增双方向Loaded MVDR无失真约束、finite输出及批量求解回归；
+  按用户要求本次未运行自动测试，仅执行修改文件的静态格式和差异检查。
+  `optimized`、`ds_baseline`、`subband_robust_baseline`、L1、L2、L4、Runtime时间线、录音、
+  数据管理、UI交互和二进制资产均无变化。未创建或移动发布标签，无Git LFS变化。
+
 ## 2026-08-20 — 全部分支统一合入main
 
 - **分支整合**：将`codex/integrate-all-branches-v1.2.1`、`main`发布历史及尚未合入的`codex/l3-loaded-mvdr-baseline`统一为同一提交历史；其余本地功能分支已是该整合历史的祖先。

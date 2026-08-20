@@ -322,20 +322,31 @@ def loaded_mvdr_weights(
     uncertainty = 1.0 + (1.0 - noise_confidence_f) * config.uncertainty_loading_multiplier
     loading_multiplier = uncertainty * static.alias_multiplier_f
 
-    for factor in config.loading_retry_factors:
-        pending = static.speech_band_f[None, :] & ~valid
-        if not bool(pending.any()):
-            break
-        loading = float(factor) * loading_multiplier * scale
-        loaded = covariance_fcc + loading[:, None, None] * static.identity_cc[None]
-        indices = torch.nonzero(pending.any(dim=0), as_tuple=False).flatten()
-        weights, ok = _mvdr(
-            loaded[indices], steering_mfc[:, indices],
-            config.condition_number_limit, config.constraint_tolerance,
-        )
-        accept = ok & pending[:, indices]
-        output[:, indices] = torch.where(accept[..., None], weights, output[:, indices])
-        valid[:, indices] |= accept
+    retry_factors = torch.as_tensor(
+        config.loading_retry_factors, dtype=scale.dtype, device=scale.device,
+    )
+    loading = retry_factors[:, None] * loading_multiplier[None, :] * scale[None, :]
+    loaded_rfcc = covariance_fcc[None] + loading[..., None, None] * static.identity_cc
+    covariance_factor, covariance_ok = _factorize(
+        loaded_rfcc, config.condition_number_limit,
+    )
+    steering_fcm = steering_mfc.permute(1, 2, 0).contiguous()
+    solved_rfcm = torch.cholesky_solve(
+        steering_fcm[None].expand(len(retry_factors), -1, -1, -1), covariance_factor,
+    )
+    retry_weights, retry_valid = _mvdr_from_solved(
+        solved_rfcm, steering_fcm, covariance_ok, config.constraint_tolerance,
+    )
+    retry_valid &= static.speech_band_f[None, None, :]
+    solved_valid = retry_valid.any(dim=0)
+    first_valid_retry = retry_valid.to(torch.int8).argmax(dim=0)
+    selected = torch.gather(
+        retry_weights,
+        0,
+        first_valid_retry[None, ..., None].expand(1, -1, -1, channel_count),
+    )[0]
+    output = torch.where(solved_valid[..., None], selected, output)
+    valid |= solved_valid
 
     fallback = static.speech_band_f[None, :] & ~valid
     output = torch.where(fallback[..., None], das, output)
