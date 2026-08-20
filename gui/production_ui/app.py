@@ -265,14 +265,17 @@ class AudioDataManager(QMainWindow):
         self.channel_player = NativeChannelPlayer()
         self.recording_command.connect(self.capture_host.handle_command)
         self.setWindowTitle("麦克风阵列录音与数据管理")
-        self.resize(1460, 900)
+        # This is only a restored-window fallback. The desktop entry opens
+        # maximized inside the current screen's available work area.
+        self.resize(1200, 760)
         self._build()
         self.refresh_all()
 
     def _build(self) -> None:
         central = QWidget()
         layout = QVBoxLayout(central)
-        top = QHBoxLayout()
+        top = QVBoxLayout()
+        status_row = QHBoxLayout()
         self.rec_badge = QLabel("● 录音已关闭")
         self.rec_badge.setObjectName("recBadge")
         self.session_label = QLabel("当前会话：—")
@@ -280,15 +283,19 @@ class AudioDataManager(QMainWindow):
         self.disk_label = QLabel("磁盘余量：—")
         self.capacity_label = QLabel("预计可录：—")
         for widget in (self.rec_badge, self.session_label, self.duration_label, self.disk_label, self.capacity_label):
-            top.addWidget(widget)
-        top.addStretch()
+            status_row.addWidget(widget)
+        status_row.addStretch()
         self.connection_badge = QLabel("● 采集源未连接")
         self.connection_badge.setObjectName("warningText")
-        top.addWidget(self.connection_badge)
+        status_row.addWidget(self.connection_badge)
+        top.addLayout(status_row)
+
+        controls_row = QHBoxLayout()
+        controls_row.addStretch()
         self.connect_button = QPushButton("连接麦克风")
         self.connect_button.clicked.connect(self._toggle_capture)
         self.connect_button.setToolTip("连接配置文件中指定的8通道麦克风设备")
-        top.addWidget(self.connect_button)
+        controls_row.addWidget(self.connect_button)
         self.mode_select = QComboBox()
         for label, value in (
             ("关闭", "off"),
@@ -302,7 +309,7 @@ class AudioDataManager(QMainWindow):
             "独立桌面版未运行人声检测算法，因此不提供事件触发录音。"
         )
         self.mode_select.setEnabled(False)
-        top.addWidget(self.mode_select)
+        controls_row.addWidget(self.mode_select)
         self.recording_buttons: dict[str, QPushButton] = {}
         for label, command, tip in (
             ("开始录音", "record", "手动录音模式下开始保存"),
@@ -314,15 +321,18 @@ class AudioDataManager(QMainWindow):
             button.setEnabled(False)
             button.clicked.connect(lambda checked=False, value=command: self._recording_action(value))
             self.recording_buttons[command] = button
-            top.addWidget(button)
+            controls_row.addWidget(button)
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self.refresh_all)
-        top.addWidget(refresh)
+        controls_row.addWidget(refresh)
         help_button = QPushButton("使用说明")
         help_button.clicked.connect(self._show_quick_help)
-        top.addWidget(help_button)
+        controls_row.addWidget(help_button)
+        top.addLayout(controls_row)
         layout.addLayout(top)
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setUsesScrollButtons(True)
         layout.addWidget(self.tabs)
         self.setCentralWidget(central)
         self._home_tab()
@@ -377,8 +387,8 @@ class AudioDataManager(QMainWindow):
                 color: #dbeafe;
                 border: 1px solid #34597f;
                 border-bottom: none;
-                padding: 12px 22px;
-                min-width: 120px;
+                padding: 12px 10px;
+                min-width: 90px;
                 font-weight: 600;
             }
             QTabBar::tab:hover {
@@ -1623,6 +1633,10 @@ class AudioDataManager(QMainWindow):
             lambda _: self._trash_complete("测试样本已移到可恢复的回收站。"),
         )
 
+    def show_default_window(self) -> None:
+        """Open as a maximized normal window within the active screen."""
+        self.showMaximized()
+
     def _trash_complete(self, message: str) -> None:
         self.refresh_all()
         self.statusBar().showMessage(message, 8000)
@@ -1805,7 +1819,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     app = QApplication(sys.argv)
     window = AudioDataManager(args.data_root)
-    window.show()
+    window.show_default_window()
     return app.exec()
 
 

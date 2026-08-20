@@ -9,6 +9,7 @@ import wave
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+from PySide6.QtCore import Qt
 
 from gui.production_ui.app import AudioDataManager, DataTable, ImportMetadataDialog
 from gui.production_ui.channel_player import NativeChannelPlayer
@@ -274,6 +275,21 @@ def test_recording_page_has_only_requested_actions_and_can_listen_to_any_native_
     assert button_texts == {
         "试听所选通道", "停止试听", "用所选样本进行模拟测试", "移到回收站",
     }
+    window.close()
+
+
+def test_default_desktop_window_is_maximized_but_not_fullscreen(tmp_path):
+    app = app_instance()
+    window = AudioDataManager(tmp_path)
+    assert window.size().width() <= 1200
+    assert window.size().height() <= 760
+
+    window.show_default_window()
+    app.processEvents()
+
+    assert window.windowState() & Qt.WindowState.WindowMaximized
+    assert not window.isFullScreen()
+    assert window.tabs.tabBar().expanding()
     window.close()
 
 
