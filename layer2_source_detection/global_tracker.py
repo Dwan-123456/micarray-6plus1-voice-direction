@@ -45,6 +45,7 @@ class _Track:
     observations: int
     raw_score: float
     normalized_score: float
+    confirmation_samples: list[int] = field(default_factory=list)
     confirmed: bool = False
     filtered_theta: float | None = None
     filtered_velocity_dps: float = 0.0
@@ -199,6 +200,30 @@ class GlobalDirectionTracker:
         track.normalized_score = candidate.normalized_score
         return elapsed
 
+    def _update_confirmation(self, track: _Track, decision_sample: int) -> None:
+        """Confirm from observations in the latest absolute-sample window.
+
+        ``first_seen`` is permanent public identity metadata, so it cannot also
+        serve as a retry deadline.  Pruning the private observation history
+        lets a tentative track start a fresh confirmation opportunity after an
+        early sparse observation without changing its authoritative ID.
+        """
+
+        if track.confirmed:
+            return
+        cutoff = decision_sample - self.config.confirmation_window_samples
+        track.confirmation_samples[:] = [
+            sample for sample in track.confirmation_samples if sample >= cutoff
+        ]
+        if (
+            not track.confirmation_samples
+            or track.confirmation_samples[-1] != decision_sample
+        ):
+            track.confirmation_samples.append(decision_sample)
+        if len(track.confirmation_samples) >= self.config.confirmation_observations:
+            track.confirmed = True
+            track.confirmation_samples.clear()
+
     def _new_id(self, session_id: str) -> int:
         track_id = self._next_by_session.setdefault(session_id, 1)
         self._next_by_session[session_id] = track_id + 1
@@ -345,6 +370,7 @@ class GlobalDirectionTracker:
                 elapsed = self._update_observation(
                     track, candidate, decision_sample, self.config.max_velocity_dps
                 )
+            self._update_confirmation(track, decision_sample)
             if kalman_enabled:
                 if track.filtered_theta is None:
                     track.filtered_theta = track.unwrapped_theta
@@ -363,12 +389,6 @@ class GlobalDirectionTracker:
                 track.filtered_theta = None
                 track.filtered_velocity_dps = 0.0
                 output_theta = float(track.unwrapped_theta % 360.0)
-            if (
-                not track.confirmed
-                and track.observations >= self.config.confirmation_observations
-                and decision_sample - track.first_seen <= self.config.confirmation_window_samples
-            ):
-                track.confirmed = True
             state = "confirmed" if track.confirmed else "tentative"
             rank = len(directions) + 1
             directions.append(TrackedDirection(

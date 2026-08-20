@@ -22,6 +22,19 @@
 
 ---
 
+## 2026-08-20 — L2 tentative轨迹滚动确认修复
+
+- **版本/标签**：项目`1.1.2`维护修复；不创建或移动发布标签，既有`v1.1.2`保持不变。
+- **类型**：L2权威ID生命周期与L2→L3方向音频链路修复。
+- **涉及文件**：`layer2_source_detection/global_tracker.py`、`tests/test_l2_music_tracking.py`。
+- tentative轨迹不再把永久不变的`first_seen_sample`同时当作唯一确认截止时间；新增私有绝对sample滚动观测窗口，过期观测会被移出，后续有效观测可重新形成确认机会。`first_seen_sample`仍保持原始身份语义，不改ID、关联、角度、Kalman、coasting或TTL规则。
+- 当任意最近200 ms窗口满足配置的观测次数后，原权威ID转为`confirmed`，随后按既有规则进入L2 `directions`，使L3能够按同一`(session_id, stream_epoch, track_id)`生成BF音频；未满足条件的tentative轨仍不会进入L3。
+- **复现验证**：同一段20.56秒“会议室·2个声源”模拟录音修复前第二轨迹874个窗口始终tentative、0次进入L3；修复后为10个tentative、280个confirmed、583个coasting窗口，863次被选入L3、664次实际完成BF，阶段错误均为空。该回放仍有240个调度丢窗，不构成50 Hz性能验收。
+- **未改变**：L1、MUSIC候选生成与Gate、L3算法/缓存格式、L4模型、Runtime队列策略、Development Test UI布局、正式录音/数据管理、Production UI、Pipeline Log UI、配置、模型和二进制资产均无变化。
+- **验证**：L2 MUSIC/ID测试41项通过；Runtime v1.1契约、Development Test UI试听追踪与UI测试41项通过。Git LFS资产无变化。
+
+---
+
 ## 2026-08-20 — 优化IMCRA对角白化并区分L2丢窗状态
 
 - **版本/标签**：项目`1.1.2`维护修复；不创建或移动发布标签，既有`v1.1.2`保持不变。

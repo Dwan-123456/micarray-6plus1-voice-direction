@@ -408,6 +408,29 @@ def test_birth_coast_reacquire_ttl_and_session_scoped_monotonic_ids() -> None:
     assert epoch_track.track_id > replacement[0].track_id
 
 
+def test_tentative_confirmation_retries_in_a_rolling_sample_window() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=45.0,
+        max_velocity_dps=60.0,
+        confirmation_observations=2,
+        confirmation_window_samples=9_600,
+        coasting_ttl_samples=20_000,
+        miss_cost=1.0,
+        birth_cost=1.0,
+    ))
+    first, _ = _update(tracker, 15_360, (30.0,))
+    outside_original_window, _ = _update(tracker, 25_920, (30.0,))
+    confirmed, active = _update(tracker, 26_880, (30.0,))
+
+    assert first[0].track_state == "tentative"
+    assert outside_original_window[0].track_id == first[0].track_id
+    assert outside_original_window[0].track_state == "tentative"
+    assert confirmed[0].track_id == first[0].track_id
+    assert confirmed[0].first_seen_sample == first[0].first_seen_sample
+    assert confirmed[0].track_state == "confirmed"
+    assert _select_l3_directions(confirmed, active) == confirmed
+
+
 def test_tracker_blocks_birth_for_saturated_mdl_window() -> None:
     tracker = _tracker()
     directions, active = tracker.update(
