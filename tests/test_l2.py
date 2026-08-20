@@ -39,11 +39,11 @@ def scan_config() -> DirectionScanConfig:
 
 
 def decision_window(samples: np.ndarray, window_id: int = 7) -> DecisionWindow:
-    context = np.zeros((15_360, 8), dtype=np.float32)
+    context = np.zeros((7_680, 8), dtype=np.float32)
     context[-len(samples):, :7] = samples
     return DecisionWindow(
-        "test-session", 2, window_id, 15_360, 13_440, 15_360,
-        0, 15_360, 48_000, context, (4, 5),
+        "test-session", 2, window_id, 7_680, 5_760, 7_680,
+        0, 7_680, 48_000, context, (4, 5),
     )
 
 
@@ -525,13 +525,13 @@ def test_mature_track_is_published_when_current_srp_has_no_mergeable_peak(
     geometry = physical_6plus1_geometry()
 
     def window_at(index: int, *, with_signal: bool = True) -> DecisionWindow:
-        decision = 15_360 + index * 960
-        context = np.zeros((15_360, 8), dtype=np.float32)
+        decision = 7_680 + index * 960
+        context = np.zeros((7_680, 8), dtype=np.float32)
         if with_signal:
             context[-1_920:, :7] = plane_wave(75.0, seed=700 + index)
         return DecisionWindow(
             "prediction-integration", 0, index, decision,
-            decision - 1_920, decision, decision - 15_360, decision,
+            decision - 1_920, decision, decision - 7_680, decision,
             48_000, context, (index,),
         )
 
@@ -626,12 +626,12 @@ def test_forced_gate_fan_matches_cannot_extend_formal_id_lifetime(
     geometry = physical_6plus1_geometry()
 
     def run(index: int, probability: float):
-        decision = 15_360 + index * 960
-        context = np.zeros((15_360, 8), dtype=np.float32)
+        decision = 7_680 + index * 960
+        context = np.zeros((7_680, 8), dtype=np.float32)
         context[-1_920:, :7] = plane_wave(350.0, seed=900 + index)
         window = DecisionWindow(
             "fan-lease", 0, index, decision,
-            decision - 1_920, decision, decision - 15_360, decision,
+            decision - 1_920, decision, decision - 7_680, decision,
             48_000, context, (index,),
         )
         slots = (
@@ -686,12 +686,12 @@ def test_queued_l4_voice_angle_feedback_extends_matching_formal_id(
     geometry = physical_6plus1_geometry()
 
     def window_and_probabilities(index: int, probability: float):
-        decision = 15_360 + index * 960
-        context = np.zeros((15_360, 8), dtype=np.float32)
+        decision = 7_680 + index * 960
+        context = np.zeros((7_680, 8), dtype=np.float32)
         context[-1_920:, :7] = plane_wave(80.0, seed=950 + index)
         window = DecisionWindow(
             "voice-lease", 0, index, decision,
-            decision - 1_920, decision, decision - 15_360, decision,
+            decision - 1_920, decision, decision - 7_680, decision,
             48_000, context, (index,),
         )
         slots = tuple(
@@ -846,12 +846,12 @@ def test_real_pipeline_replaces_only_the_second_window_candidate_angle(
     pipeline = Layer2Pipeline(ProbabilityGate(), SrpPhatScanner())
 
     def shifted_window(theta: float, index: int) -> DecisionWindow:
-        decision = 15_360 + index * 960
-        context = np.zeros((15_360, 8), dtype=np.float32)
+        decision = 7_680 + index * 960
+        context = np.zeros((7_680, 8), dtype=np.float32)
         context[-1_920:, :7] = plane_wave(theta, seed=300 + index)
         return DecisionWindow(
             "smooth-integration", 0, index, decision, decision - 1_920, decision,
-            decision - 15_360, decision, 48_000, context, (index,),
+            decision - 7_680, decision, 48_000, context, (index,),
         )
 
     def open_probabilities(window: DecisionWindow):

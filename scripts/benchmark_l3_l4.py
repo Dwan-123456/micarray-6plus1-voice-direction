@@ -17,9 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from common.config import ProjectConfig, load_config  # noqa: E402
 from common.data_types import (  # noqa: E402
-    CandidateDirection,
     DecisionWindow,
     ImcraHopSnapshot,
+    TrackedDirection,
 )
 from common.geometry import MicGeometry, physical_6plus1_geometry  # noqa: E402
 from layer3_direction_signal import Layer3Processor  # noqa: E402
@@ -113,42 +113,52 @@ def _hop(index: int, frequencies: np.ndarray) -> ImcraHopSnapshot:
 
 def _l3_windows(total: int, seed: int) -> tuple[DecisionWindow, ...]:
     rng = np.random.default_rng(seed)
-    continuous = rng.normal(0.0, 0.02, ((total + 15) * 960, 8)).astype(np.float32)
+    continuous = rng.normal(0.0, 0.02, ((total + 7) * 960, 8)).astype(np.float32)
     frequencies = _imcra_frequencies()
-    hops = tuple(_hop(index, frequencies) for index in range(total + 15))
+    hops = tuple(_hop(index, frequencies) for index in range(total + 7))
     return tuple(
         DecisionWindow(
             "benchmark-session",
             0,
             index,
-            (index + 16) * 960,
-            (index + 14) * 960,
-            (index + 16) * 960,
+            (index + 8) * 960,
+            (index + 6) * 960,
+            (index + 8) * 960,
             index * 960,
-            (index + 16) * 960,
+            (index + 8) * 960,
             48_000,
-            continuous[index * 960 : (index + 16) * 960],
-            tuple(range(index, index + 16)),
-            hops[index : index + 16],
+            continuous[index * 960 : (index + 8) * 960],
+            tuple(range(index, index + 8)),
+            hops[index : index + 8],
         )
         for index in range(total)
     )
 
 
-def _candidates(window: DecisionWindow, count: int) -> tuple[CandidateDirection, ...]:
+def _candidates(window: DecisionWindow, count: int) -> tuple[TrackedDirection, ...]:
     return tuple(
-        CandidateDirection(
+        TrackedDirection(
             window.session_id,
             window.stream_epoch,
             window.window_id,
             window.decision_sample,
             window.doa_start_sample,
             window.doa_end_sample,
+            index + 1,
+            index + 1,
+            theta,
             theta,
             1.0,
             0.8,
+            "confirmed",
+            True,
+            index == 0,
+            window.context_start_sample,
+            window.decision_sample,
+            0,
+            False,
         )
-        for theta in (20.0, 120.0)[:count]
+        for index, theta in enumerate((20.0, 120.0)[:count])
     )
 
 
@@ -262,7 +272,7 @@ def _l4_batches(total: int, count: int, seed: int) -> tuple[tuple[Layer4AudioSeg
     batches: list[tuple[Layer4AudioSegment, ...]] = []
     for window_id in range(total):
         waveforms = np.ascontiguousarray(
-            rng.normal(0.0, 0.01, (count, 15_360)), dtype=np.float32
+            rng.normal(0.0, 0.01, (count, 7_680)), dtype=np.float32
         )
         batches.append(
             tuple(
@@ -270,11 +280,11 @@ def _l4_batches(total: int, count: int, seed: int) -> tuple[tuple[Layer4AudioSeg
                     "benchmark-session",
                     0,
                     window_id,
-                    (window_id + 16) * 960,
+                    (window_id + 8) * 960,
                     float(20 + index * 100),
                     48_000,
                     waveforms[index],
-                    (0.9,) * 16,
+                    (0.9,) * 8,
                 )
                 for index in range(count)
             )

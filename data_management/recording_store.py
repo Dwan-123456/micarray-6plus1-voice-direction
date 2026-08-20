@@ -1431,7 +1431,7 @@ class RecordingStore:
         """Write large enhanced waveforms once their audio interval exists.
 
         Result metadata and small spatial arrays remain in memory until the
-        chunk watermark completes, but 320 ms waveforms do not.  Event
+        chunk watermark completes, but 160 ms waveforms do not.  Event
         pre-roll results are intentionally kept in RAM only while provisional
         so an event that never triggers cannot create orphan assets.
         """

@@ -10,6 +10,8 @@ import numpy as np
 import torch
 from scipy.signal import resample_poly
 
+from common.timing import CONTEXT_SAMPLES
+
 from .contracts import Layer4AudioSegment, Layer4Result, ModelPrediction, VoiceDetection
 from .gain_compensation import InputGainCompensationSettings, compensate_l4_input
 from .marblenet import NvidiaFrameVadMarbleNet
@@ -31,7 +33,7 @@ def max_contiguous_frame_mean(
 
     MarbleNet emits one value about every 20 ms. A three-frame window requires
     a sustained peak of about 60 ms while preventing silence elsewhere in the
-    320 ms input from diluting the decision.
+    160 ms input from diluting the decision.
     """
     if frame_probabilities.ndim != 2 or lengths.shape != (frame_probabilities.shape[0],):
         raise ValueError("frame probabilities must be [batch,time] with one length per item")
@@ -44,7 +46,7 @@ def max_contiguous_frame_mean(
     valid_windows = window_ends.unsqueeze(0) <= lengths.unsqueeze(1)
     peaks = rolling.masked_fill(~valid_windows, float("-inf")).max(dim=1).values
 
-    # The production input is always 320 ms and therefore has many more than
+    # The production input is always 160 ms and therefore has more than
     # three frames. This fallback keeps the helper total for shorter test or
     # future streaming inputs without inventing padded probabilities.
     valid_frames = (
@@ -71,12 +73,12 @@ class NvidiaMarbleNetPlugin:
         waveforms = np.asarray(waveforms_48k)
         if (
             waveforms.ndim != 2
-            or waveforms.shape[1] != 15_360
+            or waveforms.shape[1] != CONTEXT_SAMPLES
             or waveforms.dtype != np.float32
             or not waveforms.flags.c_contiguous
             or not np.isfinite(waveforms).all()
         ):
-            raise ValueError("L4 input must be finite float32 [M,15360] at 48 kHz")
+            raise ValueError("L4 input must be finite float32 [M,7680] at 48 kHz")
         started = perf_counter()
         if len(waveforms) == 0:
             probabilities = np.empty((0,), dtype=np.float32)
@@ -97,7 +99,7 @@ class NvidiaMarbleNetPlugin:
             {
                 "architecture": self.manifest["architecture_id"],
                 "source_model": self.manifest["source_model"],
-                "input_adapter": "48k_320ms_to_16k_polyphase_v1",
+                "input_adapter": "48k_160ms_to_16k_polyphase_v1",
                 "aggregation": self.manifest["aggregation"],
             },
         )
@@ -146,7 +148,7 @@ class Layer4Engine:
         )
         waveforms = (
             np.ascontiguousarray(np.stack([item[0] for item in compensated]), dtype=np.float32)
-            if compensated else np.empty((0, 15_360), np.float32)
+            if compensated else np.empty((0, CONTEXT_SAMPLES), np.float32)
         )
         waveforms.setflags(write=False)
         predictions = tuple(plugin.predict(waveforms) for plugin in (self.primary, *self.shadows))

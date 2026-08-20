@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from common.data_types import CandidateDirection, ImcraHopSnapshot, PipelineStatus, SpatialResponse
+from common.timing import CONTEXT_SAMPLES
 from layer2_source_detection.iterative import CandidateSearchDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
 from layer4_voice_classifier.contracts import Layer4Result
@@ -72,8 +73,8 @@ class BeamformPreview:
 
     def __post_init__(self) -> None:
         waveform = np.asarray(self.waveform)
-        if waveform.shape != (15_360,) or waveform.dtype != np.float32 or not np.isfinite(waveform).all():
-            raise ValueError("BeamformPreview waveform必须为finite float32 [15360]")
+        if waveform.shape != (CONTEXT_SAMPLES,) or waveform.dtype != np.float32 or not np.isfinite(waveform).all():
+            raise ValueError("BeamformPreview waveform必须为finite float32 [7680]")
         object.__setattr__(self, "waveform", np.frombuffer(np.ascontiguousarray(waveform).tobytes(), dtype=np.float32))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
 

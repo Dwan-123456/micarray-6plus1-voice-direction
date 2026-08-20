@@ -7,6 +7,8 @@ from typing import Mapping
 import numpy as np
 from numpy.typing import NDArray
 
+from common.timing import CONTEXT_HOPS, CONTEXT_SAMPLES
+
 from .gain_compensation import InputGainCompensationDiagnostic
 
 
@@ -32,18 +34,18 @@ class Layer4AudioSegment:
             raise ValueError("L4 audio must be sampled at 48 kHz")
         waveform = np.asarray(self.waveform)
         if (
-            waveform.shape != (15_360,)
+            waveform.shape != (CONTEXT_SAMPLES,)
             or waveform.dtype != np.float32
             or not waveform.flags.c_contiguous
             or not np.isfinite(waveform).all()
         ):
-            raise ValueError("L4 audio must be finite C-contiguous float32 [15360]")
-        probabilities = self.array_source_probabilities_20ms or (None,) * 16
-        if len(probabilities) != 16 or any(
+            raise ValueError("L4 audio must be finite C-contiguous float32 [7680]")
+        probabilities = self.array_source_probabilities_20ms or (None,) * CONTEXT_HOPS
+        if len(probabilities) != CONTEXT_HOPS or any(
             value is not None and (not np.isfinite(value) or not 0.0 <= value <= 1.0)
             for value in probabilities
         ):
-            raise ValueError("L4 audio requires 16 finite aligned IMCRA probabilities or missing values")
+            raise ValueError("L4 audio requires 8 finite aligned IMCRA probabilities or missing values")
         object.__setattr__(self, "waveform", np.frombuffer(waveform.tobytes(), dtype=np.float32))
         object.__setattr__(
             self,

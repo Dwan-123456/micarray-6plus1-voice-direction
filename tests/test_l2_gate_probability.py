@@ -24,8 +24,8 @@ CONFIG = Path(__file__).parents[1] / "config" / "config.yaml"
 
 def _window() -> DecisionWindow:
     return DecisionWindow(
-        "gate-test", 0, 4, 15_360, 13_440, 15_360, 0, 15_360, 48_000,
-        np.zeros((15_360, 8), dtype=np.float32), (1,),
+        "gate-test", 0, 4, 7_680, 5_760, 7_680, 0, 7_680, 48_000,
+        np.zeros((7_680, 8), dtype=np.float32), (1,),
     )
 
 

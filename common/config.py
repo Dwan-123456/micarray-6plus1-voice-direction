@@ -55,7 +55,7 @@ class CalibrationConfig(StrictModel):
 class TimingConfig(StrictModel):
     decision_hop_samples: Literal[960]
     doa_window_samples: Literal[1920]
-    context_samples: Literal[15360]
+    context_samples: Literal[7680]
     timestamp_tolerance_ms: float = Field(ge=0)
 
 
@@ -432,8 +432,8 @@ class ProjectConfig(StrictModel):
             raise ValueError("L1预降噪启用时必须同时启用IMCRA")
         if self.runtime.max_candidate_batch < self.layer2.max_candidates:
             raise ValueError("max_candidate_batch不能小于max_candidates")
-        if self.feature.expected_shape != (33, 169):
-            raise ValueError("feature shape固定为[33,169]")
+        if self.feature.expected_shape != (17, 169):
+            raise ValueError("feature shape固定为[17,169]")
         if (self.layer3.main_backend, self.layer3.fallback_backend) != (
             "imcra_spatial_separation",
             "das",

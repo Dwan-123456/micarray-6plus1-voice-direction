@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from .timing import CONTEXT_SAMPLES, STFT_FRAME_COUNT
 from .window_key import WindowKey
 
 
@@ -193,13 +194,13 @@ class DecisionWindow:
             raise ValueError("DOA、context与decision endpoint必须相同")
         if self.doa_end_sample - self.doa_start_sample != 1_920:
             raise ValueError("DOA窗口必须为1920 samples")
-        if self.context_end_sample - self.context_start_sample != 15_360:
-            raise ValueError("context窗口必须为15360 samples")
+        if self.context_end_sample - self.context_start_sample != CONTEXT_SAMPLES:
+            raise ValueError("context窗口必须为7680 samples")
         if not self.source_sequence_ids or any(value < 0 for value in self.source_sequence_ids):
             raise ValueError("source_sequence_ids不能为空或包含负值")
         raw_samples = np.asarray(self.samples)
-        if raw_samples.shape != (15_360, 8):
-            raise ValueError(f"samples shape必须为 (15360, 8)，实际为 {raw_samples.shape}")
+        if raw_samples.shape != (CONTEXT_SAMPLES, 8):
+            raise ValueError(f"samples shape必须为 (7680, 8)，实际为 {raw_samples.shape}")
         object.__setattr__(
             self,
             "samples",
@@ -395,7 +396,7 @@ class DirectionalSignal:
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
             raise ValueError("DirectionalSignal标识或边界无效")
-        if self.context_end_sample != self.decision_sample or self.context_end_sample - self.context_start_sample != 15_360:
+        if self.context_end_sample != self.decision_sample or self.context_end_sample - self.context_start_sample != CONTEXT_SAMPLES:
             raise ValueError("DirectionalSignal上下文边界无效")
         if self.sample_rate != 48_000 or not np.isfinite(self.theta_deg) or not 0 <= self.theta_deg < 360:
             raise ValueError("DirectionalSignal采样率或角度无效")
@@ -406,7 +407,7 @@ class DirectionalSignal:
             raise ValueError("DirectionalSignal后端无效")
         if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
             raise ValueError("DirectionalSignal track_id or original rank is invalid")
-        object.__setattr__(self, "stft_complex", _readonly_exact_complex64(self.stft_complex, (513, 33), "stft_complex"))
+        object.__setattr__(self, "stft_complex", _readonly_exact_complex64(self.stft_complex, (513, STFT_FRAME_COUNT), "stft_complex"))
 
     @property
     def window_key(self) -> WindowKey:
@@ -431,13 +432,13 @@ class SpectrogramFeature:
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
             raise ValueError("SpectrogramFeature标识或边界无效")
-        if self.context_end_sample != self.decision_sample or self.context_end_sample - self.context_start_sample != 15_360:
+        if self.context_end_sample != self.decision_sample or self.context_end_sample - self.context_start_sample != CONTEXT_SAMPLES:
             raise ValueError("SpectrogramFeature上下文边界无效")
         if not np.isfinite(self.theta_deg) or not 0 <= self.theta_deg < 360:
             raise ValueError("SpectrogramFeature角度无效")
         if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
             raise ValueError("SpectrogramFeature track_id or original rank is invalid")
-        object.__setattr__(self, "spectrogram", _readonly_exact_float32(self.spectrogram, (33, 169), "spectrogram"))
+        object.__setattr__(self, "spectrogram", _readonly_exact_float32(self.spectrogram, (STFT_FRAME_COUNT, 169), "spectrogram"))
 
     @property
     def window_key(self) -> WindowKey:
@@ -466,7 +467,7 @@ class EnhancedAudio:
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.context_start_sample) < 0:
             raise ValueError("EnhancedAudio标识或边界无效")
-        if self.context_end_sample != self.decision_sample or self.context_end_sample - self.context_start_sample != 15_360:
+        if self.context_end_sample != self.decision_sample or self.context_end_sample - self.context_start_sample != CONTEXT_SAMPLES:
             raise ValueError("EnhancedAudio上下文边界无效")
         if self.sample_rate != 48_000 or not np.isfinite(self.theta_deg) or not 0 <= self.theta_deg < 360:
             raise ValueError("EnhancedAudio采样率或角度无效")
@@ -474,7 +475,7 @@ class EnhancedAudio:
             raise ValueError("EnhancedAudio算法标识不能为空")
         if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:
             raise ValueError("EnhancedAudio track_id or original rank is invalid")
-        waveform = _readonly_exact_float32(self.enhanced_audio, (15_360,), "enhanced_audio")
+        waveform = _readonly_exact_float32(self.enhanced_audio, (CONTEXT_SAMPLES,), "enhanced_audio")
         object.__setattr__(self, "diagnostics", tuple(str(item) for item in self.diagnostics))
         object.__setattr__(self, "enhanced_audio", waveform)
 

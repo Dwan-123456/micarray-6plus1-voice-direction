@@ -259,10 +259,10 @@ class AudioIdTracker:
         current_decision: int,
         wanted_decision: int,
     ) -> np.ndarray | None:
-        """Recover one canonical hop from the current 320 ms L3 context."""
+        """Recover one canonical hop from the current 160 ms L3 context."""
         offset = int(current_decision) - int(wanted_decision)
-        start = 13_920 - offset
-        stop = 14_880 - offset
+        start = len(current) - 1_440 - offset
+        stop = len(current) - 480 - offset
         if start < 0 or stop > len(current):
             return None
         return np.asarray(current[start:stop], dtype=np.float32).copy()
@@ -340,14 +340,15 @@ class AudioIdTracker:
         while wanted <= final_decision:
             hops.append(self._recover_hop(current, current_decision, wanted))
             wanted += _HOP_SAMPLES
-        if any(hop is None for hop in hops) and len(hops) >= 16:
+        context_hops = len(current) // _HOP_SAMPLES
+        if any(hop is None for hop in hops) and len(hops) >= context_hops:
             # The stable canonical slices cannot cover this discontinuity.
             # Preserve the absolute duration, but use the complete current
-            # 320 ms L3 output for the newest 16 missing hops instead of
+            # 160 ms L3 output for the newest 8 missing hops instead of
             # replacing that whole region with silence.  Only any still older
-            # portion of a >320 ms hole remains exact-duration silence.
-            complete = np.asarray(current, dtype=np.float32).reshape(16, _HOP_SAMPLES)
-            hops[-16:] = [np.ascontiguousarray(item) for item in complete]
+            # portion of a >160 ms hole remains exact-duration silence.
+            complete = np.asarray(current, dtype=np.float32).reshape(context_hops, _HOP_SAMPLES)
+            hops[-context_hops:] = [np.ascontiguousarray(item) for item in complete]
         self._append_timeline_block(track, hops, first_wanted)
 
     def _accept_preview(self, track: _Track, preview: BeamformPreview) -> None:
@@ -361,8 +362,8 @@ class AudioIdTracker:
             if delta <= 0 or delta % _HOP_SAMPLES:
                 raise ValueError("Test UI L3 decisions must increase on the 20 ms sample grid")
             audio = self._stable_hop(previous)
-            aligned_start = 14_400 - delta
-            aligned_stop = 14_880 - delta
+            aligned_start = len(current) - 960 - delta
+            aligned_stop = len(current) - 480 - delta
             if aligned_start >= 0 and aligned_stop <= len(current):
                 aligned = np.asarray(current[aligned_start:aligned_stop], dtype=np.float32)
                 phase = np.linspace(
@@ -380,7 +381,7 @@ class AudioIdTracker:
                 fade_out=aligned_start < 0,
             )
             # A delayed L3 result may represent several skipped 20 ms
-            # decisions.  Recover every still-covered hop from this 320 ms
+            # decisions.  Recover every still-covered hop from this 160 ms
             # waveform; older, unrecoverable positions become exact silence.
             self._fill_until(
                 track, current, decision_sample, decision_sample - _HOP_SAMPLES,

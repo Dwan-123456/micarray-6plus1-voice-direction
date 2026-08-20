@@ -7,6 +7,7 @@ from common.config import ProjectConfig
 from common.data_types import DecisionWindow, EnhancedAudio, TrackedDirection
 from common.geometry import MicGeometry
 from common.window_key import WindowKey
+from common.timing import CONTEXT_SAMPLES
 
 from .configuration import SpatialSeparationConfig, StftSettings
 from .hybrid import ImcraSpatialSeparationBeamformer
@@ -77,9 +78,9 @@ class Layer3Processor:
 
     @staticmethod
     def _validate_input(window: DecisionWindow) -> None:
-        if window.sample_rate != 48_000 or window.samples.shape != (15_360, 8):
+        if window.sample_rate != 48_000 or window.samples.shape != (CONTEXT_SAMPLES, 8):
             raise RuntimeError(
-                f"L3输入必须是48 kHz逻辑8通道 [15360,8]，实际为"
+                f"L3输入必须是48 kHz逻辑8通道 [7680,8]，实际为"
                 f"{window.sample_rate} Hz {window.samples.shape}"
             )
 

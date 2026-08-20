@@ -12,7 +12,7 @@
   "license_snapshot": "source/NVIDIA_OPEN_MODEL_LICENSE.html",
   "input": {
     "public_sample_rate_hz": 48000,
-    "public_samples": 15360,
+    "public_samples": 7680,
     "model_sample_rate_hz": 16000,
     "model_samples": 5120,
     "channels": 1

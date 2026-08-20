@@ -7,16 +7,16 @@ import torch
 import torch.nn.functional as functional
 
 from common.data_types import DecisionWindow
+from common.timing import CONTEXT_HOPS, CONTEXT_SAMPLES, STFT_FRAME_COUNT
 
 from .configuration import StftSettings
 from .interface import Layer3Error
 
 
 MAX_TEMPORAL_CACHE_HOPS = 50
-_CONTEXT_HOPS = 16
-_ROLLING_REUSED_FRAME_INDICES = slice(1, 30)
-_PREVIOUS_REUSED_FRAME_INDICES = slice(3, 32)
-_ROLLING_RECOMPUTED_FRAME_INDICES = (0, 30, 31, 32)
+_ROLLING_REUSED_FRAME_INDICES = slice(1, 14)
+_PREVIOUS_REUSED_FRAME_INDICES = slice(3, 16)
+_ROLLING_RECOMPUTED_FRAME_INDICES = (0, 14, 15, 16)
 
 
 @lru_cache(maxsize=8)
@@ -73,7 +73,7 @@ class RollingStftCache:
         self._spectrum: torch.Tensor | None = None
         self._recomputed_indices: torch.Tensor | None = None
         self._last_reused_frames = 0
-        self._last_recomputed_frames = 33
+        self._last_recomputed_frames = STFT_FRAME_COUNT
 
     def clear(self) -> None:
         self._identity = None
@@ -81,7 +81,7 @@ class RollingStftCache:
         self._spectrum = None
         self._recomputed_indices = None
         self._last_reused_frames = 0
-        self._last_recomputed_frames = 33
+        self._last_recomputed_frames = STFT_FRAME_COUNT
 
     def process(self, window: DecisionWindow, settings: StftSettings) -> torch.Tensor:
         identity = (
@@ -102,7 +102,7 @@ class RollingStftCache:
         if not sequential:
             spectrum = shared_stft(window, settings, device=self.device)
             self._last_reused_frames = 0
-            self._last_recomputed_frames = 33
+            self._last_recomputed_frames = STFT_FRAME_COUNT
         else:
             samples = _input_tensor(window, device=self.device)
             if self._recomputed_indices is None:
@@ -122,12 +122,12 @@ class RollingStftCache:
                 :, :, _PREVIOUS_REUSED_FRAME_INDICES
             ]
             spectrum[:, :, self._recomputed_indices] = recomputed
-            self._last_reused_frames = 29
+            self._last_reused_frames = 13
             self._last_recomputed_frames = 4
-        if spectrum.shape != (7, 513, 33) or not torch.isfinite(spectrum).all():
+        if spectrum.shape != (7, 513, STFT_FRAME_COUNT) or not torch.isfinite(spectrum).all():
             self.clear()
             raise Layer3Error("rolling STFT output is invalid")
-        # Only the current 320 ms/16-hop window persists. This is deliberately
+        # Only the current 160 ms/8-hop window persists. This is deliberately
         # below the project-wide 50-hop/1000 ms temporal-cache ceiling.
         self._identity = identity
         self._settings = settings
@@ -139,7 +139,7 @@ class RollingStftCache:
         tensor_bytes = sum(item.numel() * item.element_size() for item in tensors)
         return StftCacheSnapshot(
             MAX_TEMPORAL_CACHE_HOPS,
-            0 if self._spectrum is None else _CONTEXT_HOPS,
+            0 if self._spectrum is None else CONTEXT_HOPS,
             self._last_reused_frames,
             self._last_recomputed_frames,
             tensor_bytes,
@@ -147,8 +147,8 @@ class RollingStftCache:
 
 
 def shared_stft(window: DecisionWindow, settings: StftSettings, *, device: torch.device) -> torch.Tensor:
-    if window.samples.shape != (15_360, 8):
-        raise Layer3Error(f"L3输入必须是48 kHz逻辑8通道 [15360,8]，实际为{window.samples.shape}")
+    if window.samples.shape != (CONTEXT_SAMPLES, 8):
+        raise Layer3Error(f"L3输入必须是48 kHz逻辑8通道 [7680,8]，实际为{window.samples.shape}")
     # HardwareMix is preserved by the public input contract but is never an
     # array microphone: steering, covariance and beamforming use PhysicalAudio.
     samples = _input_tensor(window, device=device)
@@ -157,12 +157,12 @@ def shared_stft(window: DecisionWindow, settings: StftSettings, *, device: torch
         window=periodic_hann(settings, device=device), center=settings.center, pad_mode=settings.pad_mode,
         normalized=settings.normalized, onesided=settings.onesided, return_complex=True,
     )
-    if spectrum.shape != (7, 513, 33) or spectrum.dtype != torch.complex64 or not torch.isfinite(spectrum).all():
+    if spectrum.shape != (7, 513, STFT_FRAME_COUNT) or spectrum.dtype != torch.complex64 or not torch.isfinite(spectrum).all():
         raise Layer3Error(f"共享STFT输出无效: {tuple(spectrum.shape)} {spectrum.dtype}")
     return spectrum
 
 
-def inverse_stft(spectrum: torch.Tensor, settings: StftSettings, *, length: int = 15_360) -> torch.Tensor:
+def inverse_stft(spectrum: torch.Tensor, settings: StftSettings, *, length: int = CONTEXT_SAMPLES) -> torch.Tensor:
     """Invert one or more spectra, preserving any leading batch dimensions."""
     waveform = torch.istft(
         spectrum, n_fft=settings.n_fft, hop_length=settings.hop_length, win_length=settings.win_length,

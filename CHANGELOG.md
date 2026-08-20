@@ -16,10 +16,45 @@
 2. 每次提交前必须记录本次实际变化；没有变化的模块明确写“无变化”，防止遗漏跨层影响。
 3. 每条记录至少包含日期、版本/标签、变更类型、涉及文件、各模块具体变化、接口或兼容性影响、验证结果和Git LFS资产变化。
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
-5. 本文件记录“发生了什么”；当前权威接口与参数仍以`ARCHITECTURE_V0.3_TARGET.md`、`config/config.yaml`和代码为准。
+5. 本文件记录“发生了什么”；当前1.1目标接口与参数以`ARCHITECTURE_V1.1_TARGET.md`、`config/config.yaml`和代码为准；`ARCHITECTURE_V0.3_TARGET.md`保留为历史版本记录。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
 
 ---
+
+## 2026-08-20 — 公共音频上下文由320 ms缩短为160 ms
+
+- **版本/标签**：项目`1.1.0`并行迁移分支；未创建或移动发布标签。
+- **类型**：跨层公共时间契约、L3/L4输入输出、Test UI试听拼接、Runtime、文档与自动测试。
+- **涉及文件**：`common/{timing,config,data_types}.py`、`config/config.yaml`、`windowing/assembler.py`、`layer3_direction_signal/`、`layer4_voice_classifier/`、`app/runtime.py`、`gui/dev_test_ui/`、`data_management/`、MarbleNet manifest、环境/基准脚本、1.1架构文档、组件README及相关测试。
+
+### L1、Windowing与L2
+
+- 公共`DecisionWindow`从48 kHz `float32[15360,8]`改为`float32[7680,8]`，首个endpoint与预热需求从15360改为7680 samples；20 ms发布节拍和末尾40 ms DOA窗口保持不变。
+- 每窗IMCRA上下文由16个连续20 ms hop改为8个；L1 IMCRA、预降噪算法、7+1通道顺序及L2 Gate、SRP/MUSIC、ID/Kalman算法均无变化。
+- 新增共享锁定时间常量，避免L3、L4和UI再次各自硬编码不同窗长。
+
+### L3
+
+- 输入和每方向48 kHz单声道`EnhancedAudio`统一为160 ms/7680 samples；STFT时间维由33帧改为17帧，内部工程特征相应为`[17,169]`。
+- 相邻20 ms窗口精确复用13/17个STFT帧，只重算0、14、15、16号4帧；IMCRA插值和协方差滚动边界同步改为8 hop/17帧，1000 ms/50 hop缓存硬上限不变。
+- `optimized`、`ds_baseline`、`constant_beamwidth_baseline`三种BF策略、空间`p`表、公开ID顺序契约和逐频点DAS回退均无变化。
+
+### L4
+
+- 正式输入改为每方向`float32[7680]`，模型适配器由48 kHz 160 ms重采样为16 kHz 2560 samples；MarbleNet权重、三帧连续峰值聚合和Voice阈值不变。
+- IMCRA响度补偿由16段改为8段20 ms概率，仍只作用于CNN副本；模型manifest的`public_samples`同步改为7680，权重文件未修改。
+
+### Development Test UI、Runtime与数据管理
+
+- 正式预览按钮和波形契约改为160 ms。ID试听仍按绝对decision sample逐20 ms拼接，稳定hop和交叉淡化规则不变；当前预览最多回填最近8个hop，超过160 ms的旧缺口保留等时静音，不压缩时间线。
+- Runtime向L4严格提供8个同窗概率槽；并行阶段、WindowKey、latest-wins队列、有序Joiner和失败终态规则不变。
+- RecordingStore增强波形契约改为7680 samples；录音schema、事务恢复、Catalog与Production UI无变化。
+
+### 验证与资产
+
+- 全量自动测试：`353 passed`。
+- Ruff检查与`git diff --check`通过；CPU最小冒烟基准成功覆盖L3单/双方向、13帧滚动复用及L4单/双方向160 ms模型前向。该单次冒烟数值不作为正式性能基线。
+- 未修改LFS管理的音频、模型权重或空间表资产；仅更新MarbleNet文本manifest，无Git LFS对象变化。
 
 ## 2026-08-19 — L3迁移到公开方向ID与严格批次对齐契约
 

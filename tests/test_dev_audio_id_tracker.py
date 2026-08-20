@@ -15,7 +15,7 @@ def _preview(*, backend: str, decision_sample: int, epoch: int = 0) -> BeamformP
         decision_sample // 960,
         decision_sample,
         30.0,
-        np.ones(15_360, np.float32),
+        np.ones(7_680, np.float32),
         backend,
     )
 
@@ -120,7 +120,7 @@ def test_overlap_stitch_uses_next_preview_for_a_continuous_boundary(tmp_path):
     candidate = SimpleNamespace(theta_deg=30.0, normalized_score=0.8)
 
     def preview(decision_sample: int, scale: float, offset: float) -> BeamformPreview:
-        absolute = np.arange(decision_sample - 15_360, decision_sample, dtype=np.float64)
+        absolute = np.arange(decision_sample - 7_680, decision_sample, dtype=np.float64)
         waveform = np.ascontiguousarray(
             scale * np.sin(2 * np.pi * 1_000 * absolute / 48_000) + offset,
             dtype=np.float32,
@@ -153,7 +153,7 @@ def test_skipped_l3_results_preserve_absolute_duration_and_formal_id(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
 
     def item(decision_sample: int, theta: float):
-        absolute = np.arange(decision_sample - 15_360, decision_sample, dtype=np.float64)
+        absolute = np.arange(decision_sample - 7_680, decision_sample, dtype=np.float64)
         waveform = np.ascontiguousarray(
             0.1 * np.sin(2 * np.pi * 500 * absolute / 48_000), dtype=np.float32,
         )
@@ -181,7 +181,7 @@ def test_skipped_l3_results_preserve_absolute_duration_and_formal_id(tmp_path):
     tracker.close()
 
 
-def test_unrecoverable_gap_uses_full_320ms_then_silence_without_time_compression(tmp_path):
+def test_unrecoverable_gap_uses_full_160ms_then_silence_without_time_compression(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     candidate = SimpleNamespace(theta_deg=30.0, normalized_score=0.8)
     first_decision = 15_360
@@ -199,8 +199,8 @@ def test_unrecoverable_gap_uses_full_320ms_then_silence_without_time_compression
 
     cached = np.fromfile(tmp_path / "cache/track_001/segment_000000.f32", np.float32)
     assert cached.shape == (20 * 960,)
-    assert np.count_nonzero(cached[960:3_840]) == 0
-    assert np.all(cached[-15_120:] == 1.0)
+    assert np.count_nonzero(cached[960:11_520]) == 0
+    assert np.all(cached[-7_200:] == 1.0)
     assert snapshots[0].audio_sample_count == 20 * 960
     tracker.close()
 
@@ -259,7 +259,7 @@ def test_l2_id_rollover_continues_one_unambiguous_listening_cache(tmp_path):
         (first_candidate,),
         (BeamformPreview(
             "session", 0, 16, first_decision, 206.0,
-            np.ones(15_360, np.float32), "ds_baseline",
+            np.ones(7_680, np.float32), "ds_baseline",
         ),),
         track_ids=(2,),
     )
@@ -268,7 +268,7 @@ def test_l2_id_rollover_continues_one_unambiguous_listening_cache(tmp_path):
         (second_candidate,),
         (BeamformPreview(
             "session", 0, 17, second_decision, 208.5,
-            np.ones(15_360, np.float32), "ds_baseline",
+            np.ones(7_680, np.float32), "ds_baseline",
         ),),
         track_ids=(3,),
     )
@@ -293,7 +293,7 @@ def test_l2_id_rollover_can_rejoin_after_four_seconds(tmp_path):
     def preview(track_id: int, decision: int, theta: float) -> BeamformPreview:
         return BeamformPreview(
             "session", 0, track_id, decision, theta,
-            np.ones(15_360, np.float32), "ds_baseline",
+            np.ones(7_680, np.float32), "ds_baseline",
         )
 
     tracker.update(
@@ -322,7 +322,7 @@ def test_simultaneous_l2_ids_are_never_merged_even_when_angles_are_close(tmp_pat
         (SimpleNamespace(theta_deg=206.0, normalized_score=0.4),),
         (BeamformPreview(
             "session", 0, 16, first_decision, 206.0,
-            np.ones(15_360, np.float32), "ds_baseline",
+            np.ones(7_680, np.float32), "ds_baseline",
         ),),
         track_ids=(2,),
     )
@@ -335,11 +335,11 @@ def test_simultaneous_l2_ids_are_never_merged_even_when_angles_are_close(tmp_pat
         (
             BeamformPreview(
                 "session", 0, 17, second_decision, 206.5,
-                np.ones(15_360, np.float32), "ds_baseline",
+                np.ones(7_680, np.float32), "ds_baseline",
             ),
             BeamformPreview(
                 "session", 0, 17, second_decision, 208.5,
-                np.ones(15_360, np.float32), "ds_baseline",
+                np.ones(7_680, np.float32), "ds_baseline",
             ),
         ),
         track_ids=(2, 3),
@@ -363,7 +363,7 @@ def test_ended_listening_tracks_are_not_pruned_while_ui_session_is_open(tmp_path
     previews = tuple(
         BeamformPreview(
             "session", 0, 16, decision, theta,
-            np.ones(15_360, np.float32), "ds_baseline",
+            np.ones(7_680, np.float32), "ds_baseline",
         )
         for theta in (0.0, 180.0)
     )
@@ -390,7 +390,7 @@ def test_provisional_l2_id_starts_cache_when_kalman_ready(tmp_path):
     def preview(decision_sample: int) -> BeamformPreview:
         return BeamformPreview(
             "session", 0, decision_sample // 960, decision_sample, 45.0,
-            np.ones(15_360, np.float32), "ds_baseline",
+            np.ones(7_680, np.float32), "ds_baseline",
         )
 
     first = 15_360

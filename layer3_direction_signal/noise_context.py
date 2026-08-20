@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from common.data_types import DecisionWindow, ImcraHopSnapshot
+from common.timing import CONTEXT_HOPS, CONTEXT_SAMPLES, STFT_FRAME_COUNT
 
 from .configuration import SpatialSeparationConfig, StftSettings
 from .interface import Layer3Error
@@ -28,16 +29,16 @@ class BeamformerNoiseContext:
     def __post_init__(self) -> None:
         if not self.session_id or self.stream_epoch < 0 or not self.algorithm_version:
             raise ValueError("BF噪声上下文身份或算法版本无效")
-        if self.context_end_sample - self.context_start_sample != 15_360:
-            raise ValueError("BF噪声上下文必须覆盖320 ms")
+        if self.context_end_sample - self.context_start_sample != CONTEXT_SAMPLES:
+            raise ValueError("BF噪声上下文必须覆盖160 ms")
         frequencies = np.asarray(self.frequencies_hz)
-        expected_spectral = (16, 7, len(frequencies))
+        expected_spectral = (CONTEXT_HOPS, 7, len(frequencies))
         arrays = {
             "noise_psd": (self.noise_psd, expected_spectral),
             "posterior_noise_probability": (self.posterior_noise_probability, expected_spectral),
             "prior_snr": (self.prior_snr, expected_spectral),
             "posterior_snr": (self.posterior_snr, expected_spectral),
-            "noise_level_db": (self.noise_level_db, (16, 7)),
+            "noise_level_db": (self.noise_level_db, (CONTEXT_HOPS, 7)),
         }
         if frequencies.ndim != 1 or len(frequencies) < 2 or not np.all(np.diff(frequencies) > 0):
             raise ValueError("BF噪声上下文频率轴无效")
@@ -87,8 +88,8 @@ def _validated_window_hops(
         for start in range(window.context_start_sample, window.context_end_sample, 960)
     )
     actual_ranges = tuple((item.start_sample, item.end_sample) for item in hops)
-    if len(hops) != 16 or actual_ranges != expected_ranges:
-        raise Layer3Error("IMCRA噪声上下文必须包含与320 ms窗口连续对齐的16个hop")
+    if len(hops) != CONTEXT_HOPS or actual_ranges != expected_ranges:
+        raise Layer3Error("IMCRA噪声上下文必须包含与160 ms窗口连续对齐的8个hop")
     if any(item.state != "ready" for item in hops):
         raise Layer3Error("IMCRA噪声上下文尚未ready")
     versions = {item.algorithm_version for item in hops}
@@ -221,7 +222,7 @@ def _full_interpolated_hops(
     *,
     device: torch.device,
 ) -> _InterpolatedNoiseContext:
-    """Transfer and interpolate all 16 hops only for a cold/rebuilt window."""
+    """Transfer and interpolate all 8 hops only for a cold/rebuilt window."""
 
     def stacked(name: str) -> torch.Tensor:
         return torch.as_tensor(
@@ -288,7 +289,7 @@ def _frame_weights(
     noise_probability_hf = interpolated.noise_probability_hmf.median(dim=1).values
     if hop_indices is None:
         frame_centres = torch.arange(spectrum_fct.shape[-1], device=spectrum_fct.device) * stft.hop_length
-        hop_indices = torch.div(frame_centres, 960, rounding_mode="floor").clamp(0, 15)
+        hop_indices = torch.div(frame_centres, 960, rounding_mode="floor").clamp(0, CONTEXT_HOPS - 1)
     return noise_probability_hf[hop_indices].transpose(0, 1).contiguous()
 
 
@@ -322,7 +323,7 @@ def _finalize_noise_statistics(
     covariance = (1.0 - shrinkage) * covariance + shrinkage * diagonal_anchor
     covariance = 0.5 * (covariance + covariance.mH)
 
-    confidence = (denominator_f / 33.0).clamp(0.0, 1.0)
+    confidence = (denominator_f / float(STFT_FRAME_COUNT)).clamp(0.0, 1.0)
     prior = interpolated.prior_snr_hmf.median(dim=0).values.median(dim=0).values
     posterior = interpolated.posterior_snr_hmf.median(dim=0).values.median(dim=0).values
     prior_gain = prior / (1.0 + prior)
@@ -338,10 +339,10 @@ def _finalize_noise_statistics(
 
 
 class RollingNoiseStatisticsCache:
-    """Exact rolling IMCRA interpolation and covariance state for one 320 ms window."""
+    """Exact rolling IMCRA interpolation and covariance state for one 160 ms window."""
 
-    _PREVIOUS_EXPIRED = (0, 1, 2, 32)
-    _CURRENT_ADDED = (0, 30, 31, 32)
+    _PREVIOUS_EXPIRED = (0, 1, 2, 16)
+    _CURRENT_ADDED = (0, 14, 15, 16)
     max_temporal_hops = 50
 
     def __init__(self) -> None:
@@ -396,7 +397,7 @@ class RollingNoiseStatisticsCache:
         if self._frame_hop_indices_key != frame_key or self._frame_hop_indices is None:
             centres = torch.arange(spectrum_fct.shape[-1], device=device) * stft.hop_length
             self._frame_hop_indices_key = frame_key
-            self._frame_hop_indices = torch.div(centres, 960, rounding_mode="floor").clamp(0, 15)
+            self._frame_hop_indices = torch.div(centres, 960, rounding_mode="floor").clamp(0, CONTEXT_HOPS - 1)
         assert self._previous_indices is not None
         return (
             self._interpolation_plan,
@@ -486,7 +487,7 @@ class RollingNoiseStatisticsCache:
         """Estimate directly from a DecisionWindow with a one-hop warm update.
 
         Unlike ``BeamformerNoiseContext.from_window`` this path does not stack
-        and copy all 16 CPU hop arrays on every 20 ms advance.  A cold window
+        and copy all 8 CPU hop arrays on every 20 ms advance.  A cold window
         transfers all hops; a sequential window transfers only its newest hop.
         """
         hops, algorithm_version, source_frequencies = _validated_window_hops(window)
@@ -587,7 +588,7 @@ class RollingNoiseStatisticsCache:
             ))
         return NoiseCacheSnapshot(
             self.max_temporal_hops,
-            0 if self._identity is None else 16,
+            0 if self._identity is None else CONTEXT_HOPS,
             self._last_rolled,
             sum(item.numel() * item.element_size() for item in tensors),
         )

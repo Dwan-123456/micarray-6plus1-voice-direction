@@ -36,7 +36,7 @@ L2内部ID不进入公共`CandidateDirection`，但Runtime会向Test UI传递与
 - Gate关闭时SRP显示Blocked且候选为空；
 - 原始SRP圆环和平滑候选点同窗显示，UI不执行二次滤波；私有ID状态只进入本机SRP诊断显示与试听sidecar，不进入公共DTO和正式记录；
 - Test UI试听ID不产生正式候选之外的L3预测波束批次，普通Runtime不创建该旁路；Center Mic参考、2秒显示门槛、3秒等待、唯一换号续接、近角双ID隔离、跳窗等时补洞和关闭清理均有回归测试；
-- L3只有音频视图，无旧`[33,169]`依赖；
+- L3只有音频视图，无内部`[17,169]`依赖；
 - L3三档循环切换、Runtime模式透传、模式切换后试听缓存隔离；恒定波束档固定30° FNBW并在不安全频点回退DAS；
 - L4完成邮箱固定容量1、只发布完整同窗COMPLETED帧、覆盖不改变正式结果；DROPPED/SKIPPED画面保留到stale超时；
 - L4实际完成/丢弃/跳过/Hz/邮箱覆盖诊断与空候选L3免prepare、L4空batch成功路径；

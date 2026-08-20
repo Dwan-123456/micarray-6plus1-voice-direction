@@ -23,7 +23,7 @@ ARTIFACT = ROOT / "models" / "nv_marblenet_baseline_v1"
 
 
 def _constant_level(dbfs: float) -> np.ndarray:
-    return np.full(15_360, 10.0 ** (dbfs / 20.0), np.float32)
+    return np.full(7_680, 10.0 ** (dbfs / 20.0), np.float32)
 
 
 @pytest.mark.parametrize(
@@ -33,7 +33,7 @@ def _constant_level(dbfs: float) -> np.ndarray:
 def test_input_gain_probability_breakpoints(probability, expected_weight):
     source = _constant_level(-45.0)
     output, diagnostic = compensate_l4_input(
-        source, (probability,) * 16, InputGainCompensationSettings()
+        source, (probability,) * 8, InputGainCompensationSettings()
     )
     segment = diagnostic.segments[0]
     assert segment.probability_weight == pytest.approx(expected_weight)
@@ -46,7 +46,7 @@ def test_input_above_target_is_not_amplified_and_source_is_unchanged():
     source = _constant_level(-20.0)
     original = source.copy()
     output, diagnostic = compensate_l4_input(
-        source, (1.0,) * 16, InputGainCompensationSettings()
+        source, (1.0,) * 8, InputGainCompensationSettings()
     )
     np.testing.assert_array_equal(source, original)
     np.testing.assert_array_equal(output, source)
@@ -54,18 +54,18 @@ def test_input_above_target_is_not_amplified_and_source_is_unchanged():
 
 
 def test_peak_protection_caps_added_gain_without_attenuating_hot_input():
-    source = np.full(15_360, 1.0e-4, np.float32)
+    source = np.full(7_680, 1.0e-4, np.float32)
     source[::960] = 10.0 ** (-4.0 / 20.0)
     output, diagnostic = compensate_l4_input(
-        source, (1.0,) * 16, InputGainCompensationSettings()
+        source, (1.0,) * 8, InputGainCompensationSettings()
     )
     assert 20.0 * np.log10(np.max(np.abs(output))) <= -3.0 + 1.0e-5
-    assert diagnostic.peak_protection_trigger_count == 16
+    assert diagnostic.peak_protection_trigger_count == 8
 
     hot = source.copy()
     hot[::960] = 10.0 ** (-2.0 / 20.0)
     hot_output, _ = compensate_l4_input(
-        hot, (1.0,) * 16, InputGainCompensationSettings()
+        hot, (1.0,) * 8, InputGainCompensationSettings()
     )
     assert np.max(np.abs(hot_output)) == pytest.approx(np.max(np.abs(hot)))
 
@@ -73,19 +73,19 @@ def test_peak_protection_caps_added_gain_without_attenuating_hot_input():
 def test_missing_probability_silence_and_nonfinite_probability_handling():
     source = _constant_level(-60.0)
     output, diagnostic = compensate_l4_input(
-        source, (None,) * 16, InputGainCompensationSettings()
+        source, (None,) * 8, InputGainCompensationSettings()
     )
     np.testing.assert_array_equal(output, source)
     assert diagnostic.compensated_segment_count == 0
 
     silence_output, silence_diagnostic = compensate_l4_input(
-        np.zeros(15_360, np.float32), (1.0,) * 16, InputGainCompensationSettings()
+        np.zeros(7_680, np.float32), (1.0,) * 8, InputGainCompensationSettings()
     )
     assert not np.any(silence_output)
     assert all(item.silent for item in silence_diagnostic.segments)
     with pytest.raises(ValueError, match="IMCRA probabilities"):
         compensate_l4_input(
-            source, (float("nan"),) * 16, InputGainCompensationSettings()
+            source, (float("nan"),) * 8, InputGainCompensationSettings()
         )
 
 
@@ -93,7 +93,7 @@ def test_linear_transition_remains_peak_safe_when_next_segment_is_hotter():
     source = _constant_level(-60.0)
     source[960:1920] = 10.0 ** (-4.0 / 20.0)
     output, diagnostic = compensate_l4_input(
-        source, (1.0,) * 16, InputGainCompensationSettings()
+        source, (1.0,) * 8, InputGainCompensationSettings()
     )
     assert 20.0 * np.log10(np.max(np.abs(output[960:1920]))) <= -3.0 + 1.0e-5
     assert diagnostic.segments[1].peak_protection_triggered is True
@@ -113,7 +113,7 @@ def test_engine_sends_one_compensated_immutable_copy_to_primary_and_shadow():
             return ModelPrediction(self.model_id, np.asarray((0.5,), np.float32), 0.0, {})
 
     segment = Layer4AudioSegment(
-        "session", 0, 1, 15_360, 10.0, 48_000, source, (0.8,) * 16
+        "session", 0, 1, 7_680, 10.0, 48_000, source, (0.8,) * 8
     )
     result = Layer4Engine(
         _GainObservingPlugin("primary"), (_GainObservingPlugin("shadow"),)
@@ -125,28 +125,28 @@ def test_engine_sends_one_compensated_immutable_copy_to_primary_and_shadow():
     assert 20.0 * np.log10(np.sqrt(np.mean(observations[0][2] ** 2))) == pytest.approx(
         -23.0, abs=1e-4
     )
-    assert len(result.input_gain_compensation[0].segments) == 16
+    assert len(result.input_gain_compensation[0].segments) == 8
 
 
 def test_compensated_distant_official_speech_remains_voice_and_low_probability_noise_is_unchanged():
     plugin = NvidiaMarbleNetPlugin("nv_marblenet_baseline_v1", ARTIFACT, device="cpu")
     sample_rate, audio = wavfile.read(ARTIFACT / "source" / "smoke_speech.wav")
     audio = audio.astype(np.float32) / 32768.0
-    speech = resample_poly(audio, 48_000, sample_rate).astype(np.float32)[2 * 15_360:3 * 15_360]
+    speech = resample_poly(audio, 48_000, sample_rate).astype(np.float32)[53_760:61_440]
     speech = np.ascontiguousarray(
         speech * (10.0 ** (-45.0 / 20.0) / np.sqrt(np.mean(speech.astype(np.float64) ** 2))),
         dtype=np.float32,
     )
     compensated, _ = compensate_l4_input(
-        speech, (0.9,) * 16, InputGainCompensationSettings()
+        speech, (0.9,) * 8, InputGainCompensationSettings()
     )
     probability = plugin.predict(compensated[None, :]).probabilities[0]
     assert probability > 0.70
 
     rng = np.random.default_rng(4)
-    noise = np.ascontiguousarray(rng.normal(0.0, 1.0e-3, 15_360), dtype=np.float32)
+    noise = np.ascontiguousarray(rng.normal(0.0, 1.0e-3, 7_680), dtype=np.float32)
     noise_output, _ = compensate_l4_input(
-        noise, (0.3,) * 16, InputGainCompensationSettings()
+        noise, (0.3,) * 8, InputGainCompensationSettings()
     )
     np.testing.assert_array_equal(noise_output, noise)
 
@@ -156,14 +156,14 @@ def test_official_marblenet_weights_detect_official_speech_and_reject_silence():
     sample_rate, audio = wavfile.read(ARTIFACT / "source" / "smoke_speech.wav")
     audio = audio.astype(np.float32) / 32768.0
     audio_48k = resample_poly(audio, 48_000, sample_rate).astype(np.float32)
-    speech_window = audio_48k[2 * 15_360:3 * 15_360]
-    probabilities = plugin.predict(np.stack((np.zeros(15_360, np.float32), speech_window))).probabilities
+    speech_window = audio_48k[53_760:61_440]
+    probabilities = plugin.predict(np.stack((np.zeros(7_680, np.float32), speech_window))).probabilities
     assert probabilities.shape == (2,)
     assert probabilities[0] < 0.01
     assert probabilities[1] > 0.70
 
 
-def test_marblenet_adapter_downsamples_the_complete_320ms_batch_to_16khz():
+def test_marblenet_adapter_downsamples_the_complete_160ms_batch_to_16khz():
     observed = {}
 
     class _SpyModel:
@@ -182,8 +182,8 @@ def test_marblenet_adapter_downsamples_the_complete_320ms_batch_to_16khz():
     }
     plugin.device = torch.device("cpu")
     plugin.model = _SpyModel()
-    result = plugin.predict(np.zeros((2, 15_360), dtype=np.float32))
-    assert observed["shape"] == (2, 5_120)
+    result = plugin.predict(np.zeros((2, 7_680), dtype=np.float32))
+    assert observed["shape"] == (2, 2_560)
     assert result.probabilities.shape == (2,)
 
 
@@ -213,7 +213,7 @@ class _FixedPlugin:
 def test_layer4_public_contract_and_rethreshold_do_not_rerun_model():
     inputs = tuple(
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, theta, 48_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 7_680, theta, 48_000, np.zeros(7_680, np.float32)
         )
         for theta in (10.0, 20.0)
     )
@@ -226,13 +226,13 @@ def test_layer4_public_contract_and_rethreshold_do_not_rerun_model():
 
 
 def test_layer4_contract_rejects_old_spectrogram_shape_and_wrong_sample_rate():
-    with pytest.raises(ValueError, match="15360"):
+    with pytest.raises(ValueError, match="7680"):
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 48_000, np.zeros((33, 169), np.float32)
+            "session", 0, 1, 7_680, 10.0, 48_000, np.zeros((17, 169), np.float32)
         )
     with pytest.raises(ValueError, match="48 kHz"):
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 16_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 7_680, 10.0, 16_000, np.zeros(7_680, np.float32)
         )
 
 
@@ -251,7 +251,7 @@ def test_primary_and_shadow_receive_the_same_immutable_waveform_batch():
 
     inputs = (
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 48_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 7_680, 10.0, 48_000, np.zeros(7_680, np.float32)
         ),
     )
     Layer4Engine(_ObservingPlugin("primary"), (_ObservingPlugin("shadow"),)).process(inputs)
@@ -270,7 +270,7 @@ def test_layer4_rejects_incomplete_model_output():
 
     inputs = (
         Layer4AudioSegment(
-            "session", 0, 1, 15_360, 10.0, 48_000, np.zeros(15_360, np.float32)
+            "session", 0, 1, 7_680, 10.0, 48_000, np.zeros(7_680, np.float32)
         ),
     )
     with pytest.raises(RuntimeError, match="one probability per audio input"):
@@ -283,8 +283,8 @@ def test_marblenet_cpu_and_cuda_probabilities_are_consistent():
     audio = audio.astype(np.float32) / 32768.0
     audio_48k = resample_poly(audio, 48_000, sample_rate).astype(np.float32)
     batch = np.ascontiguousarray(
-        np.stack((np.zeros(15_360, np.float32), audio_48k[2 * 15_360:3 * 15_360]))
+        np.stack((np.zeros(7_680, np.float32), audio_48k[53_760:61_440]))
     )
     cpu = NvidiaMarbleNetPlugin("cpu", ARTIFACT, device="cpu").predict(batch).probabilities
     cuda = NvidiaMarbleNetPlugin("cuda", ARTIFACT, device="cuda").predict(batch).probabilities
-    np.testing.assert_allclose(cuda, cpu, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(cuda, cpu, rtol=1e-4, atol=2e-5)

@@ -133,7 +133,7 @@ def test_coordinator_imcra_and_window_share_one_sample_axis():
     estimator = Layer1Imcra(config.layer1_imcra.model_copy(update={"warmup_seconds": 0.02}))
     assembler = WindowAssembler()
     windows = []
-    for sequence in range(16):
+    for sequence in range(8):
         values = np.zeros((960, 8), np.float32)
         frame = DecodedAudio(values, 48_000, sequence, sequence * 0.02)
         block = coordinator.ingest(frame)
@@ -141,8 +141,8 @@ def test_coordinator_imcra_and_window_share_one_sample_axis():
         windows.extend(assembler.add(block, hops))
     assert len(windows) == 1
     window = windows[0]
-    assert window.samples.shape == (15_360, 8)
-    assert len(window.imcra_hops) == 16
+    assert window.samples.shape == (7_680, 8)
+    assert len(window.imcra_hops) == 8
     assert [(hop.start_sample, hop.end_sample) for hop in window.imcra_hops[-2:]] == [
         (window.doa_start_sample, window.doa_start_sample + 960),
         (window.doa_start_sample + 960, window.doa_end_sample),

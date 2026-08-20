@@ -5,9 +5,11 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from common.timing import CONTEXT_HOPS
+
 
 _SEGMENT_SAMPLES = 960
-_SEGMENT_COUNT = 16
+_SEGMENT_COUNT = CONTEXT_HOPS
 _EPSILON = 1.0e-12
 
 
@@ -94,9 +96,9 @@ def compensate_l4_input(
         or not source.flags.c_contiguous
         or not np.isfinite(source).all()
     ):
-        raise ValueError("gain compensation requires finite C-contiguous float32 [15360]")
+        raise ValueError("gain compensation requires finite C-contiguous float32 [7680]")
     if len(probabilities_20ms) != _SEGMENT_COUNT:
-        raise ValueError("gain compensation requires exactly 16 aligned IMCRA probabilities")
+        raise ValueError("gain compensation requires exactly 8 aligned IMCRA probabilities")
     for probability in probabilities_20ms:
         if probability is not None and (
             not np.isfinite(probability) or not 0.0 <= probability <= 1.0

@@ -103,7 +103,7 @@ def main() -> None:
             fail(f"PyTorch wheel不包含当前GPU架构 {target_arch}: {compiled_arches}")
 
         # Exercise the operations used by the real pipeline, not only device discovery.
-        waveform = torch.randn((7, 15_360), device=device, dtype=torch.float32)
+        waveform = torch.randn((7, 7_680), device=device, dtype=torch.float32)
         window = torch.hann_window(960, periodic=True, device=device)
         spectrum = torch.stft(
             waveform,
@@ -117,7 +117,7 @@ def main() -> None:
             onesided=True,
             return_complex=True,
         )
-        if tuple(spectrum.shape) != (7, 513, 33) or spectrum.dtype != torch.complex64:
+        if tuple(spectrum.shape) != (7, 513, 17) or spectrum.dtype != torch.complex64:
             fail(f"CUDA STFT契约错误: {tuple(spectrum.shape)} / {spectrum.dtype}")
 
         matrix = torch.randn((513, 7, 7), device=device, dtype=torch.complex64)
@@ -134,7 +134,7 @@ def main() -> None:
             project_root / "models" / "nv_marblenet_baseline_v1",
             device="cuda",
         )
-        l4_output = l4.predict(np.zeros((5, 15_360), dtype=np.float32))
+        l4_output = l4.predict(np.zeros((5, 7_680), dtype=np.float32))
         if l4_output.probabilities.shape != (5,) or not np.isfinite(l4_output.probabilities).all():
             fail(f"CUDA MarbleNet波形前向契约错误: {l4_output.probabilities.shape}")
         torch.cuda.synchronize(device)

@@ -31,21 +31,21 @@ def run_chunks(sizes: list[int]):
 
 
 def test_first_window_and_hops_are_exact_and_readonly():
-    windows = run_chunks([960] * 18)
-    assert [window.decision_sample for window in windows] == [15_360, 16_320, 17_280]
+    windows = run_chunks([960] * 10)
+    assert [window.decision_sample for window in windows] == [7_680, 8_640, 9_600]
     first = windows[0]
-    assert first.samples.shape == (15_360, 8)
-    assert np.array_equal(first.samples[:, 0], np.arange(15_360, dtype=np.float32))
+    assert first.samples.shape == (7_680, 8)
+    assert np.array_equal(first.samples[:, 0], np.arange(7_680, dtype=np.float32))
     assert np.count_nonzero(first.samples[:, 7]) == 0
-    assert (first.doa_start_sample, first.context_start_sample) == (13_440, 0)
+    assert (first.doa_start_sample, first.context_start_sample) == (5_760, 0)
     assert not first.samples.flags.writeable
     with pytest.raises(ValueError):
         first.samples.setflags(write=True)
 
 
 def test_arbitrary_chunking_produces_identical_windows():
-    regular = run_chunks([960] * 20)
-    irregular = run_chunks([137, 2000, 1, 4022, 7000, 6040])
+    regular = run_chunks([960] * 12)
+    irregular = run_chunks([137, 2000, 1, 4022, 5360])
     assert len(regular) == len(irregular)
     for left, right in zip(regular, irregular, strict=True):
         assert left.decision_sample == right.decision_sample
@@ -81,16 +81,16 @@ def test_ingested_block_owns_immutable_copy():
 def test_epoch_change_clears_window_history_and_keeps_window_ids_monotonic():
     coordinator, assembler = IngestCoordinator(session_id="test"), WindowAssembler()
     windows = []
-    for sequence in range(16):
+    for sequence in range(8):
         windows.extend(assembler.add(coordinator.ingest(frame(sequence, sequence * 960, 960))))
     event = InputHealthEvent(0, 1.0, "device_restart", 15, 20, None, "restart")
-    for index in range(16):
+    for index in range(8):
         start = index * 960
         events = (event,) if index == 0 else ()
         windows.extend(assembler.add(coordinator.ingest(frame(20 + index, start, 960), events)))
     assert [(item.window_id, item.stream_epoch, item.decision_sample) for item in windows] == [
-        (0, 0, 15_360),
-        (1, 1, 15_360),
+        (0, 0, 7_680),
+        (1, 1, 7_680),
     ]
 
 

@@ -37,7 +37,7 @@ calibration:
 timing:
   decision_hop_samples: 960
   doa_window_samples: 1920
-  context_samples: 15360
+  context_samples: 7680
   timestamp_tolerance_ms: 5
 
 layer1_imcra:
@@ -182,7 +182,7 @@ feature:
   last_bin_inclusive: 170
   log_epsilon: 1.0e-6
   normalization: training_set_per_frequency_zscore
-  expected_shape: [33, 169]
+  expected_shape: [17, 169]
 
 layer4:
   primary_model_id: nv_marblenet_baseline_v1
