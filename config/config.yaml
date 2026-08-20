@@ -153,6 +153,12 @@ layer2:
   dpd_min_plane_wave_fit: 0.45
   dpd_min_frequency_support_ratio: 0.25
   dpd_angle_tolerance_deg: 10
+  # Per-frequency rank-1 votes must form a real circular cluster rather than
+  # only a relative peak in the fused map.
+  dpd_min_cluster_frequency_bins: 5
+  dpd_frequency_subbands: 4
+  dpd_min_cluster_subbands: 2
+  dpd_min_circular_concentration: 0.95
   noise_whitening_enabled: false
   noise_covariance_shrinkage: 0.10
 

@@ -242,6 +242,9 @@ def test_optional_dpd_rank1_uses_real_frequency_support_and_manual_ceiling() -> 
     assert int(np.argmax(response.raw_scores)) in range(71, 76)
     assert diagnostics.evidence[0].supporting_frequency_bins < diagnostics.valid_frequency_bins + 1
     assert diagnostics.evidence[0].frequency_support_ratio >= config.dpd_min_frequency_support_ratio
+    assert diagnostics.evidence[0].supporting_frequency_bins >= config.dpd_min_cluster_frequency_bins
+    assert diagnostics.evidence[0].supporting_frequency_subbands >= config.dpd_min_cluster_subbands
+    assert diagnostics.evidence[0].circular_concentration >= config.dpd_min_circular_concentration
 
 
 def test_optional_dpd_rank1_separates_two_sources_across_zero_boundary() -> None:
@@ -263,6 +266,39 @@ def test_optional_dpd_rank1_separates_two_sources_across_zero_boundary() -> None
         item.frequency_support_ratio >= config.dpd_min_frequency_support_ratio
         for item in diagnostics.evidence
     )
+
+
+def test_dpd_vote_clustering_wraps_zero_and_rejects_narrowband_cluster() -> None:
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        dpd_rank1_enabled=True,
+        effective_order_limit=3,
+    )
+    scanner = RollingNormMusicScanner()
+    peak_angles = np.asarray((358, 359, 0, 1, 2, 0), dtype=int)
+    per_frequency = np.zeros((len(peak_angles), 360), dtype=np.float64)
+    per_frequency[np.arange(len(peak_angles)), peak_angles] = 1.0
+    selected = np.ones(len(peak_angles), dtype=bool)
+    weights = np.ones(len(peak_angles), dtype=np.float64)
+    plane_fit = np.full(len(peak_angles), 0.9, dtype=np.float64)
+    grid = np.arange(360, dtype=np.float64)
+    distance = np.abs((grid + 180.0) % 360.0 - 180.0)
+    vote = np.maximum(0.0, 1.0 - distance / (config.dpd_angle_tolerance_deg + 1.0))
+
+    narrowband = np.linspace(2_050.0, 2_200.0, len(peak_angles))
+    assert scanner._dpd_vote_clusters(
+        vote, per_frequency, selected, weights, plane_fit, narrowband, config
+    ) == ()
+
+    broadband = np.asarray((2_050.0, 2_200.0, 2_650.0, 2_850.0, 3_250.0, 3_750.0))
+    clusters = scanner._dpd_vote_clusters(
+        vote, per_frequency, selected, weights, plane_fit, broadband, config
+    )
+    assert len(clusters) == 1
+    assert clusters[0].angle_index == 0
+    assert clusters[0].supporting_frequency_bins == len(peak_angles)
+    assert clusters[0].supporting_frequency_subbands >= config.dpd_min_cluster_subbands
+    assert clusters[0].circular_concentration >= config.dpd_min_circular_concentration
 
 
 def test_optional_imcra_noise_psd_whitening_is_independent_and_safe() -> None:

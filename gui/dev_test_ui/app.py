@@ -442,7 +442,7 @@ def build_window(
                 runtime.music_noise_whitening_enabled
             )
             self.music_dpd_rank1.setToolTip(
-                "仅使用通过直达声主导检验的频点，并以rank-1 MUSIC方向投票；默认关闭。"
+                "仅使用通过直达声主导检验的频点，以rank-1 MUSIC逐频投票并执行圆周聚类；默认关闭。"
             )
             self.music_noise_whitening.setToolTip(
                 "用IMCRA每麦noise_psd构造对角噪声协方差，同时白化协方差和steering；默认关闭。"

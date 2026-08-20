@@ -2079,7 +2079,10 @@ class ApplicationRuntime:
                  "supporting_pairs": evidence.supporting_pairs,
                  "supporting_frequency_bins": evidence.supporting_frequency_bins,
                  "frequency_support_ratio": evidence.frequency_support_ratio,
-                 "mean_plane_wave_fit": evidence.mean_plane_wave_fit}
+                 "mean_plane_wave_fit": evidence.mean_plane_wave_fit,
+                 "supporting_frequency_subbands": evidence.supporting_frequency_subbands,
+                 "circular_concentration": evidence.circular_concentration,
+                 "cluster_weight": evidence.cluster_weight}
                 for evidence in search_diagnostics.evidence
             ],
         }

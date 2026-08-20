@@ -33,6 +33,20 @@ class MusicPeakEvidence:
     supporting_frequency_bins: int
     frequency_support_ratio: float = 0.0
     mean_plane_wave_fit: float = 0.0
+    supporting_frequency_subbands: int = 0
+    circular_concentration: float = 0.0
+    cluster_weight: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _DpdVoteCluster:
+    angle_index: int
+    supporting_frequency_bins: int
+    frequency_support_ratio: float
+    mean_plane_wave_fit: float
+    supporting_frequency_subbands: int
+    circular_concentration: float
+    cluster_weight: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +123,7 @@ class MusicDiagnostics:
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_dpd_whitening_v4"
+    algorithm_version = "frequency_normalized_music_dpd_cluster_v5"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -323,6 +337,102 @@ class RollingNormMusicScanner:
             vote /= total_weight
         return vote, per_frequency, selected, weights, plane_fit
 
+    def _dpd_vote_clusters(
+        self,
+        normalized_vote: np.ndarray,
+        per_frequency: np.ndarray,
+        selected: np.ndarray,
+        weights: np.ndarray,
+        plane_fit: np.ndarray,
+        frequencies_hz: np.ndarray,
+        config: DirectionScanConfig,
+    ) -> tuple[_DpdVoteCluster, ...]:
+        """Cluster reliable per-frequency rank-1 direction votes on a circle."""
+
+        if not selected.any() or not np.any(normalized_vote > 0.0):
+            return ()
+        peak_angles = np.argmax(per_frequency, axis=1).astype(np.float64)
+        tiled = np.tile(normalized_vote, 3)
+        peaks, _ = find_peaks(tiled, prominence=config.peak_prominence)
+        seeds = sorted(
+            {int(index - 360) for index in peaks if 360 <= index < 720},
+            key=lambda index: (-float(normalized_vote[index]), index),
+        )
+        total_weight = float(np.sum(weights[selected]))
+        if total_weight <= 0.0:
+            return ()
+        subband_edges = np.linspace(
+            config.frequency_min_hz,
+            config.frequency_max_hz,
+            config.dpd_frequency_subbands + 1,
+        )
+        frequency_subbands = np.clip(
+            np.searchsorted(subband_edges, frequencies_hz, side="right") - 1,
+            0,
+            config.dpd_frequency_subbands - 1,
+        )
+        accepted: list[_DpdVoteCluster] = []
+        for seed in seeds:
+            supporters = selected & (
+                self._circular_distance_grid(peak_angles, float(seed))
+                <= config.dpd_angle_tolerance_deg
+            )
+            if not supporters.any():
+                continue
+            supporter_weights = weights[supporters]
+            supporter_angles = np.deg2rad(peak_angles[supporters])
+            vector = np.sum(supporter_weights * np.exp(1j * supporter_angles))
+            weight_sum = float(np.sum(supporter_weights))
+            if weight_sum <= 0.0:
+                continue
+            center = float(np.rad2deg(np.angle(vector)) % 360.0)
+            # Refine membership once around the circular weighted mean so a
+            # 359/0-degree cluster is treated exactly like every other one.
+            supporters = selected & (
+                self._circular_distance_grid(peak_angles, center)
+                <= config.dpd_angle_tolerance_deg
+            )
+            supporter_weights = weights[supporters]
+            supporter_angles = np.deg2rad(peak_angles[supporters])
+            weight_sum = float(np.sum(supporter_weights))
+            if weight_sum <= 0.0:
+                continue
+            vector = np.sum(supporter_weights * np.exp(1j * supporter_angles))
+            center = float(np.rad2deg(np.angle(vector)) % 360.0)
+            angle_index = int(np.rint(center)) % 360
+            support_count = int(supporters.sum())
+            support_ratio = weight_sum / total_weight
+            concentration = float(abs(vector) / weight_sum)
+            subband_count = int(np.unique(frequency_subbands[supporters]).size)
+            mean_fit = float(
+                np.average(plane_fit[supporters], weights=supporter_weights)
+            )
+            if (
+                normalized_vote[angle_index] < config.direction_threshold
+                or support_count < config.dpd_min_cluster_frequency_bins
+                or support_ratio < config.dpd_min_frequency_support_ratio
+                or subband_count < config.dpd_min_cluster_subbands
+                or concentration < config.dpd_min_circular_concentration
+            ):
+                continue
+            if any(
+                self._circular_distance_grid(
+                    np.asarray([float(angle_index)]), float(item.angle_index)
+                )[0] < config.min_peak_distance_deg
+                for item in accepted
+            ):
+                continue
+            accepted.append(_DpdVoteCluster(
+                angle_index,
+                support_count,
+                support_ratio,
+                mean_fit,
+                subband_count,
+                concentration,
+                weight_sum,
+            ))
+        return tuple(accepted)
+
     def _rebuild(self, window: DecisionWindow, config: DirectionScanConfig, reason: str) -> None:
         history_samples = config.context_ms * 48
         audio = window.samples[-history_samples:, :]
@@ -484,15 +594,12 @@ class RollingNormMusicScanner:
             raw, per_frequency, selected, weights, plane_fit = self._dpd_rank1_spectrum(
                 eigenvalues, eigenvectors, steering, window, config, valid, imcra_metrics,
             )
-            effective_order = 1 if int(selected.sum()) else 0
             limit = config.effective_order_limit
-            stop_reason = "dpd_rank1_vote" if int(selected.sum()) else "dpd_no_reliable_bins"
             fallback_reason = (
                 "imcra_noise_psd_unavailable"
                 if config.noise_whitening_enabled and whitening_status == "unavailable"
                 else None
             )
-            births_allowed = bool(selected.any())
         else:
             effective_order = min(diagnostic_order, config.effective_order_limit)
             limit = effective_order
@@ -519,7 +626,6 @@ class RollingNormMusicScanner:
             (raw - raw.min()) / max(float(raw.max() - raw.min()), 1.0e-12), dtype=np.float32
         )
         raw32 = np.asarray(raw, dtype=np.float32)
-        spectrum_built = perf_counter()
         response = SpatialResponse(
             window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
             window.doa_start_sample, window.doa_end_sample,
@@ -529,37 +635,55 @@ class RollingNormMusicScanner:
             "ready" if model_order.status == "ready" else "degraded",
             self.algorithm_version,
         )
-        tiled = np.tile(normalized, 3)
-        peaks, _ = find_peaks(tiled, prominence=config.peak_prominence)
-        ranked = sorted(
-            {int(index - 360) for index in peaks if 360 <= index < 720},
-            key=lambda index: (-float(normalized[index]), index),
-        )
-        if limit <= 0:
-            ranked = []
-        chosen: list[int] = []
-        support_by_index: dict[int, tuple[int, float, float]] = {}
-        for index in ranked:
-            if normalized[index] < config.direction_threshold:
-                continue
-            if any(abs(((index - old + 180) % 360) - 180) < config.min_peak_distance_deg for old in chosen):
-                continue
-            if config.dpd_rank1_enabled:
-                peak_angles = np.argmax(per_frequency, axis=1).astype(np.float64)
-                supporters = selected & (
-                    self._circular_distance_grid(peak_angles, float(index))
-                    <= config.dpd_angle_tolerance_deg
-                )
-                selected_weight = float(np.sum(weights[selected]))
-                support_weight = float(np.sum(weights[supporters]))
-                support_ratio = support_weight / max(selected_weight, 1.0e-12)
-                if support_ratio < config.dpd_min_frequency_support_ratio:
+        support_by_index: dict[int, _DpdVoteCluster] = {}
+        if config.dpd_rank1_enabled:
+            valid_frequencies = self._target_frequencies(config)[valid]
+            qualified_clusters = self._dpd_vote_clusters(
+                normalized,
+                per_frequency,
+                selected,
+                weights,
+                plane_fit,
+                valid_frequencies,
+                config,
+            )
+            selected_clusters = qualified_clusters[:limit]
+            chosen = [item.angle_index for item in selected_clusters]
+            support_by_index = {
+                item.angle_index: item for item in selected_clusters
+            }
+            effective_order = len(chosen)
+            births_allowed = bool(chosen)
+            if not selected.any():
+                stop_reason = "dpd_no_reliable_bins"
+            elif not qualified_clusters:
+                stop_reason = "dpd_no_qualified_clusters"
+            else:
+                stop_reason = "dpd_circular_clusters"
+            eligible_peak_count = len(qualified_clusters)
+            candidate_limit_applied = len(qualified_clusters) > limit
+        else:
+            tiled = np.tile(normalized, 3)
+            peaks, _ = find_peaks(tiled, prominence=config.peak_prominence)
+            ranked = sorted(
+                {int(index - 360) for index in peaks if 360 <= index < 720},
+                key=lambda index: (-float(normalized[index]), index),
+            )
+            if limit <= 0:
+                ranked = []
+            chosen = []
+            for index in ranked:
+                if normalized[index] < config.direction_threshold:
                     continue
-                mean_fit = float(np.mean(plane_fit[supporters])) if supporters.any() else 0.0
-                support_by_index[index] = (int(supporters.sum()), support_ratio, mean_fit)
-            chosen.append(index)
-            if len(chosen) == limit:
-                break
+                if any(abs(((index - old + 180) % 360) - 180) < config.min_peak_distance_deg for old in chosen):
+                    continue
+                chosen.append(index)
+                if len(chosen) == limit:
+                    break
+            eligible_peak_count = len(ranked)
+            candidate_limit_applied = bool(
+                limit and len(chosen) == limit and len(ranked) > limit
+            )
         candidates = tuple(
             CandidateDirection(
                 window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
@@ -568,6 +692,7 @@ class RollingNormMusicScanner:
             )
             for index in chosen
         )
+        spectrum_built = perf_counter()
         state = self.last_state_diagnostic
         if state is not None and rebuilt:
             self.last_state_diagnostic = MusicStateDiagnostic(
@@ -582,9 +707,30 @@ class RollingNormMusicScanner:
                 item.raw_score,
                 item.normalized_score,
                 7,
-                support_by_index.get(int(item.theta_deg), (int(valid.sum()), 1.0, 0.0))[0],
-                support_by_index.get(int(item.theta_deg), (int(valid.sum()), 1.0, 0.0))[1],
-                support_by_index.get(int(item.theta_deg), (int(valid.sum()), 1.0, 0.0))[2],
+                (
+                    support_by_index[int(item.theta_deg)].supporting_frequency_bins
+                    if config.dpd_rank1_enabled else int(valid.sum())
+                ),
+                (
+                    support_by_index[int(item.theta_deg)].frequency_support_ratio
+                    if config.dpd_rank1_enabled else 1.0
+                ),
+                (
+                    support_by_index[int(item.theta_deg)].mean_plane_wave_fit
+                    if config.dpd_rank1_enabled else 0.0
+                ),
+                (
+                    support_by_index[int(item.theta_deg)].supporting_frequency_subbands
+                    if config.dpd_rank1_enabled else 0
+                ),
+                (
+                    support_by_index[int(item.theta_deg)].circular_concentration
+                    if config.dpd_rank1_enabled else 0.0
+                ),
+                (
+                    support_by_index[int(item.theta_deg)].cluster_weight
+                    if config.dpd_rank1_enabled else 0.0
+                ),
             )
             for item in candidates
         )
@@ -592,7 +738,7 @@ class RollingNormMusicScanner:
         ready_imcra_hops = sum(hop.state == "ready" for hop in window.imcra_hops)
         covariance_quality = (
             "degraded"
-            if (config.dpd_rank1_enabled and not selected.any())
+            if (config.dpd_rank1_enabled and not births_allowed)
             or (config.noise_whitening_enabled and whitening_status == "unavailable")
             else ("ready" if model_order.status == "ready" else "degraded")
         )
@@ -603,8 +749,8 @@ class RollingNormMusicScanner:
             stop_reason=stop_reason,
             fallback_reason=fallback_reason,
             evidence=evidence,
-            eligible_peak_count=len(ranked), candidate_limit=limit or 3,
-            candidate_limit_applied=bool(limit and len(candidates) == limit and len(ranked) > limit),
+            eligible_peak_count=eligible_peak_count, candidate_limit=limit or 3,
+            candidate_limit_applied=candidate_limit_applied,
             effective_model_order=effective_order,
             mdl_saturated=mdl_saturated,
             births_allowed=births_allowed,

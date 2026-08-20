@@ -198,6 +198,10 @@ class Layer2Config(StrictModel):
     dpd_min_plane_wave_fit: float = Field(ge=0, le=1)
     dpd_min_frequency_support_ratio: float = Field(gt=0, le=1)
     dpd_angle_tolerance_deg: int = Field(gt=0, le=45)
+    dpd_min_cluster_frequency_bins: int = Field(ge=1)
+    dpd_frequency_subbands: int = Field(ge=1)
+    dpd_min_cluster_subbands: int = Field(ge=1)
+    dpd_min_circular_concentration: float = Field(ge=0, le=1)
     noise_whitening_enabled: bool = False
     noise_covariance_shrinkage: float = Field(ge=0, le=1)
 
@@ -211,6 +215,8 @@ class Layer2Config(StrictModel):
                 raise ValueError("Layer 2 Kalman Q/R scales must use 0.1 steps (or the 0.02 minimum)")
         if type(self.dpd_rank1_enabled) is not bool or type(self.noise_whitening_enabled) is not bool:
             raise TypeError("Layer 2 DPD/whitening switches must be bool")
+        if self.dpd_min_cluster_subbands > self.dpd_frequency_subbands:
+            raise ValueError("DPD minimum cluster subbands cannot exceed configured subbands")
         return self
 
 class StftConfig(StrictModel):
