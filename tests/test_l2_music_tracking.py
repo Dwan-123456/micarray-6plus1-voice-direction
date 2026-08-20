@@ -113,6 +113,10 @@ def _update(tracker: GlobalDirectionTracker, sample: int, angles: tuple[float, .
     )
 
 
+def _circular_error_deg(a: float, b: float) -> float:
+    return abs(((a - b + 180.0) % 360.0) - 180.0)
+
+
 def test_music_configuration_and_hardware_mix_contract() -> None:
     config = load_config(CONFIG, environ={})
     scan = DirectionScanConfig.from_project(config)
@@ -623,6 +627,80 @@ def test_kalman_off_zero_order_hold_is_circular_and_switch_does_not_change_id() 
     assert not held[0].kalman_applied
 
 
+def test_kalman_off_confirmed_stationary_id_uses_circular_mean_and_rejects_three_outliers() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=45.0,
+        max_velocity_dps=60.0,
+        confirmation_observations=2,
+        confirmation_window_samples=200_000,
+        coasting_ttl_samples=300_000,
+        miss_cost=1.0,
+        birth_cost=1.0,
+        stationary_history_samples=144_000,
+        stationary_inlier_ratio=0.70,
+        stationary_inlier_tolerance_deg=10.0,
+        stationary_outlier_window_samples=48_000,
+        stationary_outlier_tolerance_deg=20.0,
+        stationary_exit_observations=4,
+    ))
+    sample = 1_920
+    stable_angles = (359.0, 0.0, 1.0, 358.0, 2.0, 359.0, 0.0, 1.0, 359.0, 0.0, 2.0)
+    observed = ()
+    for angle in stable_angles:
+        observed, _ = _update(tracker, sample, (angle,), kalman_enabled=False)
+        sample += 14_400
+
+    stationary = observed[0]
+    assert stationary.track_state == "confirmed"
+    assert _circular_error_deg(stationary.theta_deg, 0.0) <= 1.0
+    track_id = stationary.track_id
+
+    for angle in (25.0, 26.0):
+        observed, _ = _update(tracker, sample, (angle,), kalman_enabled=False)
+        sample += 960
+        assert observed[0].track_id == track_id
+        assert observed[0].measured_theta_deg == pytest.approx(angle)
+        assert _circular_error_deg(observed[0].theta_deg, 0.0) <= 1.0
+
+    # An intervening valid point does not erase the one-second outlier count.
+    observed, _ = _update(tracker, sample, (1.0,), kalman_enabled=False)
+    sample += 960
+    assert _circular_error_deg(observed[0].theta_deg, 0.0) <= 1.0
+    observed, _ = _update(tracker, sample, (27.0,), kalman_enabled=False)
+    sample += 960
+    assert _circular_error_deg(observed[0].theta_deg, 0.0) <= 1.0
+
+    released, _ = _update(tracker, sample, (28.0,), kalman_enabled=False)
+    assert released[0].track_id == track_id
+    assert released[0].theta_deg == pytest.approx(28.0)
+
+
+def test_kalman_enabled_disables_stationary_mean_output_without_changing_id() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=45.0,
+        max_velocity_dps=60.0,
+        confirmation_observations=2,
+        confirmation_window_samples=200_000,
+        coasting_ttl_samples=300_000,
+        miss_cost=1.0,
+        birth_cost=1.0,
+        stationary_history_samples=144_000,
+    ))
+    sample = 1_920
+    result = ()
+    for angle in (50.0,) * 11:
+        result, _ = _update(tracker, sample, (angle,), kalman_enabled=False)
+        sample += 14_400
+    track_id = result[0].track_id
+
+    filtered, _ = _update(
+        tracker, sample, (60.0,), kalman_enabled=True, q_scale=1.0, r_scale=1.0,
+    )
+    assert filtered[0].track_id == track_id
+    assert filtered[0].kalman_applied
+    assert filtered[0].theta_deg != pytest.approx(50.0)
+
+
 def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observation() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
@@ -743,7 +821,8 @@ def test_three_seconds_without_voice_marks_nonexclusive_noise_track() -> None:
     assert observed[0].track_id == old_id
     noise = next(item for item in active if item.track_id == old_id)
     assert noise.is_noise_interference
-    assert abs(noise.theta_deg - 52.0) < 1e-6
+    assert noise.measured_theta_deg == pytest.approx(52.0)
+    assert abs(noise.theta_deg - 50.0) < 0.1
 
     for offset in range(5):
         assert tracker.apply_voice_feedback(

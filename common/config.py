@@ -180,6 +180,18 @@ class Layer2DirectionIdTrackingConfig(StrictModel):
     coasting_ttl_ms: int = Field(gt=0)
     miss_cost: float = Field(gt=0)
     birth_cost: float = Field(gt=0)
+    stationary_history_ms: int = Field(default=3_000, gt=0)
+    stationary_inlier_ratio: float = Field(default=0.70, ge=0, le=1)
+    stationary_inlier_tolerance_deg: float = Field(default=10.0, gt=0, le=180)
+    stationary_outlier_window_ms: int = Field(default=1_000, gt=0)
+    stationary_outlier_tolerance_deg: float = Field(default=20.0, gt=0, le=180)
+    stationary_exit_observations: int = Field(default=4, ge=1)
+
+    @model_validator(mode="after")
+    def validate_stationary_tracking(self) -> "Layer2DirectionIdTrackingConfig":
+        if self.stationary_inlier_tolerance_deg >= self.stationary_outlier_tolerance_deg:
+            raise ValueError("静止ID内点角度范围必须小于退出判断角度范围")
+        return self
 
 
 class Layer2Config(StrictModel):

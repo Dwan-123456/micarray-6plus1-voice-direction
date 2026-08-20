@@ -194,6 +194,12 @@ class Layer2Pipeline:
                 coasting_ttl_samples=tracking.coasting_ttl_ms * 48,
                 miss_cost=tracking.miss_cost,
                 birth_cost=tracking.birth_cost,
+                stationary_history_samples=tracking.stationary_history_ms * 48,
+                stationary_inlier_ratio=tracking.stationary_inlier_ratio,
+                stationary_inlier_tolerance_deg=tracking.stationary_inlier_tolerance_deg,
+                stationary_outlier_window_samples=tracking.stationary_outlier_window_ms * 48,
+                stationary_outlier_tolerance_deg=tracking.stationary_outlier_tolerance_deg,
+                stationary_exit_observations=tracking.stationary_exit_observations,
             )
         ))
 

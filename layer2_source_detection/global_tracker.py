@@ -15,6 +15,17 @@ def _residual_deg(a: float, b: float) -> float:
 _delta = _residual_deg
 
 
+def _circular_mean_deg(values: list[float]) -> float | None:
+    if not values:
+        return None
+    radians = np.deg2rad(np.asarray(values, dtype=np.float64))
+    mean_sin = float(np.mean(np.sin(radians)))
+    mean_cos = float(np.mean(np.cos(radians)))
+    if np.hypot(mean_sin, mean_cos) <= 1.0e-12:
+        return None
+    return float(np.rad2deg(np.arctan2(mean_sin, mean_cos)) % 360.0)
+
+
 @dataclass(frozen=True, slots=True)
 class GlobalTrackerConfig:
     association_gate_deg: float = 45.0
@@ -24,15 +35,29 @@ class GlobalTrackerConfig:
     coasting_ttl_samples: int = 48_000
     miss_cost: float = 1.0
     birth_cost: float = 1.0
+    stationary_history_samples: int = 3 * 48_000
+    stationary_inlier_ratio: float = 0.70
+    stationary_inlier_tolerance_deg: float = 10.0
+    stationary_outlier_window_samples: int = 48_000
+    stationary_outlier_tolerance_deg: float = 20.0
+    stationary_exit_observations: int = 4
 
     def __post_init__(self) -> None:
         if not 0 < self.association_gate_deg <= 180 or not 0 < self.max_velocity_dps <= 360:
             raise ValueError("global tracker angular limits are invalid")
         if min(
             self.confirmation_observations, self.confirmation_window_samples,
-            self.coasting_ttl_samples,
+            self.coasting_ttl_samples, self.stationary_history_samples,
+            self.stationary_outlier_window_samples, self.stationary_exit_observations,
         ) <= 0 or min(self.miss_cost, self.birth_cost) <= 0:
             raise ValueError("global tracker lifecycle/cost values must be positive")
+        if not 0 <= self.stationary_inlier_ratio <= 1:
+            raise ValueError("stationary inlier ratio must be in [0,1]")
+        if not (
+            0 < self.stationary_inlier_tolerance_deg
+            < self.stationary_outlier_tolerance_deg <= 180
+        ):
+            raise ValueError("stationary angular limits are invalid")
 
 
 @dataclass(slots=True)
@@ -55,6 +80,10 @@ class _Track:
     coasting_voice_expiry_sample: int | None = None
     noise_interference: bool = False
     noise_voice_recovery_samples: list[int] = field(default_factory=list)
+    stationary_angle_history: list[tuple[int, float]] = field(default_factory=list)
+    stationary_locked: bool = False
+    stationary_theta: float | None = None
+    stationary_outlier_samples: list[int] = field(default_factory=list)
 
 
 class GlobalDirectionTracker:
@@ -241,6 +270,97 @@ class GlobalDirectionTracker:
         track.normalized_score = candidate.normalized_score
         return elapsed
 
+    @staticmethod
+    def _clear_stationary_state(track: _Track, *, clear_history: bool) -> None:
+        track.stationary_locked = False
+        track.stationary_theta = None
+        track.stationary_outlier_samples.clear()
+        if clear_history:
+            track.stationary_angle_history.clear()
+
+    def _append_stationary_history(
+        self, track: _Track, decision_sample: int, theta_deg: float,
+    ) -> None:
+        cutoff = decision_sample - self.config.stationary_history_samples
+        track.stationary_angle_history[:] = [
+            item for item in track.stationary_angle_history if item[0] >= cutoff
+        ]
+        if (
+            not track.stationary_angle_history
+            or track.stationary_angle_history[-1][0] != decision_sample
+        ):
+            track.stationary_angle_history.append((decision_sample, float(theta_deg) % 360.0))
+
+    def _maybe_lock_stationary(self, track: _Track, decision_sample: int) -> None:
+        if (
+            track.stationary_locked
+            or not track.confirmed
+            or decision_sample - track.first_seen < self.config.stationary_history_samples
+            or len(track.stationary_angle_history) < self.config.confirmation_observations
+        ):
+            return
+        mean = _circular_mean_deg([item[1] for item in track.stationary_angle_history])
+        if mean is None:
+            return
+        inliers = sum(
+            abs(_delta(theta, mean)) <= self.config.stationary_inlier_tolerance_deg
+            for _, theta in track.stationary_angle_history
+        )
+        if inliers / len(track.stationary_angle_history) < self.config.stationary_inlier_ratio:
+            return
+        track.stationary_locked = True
+        track.stationary_theta = mean
+        track.stationary_outlier_samples.clear()
+        track.unwrapped_theta += _delta(mean, track.unwrapped_theta)
+        track.velocity_dps = 0.0
+
+    def _update_locked_stationary(
+        self, track: _Track, candidate: CandidateDirection, decision_sample: int,
+    ) -> bool:
+        """Return True when the measurement is consumed without normal motion update."""
+
+        mean = track.stationary_theta
+        if not track.stationary_locked or mean is None:
+            return False
+        outlier_cutoff = decision_sample - self.config.stationary_outlier_window_samples
+        track.stationary_outlier_samples[:] = [
+            sample for sample in track.stationary_outlier_samples if sample >= outlier_cutoff
+        ]
+        if abs(_delta(candidate.theta_deg, mean)) > self.config.stationary_outlier_tolerance_deg:
+            if (
+                not track.stationary_outlier_samples
+                or track.stationary_outlier_samples[-1] != decision_sample
+            ):
+                track.stationary_outlier_samples.append(decision_sample)
+            if len(track.stationary_outlier_samples) >= self.config.stationary_exit_observations:
+                self._clear_stationary_state(track, clear_history=True)
+                self._update_observation(
+                    track, candidate, decision_sample, self.config.max_velocity_dps
+                )
+                self._append_stationary_history(track, decision_sample, candidate.theta_deg)
+                return True
+            # Up to three one-second outliers refresh the ID observation lease
+            # but cannot move its association anchor or published angle.
+            track.last_observed = decision_sample
+            track.observations += 1
+            track.raw_score = candidate.raw_score
+            track.normalized_score = candidate.normalized_score
+            track.velocity_dps = 0.0
+            return True
+        self._append_stationary_history(track, decision_sample, candidate.theta_deg)
+        updated_mean = _circular_mean_deg(
+            [item[1] for item in track.stationary_angle_history]
+        )
+        if updated_mean is not None:
+            track.stationary_theta = updated_mean
+            track.unwrapped_theta += _delta(updated_mean, track.unwrapped_theta)
+        track.last_observed = decision_sample
+        track.observations += 1
+        track.raw_score = candidate.raw_score
+        track.normalized_score = candidate.normalized_score
+        track.velocity_dps = 0.0
+        return True
+
     def _update_confirmation(self, track: _Track, decision_sample: int) -> None:
         """Confirm from observations in the latest absolute-sample window.
 
@@ -291,6 +411,9 @@ class GlobalDirectionTracker:
         doa_end_sample = decision_sample if doa_end_sample is None else doa_end_sample
         self._expire_tracks(decision_sample)
         self._refresh_noise_labels(decision_sample)
+        if kalman_enabled:
+            for track in self._tracks.values():
+                self._clear_stationary_state(track, clear_history=True)
         candidates = tuple(candidates)
         # Noise markers are excluded from the exclusive Hungarian rows so a
         # nearby normal ID can never be merged into a stationary noise ID.
@@ -406,12 +529,26 @@ class GlobalDirectionTracker:
                     decision_sample, 1, candidate.raw_score, candidate.normalized_score,
                 )
                 self._tracks[track_id] = track
+                if not kalman_enabled:
+                    self._append_stationary_history(
+                        track, decision_sample, candidate.theta_deg
+                    )
             else:
                 track = self._tracks[track_id]
-                elapsed = self._update_observation(
-                    track, candidate, decision_sample, self.config.max_velocity_dps
-                )
+                if not kalman_enabled and track.stationary_locked:
+                    elapsed = max(1, decision_sample - track.last_observed)
+                    self._update_locked_stationary(track, candidate, decision_sample)
+                else:
+                    elapsed = self._update_observation(
+                        track, candidate, decision_sample, self.config.max_velocity_dps
+                    )
+                    if not kalman_enabled:
+                        self._append_stationary_history(
+                            track, decision_sample, candidate.theta_deg
+                        )
             self._update_confirmation(track, decision_sample)
+            if not kalman_enabled:
+                self._maybe_lock_stationary(track, decision_sample)
             if kalman_enabled:
                 if track.filtered_theta is None:
                     track.filtered_theta = track.unwrapped_theta
@@ -429,7 +566,10 @@ class GlobalDirectionTracker:
             else:
                 track.filtered_theta = None
                 track.filtered_velocity_dps = 0.0
-                output_theta = float(track.unwrapped_theta % 360.0)
+                output_theta = float(
+                    (track.stationary_theta if track.stationary_locked else track.unwrapped_theta)
+                    % 360.0
+                )
             state = "confirmed" if track.confirmed else "tentative"
             rank = len(directions) + 1
             directions.append(TrackedDirection(
