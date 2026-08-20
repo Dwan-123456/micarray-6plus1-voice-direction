@@ -73,8 +73,8 @@ Sipeed R6+1 + MA-USB8：48 kHz HostAudio [N,8]
     连续性、校准身份与不可变IngestedAudioBlock
     ↓
 【已完成】WindowAssembler
-    每20 ms发布DecisionWindow [15360,8]
-    每窗携带最近320 ms音频、16个对齐IMCRA结果和最多320 ms物理历史
+    每20 ms发布DecisionWindow [7680,8]
+    每窗携带最近160 ms音频和8个对齐IMCRA结果
     ↓
 WindowWorkItem
     WindowKey=(session_id, stream_epoch, window_id, decision_sample)
@@ -100,14 +100,14 @@ WindowWorkItem
         只平滑/预测theta_deg，不创建、重置或关闭ID
     ↓ TrackedDirection[0..3] + active_tracks → 有界L3 latest-wins队列
 【已完成】Layer 3：按公共track_id增强方向音频（BF）
-    输入：同一WindowKey、320 ms LogicalAudio和0～3个权威方向
+    输入：同一WindowKey、160 ms LogicalAudio和0～3个权威方向
     当前可用：
         ├── optimized：双候选按rho选择Dual LCMV / Soft-null MVDR / Loaded MVDR
         │     单候选和三候选使用Loaded MVDR；数值失败逐频DAS回退
         └── ds_baseline：7麦Delay-and-Sum；当前只按单声源使用
     实验入口：constant_beamwidth_baseline（固定30° FNBW），当前不作为可用方法
     跳窗重叠STFT/IMCRA/协方差滚动复用；权重仍按当前窗口重新计算
-    每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [15360])
+    每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [7680])
     物理上限：低频波长远大于阵列孔径，80～1500 Hz方向分离效果差
     ↓ 有界L4 latest-wins队列
 【已完成】Layer 4：按公共track_id判断各方向是否为人声
@@ -170,7 +170,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 系统为每次采集建立唯一`session_id`，用`stream_epoch`表示连续音频段，并用绝对sample编号描述时间。发生输入丢失或不连续时会切换epoch，防止把不连续音频误拼到同一个算法窗口。
 
-WindowAssembler累计320 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，但每个判断点都能看到此前完整的320 ms音频。L2、L3、L4使用同一个WindowKey，不能各自重新读取“当前最新音频”。
+WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个正式窗口直接携带160 ms音频。L2可在自己的有界滚动状态中跨窗口累计配置所需的240/320 ms定位历史；L3和L4只处理当前160 ms窗口。L2、L3、L4使用同一个WindowKey，不能各自重新读取“当前最新音频”。
 
 ### 4. Probability Gate
 
@@ -196,7 +196,7 @@ Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + ran
 
 ### 7. 按方向增强音频
 
-Layer 3对每个候选方向生成一条320 ms、48 kHz单声道增强音频。0/1/2候选完全保持既有BF策略；3候选时三路分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。DAS基线当前只按单声源方法使用。界面和代码中还保留固定30°恒定波束宽度实验入口，但它目前不属于可用方法，不能写入正式能力结论。
+Layer 3对每个候选方向生成一条160 ms、48 kHz单声道增强音频。0/1/2候选完全保持既有BF策略；3候选时三路分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。DAS基线当前只按单声源方法使用。界面和代码中还保留固定30°恒定波束宽度实验入口，但它目前不属于可用方法，不能写入正式能力结论。
 
 优化BF会按频率和空间可分度选择处理方式：两个方向导向矢量相关度较低时才适合施加较强的双约束分离；相关度较高时必须转为更保守的MVDR或DAS，避免病态求解和目标失真。尤其在低频段，阵列提供的方向差异不足，算法的目标是稳定保留音频而不是承诺把两个低频声源彻底拆开。
 
@@ -261,7 +261,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 
 1. 连接麦克风阵列和电源，确认Windows已识别MA-USB8设备。
 2. 启动Test UI，先观察全局状态栏是否有设备、CUDA或模型错误。
-3. 点击左上角“启动采集”。首次形成正式窗口前需要累计320 ms音频，IMCRA也会显示预热状态。
+3. 点击左上角“启动采集”。首次形成正式窗口前需要累计160 ms音频，IMCRA也会显示预热状态；L2若配置更长的滚动定位历史，会继续独立预热。
 4. 检查8路电平是否都有响应，通道名称和实际敲击位置是否一致。
 5. 需要保存完整实验数据时点击“正式录音开始”；只想临时试听或留一小段测试素材时使用“录制/暂停/结束”scratch录音。
 6. 在右上角观察Gate、360°空间响应和候选角度，再根据测试目的切换ID追踪、卡尔曼或L3对照模式。
@@ -350,7 +350,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 以下主链已经接通并有自动化测试覆盖：
 
 - L1多通道输入、IMCRA和可切换预降噪；
-- 唯一时间轴与320 ms/20 ms窗口装配；
+- 唯一时间轴与160 ms/20 ms窗口装配；
 - L2 Probability Gate、Rolling NormMUSIC、永久公共方向ID和可选Kalman；
 - L3优化BF和单声源DAS基线；恒定波束宽度仅保留实验入口，尚未列为可用能力；
 - L4响度补偿、MarbleNet适配和人声结果；

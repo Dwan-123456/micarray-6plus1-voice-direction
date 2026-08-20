@@ -280,7 +280,7 @@ class BeamformPanel(QGroupBox):
             "依次切换：优化算法 → DS基线 → 恒定波束宽度30°；只影响后续L3窗口"
         )
         self.mode_switch.clicked.connect(self._cycle_mode)
-        self.preview_play = QPushButton("播放/暂停 320 ms")
+        self.preview_play = QPushButton("播放/暂停 160 ms")
         self.preview_stop = QPushButton("停止")
         self.preview_play.setEnabled(False)
         self.preview_stop.setEnabled(False)

@@ -7,13 +7,14 @@ import torch
 import torch.nn.functional as functional
 
 from common.data_types import DecisionWindow
+from common.timing import CONTEXT_HOPS, CONTEXT_SAMPLES, STFT_FRAME_COUNT
 
 from .configuration import StftSettings
 from .interface import Layer3Error
 
 
 MAX_TEMPORAL_CACHE_HOPS = 50
-_CONTEXT_HOPS = 16
+_CONTEXT_HOPS = CONTEXT_HOPS
 _HOP_SAMPLES = 960
 _STFT_FRAMES_PER_HOP = 2
 
@@ -73,7 +74,7 @@ class RollingStftCache:
         self._recomputed_indices: torch.Tensor | None = None
         self._recomputed_hop_gap: int | None = None
         self._last_reused_frames = 0
-        self._last_recomputed_frames = 33
+        self._last_recomputed_frames = STFT_FRAME_COUNT
 
     def clear(self) -> None:
         self._identity = None
@@ -82,7 +83,7 @@ class RollingStftCache:
         self._recomputed_indices = None
         self._recomputed_hop_gap = None
         self._last_reused_frames = 0
-        self._last_recomputed_frames = 33
+        self._last_recomputed_frames = STFT_FRAME_COUNT
 
     def process(self, window: DecisionWindow, settings: StftSettings) -> torch.Tensor:
         identity = (
@@ -106,15 +107,16 @@ class RollingStftCache:
         if not has_overlapping_history:
             spectrum = shared_stft(window, settings, device=self.device)
             self._last_reused_frames = 0
-            self._last_recomputed_frames = 33
+            self._last_recomputed_frames = STFT_FRAME_COUNT
         else:
             samples = _input_tensor(window, device=self.device)
             # The locked 480-sample STFT hop advances two frames per 20 ms.
-            # Frame 0 of the current window and frame 32 of the previous one
+            # Frame 0 of the current window and the last frame of the previous one
             # depend on their respective reflected boundary, so only the
             # aligned interior frames are reusable across the overlap.
-            first_new_frame = 32 - _STFT_FRAMES_PER_HOP * hop_gap
-            recomputed_frame_indices = (0, *range(first_new_frame, 33))
+            last_frame = STFT_FRAME_COUNT - 1
+            first_new_frame = last_frame - _STFT_FRAMES_PER_HOP * hop_gap
+            recomputed_frame_indices = (0, *range(first_new_frame, STFT_FRAME_COUNT))
             if self._recomputed_indices is None or self._recomputed_hop_gap != hop_gap:
                 self._recomputed_indices = torch.tensor(
                     recomputed_frame_indices,
@@ -130,17 +132,17 @@ class RollingStftCache:
             )
             spectrum = torch.empty_like(self._spectrum)
             current_reused = slice(1, first_new_frame)
-            previous_reused = slice(1 + _STFT_FRAMES_PER_HOP * hop_gap, 32)
+            previous_reused = slice(1 + _STFT_FRAMES_PER_HOP * hop_gap, last_frame)
             spectrum[:, :, current_reused] = self._spectrum[
                 :, :, previous_reused
             ]
             spectrum[:, :, self._recomputed_indices] = recomputed
-            self._last_reused_frames = 31 - _STFT_FRAMES_PER_HOP * hop_gap
+            self._last_reused_frames = STFT_FRAME_COUNT - 2 - _STFT_FRAMES_PER_HOP * hop_gap
             self._last_recomputed_frames = len(recomputed_frame_indices)
-        if spectrum.shape != (7, 513, 33) or not torch.isfinite(spectrum).all():
+        if spectrum.shape != (7, 513, STFT_FRAME_COUNT) or not torch.isfinite(spectrum).all():
             self.clear()
             raise Layer3Error("rolling STFT output is invalid")
-        # Only the current 320 ms/16-hop window persists. This is deliberately
+        # Only the current 160 ms/8-hop window persists. This is deliberately
         # below the project-wide 50-hop/1000 ms temporal-cache ceiling.
         self._identity = identity
         self._settings = settings
@@ -152,7 +154,7 @@ class RollingStftCache:
         tensor_bytes = sum(item.numel() * item.element_size() for item in tensors)
         return StftCacheSnapshot(
             MAX_TEMPORAL_CACHE_HOPS,
-            0 if self._spectrum is None else _CONTEXT_HOPS,
+            0 if self._spectrum is None else CONTEXT_HOPS,
             self._last_reused_frames,
             self._last_recomputed_frames,
             tensor_bytes,
@@ -160,8 +162,8 @@ class RollingStftCache:
 
 
 def shared_stft(window: DecisionWindow, settings: StftSettings, *, device: torch.device) -> torch.Tensor:
-    if window.samples.shape != (15_360, 8):
-        raise Layer3Error(f"L3输入必须是48 kHz逻辑8通道 [15360,8]，实际为{window.samples.shape}")
+    if window.samples.shape != (CONTEXT_SAMPLES, 8):
+        raise Layer3Error(f"L3输入必须是48 kHz逻辑8通道 [7680,8]，实际为{window.samples.shape}")
     # HardwareMix is preserved by the public input contract but is never an
     # array microphone: steering, covariance and beamforming use PhysicalAudio.
     samples = _input_tensor(window, device=device)
@@ -170,12 +172,12 @@ def shared_stft(window: DecisionWindow, settings: StftSettings, *, device: torch
         window=periodic_hann(settings, device=device), center=settings.center, pad_mode=settings.pad_mode,
         normalized=settings.normalized, onesided=settings.onesided, return_complex=True,
     )
-    if spectrum.shape != (7, 513, 33) or spectrum.dtype != torch.complex64 or not torch.isfinite(spectrum).all():
+    if spectrum.shape != (7, 513, STFT_FRAME_COUNT) or spectrum.dtype != torch.complex64 or not torch.isfinite(spectrum).all():
         raise Layer3Error(f"共享STFT输出无效: {tuple(spectrum.shape)} {spectrum.dtype}")
     return spectrum
 
 
-def inverse_stft(spectrum: torch.Tensor, settings: StftSettings, *, length: int = 15_360) -> torch.Tensor:
+def inverse_stft(spectrum: torch.Tensor, settings: StftSettings, *, length: int = CONTEXT_SAMPLES) -> torch.Tensor:
     """Invert one or more spectra, preserving any leading batch dimensions."""
     waveform = torch.istft(
         spectrum, n_fft=settings.n_fft, hop_length=settings.hop_length, win_length=settings.win_length,

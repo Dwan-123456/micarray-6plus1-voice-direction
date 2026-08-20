@@ -5,6 +5,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from common.timing import CONTEXT_SAMPLES
+
 
 @dataclass(frozen=True, slots=True)
 class SessionMetadata:
@@ -161,8 +163,8 @@ class DecisionRecord:
         waveforms = []
         for value in self.enhanced_waveforms:
             array = np.asarray(value, dtype=np.float32)
-            if array.shape != (15_360,) or not np.isfinite(array).all():
-                raise ValueError("增强音频必须是finite float32[15360]")
+            if array.shape != (CONTEXT_SAMPLES,) or not np.isfinite(array).all():
+                raise ValueError("增强音频必须是finite float32[7680]")
             waveforms.append(array.copy())
         object.__setattr__(self, "enhanced_audio", tuple(dict(item) for item in self.enhanced_audio))
         object.__setattr__(self, "candidates", tuple(dict(item) for item in self.candidates))

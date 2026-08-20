@@ -164,9 +164,9 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
     store.set_recording_mode("continuous")
     for start in range(0, 48000, 960):
         store.append_audio(block(session, start))
-    waveform = np.linspace(-0.25, 0.25, 15360, dtype=np.float32)
+    waveform = np.linspace(-0.25, 0.25, 7_680, dtype=np.float32)
     store.append_result(DecisionRecord(
-        session, 0, 7, 48000, (46080, 48000), (32640, 48000), "ok",
+        session, 0, 7, 48000, (46080, 48000), (40320, 48000), "ok",
         candidates=({"track_id": 7, "measured_theta_deg": 29.0, "theta_deg": 30.0,
                      "track_state": "confirmed", "is_observed": True, "is_new_track": False,
                      "kalman_applied": True, "raw_score": 2.0, "normalized_score": 0.8},),
@@ -188,7 +188,7 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
         search_diagnostics={"mode": "single_pass", "algorithm_version": "srp_phat_single_pass_v1"},
         enhanced_audio=({
             "track_id": 7, "theta_deg": 30.0, "backend": "frequency_hybrid", "fallback_reason": None,
-            "diagnostics": [], "sample_rate": 48000, "start_sample": 32640, "end_sample": 48000,
+            "diagnostics": [], "sample_rate": 48000, "start_sample": 40320, "end_sample": 48000,
         },),
         enhanced_waveforms=(waveform,),
         l4_result={
@@ -226,9 +226,9 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
         assert spatial["theta_degrees"].tolist() == list(range(360))
     enhanced = next(item for item in assets if item["kind"] == "enhanced_audio")
     assert enhanced["track_id"] == 7 and "track000007" in enhanced["path"]
-    assert (enhanced["start_sample"], enhanced["end_sample"]) == (32640, 48000)
+    assert (enhanced["start_sample"], enhanced["end_sample"]) == (40320, 48000)
     with wave.open(str(root / enhanced["path"]), "rb") as wav:
-        assert (wav.getnchannels(), wav.getnframes()) == (1, 15360)
+        assert (wav.getnchannels(), wav.getnframes()) == (1, 7_680)
 
 
 def test_result_watermark_gap_is_explicit_not_audio_corruption(tmp_path: Path):
@@ -701,7 +701,7 @@ def _decision_mapping(session: str, window_id: int, decision: int, *, waveform_s
         "window_id": window_id,
         "decision_sample": decision,
         "doa_range": (max(0, decision - 1920), decision),
-        "context_range": (max(0, decision - 15360), decision),
+        "context_range": (max(0, decision - 7_680), decision),
         "status": "ok",
         "enhanced_audio": () if waveform is None else ({"track_id": 1, "theta_deg": 0.0},),
         "enhanced_waveforms": () if waveform is None else (waveform,),
@@ -760,7 +760,7 @@ def test_off_results_are_discarded_and_event_preroll_is_bounded(tmp_path: Path):
         settings=_result_retention_test_settings(),
     )
     store.start_session(session, SessionMetadata("a", "b"))
-    large = _decision_mapping(session, 0, 960, waveform_samples=15_360)
+    large = _decision_mapping(session, 0, 960, waveform_samples=7_680)
     for _ in range(200):
         assert not store.append_result(large)
     assert store.result_queue.empty()
@@ -1028,7 +1028,7 @@ def test_direct_queue_capacities_are_bounded_and_full_result_skips_waveform_copy
         AssertionError("full queue must be rejected before copying waveforms")
     )
     accepted = store.append_result(
-        _decision_mapping(session, 1, 960, waveform_samples=15_360)
+        _decision_mapping(session, 1, 960, waveform_samples=7_680)
     )
     assert accepted is False
     assert store._manifest["result_gaps"][-1]["reason"] == "result_overflow"

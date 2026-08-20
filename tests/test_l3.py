@@ -31,7 +31,7 @@ def _imcra_hops(
     noise_by_mic = np.ones(7, np.float32) if noise_by_mic is None else np.asarray(noise_by_mic, np.float32)
     noise = np.broadcast_to(noise_by_mic[:, None], spectral).copy()
     ones = np.ones(spectral, np.float32)
-    spp_by_hop = np.full(16, 0.2, np.float32) if spp_by_hop is None else np.asarray(spp_by_hop, np.float32)
+    spp_by_hop = np.full(8, 0.2, np.float32) if spp_by_hop is None else np.asarray(spp_by_hop, np.float32)
     return tuple(
         ImcraHopSnapshot(
             "session", 0, index * 960, (index + 1) * 960, (index,),
@@ -44,7 +44,7 @@ def _imcra_hops(
             10.0 * np.log10(noise_by_mic),
             np.full(7, spp_by_hop[index], np.float32), float(spp_by_hop[index]),
         )
-        for index in range(16)
+        for index in range(8)
     )
 
 
@@ -54,17 +54,17 @@ def _window(
 ) -> DecisionWindow:
     hops = _imcra_hops(noise_by_mic=noise_by_mic, spp_by_hop=spp_by_hop) if ready_imcra else ()
     return DecisionWindow(
-        "session", 0, 4, 15_360, 13_440, 15_360, 0, 15_360, 48_000, samples, (0,), hops,
+        "session", 0, 4, 7_680, 5_760, 7_680, 0, 7_680, 48_000, samples, (0,), hops,
     )
 
 
 def _candidate(theta: float) -> CandidateDirection:
-    return CandidateDirection("session", 0, 4, 15_360, 13_440, 15_360, theta, 1.0, 0.8)
+    return CandidateDirection("session", 0, 4, 7_680, 5_760, 7_680, theta, 1.0, 0.8)
 
 
 def test_l3_empty_candidates_skips_outputs():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
-    output = processor.process(_window(np.zeros((15_360, 8), np.float32)), (), physical_6plus1_geometry())
+    output = processor.process(_window(np.zeros((7_680, 8), np.float32)), (), physical_6plus1_geometry())
     assert output.enhanced_audio == ()
 
 
@@ -72,14 +72,14 @@ def test_l3_outputs_one_48khz_mono_audio_per_candidate():
     rng = np.random.default_rng(42)
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     output = processor.process(
-        _window(rng.normal(0, 0.03, (15_360, 8)).astype(np.float32)),
+        _window(rng.normal(0, 0.03, (7_680, 8)).astype(np.float32)),
         (_candidate(0.0), _candidate(359.0)), physical_6plus1_geometry(),
     )
     assert len(output.enhanced_audio) == 2
     assert tuple(item.theta_deg for item in output.enhanced_audio) == (0.0, 359.0)
     for item in output.enhanced_audio:
         assert item.sample_rate == 48_000
-        assert item.enhanced_audio.shape == (15_360,)
+        assert item.enhanced_audio.shape == (7_680,)
         assert item.enhanced_audio.dtype == np.float32
         assert not item.enhanced_audio.flags.writeable
         assert np.isfinite(item.enhanced_audio).all()
@@ -89,27 +89,27 @@ def test_l3_outputs_one_48khz_mono_audio_per_candidate():
 
 def test_l3_rejects_candidate_from_another_window():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
-    wrong = CandidateDirection("session", 0, 5, 16_320, 14_400, 16_320, 30.0, 1.0, 0.8)
+    wrong = CandidateDirection("session", 0, 5, 8_640, 6_720, 8_640, 30.0, 1.0, 0.8)
     with pytest.raises(RuntimeError, match="同一窗口"):
-        processor.process(_window(np.zeros((15_360, 8), np.float32)), (wrong,), physical_6plus1_geometry())
+        processor.process(_window(np.zeros((7_680, 8), np.float32)), (wrong,), physical_6plus1_geometry())
 
 
 def test_l3_rejects_old_seven_channel_input_contract():
-    with pytest.raises(ValueError, match="15360, 8"):
-        _window(np.zeros((15_360, 7), np.float32))
+    with pytest.raises(ValueError, match="7680, 8"):
+        _window(np.zeros((7_680, 7), np.float32))
 
 
 def test_l3_accepts_three_candidates_and_rejects_four():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     output = processor.process(
-        _window(np.zeros((15_360, 8), np.float32)),
+        _window(np.zeros((7_680, 8), np.float32)),
         (_candidate(0.0), _candidate(90.0), _candidate(180.0)),
         physical_6plus1_geometry(),
     )
     assert len(output.enhanced_audio) == 3
     with pytest.raises(RuntimeError, match="0、1、2或3"):
         processor.process(
-            _window(np.zeros((15_360, 8), np.float32)),
+            _window(np.zeros((7_680, 8), np.float32)),
             (_candidate(0.0), _candidate(90.0), _candidate(180.0), _candidate(270.0)),
             physical_6plus1_geometry(),
         )
@@ -117,9 +117,9 @@ def test_l3_accepts_three_candidates_and_rejects_four():
 
 def test_hardware_mix_channel_never_changes_l3_output():
     rng = np.random.default_rng(123)
-    physical = rng.normal(0, 0.03, (15_360, 7)).astype(np.float32)
-    first = np.column_stack((physical, np.zeros(15_360, np.float32)))
-    second = np.column_stack((physical, rng.normal(0, 10.0, 15_360).astype(np.float32)))
+    physical = rng.normal(0, 0.03, (7_680, 7)).astype(np.float32)
+    first = np.column_stack((physical, np.zeros(7_680, np.float32)))
+    second = np.column_stack((physical, rng.normal(0, 10.0, 7_680).astype(np.float32)))
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     geometry = physical_6plus1_geometry()
 
@@ -139,18 +139,18 @@ def test_l3_config_has_spatial_p_lookup_branches():
 def test_missing_imcra_context_degrades_the_complete_window_to_das():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     item = processor.process(
-        _window(np.zeros((15_360, 8), np.float32), ready_imcra=False),
+        _window(np.zeros((7_680, 8), np.float32), ready_imcra=False),
         (_candidate(20.0),), physical_6plus1_geometry(),
     ).enhanced_audio[0]
     assert item.algorithm == "das"
-    assert item.fallback_reason is not None and "16个hop" in item.fallback_reason
+    assert item.fallback_reason is not None and "8个hop" in item.fallback_reason
 
 
 def test_single_candidate_uses_imcra_loaded_mvdr():
     rng = np.random.default_rng(77)
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     item = processor.process(
-        _window(rng.normal(0, 0.02, (15_360, 8)).astype(np.float32)),
+        _window(rng.normal(0, 0.02, (7_680, 8)).astype(np.float32)),
         (_candidate(20.0),), physical_6plus1_geometry(),
     ).enhanced_audio[0]
     assert item.algorithm == "imcra_spatial_separation"
@@ -159,7 +159,7 @@ def test_single_candidate_uses_imcra_loaded_mvdr():
 
 def test_ds_baseline_uses_seven_channel_delay_and_sum_without_imcra_or_spatial_p():
     rng = np.random.default_rng(770)
-    samples = rng.normal(0, 0.02, (15_360, 8)).astype(np.float32)
+    samples = rng.normal(0, 0.02, (7_680, 8)).astype(np.float32)
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     output = processor.process(
         _window(samples, ready_imcra=False),
@@ -186,7 +186,7 @@ def test_constant_beamwidth_baseline_targets_30_degree_fnbw_without_imcra_or_p()
     rng = np.random.default_rng(771)
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     output = processor.process(
-        _window(rng.normal(0, 0.02, (15_360, 8)).astype(np.float32), ready_imcra=False),
+        _window(rng.normal(0, 0.02, (7_680, 8)).astype(np.float32), ready_imcra=False),
         (_candidate(20.0), _candidate(110.0)),
         physical_6plus1_geometry(),
         mode=L3_MODE_CONSTANT_BEAMWIDTH,
@@ -236,7 +236,7 @@ def test_l3_rejects_unknown_processing_mode():
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     with pytest.raises(ValueError, match="未知L3处理模式"):
         processor.process(
-            _window(np.zeros((15_360, 8), np.float32)),
+            _window(np.zeros((7_680, 8), np.float32)),
             (_candidate(20.0),),
             physical_6plus1_geometry(),
             mode="unknown",
@@ -245,7 +245,7 @@ def test_l3_rejects_unknown_processing_mode():
 
 def test_imcra_noise_psd_changes_the_adaptive_solution():
     rng = np.random.default_rng(88)
-    samples = rng.normal(0, 0.02, (15_360, 8)).astype(np.float32)
+    samples = rng.normal(0, 0.02, (7_680, 8)).astype(np.float32)
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     geometry = physical_6plus1_geometry()
     balanced = processor.process(
@@ -260,10 +260,10 @@ def test_imcra_noise_psd_changes_the_adaptive_solution():
 
 def test_imcra_spp_controls_noise_covariance_updates():
     rng = np.random.default_rng(99)
-    samples = np.zeros((15_360, 8), np.float32)
-    samples[:7_680, 0] = rng.normal(0, 0.08, 7_680)
-    samples[7_680:, 1] = rng.normal(0, 0.08, 7_680)
-    first_is_speech = np.asarray((0.95,) * 8 + (0.05,) * 8, np.float32)
+    samples = np.zeros((7_680, 8), np.float32)
+    samples[:3_840, 0] = rng.normal(0, 0.08, 3_840)
+    samples[3_840:, 1] = rng.normal(0, 0.08, 3_840)
+    first_is_speech = np.asarray((0.95,) * 4 + (0.05,) * 4, np.float32)
     second_is_speech = first_is_speech[::-1].copy()
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     geometry = physical_6plus1_geometry()

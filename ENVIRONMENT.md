@@ -59,18 +59,18 @@ Runtime启动时先建RecordingStore session，再按`commit→L4→L3→L2`启�
 - Python 不是 3.12.x；
 - `torch.cuda.is_available()` 为 false；
 - GPU 不是预期设备，或 wheel 不含 `sm_120`；
-- CUDA STFT 不能得到 complex64 `[7,513,33]`；
+- CUDA STFT 不能得到 complex64 `[7,513,17]`；
 - complex64 `torch.linalg.solve` 产生 NaN/Inf；
-- 实际MarbleNet批量波形 `[5,15360]` 不能完成16 kHz适配、前处理和GPU模型前向；
+- 实际MarbleNet批量波形 `[5,7680]` 不能完成16 kHz适配、前处理和GPU模型前向；
 - `pip check` 报依赖冲突。
 
 正式运行时如果 CUDA 突然不可用或 OOM，按根规格第10、13节降级并记录；环境自检任务使用 `--require-cuda`，不允许用 CPU fallback 把安装错误掩盖为成功。
 
-当前`scripts/check_runtime_env.py`已验证CUDA设备、STFT、complex64线性求解和通用Conv2D smoke，但该Conv2D的`[5,1,33,169]`输入只是环境算子检查，不是当前MarbleNet的实际输入，也不能替代L4 CPU/CUDA一致性门禁。因此环境基础门禁已有实现，实际MarbleNet GPU前向与一致性仍按未完成处理。
+当前`scripts/check_runtime_env.py`已验证CUDA设备、17帧STFT、complex64线性求解和实际MarbleNet 160 ms波形前向；L4 CPU/CUDA概率一致性由自动测试单独门禁。
 
-## 当前CUDA逐窗性能基线
+## 历史320 ms CUDA逐窗性能基线
 
-2026-08-18在NVIDIA GeForce RTX 5060 Laptop GPU、PyTorch `2.12.1+cu132`上，使用当前唯一配置和实际MarbleNet artifact运行`scripts/benchmark_l3_l4.py --device cuda --warmup 8 --iterations 40 --repeats 3`。warm-cache结果为：L3单候选avg/P95 `7.49/11.13 ms`，双候选`13.38/17.39 ms`；L4单候选`2.84/3.85 ms`，双候选`3.57/4.61 ms`。L3双候选的主要瓶颈是波束形成矩阵求解与条件检查，其avg约`9.73 ms`。
+2026-08-18在NVIDIA GeForce RTX 5060 Laptop GPU、PyTorch `2.12.1+cu132`上测得的以下结果使用旧320 ms契约，仅作历史参考，不代表当前160 ms性能：L3单候选avg/P95 `7.49/11.13 ms`，双候选`13.38/17.39 ms`；L4单候选`2.84/3.85 ms`，双候选`3.57/4.61 ms`。160 ms配置必须重新运行`scripts/benchmark_l3_l4.py`后建立新基线。
 
 该基准预生成输入、不计构造开销，并在专用CUDA stream上对每窗显式同步；它衡量的是**warm-cache逐窗stage计算**，不等于端到端延迟、正式有序commit频率或Test UI可见Hz。驱动、PyTorch、模型、算法或配置改变后必须重跑，不得将本次数字当作跨环境承诺。
 

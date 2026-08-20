@@ -293,7 +293,7 @@ def test_runtime_l3_mode_switch_is_available_before_and_during_capture(tmp_path)
 
 
 def test_application_runtime_owns_single_chain_and_emits_window(tmp_path):
-    frames = [DecodedAudio(np.zeros((960, 8), np.float32), 48_000, index, index * 0.02) for index in range(16)]
+    frames = [DecodedAudio(np.zeros((960, 8), np.float32), 48_000, index, index * 0.02) for index in range(8)]
     pipeline = StubPipeline(frames)
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}),
@@ -307,7 +307,7 @@ def test_application_runtime_owns_single_chain_and_emits_window(tmp_path):
         time.sleep(0.005)
     runtime.stop()
     window = runtime.latest_windows.get_nowait()
-    assert window.decision_sample == 15_360
+    assert window.decision_sample == 7_680
     assert pipeline.started == 1 and pipeline.stopped >= 1
 
 
@@ -334,9 +334,9 @@ def test_runtime_pre_denoise_replaces_audio_before_window_and_preserves_timeline
     runtime.stop()
     runtime.close()
     assert window.context_start_sample == 0
-    assert window.context_end_sample == 15_360
-    assert window.samples.shape == (15_360, 8)
-    assert len(window.imcra_hops) == 16
+    assert window.context_end_sample == 7_680
+    assert window.samples.shape == (7_680, 8)
+    assert len(window.imcra_hops) == 8
     assert latest_l1.pre_denoise_enabled is True
     assert np.isfinite(window.samples).all()
 
@@ -373,7 +373,7 @@ def test_runtime_light_control_reports_write_failure_while_stopped(tmp_path):
 
 
 def test_runtime_can_stop_and_start_a_new_capture_session(tmp_path):
-    frames = [DecodedAudio(np.zeros((960, 8), np.float32), 48_000, index, index * .02) for index in range(16)]
+    frames = [DecodedAudio(np.zeros((960, 8), np.float32), 48_000, index, index * .02) for index in range(8)]
     pipeline = RestartablePipeline(frames)
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path, pipeline=pipeline, serial_device=StubSerial()
@@ -436,12 +436,12 @@ def test_runtime_connects_l1_l2_formal_recording_and_ui_control(tmp_path):
 
 def _listening_window_and_candidate():
     window = DecisionWindow(
-        "s", 0, 0, 15_360, 13_440, 15_360, 0, 15_360, 48_000,
-        np.zeros((15_360, 8), np.float32), (0,),
+        "s", 0, 0, 7_680, 5_760, 7_680, 0, 7_680, 48_000,
+        np.zeros((7_680, 8), np.float32), (0,),
     )
     candidate = TrackedDirection(
-        "s", 0, 0, 15_360, 13_440, 15_360, 7, 1, 28.0, 30.0, 1.0, 0.8,
-        "confirmed", True, False, 13_440, 15_360, 0, True,
+        "s", 0, 0, 7_680, 5_760, 7_680, 7, 1, 28.0, 30.0, 1.0, 0.8,
+        "confirmed", True, False, 5_760, 7_680, 0, True,
     )
     return window, candidate
 
@@ -463,7 +463,7 @@ class _CapturingLayer3:
                 theta_deg=candidate.theta_deg, sample_rate=48_000,
                 algorithm=("ds_baseline" if mode == L3_MODE_DS_BASELINE else "imcra_spatial_separation"),
                 fallback_reason=None, diagnostics=(),
-                enhanced_audio=np.zeros(15_360, np.float32),
+                enhanced_audio=np.zeros(7_680, np.float32),
                 track_id=candidate.track_id,
             ))
         return SimpleNamespace(enhanced_audio=tuple(outputs))
@@ -488,11 +488,11 @@ def test_runtime_passes_only_formal_smoothed_candidates_to_l3_once():
     assert tuple(item.theta_deg for item in layer3.calls[0][0]) == (30.0,)
     assert layer3.calls[0][1] == L3_MODE_OPTIMIZED
     assert len(formal) == 1 and formal[0].theta_deg == 30.0
-    assert len(l4_inputs) == 1 and l4_inputs[0].waveform.shape == (15_360,)
-    assert l4_inputs[0].array_source_probabilities_20ms == (None,) * 16
+    assert len(l4_inputs) == 1 and l4_inputs[0].waveform.shape == (7_680,)
+    assert l4_inputs[0].array_source_probabilities_20ms == (None,) * 8
 
 
-def test_runtime_aligns_all_sixteen_context_imcra_probabilities_to_l4_audio():
+def test_runtime_aligns_all_eight_context_imcra_probabilities_to_l4_audio():
     window, candidate = _listening_window_and_candidate()
     hops = tuple(
         SimpleNamespace(
@@ -501,9 +501,9 @@ def test_runtime_aligns_all_sixteen_context_imcra_probabilities_to_l4_audio():
             start_sample=index * 960,
             end_sample=(index + 1) * 960,
             state="ready",
-            array_source_probability_20ms=index / 15.0,
+            array_source_probability_20ms=index / 7.0,
         )
-        for index in range(16)
+        for index in range(8)
     )
     window = replace(window, imcra_hops=hops)
     runtime = _runtime_with_layer3(_CapturingLayer3())
@@ -511,7 +511,7 @@ def test_runtime_aligns_all_sixteen_context_imcra_probabilities_to_l4_audio():
     _, l4_inputs = runtime._process_l3(window, (candidate,))
 
     assert l4_inputs[0].array_source_probabilities_20ms == pytest.approx(
-        tuple(index / 15.0 for index in range(16))
+        tuple(index / 7.0 for index in range(8))
     )
 
 

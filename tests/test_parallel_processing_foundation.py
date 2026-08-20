@@ -36,7 +36,7 @@ from common.data_types import DecisionWindow
 
 def _window(index: int, *, session_id: str = "parallel", epoch: int = 0) -> DecisionWindow:
     start = index * 960
-    end = start + 15_360
+    end = start + 7_680
     return DecisionWindow(
         session_id=session_id,
         stream_epoch=epoch,
@@ -47,8 +47,8 @@ def _window(index: int, *, session_id: str = "parallel", epoch: int = 0) -> Deci
         context_start_sample=start,
         context_end_sample=end,
         sample_rate=48_000,
-        samples=np.zeros((15_360, 8), dtype=np.float32),
-        source_sequence_ids=tuple(range(index, index + 16)),
+        samples=np.zeros((7_680, 8), dtype=np.float32),
+        source_sequence_ids=tuple(range(index, index + 8)),
     )
 
 
@@ -89,17 +89,17 @@ def _stage_results(work: WindowWorkItem):
 def test_window_work_item_has_one_exact_key_and_deeply_immutable_config():
     work = _work(0)
 
-    assert work.key == WindowKey("parallel", 0, 0, 15_360)
+    assert work.key == WindowKey("parallel", 0, 0, 7_680)
     assert work.config.values["models"] == ("nv",)
     with pytest.raises(TypeError):
         work.config.values["gate"]["threshold"] = 0.2
     with pytest.raises(ValueError, match="exactly match"):
-        WindowWorkItem(WindowKey("parallel", 0, 1, 15_360), work.window, work.config)
+        WindowWorkItem(WindowKey("parallel", 0, 1, 7_680), work.window, work.config)
 
 
 def test_stage_results_reject_wrong_identity_and_define_terminal_state():
     work = _work(0)
-    wrong = _Payload("other", 0, 0, 15_360, "l2")
+    wrong = _Payload("other", 0, 0, 7_680, "l2")
 
     with pytest.raises(ValueError, match="identity"):
         L2StageResult.completed(work.key, wrong, finished_monotonic_ns=1)

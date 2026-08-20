@@ -12,7 +12,7 @@ L2、L3、L4各有独立单worker和有界latest-wins等待队列。同一窗口
 
 L4 worker另有一个严格限于Test UI的`latest_l4_dev_ui` side channel：只有正式L4计算`COMPLETED`后才发布包含完整同窗L2空间响应、L3预览和L4结果的`DevUiFrame`。邮箱固定`maxsize=1`，新完成帧覆盖旧显示帧并累计覆盖数；失败不发布。该路径绕过的只是有序UI等待，不绕过ResultJoiner的正式结果、录音或watermark顺序。UI收到后续有序`DROPPED/SKIPPED`帧时保留最近有效CNN画面，直至`dev_test_ui.stale_after_ms`超时。
 
-ResultJoiner注册前若在途窗口/字节容量已满，Runtime不保留新窗口的320 ms音频，只在有界范围审计中压缩保留身份、sample边界与原因；commit遇到对应window ID时展开为轻量`error` DecisionRecord和watermark。这条pre-joiner拒绝路径不会把容量异常抛回L1采集循环。
+ResultJoiner注册前若在途窗口/字节容量已满，Runtime不保留新窗口的160 ms音频，只在有界范围审计中压缩保留身份、sample边界与原因；commit遇到对应window ID时展开为轻量`error` DecisionRecord和watermark。这条pre-joiner拒绝路径不会把容量异常抛回L1采集循环。
 
 Runtime的`ComputeCache`按L2/L3/L4分区并受窗口数、分区字节和全局字节硬限制。它只缓存CPU可复用artifact，不能接纳CUDA张量，也不是StageResult的正确性来源。L3自己的滚动STFT/噪声统计、静态steering/p查询及prepared GPU context另有小容量硬上限；完成提交后按窗口退休。
 

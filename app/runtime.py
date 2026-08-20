@@ -14,6 +14,7 @@ import torch
 from common.config import ProjectConfig, calibration_config_hash, config_hash, load_config
 from common.data_types import DecisionWindow, PipelineStatus
 from common.geometry import physical_6plus1_geometry
+from common.timing import CONTEXT_HOPS
 from data_management import DecisionRecord, RecordingStore, ResultWatermark, SessionMetadata
 from gui.dev_test_ui.aggregator import DevUiAggregator, PerformanceTracker
 from gui.dev_test_ui.contracts import AlgorithmPerformanceSnapshot, BeamformPreview, DevUiFrame
@@ -420,7 +421,7 @@ class ApplicationRuntime:
             return len(self._completion_backlog)
 
     def _record_admission_rejection(self, work_item: WindowWorkItem, reason: str) -> None:
-        """Record a pre-joiner rejection without retaining its 320 ms audio."""
+        """Record a pre-joiner rejection without retaining its 160 ms audio."""
 
         window_id = work_item.key.window_id
         key = work_item.key
@@ -1482,7 +1483,7 @@ class ApplicationRuntime:
         # A capacity failure must never escape into the L1 capture loop.  It
         # should normally be resolved by dropping one waiting L2 item; the
         # final branch explicitly rejects the new window without retaining its
-        # 320 ms samples.
+        # 160 ms samples.
         for _ in range(self._l2_windows.maxsize + 2):
             try:
                 self._result_joiner.register(
@@ -1675,7 +1676,7 @@ class ApplicationRuntime:
                     mode = str(item.work_item.config.values["l3_mode"])
                     if not candidates:
                         # A valid SRP response can have no accepted peaks.  Do
-                        # not pay the 320 ms STFT/covariance preparation cost
+                        # not pay the 160 ms STFT/covariance preparation cost
                         # when there is no direction to synthesize.
                         output = Layer3Output(())
                     elif self._l3_cuda_stream is None:
@@ -2466,8 +2467,8 @@ class ApplicationRuntime:
             )
             for start in range(window.context_start_sample, window.context_end_sample, 960)
         )
-        if len(probabilities) != 16:
-            raise RuntimeError("L4 requires exactly 16 context-aligned 20 ms probability slots")
+        if len(probabilities) != CONTEXT_HOPS:
+            raise RuntimeError("L4 requires exactly 8 context-aligned 20 ms probability slots")
         return probabilities
 
     def _layer4_inputs_from_output(self, window, l3_output, formal_count: int):

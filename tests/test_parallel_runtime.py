@@ -188,7 +188,7 @@ def _window(
     session_id: str = "parallel-session",
     stream_epoch: int = 0,
 ) -> DecisionWindow:
-    decision_sample = 15_360 + window_id * 960
+    decision_sample = 7_680 + window_id * 960
     return DecisionWindow(
         session_id,
         stream_epoch,
@@ -196,11 +196,11 @@ def _window(
         decision_sample,
         decision_sample - 1_920,
         decision_sample,
-        decision_sample - 15_360,
+        decision_sample - 7_680,
         decision_sample,
         48_000,
-        np.zeros((15_360, 8), dtype=np.float32),
-        tuple(range(window_id, window_id + 16)),
+        np.zeros((7_680, 8), dtype=np.float32),
+        tuple(range(window_id, window_id + 8)),
     )
 
 
@@ -299,7 +299,7 @@ def _l3_output(window: DecisionWindow, candidates: tuple[CandidateDirection, ...
                 "parallel_runtime_test",
                 None,
                 (),
-                np.zeros(15_360, dtype=np.float32),
+                np.zeros(7_680, dtype=np.float32),
                 candidate.track_id,
             )
             for candidate in candidates
@@ -581,7 +581,7 @@ def test_late_ordered_commit_from_old_epoch_cannot_update_new_epoch_ui(tmp_path:
         np.zeros(8, np.bool_), "unknown", "idle",
     )
     status = PipelineStatus(
-        "warming_up", "parallel-session", 1, 960, 15_360, "Warming"
+            "warming_up", "parallel-session", 1, 960, 7_680, "Warming"
     )
     runtime._ui_aggregator.update_l1(meter, status)
     joined = SimpleNamespace(work_item=SimpleNamespace(window=_window(0, stream_epoch=0)))
@@ -615,7 +615,7 @@ def test_completed_l4_returns_track_probability_to_l2(tmp_path: Path) -> None:
         _wait_until(lambda: runtime.processing_status["l4_actual_completed"] >= 1)
         feedback = runtime._layer2.voice_feedback
         assert len(feedback) == 1
-        assert feedback[0][:4] == ("parallel-session", 0, 15_360, 1)
+        assert feedback[0][:4] == ("parallel-session", 0, 7_680, 1)
         assert feedback[0][4:] == (0.8, True)
     finally:
         runtime.stop()
@@ -649,10 +649,10 @@ def test_stages_overlap_across_windows_but_preserve_same_window_dependencies_and
         assert probe.get("l3", 1).started < probe.get("l4", 0).finished
         assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
         assert [item.sample for item in store.watermark_snapshot()] == [
-            15_360,
-            16_320,
-            17_280,
-            18_240,
+            7_680,
+            8_640,
+            9_600,
+            10_560,
         ]
         assert runtime.compute_cache_bytes == 0
     finally:
@@ -842,10 +842,10 @@ def test_graceful_stop_drains_every_admitted_window(tmp_path: Path) -> None:
     runtime.stop()
     assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
     assert [item.sample for item in store.watermark_snapshot()] == [
-        15_360,
-        16_320,
-        17_280,
-        18_240,
+        7_680,
+        8_640,
+        9_600,
+        10_560,
     ]
     assert runtime.processing_running is False
     assert runtime.processing_queue_depths == {"l2": 0, "l3": 0, "l4": 0, "completion": 0}
@@ -862,7 +862,7 @@ def test_processing_status_exposes_bounded_queues_and_cache_never_exceeds_hard_l
         runtime._cache_publish(
             "l2",
             # Cache keys intentionally use a separate stream from formal runtime work.
-            key=WindowKey("cache-stress", 0, window_id, 15_360 + window_id * 960),
+            key=WindowKey("cache-stress", 0, window_id, 7_680 + window_id * 960),
             name="stress",
             value=payload,
         )
@@ -891,7 +891,7 @@ def test_ui_projection_failure_never_stops_formal_commit_or_later_windows(tmp_pa
             runtime._admit_window(_window(window_id))
         _wait_until(lambda: len(store.record_snapshot()) == 3)
         assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2]
-        assert [item.sample for item in store.watermark_snapshot()] == [15_360, 16_320, 17_280]
+        assert [item.sample for item in store.watermark_snapshot()] == [7_680, 8_640, 9_600]
         assert runtime.dev_ui_error == "injected UI projection failure"
         assert runtime.processing_running is True
     finally:

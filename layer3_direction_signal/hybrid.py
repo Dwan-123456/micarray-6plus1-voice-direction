@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from common.data_types import CandidateDirection, DecisionWindow, DirectionalSignal
+from common.timing import CONTEXT_HOPS, CONTEXT_SAMPLES, STFT_FRAME_COUNT
 from common.geometry import MicGeometry
 from spatial_separability import (
     P_FREQUENCY_BIN_INDICES,
@@ -353,7 +354,7 @@ class ImcraSpatialSeparationBeamformer:
         if not candidates:
             self.last_diagnostics = ()
             empty = torch.empty(
-                (0, 513, 33), dtype=torch.complex64, device=prepared.spectrum_fct.device,
+                (0, 513, STFT_FRAME_COUNT), dtype=torch.complex64, device=prepared.spectrum_fct.device,
             )
             return BeamformedL3Batch(empty, (), (), (), (), ())
         prepared_device = prepared.spectrum_fct.device
@@ -446,7 +447,7 @@ class ImcraSpatialSeparationBeamformer:
                 diagnostics = tuple(
                     (
                         "backend=imcra_spatial_separation",
-                        f"imcra={prepared.noise_algorithm_version}:16x20ms",
+                        f"imcra={prepared.noise_algorithm_version}:{CONTEXT_HOPS}x20ms",
                         f"spatial_p={('independent_loaded_mvdr' if len(candidates) == 3 else 'single_candidate') if spatial_p is None else P_TABLE_VERSION}",
                         f"rho_thresholds={prepared.config.rho_lcmv_max:.3f}/"
                         f"{prepared.config.rho_soft_null_max:.3f}",
@@ -475,7 +476,7 @@ class ImcraSpatialSeparationBeamformer:
                 backends = tuple("das" for _item in candidates)
                 fallback_reasons = tuple(fallback_reason for _item in candidates)
 
-        if output.shape != (len(candidates), 513, 33) or not torch.isfinite(output).all():
+        if output.shape != (len(candidates), 513, STFT_FRAME_COUNT) or not torch.isfinite(output).all():
             raise Layer3Error("方向分离频谱输出无效")
         self.last_diagnostics = diagnostics
         return BeamformedL3Batch(
@@ -522,7 +523,7 @@ class ImcraSpatialSeparationBeamformer:
         frequencies = self._frequency_axis(window.sample_rate, stft)
         steering = self._steering_vectors(frequencies, candidates, geometry)
         output = apply_weights(das_weights(steering), spectrum_fct)
-        if output.shape != (len(candidates), 513, 33) or not torch.isfinite(output).all():
+        if output.shape != (len(candidates), 513, STFT_FRAME_COUNT) or not torch.isfinite(output).all():
             raise Layer3Error("DS baseline方向频谱输出无效")
         diagnostics = tuple(
             (
@@ -569,8 +570,8 @@ class ImcraSpatialSeparationBeamformer:
         if not candidates:
             self.last_diagnostics = ()
             return ()
-        if spectrum_cft.shape != (7, 513, 33) or spectrum_cft.dtype != torch.complex64:
-            raise Layer3Error("precomputed STFT must be complex64 [7,513,33]")
+        if spectrum_cft.shape != (7, 513, STFT_FRAME_COUNT) or spectrum_cft.dtype != torch.complex64:
+            raise Layer3Error("precomputed STFT must be complex64 [7,513,17]")
 
         spectrum_fct = spectrum_cft.permute(1, 0, 2).contiguous()
         frequencies = self._frequency_axis(window.sample_rate, stft)
@@ -607,7 +608,7 @@ class ImcraSpatialSeparationBeamformer:
             diagnostics = tuple(
                 (
                     "backend=imcra_spatial_separation",
-                    f"imcra={noise_context.algorithm_version}:16x20ms",
+                    f"imcra={noise_context.algorithm_version}:{CONTEXT_HOPS}x20ms",
                     f"spatial_p={('independent_loaded_mvdr' if len(candidates) == 3 else 'single_candidate') if spatial_p is None else P_TABLE_VERSION}",
                     f"rho_thresholds={config.rho_lcmv_max:.3f}/{config.rho_soft_null_max:.3f}",
                     f"rho_range={float(solved.rho_f.min().item()):.4f}..{float(solved.rho_f.max().item()):.4f}",
@@ -634,7 +635,7 @@ class ImcraSpatialSeparationBeamformer:
                 for _item in candidates
             )
 
-        if output.shape != (len(candidates), 513, 33) or not torch.isfinite(output).all():
+        if output.shape != (len(candidates), 513, STFT_FRAME_COUNT) or not torch.isfinite(output).all():
             raise Layer3Error("方向分离频谱输出无效")
         signals = tuple(
             DirectionalSignal(
@@ -673,8 +674,8 @@ class ImcraSpatialSeparationBeamformer:
 
     @staticmethod
     def _validate_window(window: DecisionWindow) -> None:
-        if window.sample_rate != 48_000 or window.samples.shape != (15_360, 8):
-            raise Layer3Error("L3输入必须是48 kHz逻辑8通道 [15360,8]")
+        if window.sample_rate != 48_000 or window.samples.shape != (CONTEXT_SAMPLES, 8):
+            raise Layer3Error("L3输入必须是48 kHz逻辑8通道 [7680,8]")
 
     @staticmethod
     def _validate_prepared_candidates(

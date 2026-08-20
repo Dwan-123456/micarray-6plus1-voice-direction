@@ -726,7 +726,7 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
     )
     assert len(frame.previews) == len(frame.candidates) >= 1
     assert all(preview.window_id == frame.spatial_response.window_id for preview in frame.previews)
-    assert all(preview.waveform.shape == (15_360,) for preview in frame.previews)
+    assert all(preview.waveform.shape == (7_680,) for preview in frame.previews)
     assert all(not hasattr(preview, "spectrogram") for preview in frame.previews)
 
     app, window = build_window(CONFIG)

@@ -57,7 +57,7 @@ class NvidiaFrameVadMarbleNet(nn.Module):
     """Dependency-light inference port of NVIDIA's NeMo frame VAD MarbleNet.
 
     It preserves the official feature extractor and network tensors. The public
-    application adapter supplies 48 kHz / 320 ms audio and this module consumes
+    application adapter supplies 48 kHz / 160 ms audio and this module consumes
     the internally resampled 16 kHz waveform.
     """
 

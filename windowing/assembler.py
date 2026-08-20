@@ -11,12 +11,15 @@ from common.data_types import (
     IngestedAudioBlock,
     PipelineStatus,
 )
+from common.timing import CONTEXT_SAMPLES, DECISION_HOP_SAMPLES, DOA_WINDOW_SAMPLES
 
 
 class WindowAssembler:
-    def __init__(self, *, context_samples: int = 15_360, doa_window_samples: int = 1_920, hop_samples: int = 960):
-        if (context_samples, doa_window_samples, hop_samples) != (15_360, 1_920, 960):
-            raise ValueError("v0.2窗口参数固定为15360/1920/960")
+    def __init__(self, *, context_samples: int = CONTEXT_SAMPLES, doa_window_samples: int = DOA_WINDOW_SAMPLES, hop_samples: int = DECISION_HOP_SAMPLES):
+        if (context_samples, doa_window_samples, hop_samples) != (
+            CONTEXT_SAMPLES, DOA_WINDOW_SAMPLES, DECISION_HOP_SAMPLES,
+        ):
+            raise ValueError("窗口参数固定为7680/1920/960")
         self.context_samples, self.doa_window_samples, self.hop_samples = (
             context_samples,
             doa_window_samples,

@@ -40,7 +40,7 @@ Catalog新增`direction_observations`投影，正式键为`(session_id, stream_e
 
 ## UI调整
 
-Production UI运行录音详情显示方向ID、epoch、首末sample、持续时间、首末角、角度变化、状态和L4概率；可以试听按20 ms决策增量去除320 ms重叠后的逐ID增强时间线、Center参考及native/logical/physical任意通道。专用L1录音向导和manifest明确显示“无算法方向ID”。
+Production UI运行录音详情显示方向ID、epoch、首末sample、持续时间、首末角、角度变化、状态和L4概率；可以试听按20 ms决策增量去除160 ms重叠后的逐ID增强时间线、Center参考及native/logical/physical任意通道。专用L1录音向导和manifest明确显示“无算法方向ID”。
 
 ## 持续回归与实机验收
 
