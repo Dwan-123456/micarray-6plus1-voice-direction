@@ -215,7 +215,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 输入从无 ID 的 `CandidateDirection` 改为 `TrackedDirection`，以 `(WindowKey, track_id)` 为方向批次身份。
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
-- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。coasting ID在3方向上限和50°分离约束内继续按其输出角执行 L3 BF，输出携带原`track_id`的真实音频；未确认tentative轨不生成 L3 音频。
+- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。已获得L4人声确认的ID在几何3秒TTL内优先占用L3方向槽位：MUSIC有新观测时更新角度，短时漏检进入coasting时仍每20 ms按保持/预测角生成BF音频，不得因临时MUSIC峰抢占名额而生成空hop。最终仍遵守3方向上限和50°分离约束；未确认tentative轨不生成 L3 音频。
 - `optimized`、`ds_baseline`、`subband_robust_baseline`三档保留；第三档用五频段
   IMCRA/声源SCM/WNG/Wiener鲁棒对照替代30°恒定波束宽度方法。切换模式不改变权威ID，
   只隔离各模式的试听缓存。

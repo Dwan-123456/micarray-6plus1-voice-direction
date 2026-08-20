@@ -539,6 +539,33 @@ def test_only_voice_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> No
     assert not selected[0].is_observed
 
 
+def test_voice_confirmed_coasting_id_keeps_l3_slot_over_nearby_transient_peak() -> None:
+    tracker = _tracker()
+    _update(tracker, 15_360, (20.0,), kalman_enabled=False)
+    confirmed, _ = _update(tracker, 16_320, (20.0,), kalman_enabled=False)
+    _, active = _update(tracker, 17_280, (), kalman_enabled=False)
+    human_id = confirmed[0].track_id
+    transient = replace(
+        confirmed[0],
+        track_id=human_id + 100,
+        measured_theta_deg=55.0,
+        theta_deg=55.0,
+        is_observed=True,
+        is_new_track=True,
+    )
+
+    selected = _select_l3_directions(
+        (transient,),
+        active + (transient,),
+        voice_confirmed_coasting_ids=frozenset({human_id}),
+    )
+
+    assert len(selected) == 1
+    assert selected[0].track_id == human_id
+    assert selected[0].track_state == "coasting"
+    assert not selected[0].is_observed
+
+
 def test_tentative_missing_id_is_not_selected_as_an_l3_bf_target() -> None:
     tracker = _tracker()
     first, _ = _update(tracker, 15_360, (20.0,), kalman_enabled=True)

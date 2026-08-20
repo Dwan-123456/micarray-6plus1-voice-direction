@@ -31,22 +31,38 @@ def _select_l3_directions(
     minimum_separation_deg: float = 50.0,
     voice_confirmed_coasting_ids: frozenset[int] | None = None,
 ) -> tuple[TrackedDirection, ...]:
-    """Select observed tracks plus L4-voice-confirmed coasting tracks for L3."""
+    """Keep L4-confirmed human tracks continuous while their geometry TTL is alive."""
 
-    selected = [item for item in observed if item.track_state == "confirmed"]
-    selected_ids = {item.track_id for item in selected}
-    coasting = sorted(
-        (
-            item for item in active
-            if item.track_state == "coasting" and item.track_id not in selected_ids
-            and (
-                voice_confirmed_coasting_ids is None
-                or item.track_id in voice_confirmed_coasting_ids
-            )
-        ),
-        key=lambda item: (item.missed_samples, -item.normalized_score, item.track_id),
-    )
-    for item in coasting:
+    observed_confirmed = tuple(item for item in observed if item.track_state == "confirmed")
+    observed_by_id = {item.track_id: item for item in observed_confirmed}
+    active_by_id = {item.track_id: item for item in active}
+    if voice_confirmed_coasting_ids is None:
+        # Test/helper compatibility: without an explicit semantic set, retain
+        # the historical observed-first ordering and then append all coasting.
+        prioritized = list(observed_confirmed)
+        prioritized.extend(sorted(
+            (
+                item for item in active
+                if item.track_state == "coasting" and item.track_id not in observed_by_id
+            ),
+            key=lambda item: (item.missed_samples, -item.normalized_score, item.track_id),
+        ))
+    else:
+        # In production an L4-confirmed human ID owns its L3 slot throughout
+        # the three-second geometry TTL. A transient MUSIC peak must not take
+        # that slot and turn a missing observation into a silent audio hop.
+        human: list[TrackedDirection] = []
+        for track_id in sorted(voice_confirmed_coasting_ids):
+            item = observed_by_id.get(track_id, active_by_id.get(track_id))
+            if item is not None and item.track_state in {"confirmed", "coasting"}:
+                human.append(item)
+        human_ids = {item.track_id for item in human}
+        prioritized = human + [
+            item for item in observed_confirmed if item.track_id not in human_ids
+        ]
+
+    selected: list[TrackedDirection] = []
+    for item in prioritized:
         if len(selected) >= limit:
             break
         if all(
