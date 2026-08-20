@@ -1,6 +1,6 @@
 # Layer 1：八通道输入、物理映射与IMCRA
 
-> 项目1.1.2的L1输入已按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#5-layer-1-改动)落地：提供连续、校准后的7麦输入、verified/unverified状态及版本/hash边界；L1不创建ID，MUSIC与公共方向ID由L2负责。
+> 项目1.2.1的L1输入已按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#5-layer-1-改动)落地：提供连续、校准后的7麦输入、verified/unverified状态及版本/hash边界；L1不创建ID，MUSIC与公共方向ID由L2负责。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1的逻辑8通道、麦克风面坐标和20 ms IMCRA迁移已完成。
 

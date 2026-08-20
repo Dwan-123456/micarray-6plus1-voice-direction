@@ -465,8 +465,7 @@ class ApplicationRuntime:
             self._last_rejected_admission = (window_id, reason)
             if not audit_overflow:
                 self._preceding_gap_reasons[work_item.key.stream_key] = reason
-        self.processing_drops += 1
-        self._record_l4_terminal(StageState.DROPPED)
+        self._record_processing_drop(key)
         if audit_overflow:
             # Continuing to retain per-window identities after the compact
             # audit limit would make an unhealthy commit path unbounded. Stop
@@ -571,8 +570,7 @@ class ApplicationRuntime:
                 displaced.key, StageState.DROPPED, reason
             )
         )
-        self.processing_drops += 1
-        self._record_l4_terminal(StageState.DROPPED)
+        self._record_processing_drop(displaced.key)
         return True
 
     def _enqueue_l3_latest(self, item: _L3Work) -> bool:
@@ -608,8 +606,7 @@ class ApplicationRuntime:
                 self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
                 self._stage_completed_counts["l3"] += 1
                 self._stage_completed_counts["l4"] += 1
-                self.processing_drops += 1
-                self._record_l4_terminal(StageState.DROPPED)
+                self._record_processing_drop(displaced.work_item.key)
         return False
 
     def _enqueue_l4_latest(self, item: _L4Work) -> bool:
@@ -636,8 +633,7 @@ class ApplicationRuntime:
                 )
                 self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
                 self._stage_completed_counts["l4"] += 1
-                self.processing_drops += 1
-                self._record_l4_terminal(StageState.DROPPED)
+                self._record_processing_drop(displaced.work_item.key)
         return False
 
     def _put_eos_interruptibly(
@@ -1005,6 +1001,13 @@ class ApplicationRuntime:
             except queue.Empty:
                 pass
             mailbox.put_nowait(value)
+
+    def _record_processing_drop(self, key: WindowKey) -> None:
+        """Record one dropped 20 ms window for cumulative and 1-second UI metrics."""
+
+        self.processing_drops += 1
+        self._performance.add_drop(key.session_id, key.stream_epoch)
+        self._record_l4_terminal(StageState.DROPPED)
 
     def _record_l4_terminal(self, state: StageState) -> None:
         """Count actual L4 inference separately from overload terminal markers."""
@@ -1512,8 +1515,7 @@ class ApplicationRuntime:
                     "l2_admission_queue_race",
                 )
             )
-            self.processing_drops += 1
-            self._record_l4_terminal(StageState.DROPPED)
+            self._record_processing_drop(work_item.key)
             return False
 
     def _run(self) -> None:
@@ -2355,6 +2357,7 @@ class ApplicationRuntime:
                 compute_ms, latency_ms,
                 l2_ms=stage_timings.get("l2"), l3_ms=stage_timings.get("l3"),
                 l4_ms=stage_timings.get("l4"), completed_monotonic=monotonic(),
+                processed=joined.state is StageState.COMPLETED,
             )
             scan = DirectionScanConfig(**dict(values["scan_config"]))
             if l2_output is None:

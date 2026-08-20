@@ -1,6 +1,6 @@
 # Layer 2 1.1：Rolling NormMUSIC 与公共方向轨迹
 
-本目录是项目`1.1.2`正式组成部分，L2公开版本为`1.1`，已实现Rolling NormMUSIC、公共方向ID、可选Kalman平滑、可选DPD与IMCRA白化。
+本目录是项目`1.2.1`正式组成部分，L2公开版本为`1.1`，已实现Rolling NormMUSIC、公共方向ID、可选Kalman平滑、可选DPD与IMCRA白化。
 
 IMCRA白化严格只读DecisionWindow携带的L1不可变快照，不拥有、更新或重置IMCRA状态。逐麦PSD形成的噪声模型为对角矩阵，收缩和diagonal loading后仍保持对角，因此实现使用逐麦逆平方根直接缩放协方差与steering，不执行逐频通用7×7 Cholesky/solve。16个hop的固定频率映射按批量向量化处理；缺少READY快照或有效对角项时明确退回未白化MUSIC。
 

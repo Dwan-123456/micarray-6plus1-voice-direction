@@ -31,6 +31,8 @@ class PerformanceTracker:
         self._stage_timings: deque[
             tuple[float, float | None, float | None, float | None]
         ] = deque(maxlen=window_count)
+        self._processed_windows: deque[float] = deque(maxlen=window_count)
+        self._dropped_windows: deque[float] = deque(maxlen=window_count)
         self._current_window: int | None = None
 
     def _ensure_epoch(self, session_id: str, epoch: int) -> None:
@@ -41,6 +43,8 @@ class PerformanceTracker:
             self._compute.clear()
             self._latency.clear()
             self._stage_timings.clear()
+            self._processed_windows.clear()
+            self._dropped_windows.clear()
             self._current_window = None
 
     def add_block(self, block: IngestedAudioBlock, received_monotonic: float) -> None:
@@ -62,6 +66,7 @@ class PerformanceTracker:
         l3_ms: float | None = None,
         l4_ms: float | None = None,
         completed_monotonic: float | None = None,
+        processed: bool = True,
     ) -> None:
         self._ensure_epoch(session_id, epoch)
         if latency_ms < compute_ms:
@@ -78,7 +83,27 @@ class PerformanceTracker:
         if not np.isfinite(completed):
             raise ValueError("completed_monotonic must be finite")
         self._stage_timings.append((completed, *stage_values))
+        if type(processed) is not bool:
+            raise TypeError("processed must be bool")
+        if processed:
+            self._processed_windows.append(completed)
         self._current_window = window_id
+
+    def add_drop(
+        self,
+        session_id: str,
+        epoch: int,
+        *,
+        dropped_monotonic: float | None = None,
+    ) -> None:
+        key = (session_id, epoch)
+        if self._key is not None and key != self._key:
+            return
+        self._ensure_epoch(session_id, epoch)
+        dropped = monotonic() if dropped_monotonic is None else float(dropped_monotonic)
+        if not np.isfinite(dropped):
+            raise ValueError("dropped_monotonic must be finite")
+        self._dropped_windows.append(dropped)
 
     def _last_second_stage_statistics(
         self, now_monotonic: float,
@@ -99,11 +124,26 @@ class PerformanceTracker:
             statistics.append((average, float(len(values))))
         return tuple(statistics)
 
+    def _last_second_window_statistics(
+        self, now_monotonic: float,
+    ) -> tuple[int, int, float]:
+        cutoff = now_monotonic - 1.0
+        while self._processed_windows and self._processed_windows[0] < cutoff:
+            self._processed_windows.popleft()
+        while self._dropped_windows and self._dropped_windows[0] < cutoff:
+            self._dropped_windows.popleft()
+        processed = len(self._processed_windows)
+        dropped = len(self._dropped_windows)
+        total = processed + dropped
+        return processed, dropped, 0.0 if total == 0 else dropped / total
+
     def snapshot(self, status: PipelineStatus) -> AlgorithmPerformanceSnapshot:
         self._ensure_epoch(status.session_id, status.stream_epoch)
+        now = monotonic()
         (l2_avg, l2_hz), (l3_avg, l3_hz), (l4_avg, l4_hz) = (
-            self._last_second_stage_statistics(monotonic())
+            self._last_second_stage_statistics(now)
         )
+        processed, dropped, drop_rate = self._last_second_window_statistics(now)
         observed = None
         if len(self._rates) >= 2:
             elapsed = self._rates[-1][0] - self._rates[0][0]
@@ -131,6 +171,9 @@ class PerformanceTracker:
             l2_refresh_hz_last_second=l2_hz,
             l3_refresh_hz_last_second=l3_hz,
             l4_refresh_hz_last_second=l4_hz,
+            processed_windows_last_second=processed,
+            dropped_windows_last_second=dropped,
+            drop_rate_last_second=drop_rate,
         )
 
 

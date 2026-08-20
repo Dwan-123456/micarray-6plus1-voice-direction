@@ -17,8 +17,23 @@
 2. 每次提交前必须记录本次实际变化；没有变化的模块明确写“无变化”，防止遗漏跨层影响。
 3. 每条记录至少包含日期、版本/标签、变更类型、涉及文件、各模块具体变化、接口或兼容性影响、验证结果和Git LFS资产变化。
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
-5. 本文件记录“发生了什么”；当前1.1.2架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
+5. 本文件记录“发生了什么”；当前1.2.1架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
+
+---
+
+## 2026-08-20 — 项目1.2.1整合发布
+
+- **版本/标签**：项目`1.2.1`，创建新的不可变标签`v1.2.1`；`v1.0.0`、`v1.0.1`、`v1.1.1`、`v1.1.2`及全部历史分支保持原位，不移动、不覆盖、不删除。
+- **发布范围**：整合`v1.1.2`之后的全部已提交功能和当前工作区修改，覆盖L2、Runtime、Development Test UI、Pipeline Log UI、Production UI、CorpusStore命名、配置、文档与测试；L1～L4、Windowing和完整录音/数据管理系统继续随项目发布。
+- **L2**：优化IMCRA白化并保持丢窗UI状态；tentative轨迹可在滚动确认窗口内重新匹配并完成确认，减少短时漏检造成的重复ID。MUSIC、DPD、公共方向上限和L2公开版本`1.1`保持兼容。
+- **Runtime**：L2/L3/L4阶段队列容量改为严格配置驱动；新增上一秒完整处理20 ms窗口与丢窗事件统计，按session/epoch隔离，丢窗率严格使用`丢窗/(完整处理+丢窗)`，不把启动以来累计值冒充一秒指标。
+- **Development Test UI**：底部每秒显示L2/L3/L4平均耗时、L4后的统一输出刷新率、完整窗口数、丢窗数与丢窗率；保留低电平有效试听轨，空帧/错误投影不误删已有试听行。
+- **数据管理与桌面入口**：测试语料录音采用标准化标签文件名；Production UI自动适配桌面可用区域；Pipeline Log UI增加桌面启动入口；录音回放、Catalog和旧记录兼容边界不变。
+- **未改变**：L1采集/IMCRA核心算法、WindowAssembler时间轴、L3波束形成算法、L4 MarbleNet模型与概率语义、RecordingStore资产schema和Git LFS模型/测试音频均无新变化。
+- **本地数据边界**：`.venv/`、`data/`、运行录音、scratch、Catalog、日志、缓存、临时报告、密钥和代理设置继续只保存在本机，不进入GitHub。
+- **验证**：完整自动测试`399 passed`；核心源码与测试Ruff全部通过；全目录Python编译通过；项目元数据为`1.2.1`、L2公开版本为`1.1`；Git差异、冲突标记、敏感数据与LFS边界检查通过。
+- **Git LFS**：现有模型、精选测试音频和大型数组继续按`.gitattributes`管理；当前工作区没有新增或修改LFS资产。
 
 ---
 
@@ -138,6 +153,28 @@
 - L3算法、三档模式和Development Test UI缓存格式无变化；但coasting窗口现在获得真实BF输出并写入同一`(session_id, stream_epoch, track_id)`试听轨，只有本窗确实没有该ID的L3输出时才按既有绝对时间轴补等时静音。
 - L4算法无变化，但继续消费与L3相同的权威方向集合；L1、录音/数据管理、Production UI、Pipeline Log UI、模型和二进制资产均无变化，Git LFS资产无变化。
 - **验证**：新增confirmed→coasting BF目标、tentative排除和同ID真实音频连续写入测试；完成相关跨层定向测试及全量测试（结果见本次提交验证记录）。
+
+---
+
+## 2026-08-20 — Development Test UI性能栏合并刷新率显示
+
+- **版本/标签**：Development Test UI显示精简；未创建或移动版本标签。
+- **类型**：纯UI文案与布局调整。
+- 底部上一秒性能栏不再分别显示L2、L3刷新率，仅保留三层平均耗时，并在L4耗时后显示一个统一输出刷新率；20 ms完整窗口数、丢窗数和丢窗率继续显示且统计逻辑不变。
+- Runtime调度、性能快照字段、L1/L2/L3/L4算法、录音与数据管理、Production UI、Pipeline Log UI、模型和二进制资产均无变化，Git LFS资产无变化。
+- **验证**：更新底栏初始布局文本测试；当前桌面分支Development Test UI测试24项通过，正式提交分支25项通过。
+
+---
+
+## 2026-08-20 — Development Test UI增加上一秒窗口与丢窗性能指标
+
+- **版本/标签**：Development Test UI性能监控增强；未创建或移动版本标签。
+- **类型**：Runtime可观测性、UI显示和性能快照契约更新。
+- Runtime在每次20 ms窗口被L2/L3/L4调度链丢弃时记录带session/epoch和单调时钟的丢窗事件；继续保留原累计`processing_drops`，不改变latest-wins、队列容量或算法调度行为。
+- 性能快照新增上一秒完整处理窗口数、丢窗数和丢窗率；完整处理以L2/L3/L4均取得非失败终态的窗口计数，丢窗率按`丢窗/(完整处理+丢窗)`计算，session/epoch切换时清零。
+- Development Test UI底栏继续每1秒刷新，在原L2/L3/L4平均耗时与刷新率后显示`20ms窗口、丢窗、丢窗率`；停止或尚无数据时稳定显示0，不使用历史累计值。
+- L1采集、L2 MUSIC/ID、L3波束形成与试听、L4分类、正式录音/数据管理、Production UI、Pipeline Log UI、模型和二进制资产均无变化，Git LFS资产无变化。
+- **验证**：增加一秒滑动计数、丢窗率、epoch重置和初始布局文本测试；Runtime/UI相关测试70项通过，全量自动测试322项通过。
 
 ---
 
