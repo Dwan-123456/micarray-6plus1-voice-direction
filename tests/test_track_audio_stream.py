@@ -9,6 +9,7 @@ from scipy.signal import resample_poly
 from gui.dev_test_ui.audio_id_tracker import AudioIdTracker
 from layer4_voice_classifier import InputGainCompensationSettings, NvidiaMarbleNetPlugin
 from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow
+from track_audio_stream.service import _CROSSFADE_SAMPLES
 
 
 def _window(decision: int, track_id: int = 7, *, level: float = 1.0e-3):
@@ -46,6 +47,47 @@ def test_hub_appends_one_aligned_compensated_hop_per_id_and_grows_context():
     assert len(second.continuous_audio[0].waveform) == 1_920
     assert second.continuous_audio[0].effective_end_sample == 7_680
     assert second.continuous_audio[0].gain_diagnostic.enabled is True
+
+
+def test_adjacent_windows_crossfade_the_future_overlap_without_a_20ms_seam():
+    def offset_window(decision: int, offset: float) -> TrackAudioWindow:
+        absolute = np.arange(decision - 3_840, decision, dtype=np.float64)
+        waveform = np.ascontiguousarray(
+            0.1 * np.sin(2.0 * np.pi * 523.0 * absolute / 48_000.0) + offset,
+            np.float32,
+        )
+        return TrackAudioWindow(
+            "session", 0, decision // 960, decision, 7, 30.0,
+            waveform, (0.1,) * 4, "optimized",
+        )
+
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+    )
+    first_window = offset_window(7_680, 0.0)
+    second_window = offset_window(8_640, 0.04)
+    first = hub.process(
+        (first_window,), active_track_ids=(7,), identity=_identity(7_680),
+    ).emitted_hops[0].waveform
+    second = hub.process(
+        (second_window,), active_track_ids=(7,), identity=_identity(8_640),
+    ).emitted_hops[0].waveform
+
+    previous_future = first_window.waveform[-960:]
+    current = second_window.waveform[-1_920:-960]
+    phase = np.linspace(0.0, np.pi / 2.0, _CROSSFADE_SAMPLES, dtype=np.float32)
+    expected_prefix = (
+        previous_future[:_CROSSFADE_SAMPLES] * np.cos(phase) ** 2
+        + current[:_CROSSFADE_SAMPLES] * np.sin(phase) ** 2
+    )
+    np.testing.assert_allclose(second[:_CROSSFADE_SAMPLES], expected_prefix, atol=1e-7)
+    np.testing.assert_array_equal(second[_CROSSFADE_SAMPLES:], current[_CROSSFADE_SAMPLES:])
+    # The seam now follows two adjacent samples from the same older L3
+    # estimate instead of jumping directly to the newer window's DC/weights.
+    assert second[0] - first[-1] == pytest.approx(
+        previous_future[0] - first[-1], abs=1e-7,
+    )
+    assert abs(second[0] - first[-1]) < abs(current[0] - first[-1])
 
 
 def test_gain_switch_is_realtime_and_does_not_reset_the_track_context():

@@ -26,6 +26,8 @@ class _TrackState:
     last_source_decision: int | None = None
     last_emitted_end: int | None = None
     previous_gain_db: float = 0.0
+    future_source_decision: int | None = None
+    future_audio: np.ndarray | None = None
     audio: deque[np.ndarray] = field(default_factory=deque)
     probabilities: deque[float | None] = field(default_factory=deque)
     diagnostics: deque[SegmentGainDiagnostic] = field(default_factory=deque)
@@ -105,6 +107,31 @@ class TrackAudioStreamHub:
         state.diagnostics.clear()
         state.previous_gain_db = 0.0
         state.last_emitted_end = None
+        state.future_source_decision = None
+        state.future_audio = None
+
+    @staticmethod
+    def _join_from_overlapping_window(
+        previous_estimate: np.ndarray,
+        current_estimate: np.ndarray,
+    ) -> np.ndarray:
+        """Move BF weights between windows without a periodic 20 ms seam."""
+
+        previous = np.asarray(previous_estimate, dtype=np.float32)
+        current = np.asarray(current_estimate, dtype=np.float32)
+        if previous.shape != (_HOP_SAMPLES,) or current.shape != (_HOP_SAMPLES,):
+            raise ValueError("track-audio crossfade requires two complete 20 ms hops")
+        output = current.copy()
+        phase = np.linspace(
+            0.0, np.pi / 2.0, _CROSSFADE_SAMPLES, dtype=np.float32,
+        )
+        old_weight = np.cos(phase) ** 2
+        new_weight = np.sin(phase) ** 2
+        output[:_CROSSFADE_SAMPLES] = (
+            previous[:_CROSSFADE_SAMPLES] * old_weight
+            + current[:_CROSSFADE_SAMPLES] * new_weight
+        )
+        return np.ascontiguousarray(output, dtype=np.float32)
 
     def _append(
         self,
@@ -200,8 +227,26 @@ class TrackAudioStreamHub:
                     if recovered is None:
                         self._reset_track_audio(state)
                         continue
-                    emitted.append(self._append(key, state, source_decision, *recovered))
+                    audio, probability = recovered
+                    if (
+                        state.future_audio is not None
+                        and state.future_source_decision == source_decision
+                    ):
+                        audio = self._join_from_overlapping_window(
+                            state.future_audio, audio,
+                        )
+                    emitted.append(self._append(
+                        key, state, source_decision, audio, probability,
+                    ))
                 state.last_source_decision = window.decision_sample
+                # The current L3 window also contains the immediately following
+                # 20 ms interval.  Keep that overlapping estimate so the next
+                # window can begin with the same BF solution that ended this
+                # emitted hop, then move to its newer solution over 2 ms.
+                future_source_decision = window.decision_sample + _HOP_SAMPLES
+                future = self._extract_hop(window, future_source_decision)
+                state.future_source_decision = future_source_decision
+                state.future_audio = None if future is None else future[0]
                 if not state.audio:
                     continue
                 waveform = np.ascontiguousarray(np.concatenate(tuple(state.audio)), dtype=np.float32)
