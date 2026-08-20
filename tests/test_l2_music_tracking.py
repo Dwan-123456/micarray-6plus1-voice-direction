@@ -475,6 +475,31 @@ def test_birth_coast_reacquire_ttl_and_session_scoped_monotonic_ids() -> None:
     assert epoch_track.track_id > replacement[0].track_id
 
 
+def test_two_distinct_l4_voice_windows_are_required_and_coasting_feedback_renews_ttl() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=45.0, max_velocity_dps=60.0,
+        confirmation_observations=2, confirmation_window_samples=9_600,
+        coasting_ttl_samples=1_920, miss_cost=1.0, birth_cost=1.0,
+    ))
+    first, _ = _update(tracker, 7_680, (30.0,))
+    confirmed, _ = _update(tracker, 8_640, (30.0,))
+    track_id = confirmed[0].track_id
+    assert track_id == first[0].track_id
+    assert tracker.apply_voice_feedback("track", 0, 7_680, track_id, 0.95, True)
+    assert tracker.voice_confirmed_track_ids("track", 0, 8_640) == frozenset()
+    assert tracker.apply_voice_feedback("track", 0, 7_680, track_id, 0.95, True)
+    assert tracker.voice_confirmed_track_ids("track", 0, 8_640) == frozenset()
+    assert tracker.apply_voice_feedback("track", 0, 8_640, track_id, 0.95, True)
+    assert tracker.voice_confirmed_track_ids("track", 0, 8_640) == frozenset({track_id})
+    _, coasting = _update(tracker, 9_600, ())
+    assert coasting[0].track_state == "coasting"
+    assert tracker.apply_voice_feedback("track", 0, 9_600, track_id, 0.95, True)
+    _, renewed = _update(tracker, 11_520, ())
+    assert renewed[0].track_id == track_id
+    _, expired = _update(tracker, 12_480, ())
+    assert expired == ()
+
+
 def test_tentative_confirmation_retries_in_a_rolling_sample_window() -> None:
     tracker = GlobalDirectionTracker(GlobalTrackerConfig(
         association_gate_deg=45.0,
@@ -613,7 +638,7 @@ def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observati
     assert result.spatial_response is None and result.directions == ()
 
 
-def test_only_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
+def test_only_twice_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
     audio = _audio((30.0,), seed=29, samples=7_680 + 7 * 960)
@@ -659,6 +684,14 @@ def test_only_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None
         confirmed.directions[0].session_id,
         confirmed.directions[0].stream_epoch,
         confirmed.directions[0].decision_sample,
+        track_id,
+        0.95,
+        True,
+    )
+    assert pipeline.submit_voice_feedback(
+        confirmed.directions[0].session_id,
+        confirmed.directions[0].stream_epoch,
+        confirmed.directions[0].decision_sample + 960,
         track_id,
         0.95,
         True,

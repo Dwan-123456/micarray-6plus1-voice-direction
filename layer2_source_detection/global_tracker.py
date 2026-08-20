@@ -51,6 +51,8 @@ class _Track:
     filtered_velocity_dps: float = 0.0
     last_voice_sample: int | None = None
     last_voice_probability: float | None = None
+    voice_confirmation_samples: set[int] = field(default_factory=set)
+    coasting_voice_expiry_sample: int | None = None
     noise_interference: bool = False
     noise_voice_recovery_samples: list[int] = field(default_factory=list)
 
@@ -60,6 +62,7 @@ class GlobalDirectionTracker:
 
     backend = "global_assignment_v1"
     voice_absence_noise_samples = 3 * 48_000
+    minimum_voice_confirmations = 2
     max_active_tracks = 4
 
     def __init__(self, config: GlobalTrackerConfig | None = None) -> None:
@@ -137,14 +140,17 @@ class GlobalDirectionTracker:
             track_id
             for track_id, track in self._tracks.items()
             if track.confirmed
-            and track.last_voice_sample is not None
+            and len(track.voice_confirmation_samples) >= self.minimum_voice_confirmations
             and not track.noise_interference
         )
 
     def _expire_tracks(self, decision_sample: int) -> None:
         ttl = self.config.coasting_ttl_samples
         for track_id, track in tuple(self._tracks.items()):
-            if decision_sample - track.last_observed > ttl:
+            expiry_sample = track.last_observed + ttl
+            if track.coasting_voice_expiry_sample is not None:
+                expiry_sample = max(expiry_sample, track.coasting_voice_expiry_sample)
+            if decision_sample > expiry_sample:
                 del self._tracks[track_id]
 
     def _refresh_noise_labels(self, decision_sample: int) -> None:
@@ -176,6 +182,20 @@ class GlobalDirectionTracker:
             raise ValueError("L4 voice feedback probability must be in [0,1]")
         track.last_voice_probability = probability
         if is_voice:
+            if len(track.voice_confirmation_samples) < self.minimum_voice_confirmations:
+                track.voice_confirmation_samples.add(decision_sample)
+            if (
+                track.confirmed
+                and len(track.voice_confirmation_samples) >= self.minimum_voice_confirmations
+                and decision_sample > track.last_observed
+            ):
+                renewed_expiry = decision_sample + self.config.coasting_ttl_samples
+                if track.coasting_voice_expiry_sample is None:
+                    track.coasting_voice_expiry_sample = renewed_expiry
+                else:
+                    track.coasting_voice_expiry_sample = max(
+                        track.coasting_voice_expiry_sample, renewed_expiry
+                    )
             track.last_voice_sample = max(
                 decision_sample,
                 decision_sample if track.last_voice_sample is None else track.last_voice_sample,
