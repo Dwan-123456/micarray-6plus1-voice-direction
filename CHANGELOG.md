@@ -22,6 +22,19 @@
 
 ---
 
+## 2026-08-20 — 收录L3双声源分离与Python实时优化研究报告
+
+- **版本/标签**：项目`1.2.1`研究资料维护；不创建或移动发布标签，既有`v1.2.1`保持不变。
+- **类型**：重要非规范性研究参考资料归档。
+- **涉及文件**：`docs/references/README.md`、两份PDF研究报告、根目录`README.md`、`.gitattributes`和本日志。
+- **研究资料**：收录“以Python为主的两声源波束形成分离与实时优化研究报告”和“4 cm间距6+1麦克风阵列双固定声源分离：针对L3波束形成的研究结论与优化方案”，覆盖Python批量数值优化、DOA-conditioned Mask-MVDR、track-specific RTF、speaker-specific SCM、WNG约束鲁棒BF、分频处理、低频后滤波、实验矩阵和验收指标。
+- **权威边界**：两份报告是研究综述与实施建议，其中部分描述基于旧320 ms上下文；当前项目已经统一为160 ms L3/L4直接音频窗口。报告不得覆盖代码、`config/config.yaml`、`ARCHITECTURE_V1.1_TARGET.md`及发布文档的现行契约。
+- **L1/L2/L3/L4与界面/数据系统**：算法代码、Runtime、Windowing、Development Test UI、Pipeline Log UI、Production UI、RecordingStore、Audio Data Manager、配置、模型、测试和运行数据均无变化。
+- **验证**：复制前后两份PDF逐文件SHA-256一致；PDF可重新打开，页数分别为36页和26页；Git差异、LFS跟踪、链接与冲突标记进行静态检查。文档归档不构成报告方案已经实现或完成真实阵列/诊室验收。
+- **Git LFS与数据边界**：新增`docs/references/*.pdf` LFS规则并将两份报告作为LFS资产提交；不提交`.venv/`、`data/`、运行录音、scratch、Catalog、日志、缓存、临时渲染、密钥或代理设置。
+
+---
+
 ## 2026-08-20 — 改动前主线统一：合并全部本地与GitHub功能分支
 
 - **版本/标签**：以项目`1.2.1`为合并基线，不创建新版本、不移动或覆盖既有`v1.2.1`标签；保留`codex/backup-before-major-v1.2.1`作为大改前回退点。
