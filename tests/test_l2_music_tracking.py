@@ -202,7 +202,7 @@ def test_music_two_sources_are_50_degree_nms_separated() -> None:
 
 
 @pytest.mark.parametrize("manual_limit", (1, 2, 3))
-def test_manual_music_order_limit_caps_diagnostic_mdl_without_hiding_it(
+def test_manual_music_order_controls_peak_search_without_hiding_diagnostic_mdl(
     monkeypatch, manual_limit: int,
 ) -> None:
     monkeypatch.setattr(
@@ -220,8 +220,31 @@ def test_manual_music_order_limit_caps_diagnostic_mdl_without_hiding_it(
     assert diagnostics.model_order.estimated_sources == 5
     assert diagnostics.effective_model_order == manual_limit
     assert diagnostics.mdl_saturated
-    assert not diagnostics.births_allowed
-    assert diagnostics.stop_reason == "mdl_saturated"
+    assert diagnostics.births_allowed
+    assert diagnostics.stop_reason == "manual_order_greedy_peak_search"
+
+
+def test_manual_music_order_two_finds_two_peaks_when_mdl_underestimates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        RollingNormMusicScanner,
+        "_mdl_order",
+        staticmethod(lambda _eigenvalues, _snapshots: (1, 1.0)),
+    )
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        effective_order_limit=2,
+        direction_threshold=0.15,
+    )
+    _, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
+        _window(_audio((30.0, 210.0), seed=49)), physical_6plus1_geometry(), config,
+    )
+    assert diagnostics.model_order.estimated_sources == 1
+    assert diagnostics.effective_model_order == 2
+    assert len(candidates) == 2
+    assert all(
+        abs(((left.theta_deg - right.theta_deg + 180.0) % 360.0) - 180.0) >= 50.0
+        for index, left in enumerate(candidates) for right in candidates[index + 1:]
+    )
 
 
 def test_optional_dpd_rank1_uses_real_frequency_support_and_manual_ceiling() -> None:

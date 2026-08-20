@@ -72,7 +72,7 @@ class MusicDiagnostics:
     valid_frequency_bins: int
     covariance_quality: str
     iterations_used: int = 1
-    stop_reason: str = "model_order_applied"
+    stop_reason: str = "manual_order_greedy_peak_search"
     remaining_weight_ratio: float = 1.0
     fallback_reason: str | None = None
     evidence: tuple[MusicPeakEvidence, ...] = ()
@@ -123,7 +123,7 @@ class MusicDiagnostics:
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_dpd_cluster_v5"
+    algorithm_version = "frequency_normalized_music_greedy_peaks_v6"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -146,6 +146,52 @@ class RollingNormMusicScanner:
         self._last_model_order = None
         self._last_mdl_sample = None
         self.last_state_diagnostic = None
+
+    @staticmethod
+    def _greedy_circular_peaks(
+        normalized: np.ndarray,
+        config: DirectionScanConfig,
+        limit: int,
+    ) -> tuple[list[int], int, bool]:
+        """Pick up to ``limit`` local maxima using the UI threshold and circular NMS."""
+        tiled = np.tile(normalized, 3)
+        peaks, _ = find_peaks(tiled, prominence=config.peak_prominence)
+        eligible = sorted(
+            (
+                int(index - 360)
+                for index in peaks
+                if 360 <= index < 720
+                and normalized[int(index - 360)] >= config.direction_threshold
+            ),
+            key=lambda index: (-float(normalized[index]), index),
+        )
+        chosen: list[int] = []
+        for _ in range(limit):
+            next_peak = next(
+                (
+                    index for index in eligible
+                    if index not in chosen
+                    and all(
+                        abs(((index - old + 180) % 360) - 180)
+                        >= config.min_peak_distance_deg
+                        for old in chosen
+                    )
+                ),
+                None,
+            )
+            if next_peak is None:
+                break
+            chosen.append(next_peak)
+        unselected_separated_peak = any(
+            index not in chosen
+            and all(
+                abs(((index - old + 180) % 360) - 180)
+                >= config.min_peak_distance_deg
+                for old in chosen
+            )
+            for index in eligible
+        )
+        return chosen, len(eligible), bool(len(chosen) == limit and unselected_separated_peak)
 
     @staticmethod
     def _periodic_hann(length: int) -> np.ndarray:
@@ -601,19 +647,19 @@ class RollingNormMusicScanner:
                 else None
             )
         else:
-            effective_order = min(diagnostic_order, config.effective_order_limit)
+            # The Test UI order selector is the requested MUSIC subspace order
+            # and the maximum number of peaks to search. MDL remains diagnostic
+            # only, so an underestimated MDL result cannot hide a weaker second
+            # or third local maximum.
+            effective_order = config.effective_order_limit
             limit = effective_order
-            if effective_order == 0:
-                raw = np.zeros(360, dtype=np.float64)
-                per_frequency = np.zeros((int(valid.sum()), 360), dtype=np.float64)
-            else:
-                noise = eigenvectors[:, :, : 7 - effective_order]
-                projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
-                denominator = np.sum(np.abs(projection) ** 2, axis=2)
-                per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
-                per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
-                raw = per_frequency.mean(axis=0)
-            stop_reason = "mdl_saturated" if mdl_saturated else "model_order_applied"
+            noise = eigenvectors[:, :, : 7 - effective_order]
+            projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
+            denominator = np.sum(np.abs(projection) ** 2, axis=2)
+            per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
+            per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
+            raw = per_frequency.mean(axis=0)
+            stop_reason = "manual_order_greedy_peak_search"
             fallback_reason = (
                 "imcra_noise_psd_unavailable"
                 if config.noise_whitening_enabled and whitening_status == "unavailable"
@@ -621,7 +667,7 @@ class RollingNormMusicScanner:
                     "diagnostic_order_exceeds_output_limit" if mdl_saturated else None
                 )
             )
-            births_allowed = not mdl_saturated
+            births_allowed = True
         normalized = np.asarray(
             (raw - raw.min()) / max(float(raw.max() - raw.min()), 1.0e-12), dtype=np.float32
         )
@@ -663,27 +709,10 @@ class RollingNormMusicScanner:
             eligible_peak_count = len(qualified_clusters)
             candidate_limit_applied = len(qualified_clusters) > limit
         else:
-            tiled = np.tile(normalized, 3)
-            peaks, _ = find_peaks(tiled, prominence=config.peak_prominence)
-            ranked = sorted(
-                {int(index - 360) for index in peaks if 360 <= index < 720},
-                key=lambda index: (-float(normalized[index]), index),
+            chosen, eligible_peak_count, candidate_limit_applied = self._greedy_circular_peaks(
+                normalized, config, limit,
             )
-            if limit <= 0:
-                ranked = []
-            chosen = []
-            for index in ranked:
-                if normalized[index] < config.direction_threshold:
-                    continue
-                if any(abs(((index - old + 180) % 360) - 180) < config.min_peak_distance_deg for old in chosen):
-                    continue
-                chosen.append(index)
-                if len(chosen) == limit:
-                    break
-            eligible_peak_count = len(ranked)
-            candidate_limit_applied = bool(
-                limit and len(chosen) == limit and len(ranked) > limit
-            )
+            births_allowed = bool(chosen)
         candidates = tuple(
             CandidateDirection(
                 window.session_id, window.stream_epoch, window.window_id, window.decision_sample,

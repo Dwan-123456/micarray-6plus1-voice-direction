@@ -14,9 +14,9 @@ DecisionWindow + 两个对齐的20 ms概率
          20 ms增量加入/移除STFT协方差帧
          每频点7×7加载/收缩协方差 + Hermitian eigh
          MDL与跨频一致性估计0～6阶空间模态
-         实际阶数=min(MDL诊断阶数, 手动上限1/2/3)
+         MDL仅作0～6阶诊断；实际阶数=手动上限1/2/3
          NormMUSIC逐频归一化后跨频融合
-         最多3峰 + 50°圆周NMS
+         UI阶数上限1/2/3轮贪心选峰 + 50°圆周NMS
     → 永久开启的全局方向轨迹分配
          birth/miss dummy行列 + linear_sum_assignment
          tentative / confirmed / coasting / deleted
