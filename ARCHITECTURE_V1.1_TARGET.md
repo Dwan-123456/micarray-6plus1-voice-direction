@@ -126,7 +126,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `DecisionWindow [7680,8]` 每20 ms发布一次；160 ms是L3/L4的直接上下文，L2可用滚动历史上限仍为320 ms，但更长历史由L2跨窗口状态维护。
 - L2维护按session/epoch/sample连续的滚动STFT与协方差状态。每个新DecisionWindow原则上只加入最近20 ms产生的新帧并移出超出MUSIC历史长度的旧帧；禁止每20 ms从头重算320 ms STFT和全部协方差。
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
-- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有活动ID时，Gate关闭会跳过新的MUSIC观测。当前窗口开始时只要存在任意未删除ID，低于门限的正式概率判决即强制放行MUSIC；最后一个ID删除后立即恢复概率门限。ID继续按3秒绝对sample TTL推进到coasting/超时；预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
+- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有符合条件的人声ID时，Gate关闭会跳过新的MUSIC观测。只有tracking状态已为`confirmed`、至少收到一次L4正向人声反馈且当前未标记为噪声干扰的ID，才能把低于门限的正式概率判决强制放行；仅有MUSIC观测的临时/未获人声确认ID不能强制Gate。ID继续按3秒绝对sample TTL推进到coasting/超时；未获L4人声确认的轨迹漏检后可留在`active_tracks`等待重关联，但不得作为公共coasting方向送入L3。预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
 
 本分支的Windowing直接提供`DecisionWindow.physical_samples`和`physical_history(160)`，只含7个物理麦，`HardwareMix`只能通过独立属性访问；请求超出当前窗口的240/320 ms历史会被拒绝。`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2跨窗口维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/240/320三档之一、比较集合固定为三档且滚动历史上限为320 ms。WindowAssembler仍只组装160 ms窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
@@ -177,7 +177,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 - 状态为 `tentative → confirmed → coasting → deleted`。
 - 首次无匹配观测立即分配新 ID；满足连续观测条件后确认。ID 一经分配，在同一 session 内不得给其他轨迹复用。
-- 短时漏检或 Gate 关闭进入 coasting；在 TTL 内重新落入关联门限应恢复原 ID。
+- 短时漏检或 Gate 关闭进入内部 coasting；在 TTL 内重新落入关联门限应恢复原 ID。只有至少收到一次L4人声确认且未标记为噪声干扰的confirmed轨迹，才能把coasting角度作为公共L3方向发布。
 - L4必须按权威`track_id`、原窗口sample和epoch回传人声概率。某ID从建立或最近一次正向人声判定起连续3秒没有再次被判为人声时，L2将其标记为非排他的噪声干扰轨：它仍可更新自身方向和3秒TTL，但不占用普通ID的全局关联排他空间，普通ID接近时不得错误归并到噪声ID。只有其±45°内没有其他普通ID，且在滚动3秒时间窗内累计收到5次人声判定，才解除噪声标记；非人声结果不增加次数，也不清空仍在时间窗内的人声记录。反馈不得按迟到角度猜测ID。
 - 超过 TTL 删除轨迹；之后出现的方向即使相近也必须获得新 ID。
 - 所有确认、miss、coast 和 TTL 使用 48 kHz 绝对 sample 计算，不依赖“处理了多少窗”，从而正确应对 latest-wins 丢窗和 sample 跳跃。

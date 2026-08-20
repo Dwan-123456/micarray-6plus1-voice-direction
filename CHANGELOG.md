@@ -22,6 +22,18 @@
 
 ---
 
+## 2026-08-20 — 收紧L2 Gate强制放行与coasting发布资格
+
+- **版本/标签**：项目`1.2.1`缺陷修复；不创建或移动发布标签。
+- **类型**：L2方向ID、概率Gate联动和L3方向发布规则修复。
+- **L2**：只有tracking状态已为`confirmed`、至少收到一次L4正向人声反馈且当前未标记为噪声干扰的ID，才能在正式概率低于门限时强制Gate开启；未经L4人声确认的轨迹失去当前观测后仍可在内部3秒TTL中等待重关联，但不再作为公共coasting方向送入L3。其有当前观测时仍可按既有规则进入L3/L4接受分类。MUSIC、MDL、逐帧归一化、候选门限、Gate概率计算、ID关联、Kalman和3秒几何TTL均未改变。
+- **L1/L3/L4与其他系统**：L1采集/IMCRA/预降噪、L3波束形成、L4分类器和反馈格式、Runtime调度、Development Test UI、Pipeline Log UI、Production UI、RecordingStore、Audio Data Manager、模型与资产均无算法或接口变化；L3只会少收到未经人声确认的漏检coasting目标。
+- **文档与测试**：同步根README、L2 README和`ARCHITECTURE_V1.1_TARGET.md`；更新L2跟踪测试，覆盖“仅tracking-confirmed不能强制Gate”和“收到L4人声反馈后允许强制Gate及coasting发布”。
+- **验证**：`tests/test_l2_music_tracking.py`与`tests/test_runtime_v11_contracts.py`定向测试共`46 passed`；不等同于真实阵列声场验收。
+- **Git LFS与数据边界**：无Git LFS资产变化；不提交`.venv/`、`data/`、运行录音、scratch、Catalog、日志、缓存、密钥或代理设置。
+
+---
+
 ## 2026-08-20 — 收录L3双声源分离与Python实时优化研究报告
 
 - **版本/标签**：项目`1.2.1`研究资料维护；不创建或移动发布标签，既有`v1.2.1`保持不变。

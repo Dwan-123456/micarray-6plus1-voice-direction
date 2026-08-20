@@ -459,13 +459,20 @@ def test_kalman_toggle_changes_only_angle_not_id_or_lifecycle() -> None:
     assert third[0].track_state == "confirmed"
 
 
-def test_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> None:
+def test_only_voice_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> None:
     tracker = _tracker()
     _update(tracker, 15_360, (20.0,), kalman_enabled=True)
     confirmed, _ = _update(tracker, 16_320, (22.0,), kalman_enabled=True)
     observed, active = _update(tracker, 17_280, (), kalman_enabled=True)
 
-    selected = _select_l3_directions(observed, active)
+    assert _select_l3_directions(
+        observed, active, voice_confirmed_coasting_ids=frozenset()
+    ) == ()
+    selected = _select_l3_directions(
+        observed,
+        active,
+        voice_confirmed_coasting_ids=frozenset({confirmed[0].track_id}),
+    )
 
     assert len(selected) == 1
     assert selected[0].track_id == confirmed[0].track_id
@@ -520,10 +527,10 @@ def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observati
     assert result.spatial_response is None and result.directions == ()
 
 
-def test_live_id_forces_closed_probability_gate_open_for_three_second_ttl() -> None:
+def test_only_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
-    audio = _audio((30.0,), seed=29, samples=7_680 + 960)
+    audio = _audio((30.0,), seed=29, samples=7_680 + 3 * 960)
 
     def probabilities(window: DecisionWindow, value: float) -> tuple[SourceProbability20ms, ...]:
         return tuple(SourceProbability20ms(
@@ -542,17 +549,45 @@ def test_live_id_forces_closed_probability_gate_open_for_three_second_ttl() -> N
     assert first.directions == ()
 
     second_window = _window(audio, 1)
+    confirmed = pipeline.process(
+        second_window, probabilities(second_window, 1.0), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0,
+    )
+    assert confirmed.directions[0].track_state == "confirmed"
+    track_id = confirmed.directions[0].track_id
+
+    # Tracking confirmation without L4 voice evidence cannot sustain scanning.
+    third_window = _window(audio, 2)
+    closed = pipeline.process(
+        third_window, probabilities(third_window, 0.0), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0,
+    )
+    assert closed.gate_decision.state is ProbabilityGateState.CLOSED
+    assert closed.directions == ()
+
+    assert pipeline.submit_voice_feedback(
+        confirmed.directions[0].session_id,
+        confirmed.directions[0].stream_epoch,
+        confirmed.directions[0].decision_sample,
+        track_id,
+        0.95,
+        True,
+    )
+    forced_window = _window(audio, 3)
     forced = pipeline.process(
-        second_window, probabilities(second_window, 0.0), physical_6plus1_geometry(),
+        forced_window, probabilities(forced_window, 0.0), physical_6plus1_geometry(),
         DirectionScanConfig.from_project(config), gate_threshold=0.6,
         gate_config_revision=0,
     )
     assert forced.gate_decision.state is ProbabilityGateState.OPEN
     assert forced.gate_decision.probability_40ms == 0.0
-    assert forced.gate_decision.reason == "active_id_force_open"
+    assert forced.gate_decision.reason == "voice_confirmed_id_force_open"
     assert forced.spatial_response is not None
+    assert any(item.track_id == track_id for item in forced.directions)
 
-    expired_decision = second_window.decision_sample + 3 * 48_000 + 960
+    expired_decision = forced_window.decision_sample + 3 * 48_000 + 960
     expired_window = DecisionWindow(
         second_window.session_id, second_window.stream_epoch, 999, expired_decision,
         expired_decision - 1_920, expired_decision,

@@ -29,8 +29,9 @@ def _select_l3_directions(
     *,
     limit: int = 3,
     minimum_separation_deg: float = 45.0,
+    voice_confirmed_coasting_ids: frozenset[int] | None = None,
 ) -> tuple[TrackedDirection, ...]:
-    """Select authoritative observed/coasting IDs that receive L3 BF."""
+    """Select observed tracks plus L4-voice-confirmed coasting tracks for L3."""
 
     selected = [item for item in observed if item.track_state == "confirmed"]
     selected_ids = {item.track_id for item in selected}
@@ -38,6 +39,10 @@ def _select_l3_directions(
         (
             item for item in active
             if item.track_state == "coasting" and item.track_id not in selected_ids
+            and (
+                voice_confirmed_coasting_ids is None
+                or item.track_id in voice_confirmed_coasting_ids
+            )
         ),
         key=lambda item: (item.missed_samples, -item.normalized_score, item.track_id),
     )
@@ -223,20 +228,20 @@ class Layer2Pipeline:
         if type(direction_kalman_enabled) is not bool:
             raise TypeError("L2 Kalman switch must be bool")
         self._drain_voice_feedback()
-        force_open_for_active_id = self.id_tracker.has_live_tracks(
+        voice_confirmed_ids = self.id_tracker.voice_confirmed_track_ids(
             window.session_id, window.stream_epoch, window.decision_sample
         )
         decision = self.gate.evaluate(window, probabilities, threshold=gate_threshold,
                                       config_revision=gate_config_revision)
-        if force_open_for_active_id and decision.state is ProbabilityGateState.CLOSED:
+        if voice_confirmed_ids and decision.state is ProbabilityGateState.CLOSED:
             decision = replace(
                 decision,
                 state=ProbabilityGateState.OPEN,
                 sound_present=True,
-                reason="active_id_force_open",
+                reason="voice_confirmed_id_force_open",
                 diagnostics=decision.diagnostics + (
-                    "active_id_force_open=true",
-                    "active_id_force_open_while_id_exists=true",
+                    "voice_confirmed_id_force_open=true",
+                    "force_open_requires_l4_voice=true",
                 ),
             )
         response: SpatialResponse | None = None
@@ -253,7 +258,11 @@ class Layer2Pipeline:
             allow_births=True if diagnostics is None else diagnostics.births_allowed)
         self.last_id_tracking_error = self.last_kalman_error = None
         directions = (
-            _select_l3_directions(observed_directions, active)
+            _select_l3_directions(
+                observed_directions,
+                active,
+                voice_confirmed_coasting_ids=voice_confirmed_ids,
+            )
             if decision.allow_srp else ()
         )
         candidates = tuple(CandidateDirection(

@@ -120,6 +120,27 @@ class GlobalDirectionTracker:
         self._refresh_noise_labels(decision_sample)
         return bool(self._tracks)
 
+    def voice_confirmed_track_ids(
+        self, session_id: str, stream_epoch: int, decision_sample: int
+    ) -> frozenset[int]:
+        """Return live tracking-confirmed IDs with positive L4 voice evidence.
+
+        A direction observation alone is deliberately insufficient here.  The
+        returned IDs are the only tracks allowed to force the probability Gate
+        open or publish a missing-observation/coasting direction to L3.
+        """
+
+        self.prepare_stream(session_id, stream_epoch)
+        self._expire_tracks(decision_sample)
+        self._refresh_noise_labels(decision_sample)
+        return frozenset(
+            track_id
+            for track_id, track in self._tracks.items()
+            if track.confirmed
+            and track.last_voice_sample is not None
+            and not track.noise_interference
+        )
+
     def _expire_tracks(self, decision_sample: int) -> None:
         ttl = self.config.coasting_ttl_samples
         for track_id, track in tuple(self._tracks.items()):
