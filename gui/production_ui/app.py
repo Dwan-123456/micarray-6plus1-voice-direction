@@ -158,6 +158,14 @@ class DataTable(QTableWidget):
         value = self.item(rows[0].row(), 0).data(Qt.UserRole)
         return None if value in {None, ""} else str(value)
 
+    def select_id(self, value: str) -> bool:
+        for row in range(self.rowCount()):
+            item = self.item(row, 0)
+            if item is not None and str(item.data(Qt.UserRole)) == value:
+                self.selectRow(row)
+                return True
+        return False
+
 
 class ImportMetadataDialog(QDialog):
     """Self-contained import metadata gate; no hidden dependency on another page."""
@@ -770,6 +778,9 @@ class AudioDataManager(QMainWindow):
         simulate_button = QPushButton("用所选样本进行模拟测试")
         simulate_button.clicked.connect(self._simulate_selected_recording)
         simulate_button.setToolTip("自动打开Test UI，并完整模拟录制时的8通道音频和热力图输入")
+        rename_button = QPushButton("修改所选名称")
+        rename_button.clicked.connect(self._rename_selected_recording)
+        rename_button.setToolTip("只修改列表名称和标签记录，不改变录音文件或内部编号")
         trash_button = QPushButton("移到回收站")
         trash_button.setObjectName("destructiveButton")
         trash_button.clicked.connect(self._trash_recording)
@@ -777,6 +788,7 @@ class AudioDataManager(QMainWindow):
         actions.addWidget(listen_button)
         actions.addWidget(stop_listen_button)
         actions.addWidget(simulate_button)
+        actions.addWidget(rename_button)
         actions.addWidget(trash_button)
         actions.addStretch()
         box.addLayout(actions)
@@ -1640,6 +1652,39 @@ class AudioDataManager(QMainWindow):
             lambda: self.service.trash("recording", recording_id),
             lambda _: self._trash_complete("测试样本已移到可恢复的回收站。"),
         )
+
+    def _rename_selected_recording(self):
+        recording_id = self.corpus_table.selected_id()
+        if not recording_id:
+            return self._info("请先在表格中选择一个测试样本。")
+        row = next(
+            (item for item in self.service.recordings() if item["id"] == recording_id),
+            None,
+        )
+        if row is None:
+            return self._info("所选测试样本已不存在，请刷新列表。")
+        current_name = str(row.get("display_name") or "")
+        requested_name, ok = QInputDialog.getText(
+            self,
+            "修改音频名称",
+            "新的标注名称：",
+            QLineEdit.Normal,
+            current_name,
+        )
+        if not ok:
+            return None
+        self._job(
+            lambda: self.service.rename_recording(recording_id, requested_name),
+            lambda name: self._recording_renamed(recording_id, name),
+        )
+
+    def _recording_renamed(self, recording_id: str, name: str) -> None:
+        def loaded(rows: list[dict[str, Any]]) -> None:
+            self.corpus_table.load(rows)
+            self.corpus_table.select_id(recording_id)
+            self.statusBar().showMessage(f"名称已修改：{name}", 5000)
+
+        self._job(self.service.recordings, loaded)
 
     def show_default_window(self) -> None:
         """Open as a maximized normal window within the active screen."""

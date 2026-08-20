@@ -61,6 +61,75 @@ def build_corpus_display_name(
     )
 
 
+def validate_manual_display_name(value: object) -> str:
+    """Validate a user-supplied label without changing its intended wording."""
+
+    raw = "" if value is None else str(value)
+    if any(ord(char) < 32 for char in raw):
+        raise ValueError("音频名称不能包含换行、制表符或其他控制字符")
+    name = raw.strip()
+    if not name:
+        raise ValueError("音频名称不能为空")
+    if len(name) > 300:
+        raise ValueError("音频名称不能超过300个字符")
+    return name
+
+
+def rename_corpus_recording(
+    data_root: str | Path,
+    recording_id: str,
+    requested_name: object,
+    *,
+    catalog: Catalog,
+) -> str:
+    """Change only the human-readable recording label and its indexed projections."""
+
+    name = validate_manual_display_name(requested_name)
+    data_path = Path(data_root).resolve()
+    matches = list(
+        data_path.glob(f"test_corpus/*/recordings/{recording_id}/recording_manifest.json")
+    )
+    if len(matches) != 1:
+        raise FileNotFoundError(f"找不到唯一测试样本：{recording_id}")
+    manifest_path = matches[0]
+    recording_root = manifest_path.parent.resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    previous_name = str(manifest.get("display_name") or "").strip()
+    if name == previous_name:
+        return name
+
+    labels_asset = next(
+        (item for item in manifest.get("assets", ()) if item.get("kind") == "labels"),
+        None,
+    )
+    if labels_asset is None:
+        raise ValueError("该样本缺少labels资产，不能只修改Catalog中的显示名称")
+    labels_path = (recording_root / str(labels_asset.get("path", ""))).resolve(strict=True)
+    if recording_root not in labels_path.parents:
+        raise ValueError("labels资产路径越出样本目录")
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
+    labels["recording_name"] = name
+    atomic_json(labels_path, labels)
+    labels_asset["sha256"] = sha256_file(labels_path)
+
+    manifest["display_name"] = name
+    manifest["display_name_source"] = "manual"
+    write_manifest(manifest_path, manifest)
+    append_audit(
+        recording_root,
+        "recording_display_name_changed",
+        {"previous_name": previous_name, "current_name": name, "source": "manual"},
+    )
+    catalog.upsert_recording(manifest, recording_root)
+    catalog.audit(
+        "recording",
+        str(manifest["recording_id"]),
+        "recording_display_name_changed",
+        {"previous_name": previous_name, "current_name": name, "source": "manual"},
+    )
+    return name
+
+
 def _recorded_at(manifest: dict[str, Any], previous_name: str) -> datetime:
     match = _LEGACY_TIMESTAMP.search(previous_name)
     if match:

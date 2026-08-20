@@ -8,6 +8,8 @@ from data_management.catalog import Catalog
 from data_management.corpus_naming import (
     build_corpus_display_name,
     migrate_corpus_display_names,
+    rename_corpus_recording,
+    validate_manual_display_name,
 )
 from data_management.manifests import atomic_json, sha256_file, write_manifest
 
@@ -85,3 +87,66 @@ def test_migration_updates_manifest_labels_hash_catalog_and_legacy_metadata(tmp_
         assert json.loads(row["metadata_json"])["display_name"] == expected
     finally:
         catalog.close()
+
+
+def test_manual_rename_updates_labels_hash_manifest_catalog_and_audit(tmp_path: Path):
+    recording_id = "rename-recording"
+    root = tmp_path / "test_corpus" / "test-recordings" / "recordings" / recording_id
+    root.mkdir(parents=True)
+    labels_path = atomic_json(
+        root / "labels.json",
+        {"schema_version": "test_recording_labels_v3", "recording_name": "原名称"},
+    )
+    manifest = {
+        "schema_version": "raw_microphone_recording_v1",
+        "dataset_id": "test-recordings",
+        "recording_id": recording_id,
+        "display_name": "原名称",
+        "source_type": "dedicated",
+        "quality_status": "passed",
+        "split": "unset",
+        "duration_samples": 48_000,
+        "assets": [
+            {"kind": "labels", "path": "labels.json", "sha256": sha256_file(labels_path)}
+        ],
+    }
+    write_manifest(root / "recording_manifest.json", manifest)
+    catalog = Catalog(tmp_path / "catalog.sqlite")
+    try:
+        catalog.upsert_dataset("test-recordings", root.parents[1])
+        catalog.upsert_recording(manifest, root)
+        result = rename_corpus_recording(
+            tmp_path, recording_id, " 会议室双人对话（复核） ", catalog=catalog
+        )
+
+        assert result == "会议室双人对话（复核）"
+        updated = json.loads((root / "recording_manifest.json").read_text(encoding="utf-8"))
+        assert updated["display_name"] == result
+        assert updated["display_name_source"] == "manual"
+        labels = json.loads(labels_path.read_text(encoding="utf-8"))
+        assert labels["recording_name"] == result
+        assert updated["assets"][0]["sha256"] == sha256_file(labels_path)
+        catalog_row = catalog.list_recordings()[0]
+        assert json.loads(catalog_row["metadata_json"])["display_name"] == result
+        actions = [
+            row[0]
+            for row in catalog.connection.execute(
+                "SELECT action FROM audit_log WHERE entity_id=?", (recording_id,)
+            )
+        ]
+        assert actions == ["recording_display_name_changed"]
+        assert "recording_display_name_changed" in (root / "audit.jsonl").read_text(
+            encoding="utf-8"
+        )
+    finally:
+        catalog.close()
+
+
+def test_manual_display_name_rejects_empty_control_characters_and_excess_length():
+    for value in (None, "  ", "名称\n换行", "x" * 301):
+        try:
+            validate_manual_display_name(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid name accepted: {value!r}")

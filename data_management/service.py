@@ -7,6 +7,7 @@ from typing import Any
 
 from .catalog import Catalog
 from .contracts import Annotation
+from .corpus_naming import rename_corpus_recording
 from .corpus_store import CorpusStore
 from .dedicated_recording import DedicatedRecordingController
 from .experiments import ExperimentStore
@@ -105,6 +106,29 @@ class DataManagerService:
                 metadata = {}
             row["display_name"] = str(metadata.get("display_name") or row["id"])
         return rows
+
+    def rename_recording(self, recording_id: str, requested_name: object) -> str:
+        row = next(
+            (
+                item
+                for item in self.catalog.list_recordings(limit=100000)
+                if item["id"] == recording_id
+            ),
+            None,
+        )
+        if row is None:
+            raise FileNotFoundError(recording_id)
+        dataset = self.catalog.get_dataset(row["dataset_id"])
+        if (dataset and dataset["locked"]) or self.catalog.recording_is_experiment_locked(
+            recording_id
+        ):
+            raise PermissionError("锁定数据集或实验快照中的名称不能原地修改")
+        return rename_corpus_recording(
+            self.data_root,
+            recording_id,
+            requested_name,
+            catalog=self.catalog,
+        )
 
     def datasets(self) -> list[dict[str, Any]]:
         return self.catalog.list_datasets()

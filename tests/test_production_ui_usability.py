@@ -8,7 +8,7 @@ import wave
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
 from PySide6.QtCore import Qt
 
 from gui.production_ui.app import AudioDataManager, DataTable, ImportMetadataDialog
@@ -275,8 +275,35 @@ def test_recording_page_has_only_requested_actions_and_can_listen_to_any_native_
     assert played == [(audio.resolve(), 7)]
     button_texts = {button.text() for button in window.pages["corpus"].findChildren(QPushButton)}
     assert button_texts == {
-        "试听所选通道", "停止试听", "用所选样本进行模拟测试", "移到回收站",
+        "试听所选通道", "停止试听", "用所选样本进行模拟测试", "修改所选名称", "移到回收站",
     }
+    window.close()
+
+
+def test_selected_recording_name_can_be_changed_from_corpus_page(tmp_path, monkeypatch):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    current_rows = [{"id": "sample-rename", "display_name": "原名称"}]
+    renamed: list[tuple[str, str]] = []
+    monkeypatch.setattr(window.service, "recordings", lambda **_filters: current_rows)
+
+    def rename(recording_id: str, name: str) -> str:
+        renamed.append((recording_id, name))
+        current_rows[0] = {"id": recording_id, "display_name": name.strip()}
+        return name.strip()
+
+    monkeypatch.setattr(window.service, "rename_recording", rename)
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_args, **_kwargs: ("新标注名称", True))
+    monkeypatch.setattr(window, "_job", lambda fn, done: done(fn()))
+    window.corpus_table.load(current_rows)
+    window.corpus_table.selectRow(0)
+
+    window._rename_selected_recording()
+
+    assert renamed == [("sample-rename", "新标注名称")]
+    assert window.corpus_table.item(0, 1).text() == "新标注名称"
+    assert window.corpus_table.selected_id() == "sample-rename"
+    assert "名称已修改" in window.statusBar().currentMessage()
     window.close()
 
 

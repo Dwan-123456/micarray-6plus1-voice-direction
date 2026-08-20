@@ -22,6 +22,19 @@
 
 ---
 
+## 2026-08-20 — 测试语料库支持手动修改所选音频名称
+
+- **版本/标签**：项目`1.2.1`维护增强；不创建或移动发布标签，既有发布标签保持不变。
+- **类型**：Production UI语料操作、标签一致性与审计功能。
+- **涉及文件**：`data_management/{corpus_naming,service}.py`、`gui/production_ui/{app.py,README.md}`及对应测试。
+- 测试语料库新增“修改所选名称”：对话框预填当前名称，保存后保持该行选中并立即显示新名称；取消不写入，空名称、控制字符和超过300字符的名称会被拒绝。
+- 手动改名同步更新`labels.json`的`recording_name`、labels资产SHA-256、`recording_manifest.json`及sidecar、Catalog投影和文件/Catalog审计记录；Recording UUID、目录、PCM、热力图、绝对sample轴和其他结构化标签不变。锁定数据集或实验快照禁止原地改名。
+- **未改变**：L1～L4算法、Windowing、Application Runtime、Development Test UI、Pipeline Log UI、录制流程、QA与数据集划分均无变化。
+- **验证**：语料命名/改名与Production UI可用性聚焦测试`22 passed`，全量自动测试`433 passed`，相关文件Ruff通过；本次不修改现有本地语料名称。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-20 — 总架构图同步当前连续逐ID音频主链
 
 - **版本/标签**：项目`1.2.1`文档维护；未创建或移动发布标签。
