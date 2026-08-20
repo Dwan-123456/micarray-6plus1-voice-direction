@@ -339,7 +339,7 @@ class RuntimeConfig(StrictModel):
     processing_queue_windows: int = Field(gt=0)
     # Normal deployments change only this shared value. Per-stage fields stay
     # optional for focused tests and exceptional diagnostic profiles.
-    stage_queue_windows: int = Field(default=1_000, gt=0, le=10_000)
+    stage_queue_windows: int = Field(default=2_000, gt=0, le=10_000)
     l2_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     l3_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     l4_queue_windows: int | None = Field(default=None, gt=0, le=10_000)

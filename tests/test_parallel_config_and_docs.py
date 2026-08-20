@@ -14,23 +14,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def test_parallel_runtime_limits_are_loaded_from_the_single_config():
     runtime = load_config(PROJECT_ROOT / "config" / "config.yaml").runtime
 
-    assert runtime.stage_queue_windows == 1_000
+    assert runtime.stage_queue_windows == 2_000
     assert (runtime.l2_queue_windows, runtime.l3_queue_windows, runtime.l4_queue_windows) == (
-        1_000,
-        1_000,
-        1_000,
+        2_000,
+        2_000,
+        2_000,
     )
     assert runtime.completion_queue_windows == 8
-    assert runtime.max_inflight_windows == 3_003
+    assert runtime.max_inflight_windows == 6_003
     assert runtime.compute_cache_max_bytes == 64 * 1024 * 1024
     assert runtime.overflow_policy == "drop_oldest"
     assert runtime.graceful_shutdown_timeout_seconds == 10.0
 
 
-def test_thousand_window_defaults_are_covered_by_joiner_capacity():
+def test_two_thousand_window_defaults_are_covered_by_joiner_capacity():
     runtime = load_config(PROJECT_ROOT / "config" / "config.yaml").runtime
 
-    assert RuntimeConfig.model_fields["stage_queue_windows"].default == 1_000
+    assert RuntimeConfig.model_fields["stage_queue_windows"].default == 2_000
     assert RuntimeConfig.model_fields["l2_queue_windows"].default is None
     assert RuntimeConfig.model_fields["l3_queue_windows"].default is None
     assert RuntimeConfig.model_fields["l4_queue_windows"].default is None
@@ -44,7 +44,7 @@ def test_thousand_window_defaults_are_covered_by_joiner_capacity():
 
     with pytest.raises(ValidationError, match="must cover all staged queues"):
         RuntimeConfig.model_validate(
-            {**runtime.model_dump(), "max_inflight_windows": 3_002}
+            {**runtime.model_dump(), "max_inflight_windows": 6_002}
         )
 
 
