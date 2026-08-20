@@ -362,7 +362,7 @@ class ImcraSpatialSeparationBeamformer:
                     (
                         "backend=loaded_mvdr_baseline",
                         "comparison_only=true",
-                        f"imcra={prepared.noise_algorithm_version}:{CONTEXT_HOPS}x20ms",
+                        f"imcra={prepared.noise_algorithm_version}:{prepared.stft.window_hops}x20ms",
                         "steering=free_field_direction",
                         f"loaded_mvdr_bins={solved.loaded_mvdr_bins}",
                         f"das_fallback_bins={solved.fallback_bins[index]}",

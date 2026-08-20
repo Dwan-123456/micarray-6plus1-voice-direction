@@ -28,8 +28,12 @@
   内部求解器，每个有方向的窗口因`NameError`直接进入`L3 failed`，因而Test UI只有
   Center Mic对照而没有方向预览。该基线现与当前优化路径一致，批量对所有loading重试
   执行Cholesky分解/求解，选择首个数值有效权重，其余频点仍回退DAS。
+- **模拟输入二次修复**：同一录音回放还暴露了Loaded MVDR诊断文字引用已移除的
+  `CONTEXT_HOPS`固定160 ms常量，数值求解成功后仍因`NameError`丢弃整窗输出。现改为读取
+  `prepared.stft.window_hops`，与40/80/160 ms可配置窗口一致。
 - **验证边界**：新增双方向Loaded MVDR无失真约束、finite输出及批量求解回归；
-  按用户要求本次未运行自动测试，仅执行修改文件的静态格式和差异检查。
+  按用户要求本次未运行自动测试套件。使用报错的同一录音执5秒短回放，L3完成83窗、
+  L4完成82窗，L2/L3/L4/commit错误计数均为0；修改文件静态格式和差异检查通过。
   `optimized`、`ds_baseline`、`subband_robust_baseline`、L1、L2、L4、Runtime时间线、录音、
   数据管理、UI交互和二进制资产均无变化。未创建或移动发布标签，无Git LFS变化。
 
