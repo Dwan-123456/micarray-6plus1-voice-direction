@@ -48,6 +48,19 @@ def _silent_preview(track_id: int, decision: int, theta: float) -> BeamformPrevi
     )
 
 
+def _low_level_preview(track_id: int, decision: int, theta: float) -> BeamformPreview:
+    absolute = np.arange(decision - 15_360, decision, dtype=np.float64)
+    peak = np.sqrt(2.0) * 10.0 ** (-55.0 / 20.0)
+    waveform = np.ascontiguousarray(
+        peak * np.sin(2.0 * np.pi * 500.0 * absolute / 48_000.0),
+        dtype=np.float32,
+    )
+    return BeamformPreview(
+        "session", 0, decision // 960, decision, theta, waveform, "ds_baseline",
+        track_id=track_id, track_state="confirmed",
+    )
+
+
 def _window(decision: int):
     return SimpleNamespace(session_id="session", stream_epoch=0, decision_sample=decision)
 
@@ -173,6 +186,22 @@ def test_ended_track_above_thirty_percent_sound_is_retained(tmp_path):
         tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
     tracker.update(_window(24_960), (), (), active_tracks=())
     assert tracker.snapshots()[0].track_id == 13
+
+
+def test_minus_fifty_five_dbfs_l3_audio_counts_as_sound(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    for index in range(10):
+        decision = 15_360 + index * 960
+        direction = _direction(16, decision, 95.0)
+        preview = (
+            _low_level_preview(16, decision, 95.0)
+            if index < 4 else _silent_preview(16, decision, 95.0)
+        )
+        tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
+    tracker.update(_window(24_960), (), (), active_tracks=())
+
+    assert tracker.snapshots()[0].track_id == 16
+    assert tracker.audio_cache_path(16) is not None
 
 
 def test_playable_track_survives_silent_tail_while_replay_queue_drains(tmp_path):

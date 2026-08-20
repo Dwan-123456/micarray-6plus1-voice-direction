@@ -22,6 +22,19 @@
 
 ---
 
+## 2026-08-20 — Development Test UI静音过滤与试听行同步修复
+
+- **版本/标签**：项目`1.1.2`Development Test UI维护修复；不创建或移动发布标签，既有`v1.1.2`保持不变。
+- **类型**：L3试听缓存静音判定与UI缓存生命周期一致性修复。
+- **涉及文件**：`gui/dev_test_ui/audio_id_tracker.py`、`gui/dev_test_ui/panels.py`及对应Development Test UI测试。
+- L3试听音轨的绝对有声RMS门限暂由`-50 dBFS`调低为`-60 dBFS`，避免未经试听增益的低电平有效BF音频被过早计为静音；声音hop占比不超过30%的既有整轨过滤规则保持不变。
+- 当完整权威试听快照确认某个方向ID的缓存已被过滤删除时，界面同步删除该ID的时长、波形和播放行；普通空帧/错误投影继续保留上次有效行，正常`confirmed/coasting/ended`音轨仍随缓存保留，不产生“波形仍在但暂无可播放缓存”的假行。
+- **未改变**：L1、L2 MUSIC/Gate/ID/Kalman、L3波束形成算法和音频格式、L4模型、Runtime调度、Center Mic参考、正式录音/数据管理、Production UI、Pipeline Log UI、配置schema、模型和二进制资产均无变化。
+- **验证**：执行L3试听追踪及Development Test UI聚焦测试；未进行耳机实机听感验收。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-20 — 阶段等待队列改为单变量配置并设为1000
 
 - **版本/标签**：项目`1.1.2`Runtime配置调整；不创建或移动发布标签，既有`v1.1.2`保持不变。

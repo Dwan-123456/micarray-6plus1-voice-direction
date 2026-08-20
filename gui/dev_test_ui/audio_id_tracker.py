@@ -14,7 +14,7 @@ from .contracts import BeamformPreview, TrackedAudioSnapshot
 _HOP_SAMPLES = 960
 _CROSSFADE_SAMPLES = 480
 _EDGE_FADE_SAMPLES = 240
-_SOUND_RMS_THRESHOLD = 10.0 ** (-50.0 / 20.0)
+_SOUND_RMS_THRESHOLD = 10.0 ** (-60.0 / 20.0)
 _MIN_SOUND_RATIO = 0.30
 
 

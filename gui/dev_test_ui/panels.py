@@ -417,6 +417,22 @@ class BeamformPanel(QGroupBox):
             if self._track_stream is not None and incoming_stream != self._track_stream:
                 self.clear_tracks()
             self._track_stream = incoming_stream
+        incoming_ids = {item.track_id for item in all_tracks}
+        # A Center Mic row marks a complete authoritative tracker snapshot.
+        # Directional IDs omitted from such a snapshot were explicitly
+        # filtered together with their cache files, so their previously drawn
+        # waveform rows must not remain as unplayable UI ghosts.  Empty/error
+        # projections still retain the last good rows.
+        if 0 in incoming_ids:
+            removed_ids = set(self._track_rows) - incoming_ids
+            if self._playing_track_id in removed_ids:
+                self._playing_track_id = None
+                self.track_stop_requested.emit()
+            for track_id in removed_ids:
+                self._track_snapshots.pop(track_id, None)
+                row = self._track_rows.pop(track_id)
+                self.track_layout.removeWidget(row)
+                row.deleteLater()
         tracks = tuple(
             item
             for item in all_tracks

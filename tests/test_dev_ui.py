@@ -922,6 +922,14 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         app.processEvents()
         assert set(window.bf_panel._track_rows) == {0, 2, 3}
 
+        # A complete tracker snapshot (identified by Center Mic) removes an ID
+        # whose cache was explicitly filtered, instead of retaining a stale,
+        # unplayable waveform row.
+        window.bf_panel.set_tracks((longer, reference))
+        app.processEvents()
+        assert set(window.bf_panel._track_rows) == {0, 3}
+        assert set(window.bf_panel._track_snapshots) == {0, 3}
+
         next_session = TrackedAudioSnapshot(
             "next", 0, 0, "active", 0.0, 0.0, 48_000,
         )
