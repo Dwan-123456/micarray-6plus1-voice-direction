@@ -868,6 +868,12 @@ def test_test_ui_accepts_backend_injected_wav_and_keeps_default_ui_input_hidden(
         assert window._runtime.input_exhausted
         assert not window._runtime.active
         assert window._frame is not None
+        window._refresh_total_duration_text()
+        assert "总处理时长 | L2 " in window.performance_bar.text()
+        total_duration_text = window.performance_bar.text().split("总处理时长", 1)[1]
+        assert "L2 N/A" not in total_duration_text
+        assert "L3 N/A" not in total_duration_text
+        assert "L4 N/A" not in total_duration_text
     finally:
         window.close()
         app.processEvents()

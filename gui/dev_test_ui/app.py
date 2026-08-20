@@ -145,6 +145,7 @@ def build_window(
         raise ValueError("input_wav和replay_recording不能同时使用")
     replay_path = None if input_wav is None else Path(input_wav).resolve()
     recording_manifest = None if replay_recording is None else Path(replay_recording).resolve()
+    simulation_mode = replay_path is not None or recording_manifest is not None
     replay_source = None
     pipeline = None
     if recording_manifest is not None:
@@ -794,6 +795,7 @@ def build_window(
             if replay_source is None:
                 return
             self._clear_replay_results()
+            runtime.reset_pipeline_total_durations()
             replay_source.replay()
             if not runtime.active:
                 self._start_capture()
@@ -819,6 +821,8 @@ def build_window(
                 f"{names[status.state]} · {self._format_replay_time(status.current_seconds)} / "
                 f"{self._format_replay_time(status.total_seconds)}"
             )
+            if status.state == "ended":
+                runtime.seal_pipeline_total_durations()
             busy = self._pending_command is not None
             self.replay_start.setEnabled(not busy and status.state in {"ready", "paused"})
             self.replay_pause.setEnabled(not busy and status.state == "playing")
@@ -941,6 +945,7 @@ def build_window(
         def _refresh(self):
             self._poll_command()
             self._refresh_replay_controls()
+            self._refresh_total_duration_text()
             self.preview_player.validate_output()
             if not self.preview_player.playing:
                 self.bf_panel.sync_track_playback_stopped()
@@ -1302,6 +1307,26 @@ def build_window(
                 self.performance_bar.setToolTip(
                     "每1秒刷新；显示上一秒内各层平均耗时、L4后的统一输出刷新率、"
                     "完整处理的20 ms窗口数、丢窗数及丢窗率。"
+                )
+            self._performance_base_text = text
+            self._refresh_total_duration_text()
+
+        def _refresh_total_duration_text(self):
+            text = getattr(self, "_performance_base_text", "")
+            if simulation_mode:
+                durations = runtime.pipeline_total_durations_seconds
+
+                def elapsed(stage: str) -> str:
+                    value = durations.get(stage)
+                    return "N/A" if value is None else f"{value:.2f} s"
+
+                text += (
+                    "    总处理时长 | "
+                    f"L2 {elapsed('l2')} | L3 {elapsed('l3')} | L4 {elapsed('l4')}"
+                )
+                self.performance_bar.setToolTip(
+                    "左侧每1秒刷新上一秒性能；总处理时长从首个20 ms窗口开始入队计时，"
+                    "各层在处理完最后一个输入并排空后分别停止。"
                 )
             self.performance_bar.setText(text)
 

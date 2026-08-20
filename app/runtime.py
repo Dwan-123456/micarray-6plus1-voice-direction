@@ -69,6 +69,11 @@ from .result_joiner import JoinerCapacityError, ResultDeliveryError, ResultJoine
 _PIPELINE_EOS = object()
 
 
+@dataclass(frozen=True)
+class _PipelineTimingBarrier:
+    generation: int
+
+
 @dataclass(frozen=True, slots=True)
 class _L3Work:
     work_item: WindowWorkItem
@@ -297,6 +302,13 @@ class ApplicationRuntime:
         self._stage_error_counts: dict[str, int] = {name: 0 for name in self._stage_errors}
         self._stage_completed_counts: dict[str, int] = {
             "l2": 0, "l3": 0, "l4": 0, "commit": 0,
+        }
+        self._pipeline_duration_lock = threading.RLock()
+        self._pipeline_timing_generation = 0
+        self._pipeline_timing_sealed = False
+        self._pipeline_first_queued_ns: int | None = None
+        self._pipeline_stage_finished_ns: dict[str, int | None] = {
+            "l2": None, "l3": None, "l4": None,
         }
         self._project_config_hash = config_hash(config=config)
         self._calibration_hash = calibration_config_hash(config.calibration)
@@ -685,6 +697,29 @@ class ApplicationRuntime:
         except queue.Full:
             return False
 
+    def _put_pipeline_timing_barrier_interruptibly(
+        self,
+        mailbox: queue.Queue[object],
+        downstream_stage: str,
+        barrier: _PipelineTimingBarrier,
+    ) -> bool:
+        """Forward an interactive replay drain barrier without dropping work."""
+
+        while not self._processing_abort.is_set():
+            try:
+                mailbox.put(barrier, timeout=0.05)
+                return True
+            except queue.Full:
+                downstream = self._processing_threads.get(downstream_stage)
+                if (
+                    downstream is not None
+                    and downstream.ident is not None
+                    and not downstream.is_alive()
+                ):
+                    self._processing_abort.set()
+                    return False
+        return False
+
     def _wake_processing_workers(self) -> None:
         """Best-effort wakeup used by startup rollback and forced shutdown."""
 
@@ -724,6 +759,65 @@ class ApplicationRuntime:
     @property
     def processing_running(self) -> bool:
         return any(thread.is_alive() for thread in self._processing_threads.values())
+
+    def _mark_pipeline_stage_finished(self, stage: str, generation: int | None = None) -> None:
+        """Freeze one stage's end-to-end duration after its input queue drains."""
+
+        with self._pipeline_duration_lock:
+            if (
+                (generation is None or generation == self._pipeline_timing_generation)
+                and self._pipeline_first_queued_ns is not None
+                and stage in self._pipeline_stage_finished_ns
+                and self._pipeline_stage_finished_ns[stage] is None
+            ):
+                self._pipeline_stage_finished_ns[stage] = monotonic_ns()
+
+    def reset_pipeline_total_durations(self) -> None:
+        """Start a fresh interactive replay timing generation."""
+
+        with self._pipeline_duration_lock:
+            self._pipeline_timing_generation += 1
+            self._pipeline_timing_sealed = False
+            self._pipeline_first_queued_ns = None
+            self._pipeline_stage_finished_ns = {
+                "l2": None, "l3": None, "l4": None,
+            }
+
+    def seal_pipeline_total_durations(self) -> bool:
+        """Queue an ordered barrier so interactive replay timers stop after drain."""
+
+        with self._pipeline_duration_lock:
+            if self._pipeline_timing_sealed:
+                return True
+            generation = self._pipeline_timing_generation
+        try:
+            self._l2_windows.put_nowait(_PipelineTimingBarrier(generation))
+        except queue.Full:
+            return False
+        with self._pipeline_duration_lock:
+            if generation == self._pipeline_timing_generation:
+                self._pipeline_timing_sealed = True
+        return True
+
+    @property
+    def pipeline_total_durations_seconds(self) -> dict[str, float | None]:
+        """Elapsed first-queue-to-drain time for L2/L3/L4 in the current run."""
+
+        with self._pipeline_duration_lock:
+            started_ns = self._pipeline_first_queued_ns
+            finished_ns = dict(self._pipeline_stage_finished_ns)
+        if started_ns is None:
+            return {"l2": None, "l3": None, "l4": None}
+        now_ns = monotonic_ns()
+        durations: dict[str, float | None] = {}
+        for stage in ("l2", "l3", "l4"):
+            end_ns = finished_ns[stage]
+            worker = self._processing_threads.get(stage)
+            if end_ns is None and (worker is None or not worker.is_alive()):
+                durations[stage] = None
+            else:
+                durations[stage] = max(0.0, ((end_ns or now_ns) - started_ns) / 1e9)
+        return durations
 
     @property
     def processing_queue_depths(self) -> dict[str, int]:
@@ -1254,6 +1348,13 @@ class ApplicationRuntime:
             self._stage_errors = {"l2": None, "l3": None, "l4": None, "commit": None}
             self._stage_error_counts = {name: 0 for name in self._stage_errors}
             self._stage_completed_counts = {name: 0 for name in self._stage_errors}
+            with self._pipeline_duration_lock:
+                self._pipeline_timing_generation += 1
+                self._pipeline_timing_sealed = False
+                self._pipeline_first_queued_ns = None
+                self._pipeline_stage_finished_ns = {
+                    "l2": None, "l3": None, "l4": None,
+                }
             with self._pre_denoise_lock:
                 self._pre_denoise_latency_active = self._pre_denoise_enabled
             if self.dev_audio_tracker is not None:
@@ -1533,10 +1634,18 @@ class ApplicationRuntime:
         with self._rejected_admission_lock:
             self._preceding_gap_reasons.pop(work_item.key.stream_key, None)
 
+        started_timing = False
+        with self._pipeline_duration_lock:
+            if self._pipeline_first_queued_ns is None:
+                self._pipeline_first_queued_ns = monotonic_ns()
+                started_timing = True
         try:
             self._l2_windows.put_nowait(work_item)
             return True
         except queue.Full:
+            if started_timing:
+                with self._pipeline_duration_lock:
+                    self._pipeline_first_queued_ns = None
             # A producer race should be impossible with the single L1 owner,
             # but keep it terminal and observable rather than raising.
             self._joiner_submit(
@@ -1595,13 +1704,21 @@ class ApplicationRuntime:
                     self._input_worker_done.set()
 
     def _run_l2(self) -> None:
+        drained = False
         try:
             while not self._processing_abort.is_set():
                 if self._input_worker_done.is_set() and self._l2_windows.empty():
+                    drained = True
                     break
                 try:
                     item = self._l2_windows.get(timeout=0.1)
                 except queue.Empty:
+                    continue
+                if isinstance(item, _PipelineTimingBarrier):
+                    self._mark_pipeline_stage_finished("l2", item.generation)
+                    self._put_pipeline_timing_barrier_interruptibly(
+                        self._l3_windows, "l3", item
+                    )
                     continue
                 if not isinstance(item, WindowWorkItem):
                     continue
@@ -1680,9 +1797,12 @@ class ApplicationRuntime:
             self._set_stage_error("l2", exc)
             self._processing_abort.set()
         finally:
+            if drained:
+                self._mark_pipeline_stage_finished("l2")
             self._put_eos_interruptibly(self._l3_windows, "l3")
 
     def _run_l3(self) -> None:
+        drained = False
         try:
             while True:
                 try:
@@ -1692,7 +1812,14 @@ class ApplicationRuntime:
                         break
                     continue
                 if item is _PIPELINE_EOS:
+                    drained = True
                     break
+                if isinstance(item, _PipelineTimingBarrier):
+                    self._mark_pipeline_stage_finished("l3", item.generation)
+                    self._put_pipeline_timing_barrier_interruptibly(
+                        self._l4_windows, "l4", item
+                    )
+                    continue
                 if self._processing_abort.is_set():
                     break
                 if not isinstance(item, _L3Work):
@@ -1834,9 +1961,12 @@ class ApplicationRuntime:
             self._set_stage_error("l3", exc)
             self._processing_abort.set()
         finally:
+            if drained:
+                self._mark_pipeline_stage_finished("l3")
             self._put_eos_interruptibly(self._l4_windows, "l4")
 
     def _run_l4(self) -> None:
+        drained = False
         try:
             while True:
                 try:
@@ -1846,7 +1976,11 @@ class ApplicationRuntime:
                         break
                     continue
                 if item is _PIPELINE_EOS:
+                    drained = True
                     break
+                if isinstance(item, _PipelineTimingBarrier):
+                    self._mark_pipeline_stage_finished("l4", item.generation)
+                    continue
                 if self._processing_abort.is_set():
                     break
                 if not isinstance(item, _L4Work):
@@ -1911,6 +2045,8 @@ class ApplicationRuntime:
             self._set_stage_error("l4", exc)
             self._processing_abort.set()
         finally:
+            if drained:
+                self._mark_pipeline_stage_finished("l4")
             self._put_eos_interruptibly(self._completion_results, "commit")
 
     def _run_commit(self) -> None:

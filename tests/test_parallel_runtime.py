@@ -840,6 +840,8 @@ def test_graceful_stop_drains_every_admitted_window(tmp_path: Path) -> None:
     )
     for window_id in range(4):
         runtime._admit_window(_window(window_id))
+    running_durations = runtime.pipeline_total_durations_seconds
+    assert all(running_durations[stage] is not None for stage in ("l2", "l3", "l4"))
     runtime.stop()
     assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
     assert [item.sample for item in store.watermark_snapshot()] == [
@@ -851,6 +853,38 @@ def test_graceful_stop_drains_every_admitted_window(tmp_path: Path) -> None:
     assert runtime.processing_running is False
     assert runtime.processing_queue_depths == {"l2": 0, "l3": 0, "l4": 0, "completion": 0}
     assert store.stop_reasons == ["normal"]
+    final_durations = runtime.pipeline_total_durations_seconds
+    assert all(final_durations[stage] is not None for stage in ("l2", "l3", "l4"))
+    assert 0.0 < final_durations["l2"] <= final_durations["l3"] <= final_durations["l4"]
+
+
+def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_runtime(
+    tmp_path: Path,
+) -> None:
+    runtime, store, _ = _start_with_stubs(
+        tmp_path,
+        l2_factory=lambda value: _StubL2(value, delay=0.005),
+        l3_factory=lambda value: _StubL3(value, delay=0.010),
+        l4_factory=lambda value: _StubL4(value, delay=0.005),
+    )
+    try:
+        for window_id in range(4):
+            assert runtime._admit_window(_window(window_id))
+        assert runtime.seal_pipeline_total_durations()
+        _wait_until(
+            lambda: all(
+                runtime._pipeline_stage_finished_ns[stage] is not None
+                for stage in ("l2", "l3", "l4")
+            )
+        )
+        frozen = runtime.pipeline_total_durations_seconds
+        time.sleep(0.05)
+        assert runtime.pipeline_total_durations_seconds == frozen
+        assert runtime.processing_running is True
+        assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
+        assert 0.0 < frozen["l2"] <= frozen["l3"] <= frozen["l4"]
+    finally:
+        runtime.stop()
 
 
 def test_processing_status_exposes_bounded_queues_and_cache_never_exceeds_hard_limit(
