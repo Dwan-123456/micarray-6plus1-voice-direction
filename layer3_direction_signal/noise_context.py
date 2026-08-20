@@ -6,14 +6,12 @@ import numpy as np
 import torch
 
 from common.data_types import DecisionWindow, ImcraHopSnapshot
-from common.timing import CONTEXT_HOPS, CONTEXT_SAMPLES, STFT_FRAME_COUNT
 
 from .configuration import SpatialSeparationConfig, StftSettings
 from .interface import Layer3Error
 
 
 _HOP_SAMPLES = 960
-_CONTEXT_HOPS = CONTEXT_HOPS
 _STFT_FRAMES_PER_HOP = 2
 
 
@@ -34,16 +32,17 @@ class BeamformerNoiseContext:
     def __post_init__(self) -> None:
         if not self.session_id or self.stream_epoch < 0 or not self.algorithm_version:
             raise ValueError("BF噪声上下文身份或算法版本无效")
-        if self.context_end_sample - self.context_start_sample != CONTEXT_SAMPLES:
-            raise ValueError("BF噪声上下文必须覆盖160 ms")
+        context_hops = (self.context_end_sample - self.context_start_sample) // _HOP_SAMPLES
+        if context_hops not in {4, 8}:
+            raise ValueError("BF噪声上下文必须覆盖80或160 ms")
         frequencies = np.asarray(self.frequencies_hz)
-        expected_spectral = (CONTEXT_HOPS, 7, len(frequencies))
+        expected_spectral = (context_hops, 7, len(frequencies))
         arrays = {
             "noise_psd": (self.noise_psd, expected_spectral),
             "posterior_noise_probability": (self.posterior_noise_probability, expected_spectral),
             "prior_snr": (self.prior_snr, expected_spectral),
             "posterior_snr": (self.posterior_snr, expected_spectral),
-            "noise_level_db": (self.noise_level_db, (CONTEXT_HOPS, 7)),
+            "noise_level_db": (self.noise_level_db, (context_hops, 7)),
         }
         if frequencies.ndim != 1 or len(frequencies) < 2 or not np.all(np.diff(frequencies) > 0):
             raise ValueError("BF噪声上下文频率轴无效")
@@ -67,12 +66,16 @@ class BeamformerNoiseContext:
             raise ValueError("BF后验噪声概率必须位于[0,1]")
 
     @classmethod
-    def from_window(cls, window: DecisionWindow) -> "BeamformerNoiseContext":
-        hops, algorithm_version, _frequencies = _validated_window_hops(window)
+    def from_window(
+        cls, window: DecisionWindow, stft: StftSettings,
+    ) -> "BeamformerNoiseContext":
+        hops, algorithm_version, _frequencies = _validated_window_hops(
+            window, stft.window_hops,
+        )
         return cls(
             window.session_id,
             window.stream_epoch,
-            window.context_start_sample,
+            window.context_end_sample - stft.window_samples,
             window.context_end_sample,
             algorithm_version,
             hops[0].frequencies_hz,
@@ -85,16 +88,19 @@ class BeamformerNoiseContext:
 
 
 def _validated_window_hops(
-    window: DecisionWindow,
+    window: DecisionWindow, window_hops: int,
 ) -> tuple[tuple[ImcraHopSnapshot, ...], str, np.ndarray]:
-    hops = tuple(window.imcra_hops)
+    hops = tuple(window.imcra_hops)[-window_hops:]
+    context_start = window.context_end_sample - window_hops * _HOP_SAMPLES
     expected_ranges = tuple(
-        (start, start + 960)
-        for start in range(window.context_start_sample, window.context_end_sample, 960)
+        (start, start + _HOP_SAMPLES)
+        for start in range(context_start, window.context_end_sample, _HOP_SAMPLES)
     )
     actual_ranges = tuple((item.start_sample, item.end_sample) for item in hops)
-    if len(hops) != CONTEXT_HOPS or actual_ranges != expected_ranges:
-        raise Layer3Error("IMCRA噪声上下文必须包含与160 ms窗口连续对齐的8个hop")
+    if len(hops) != window_hops or actual_ranges != expected_ranges:
+        raise Layer3Error(
+            f"IMCRA噪声上下文必须包含连续对齐的{window_hops}个20 ms hop"
+        )
     if any(item.state != "ready" for item in hops):
         raise Layer3Error("IMCRA噪声上下文尚未ready")
     versions = {item.algorithm_version for item in hops}
@@ -301,7 +307,9 @@ def _frame_weights(
     noise_probability_hf = interpolated.noise_probability_hmf.median(dim=1).values
     if hop_indices is None:
         frame_centres = torch.arange(spectrum_fct.shape[-1], device=spectrum_fct.device) * stft.hop_length
-        hop_indices = torch.div(frame_centres, 960, rounding_mode="floor").clamp(0, CONTEXT_HOPS - 1)
+        hop_indices = torch.div(frame_centres, 960, rounding_mode="floor").clamp(
+            0, stft.window_hops - 1,
+        )
     return noise_probability_hf[hop_indices].transpose(0, 1).contiguous()
 
 
@@ -320,6 +328,7 @@ def _finalize_noise_statistics(
     denominator_f: torch.Tensor,
     frequencies_hz: torch.Tensor,
     config: SpatialSeparationConfig,
+    frame_count: int,
 ) -> NoiseStatistics:
     covariance = covariance_numerator_fcc / denominator_f[:, None, None].clamp_min(1e-6)
     covariance = 0.5 * (covariance + covariance.mH)
@@ -335,7 +344,7 @@ def _finalize_noise_statistics(
     covariance = (1.0 - shrinkage) * covariance + shrinkage * diagonal_anchor
     covariance = 0.5 * (covariance + covariance.mH)
 
-    confidence = (denominator_f / float(STFT_FRAME_COUNT)).clamp(0.0, 1.0)
+    confidence = (denominator_f / float(frame_count)).clamp(0.0, 1.0)
     prior = interpolated.prior_snr_hmf.median(dim=0).values.median(dim=0).values
     posterior = interpolated.posterior_snr_hmf.median(dim=0).values.median(dim=0).values
     prior_gain = prior / (1.0 + prior)
@@ -351,7 +360,7 @@ def _finalize_noise_statistics(
 
 
 class RollingNoiseStatisticsCache:
-    """Exact rolling IMCRA interpolation and covariance state for one 160 ms window."""
+    """Exact rolling IMCRA interpolation/covariance for the configured direct window."""
 
     max_temporal_hops = 50
 
@@ -372,7 +381,7 @@ class RollingNoiseStatisticsCache:
         self._interpolation_plan: _InterpolationPlan | None = None
         self._current_indices: torch.Tensor | None = None
         self._previous_indices: torch.Tensor | None = None
-        self._rolling_index_hop_gap: int | None = None
+        self._rolling_index_key: tuple[int, int] | None = None
         self._frame_hop_indices_key: tuple[int, int, str, int] | None = None
         self._frame_hop_indices: torch.Tensor | None = None
         self._last_rolled = False
@@ -409,28 +418,29 @@ class RollingNoiseStatisticsCache:
                 centres,
                 _HOP_SAMPLES,
                 rounding_mode="floor",
-            ).clamp(0, _CONTEXT_HOPS - 1)
+            ).clamp(0, stft.window_hops - 1)
         return self._interpolation_plan, self._frame_hop_indices
 
     def _rolling_indices(
         self,
         hop_gap: int,
+        frame_count: int,
         *,
         device: torch.device,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if (
-            self._rolling_index_hop_gap != hop_gap
+            self._rolling_index_key != (hop_gap, frame_count)
             or self._current_indices is None
             or self._current_indices.device != device
         ):
             # These complements match RollingStftCache's aligned interior:
             # remove the previous left edge/right reflected frame, then add
             # the current left reflected frame/right edge and all new frames.
-            last_frame = STFT_FRAME_COUNT - 1
+            last_frame = frame_count - 1
             previous_expired = (*range(0, _STFT_FRAMES_PER_HOP * hop_gap + 1), last_frame)
             current_added = (
                 0,
-                *range(last_frame - _STFT_FRAMES_PER_HOP * hop_gap, STFT_FRAME_COUNT),
+                *range(last_frame - _STFT_FRAMES_PER_HOP * hop_gap, frame_count),
             )
             self._current_indices = torch.tensor(
                 current_added,
@@ -442,7 +452,7 @@ class RollingNoiseStatisticsCache:
                 dtype=torch.long,
                 device=device,
             )
-            self._rolling_index_hop_gap = hop_gap
+            self._rolling_index_key = (hop_gap, frame_count)
         assert self._previous_indices is not None
         return self._current_indices, self._previous_indices
 
@@ -475,7 +485,7 @@ class RollingNoiseStatisticsCache:
             and identity[:2] == previous[:2]
             and identity[3] - previous[3] == sample_delta
             and sample_delta % _HOP_SAMPLES == 0
-            and 1 <= hop_gap < _CONTEXT_HOPS
+            and 1 <= hop_gap < stft.window_hops
             and context_key == self._context_key
             and config == self._config
             and stft == self._stft
@@ -500,6 +510,7 @@ class RollingNoiseStatisticsCache:
         if can_roll:
             current_indices, previous_indices = self._rolling_indices(
                 hop_gap,
+                stft.frame_count,
                 device=spectrum_fct.device,
             )
             current_edge_spectrum = spectrum_fct.index_select(-1, current_indices)
@@ -519,7 +530,9 @@ class RollingNoiseStatisticsCache:
         else:
             numerator = _covariance_numerator(spectrum_fct, weights)
             denominator = weights.sum(dim=-1)
-        result = _finalize_noise_statistics(interpolated, numerator, denominator, frequencies_hz, config)
+        result = _finalize_noise_statistics(
+            interpolated, numerator, denominator, frequencies_hz, config, stft.frame_count,
+        )
 
         self._identity = identity
         self._context_key = context_key
@@ -549,11 +562,13 @@ class RollingNoiseStatisticsCache:
         and copy all 8 CPU hop arrays on every 20 ms advance.  A cold window
         transfers all hops; an overlapping window transfers only its newly arrived hops.
         """
-        hops, algorithm_version, source_frequencies = _validated_window_hops(window)
+        hops, algorithm_version, source_frequencies = _validated_window_hops(
+            window, stft.window_hops,
+        )
         identity = (
             window.session_id,
             window.stream_epoch,
-            window.context_start_sample,
+            window.context_end_sample - stft.window_samples,
             window.context_end_sample,
         )
         context_key = (algorithm_version, source_frequencies.tobytes())
@@ -569,7 +584,7 @@ class RollingNoiseStatisticsCache:
             and identity[:2] == previous[:2]
             and identity[3] - previous[3] == sample_delta
             and sample_delta % _HOP_SAMPLES == 0
-            and 1 <= hop_gap < _CONTEXT_HOPS
+            and 1 <= hop_gap < stft.window_hops
             and context_key == self._context_key
             and config == self._config
             and stft == self._stft
@@ -598,6 +613,7 @@ class RollingNoiseStatisticsCache:
         if can_roll:
             current_indices, previous_indices = self._rolling_indices(
                 hop_gap,
+                stft.frame_count,
                 device=spectrum_fct.device,
             )
             current_edge_spectrum = spectrum_fct.index_select(-1, current_indices)
@@ -618,7 +634,7 @@ class RollingNoiseStatisticsCache:
             numerator = _covariance_numerator(spectrum_fct, weights)
             denominator = weights.sum(dim=-1)
         result = _finalize_noise_statistics(
-            interpolated, numerator, denominator, frequencies_hz, config,
+            interpolated, numerator, denominator, frequencies_hz, config, stft.frame_count,
         )
 
         self._identity = identity
@@ -658,7 +674,7 @@ class RollingNoiseStatisticsCache:
             ))
         return NoiseCacheSnapshot(
             self.max_temporal_hops,
-            0 if self._identity is None else CONTEXT_HOPS,
+            0 if self._identity is None or self._stft is None else self._stft.window_hops,
             self._last_rolled,
             sum(item.numel() * item.element_size() for item in tensors),
         )

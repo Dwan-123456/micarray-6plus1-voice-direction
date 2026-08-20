@@ -14,12 +14,18 @@ class StftSettings:
     pad_mode: str
     normalized: bool
     onesided: bool
+    window_samples: int
+    window_hops: int
+    frame_count: int
 
     @classmethod
     def from_project(cls, config: ProjectConfig) -> "StftSettings":
         value = config.stft
-        return cls(value.n_fft, value.win_length, value.hop_length, value.center, value.pad_mode,
-                   value.normalized, value.onesided)
+        spec = config.downstream_audio_window
+        return cls(
+            value.n_fft, value.win_length, value.hop_length, value.center, value.pad_mode,
+            value.normalized, value.onesided, spec.samples, spec.decision_hops, spec.stft_frames,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +72,15 @@ class FeatureSettings:
     first_bin: int
     last_bin_inclusive: int
     log_epsilon: float
+    frame_count: int
 
     @classmethod
     def from_project(cls, config: ProjectConfig) -> "FeatureSettings":
         value = config.feature
-        return cls(value.preprocessing_version, value.first_bin, value.last_bin_inclusive, value.log_epsilon)
+        return cls(
+            value.preprocessing_version,
+            value.first_bin,
+            value.last_bin_inclusive,
+            value.log_epsilon,
+            config.downstream_audio_window.stft_frames,
+        )

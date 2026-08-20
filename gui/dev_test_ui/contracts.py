@@ -11,7 +11,6 @@ from common.data_types import (
     CandidateDirection, ImcraHopSnapshot, PipelineStatus, SpatialResponse,
     TrackedDirection,
 )
-from common.timing import CONTEXT_SAMPLES
 from layer2_source_detection.music import MusicDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
 from layer4_voice_classifier.contracts import Layer4Result
@@ -87,8 +86,12 @@ class BeamformPreview:
 
     def __post_init__(self) -> None:
         waveform = np.asarray(self.waveform)
-        if waveform.shape != (CONTEXT_SAMPLES,) or waveform.dtype != np.float32 or not np.isfinite(waveform).all():
-            raise ValueError("BeamformPreview waveform必须为finite float32 [7680]")
+        if (
+            waveform.shape not in {(3_840,), (7_680,)}
+            or waveform.dtype != np.float32
+            or not np.isfinite(waveform).all()
+        ):
+            raise ValueError("BeamformPreview waveform必须为finite float32 [3840或7680]")
         object.__setattr__(self, "waveform", np.frombuffer(np.ascontiguousarray(waveform).tobytes(), dtype=np.float32))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):

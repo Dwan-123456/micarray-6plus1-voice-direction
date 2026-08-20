@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
-from .timing import CONTEXT_SAMPLES, STFT_FRAME_COUNT
+from .timing import CONTEXT_SAMPLES
 
 _IMCRA_FREQUENCIES_HZ = np.fft.rfftfreq(2048, 1.0 / 48_000).astype(np.float32)
 _IMCRA_FREQUENCIES_HZ = _IMCRA_FREQUENCIES_HZ[
@@ -524,7 +524,10 @@ class DirectionalSignal:
             raise ValueError("DirectionalSignal后端无效")
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("DirectionalSignal track_id must be a positive integer")
-        object.__setattr__(self, "stft_complex", _readonly_exact_complex64(self.stft_complex, (513, STFT_FRAME_COUNT), "stft_complex"))
+        frames = np.asarray(self.stft_complex).shape[-1] if np.asarray(self.stft_complex).ndim == 2 else -1
+        if frames not in {9, 17}:
+            raise ValueError("stft_complex时间帧必须对应80或160 ms窗口")
+        object.__setattr__(self, "stft_complex", _readonly_exact_complex64(self.stft_complex, (513, frames), "stft_complex"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -550,7 +553,10 @@ class SpectrogramFeature:
             raise ValueError("SpectrogramFeature角度无效")
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("SpectrogramFeature track_id must be a positive integer")
-        object.__setattr__(self, "spectrogram", _readonly_exact_float32(self.spectrogram, (STFT_FRAME_COUNT, 169), "spectrogram"))
+        frames = np.asarray(self.spectrogram).shape[0] if np.asarray(self.spectrogram).ndim == 2 else -1
+        if frames not in {9, 17}:
+            raise ValueError("spectrogram时间帧必须对应80或160 ms窗口")
+        object.__setattr__(self, "spectrogram", _readonly_exact_float32(self.spectrogram, (frames, 169), "spectrogram"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,7 +588,10 @@ class EnhancedAudio:
             raise ValueError("EnhancedAudio算法标识不能为空")
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("EnhancedAudio track_id must be a positive integer")
-        waveform = _readonly_exact_float32(self.enhanced_audio, (CONTEXT_SAMPLES,), "enhanced_audio")
+        samples = np.asarray(self.enhanced_audio).size
+        if samples not in {3_840, 7_680}:
+            raise ValueError("enhanced_audio长度必须对应80或160 ms窗口")
+        waveform = _readonly_exact_float32(self.enhanced_audio, (samples,), "enhanced_audio")
         object.__setattr__(self, "diagnostics", tuple(str(item) for item in self.diagnostics))
         object.__setattr__(self, "enhanced_audio", waveform)
 

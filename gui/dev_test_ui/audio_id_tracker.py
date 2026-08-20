@@ -58,6 +58,7 @@ class AudioIdTracker:
         segment_seconds: float = 10.0,
         retained_segments: int = 3,
         max_ended_tracks: int = 8,
+        downstream_window_samples: int = 7_680,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         root = Path(cache_root)
@@ -67,10 +68,12 @@ class AudioIdTracker:
         self.segment_samples = round(float(segment_seconds) * 48_000)
         self.retained_segments = int(retained_segments)
         self.max_ended_tracks = int(max_ended_tracks)
+        self.downstream_window_samples = int(downstream_window_samples)
         if min(
             self.segment_samples,
             self.retained_segments,
             self.max_ended_tracks,
+            self.downstream_window_samples,
         ) <= 0:
             raise ValueError("invalid Test UI tracker retention configuration")
         self._lock = threading.RLock()
@@ -291,7 +294,7 @@ class AudioIdTracker:
         current_decision: int,
         wanted_decision: int,
     ) -> np.ndarray | None:
-        """Recover one canonical hop from the current 160 ms L3 context."""
+        """Recover one canonical hop from the current configured L3 context."""
         offset = int(current_decision) - int(wanted_decision)
         start = len(current) - 1_440 - offset
         stop = len(current) - 480 - offset
@@ -380,9 +383,9 @@ class AudioIdTracker:
         if any(hop is None for hop in hops) and len(hops) >= context_hops:
             # The stable canonical slices cannot cover this discontinuity.
             # Preserve the absolute duration, but use the complete current
-            # 160 ms L3 output for the newest 8 missing hops instead of
+            # configured L3 output for the newest covered missing hops instead of
             # replacing that whole region with silence.  Only any still older
-            # portion of a >160 ms hole remains exact-duration silence.
+            # portion beyond the configured window remains exact-duration silence.
             complete = np.asarray(current, dtype=np.float32).reshape(context_hops, _HOP_SAMPLES)
             hops[-context_hops:] = [np.ascontiguousarray(item) for item in complete]
         self._append_timeline_block(track, hops, first_wanted)
@@ -390,6 +393,10 @@ class AudioIdTracker:
     def _accept_preview(self, track: _Track, preview: BeamformPreview) -> None:
         """Finalize prior audio and preserve the absolute decision-sample timeline."""
         current = np.asarray(preview.waveform, dtype=np.float32)
+        if current.shape != (self.downstream_window_samples,):
+            raise ValueError(
+                "Test UI preview does not match configured downstream audio window"
+            )
         decision_sample = int(preview.decision_sample)
         previous = track.pending_waveform
         previous_decision = track.pending_decision_sample
@@ -418,7 +425,7 @@ class AudioIdTracker:
                 fade_out=aligned_start < 0,
             )
             # A delayed L3 result may represent several skipped 20 ms
-            # decisions.  Recover every still-covered hop from this 160 ms
+            # decisions. Recover every still-covered hop from this configured
             # waveform; older, unrecoverable positions become exact silence.
             self._fill_until(
                 track, current, decision_sample, decision_sample - _HOP_SAMPLES,

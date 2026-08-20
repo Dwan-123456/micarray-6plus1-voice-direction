@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from scipy.signal import resample_poly
 
-from common.timing import CONTEXT_SAMPLES
+from common.config import DownstreamAudioWindowSpec
 
 from .contracts import Layer4AudioSegment, Layer4Result, ModelPrediction, VoiceDetection
 from .gain_compensation import InputGainCompensationSettings, compensate_l4_input
@@ -33,7 +33,7 @@ def max_contiguous_frame_mean(
 
     MarbleNet emits one value about every 20 ms. A three-frame window requires
     a sustained peak of about 60 ms while preventing silence elsewhere in the
-    160 ms input from diluting the decision.
+    configured 80/160 ms input from diluting the decision.
     """
     if frame_probabilities.ndim != 2 or lengths.shape != (frame_probabilities.shape[0],):
         raise ValueError("frame probabilities must be [batch,time] with one length per item")
@@ -46,8 +46,8 @@ def max_contiguous_frame_mean(
     valid_windows = window_ends.unsqueeze(0) <= lengths.unsqueeze(1)
     peaks = rolling.masked_fill(~valid_windows, float("-inf")).max(dim=1).values
 
-    # The production input is always 160 ms and therefore has more than
-    # three frames. This fallback keeps the helper total for shorter test or
+    # Both supported production inputs have enough audio for three frames.
+    # This fallback keeps the helper total for shorter test or
     # future streaming inputs without inventing padded probabilities.
     valid_frames = (
         torch.arange(frame_probabilities.shape[1], device=frame_probabilities.device).unsqueeze(0)
@@ -58,7 +58,14 @@ def max_contiguous_frame_mean(
 
 
 class NvidiaMarbleNetPlugin:
-    def __init__(self, model_id: str, artifact: str | Path, *, device: str = "cpu") -> None:
+    def __init__(
+        self,
+        model_id: str,
+        artifact: str | Path,
+        *,
+        device: str = "cpu",
+        window_spec: DownstreamAudioWindowSpec | None = None,
+    ) -> None:
         self.model_id = model_id
         self.artifact = Path(artifact)
         self.manifest = json.loads((self.artifact / "manifest.json").read_text(encoding="utf-8"))
@@ -67,18 +74,27 @@ class NvidiaMarbleNetPlugin:
         if actual_hash != self.manifest["weights_sha256"]:
             raise ValueError("MarbleNet weight hash does not match its manifest")
         self.device = torch.device(device)
+        self.window_spec = window_spec or DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560)
+        supported = tuple(self.manifest["input"].get("public_samples_supported", ()))
+        if self.window_spec.samples not in supported:
+            raise ValueError("MarbleNet manifest does not support configured public audio length")
         self.model = NvidiaFrameVadMarbleNet.from_artifact(self.artifact, self.device)
 
     def predict(self, waveforms_48k: np.ndarray) -> ModelPrediction:
+        window_spec = getattr(
+            self, "window_spec", DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560),
+        )
         waveforms = np.asarray(waveforms_48k)
         if (
             waveforms.ndim != 2
-            or waveforms.shape[1] != CONTEXT_SAMPLES
+            or waveforms.shape[1] != window_spec.samples
             or waveforms.dtype != np.float32
             or not waveforms.flags.c_contiguous
             or not np.isfinite(waveforms).all()
         ):
-            raise ValueError("L4 input must be finite float32 [M,7680] at 48 kHz")
+            raise ValueError(
+                f"L4 input must be finite float32 [M,{window_spec.samples}] at 48 kHz"
+            )
         started = perf_counter()
         if len(waveforms) == 0:
             probabilities = np.empty((0,), dtype=np.float32)
@@ -99,7 +115,10 @@ class NvidiaMarbleNetPlugin:
             {
                 "architecture": self.manifest["architecture_id"],
                 "source_model": self.manifest["source_model"],
-                "input_adapter": "48k_160ms_to_16k_polyphase_v1",
+                "input_adapter": (
+                    f"48k_{window_spec.duration_ms}ms_to_16k_polyphase_v1"
+                ),
+                "resampled_samples": window_spec.resampled_16k_samples,
                 "aggregation": self.manifest["aggregation"],
             },
         )
@@ -115,6 +134,7 @@ class Layer4Engine:
         *,
         threshold: float = 0.70,
         input_gain_compensation: InputGainCompensationSettings | None = None,
+        window_spec: DownstreamAudioWindowSpec | None = None,
     ):
         plugins = (primary, *shadows)
         ids = tuple(item.model_id for item in plugins)
@@ -126,6 +146,7 @@ class Layer4Engine:
         self.shadows = tuple(shadows)
         self.threshold = float(threshold)
         self.input_gain_compensation = input_gain_compensation or InputGainCompensationSettings()
+        self.window_spec = window_spec or DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560)
 
     def process(self, inputs: tuple[Layer4AudioSegment, ...]) -> Layer4Result:
         inputs = tuple(inputs)
@@ -147,13 +168,18 @@ class Layer4Engine:
                 item.waveform,
                 item.array_source_probabilities_20ms,
                 self.input_gain_compensation,
+                segment_count=self.window_spec.decision_hops,
             )
             for item in inputs
         )
         waveforms = (
             np.ascontiguousarray(np.stack([item[0] for item in compensated]), dtype=np.float32)
-            if compensated else np.empty((0, CONTEXT_SAMPLES), np.float32)
+            if compensated else np.empty((0, self.window_spec.samples), np.float32)
         )
+        if waveforms.shape != (len(inputs), self.window_spec.samples):
+            raise ValueError(
+                f"L4 batch must match configured window length {self.window_spec.samples}"
+            )
         waveforms.setflags(write=False)
         predictions = tuple(plugin.predict(waveforms) for plugin in (self.primary, *self.shadows))
         if any(len(item.probabilities) != len(inputs) for item in predictions):

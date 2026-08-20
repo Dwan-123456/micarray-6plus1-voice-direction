@@ -37,6 +37,7 @@ from layer4_voice_classifier import Layer4Result, ModelPrediction, VoiceDetectio
 
 
 CONFIG = Path(__file__).parents[1] / "config/config.yaml"
+DOWNSTREAM_WINDOW_SAMPLES = load_config(CONFIG, environ={}).downstream_audio_window.samples
 
 
 def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
@@ -299,7 +300,7 @@ def _l3_output(window: DecisionWindow, candidates: tuple[CandidateDirection, ...
                 "parallel_runtime_test",
                 None,
                 (),
-                np.zeros(7_680, dtype=np.float32),
+                np.zeros(DOWNSTREAM_WINDOW_SAMPLES, dtype=np.float32),
                 candidate.track_id,
             )
             for candidate in candidates

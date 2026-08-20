@@ -357,8 +357,10 @@ def test_runtime_pre_denoise_replaces_audio_before_window_and_preserves_timeline
     latest_l1 = runtime.latest_l1.get_nowait()
     runtime.stop()
     runtime.close()
-    assert window.context_start_sample == 0
-    assert window.context_end_sample == 7_680
+    # The runtime mailbox intentionally keeps only the newest window, so a
+    # completed successor can replace window 0 before the test thread wakes.
+    assert window.context_start_sample == window.window_id * 960
+    assert window.context_end_sample == window.context_start_sample + 7_680
     assert window.samples.shape == (7_680, 8)
     assert len(window.imcra_hops) == 8
     assert latest_l1.pre_denoise_enabled is True

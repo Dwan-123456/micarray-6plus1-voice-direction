@@ -7,6 +7,8 @@ from scipy.signal import resample_poly
 
 import torch
 
+from common.config import DownstreamAudioWindowSpec
+
 from layer4_voice_classifier import (
     Layer4AudioSegment,
     Layer4Engine,
@@ -163,6 +165,26 @@ def test_official_marblenet_weights_detect_official_speech_and_reject_silence():
     assert probabilities[1] > 0.70
 
 
+def test_official_marblenet_accepts_the_configured_80ms_window():
+    spec = DownstreamAudioWindowSpec(80, 3_840, 4, 9, 1_280)
+    plugin = NvidiaMarbleNetPlugin(
+        "nv_marblenet_baseline_v1", ARTIFACT, device="cpu", window_spec=spec,
+    )
+    sample_rate, audio = wavfile.read(ARTIFACT / "source" / "smoke_speech.wav")
+    audio = audio.astype(np.float32) / 32768.0
+    audio_48k = resample_poly(audio, 48_000, sample_rate).astype(np.float32)
+    speech_window = np.ascontiguousarray(audio_48k[57_600:61_440])
+
+    prediction = plugin.predict(
+        np.stack((np.zeros(spec.samples, np.float32), speech_window))
+    )
+
+    assert prediction.probabilities.shape == (2,)
+    assert np.isfinite(prediction.probabilities).all()
+    assert np.all((prediction.probabilities >= 0.0) & (prediction.probabilities <= 1.0))
+    assert prediction.metadata["resampled_samples"] == spec.resampled_16k_samples
+
+
 def test_marblenet_adapter_downsamples_the_complete_160ms_batch_to_16khz():
     observed = {}
 
@@ -185,6 +207,61 @@ def test_marblenet_adapter_downsamples_the_complete_160ms_batch_to_16khz():
     result = plugin.predict(np.zeros((2, 7_680), dtype=np.float32))
     assert observed["shape"] == (2, 2_560)
     assert result.probabilities.shape == (2,)
+
+
+@pytest.mark.parametrize(
+    ("spec", "model_samples"),
+    (
+        (DownstreamAudioWindowSpec(80, 3_840, 4, 9, 1_280), 1_280),
+        (DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560), 2_560),
+    ),
+)
+def test_marblenet_adapter_accepts_both_configured_window_lengths(spec, model_samples):
+    observed = {}
+
+    class _SpyModel:
+        def __call__(self, audio):
+            observed["shape"] = tuple(audio.shape)
+            logits = torch.zeros((audio.shape[0], 5, 2), device=audio.device)
+            lengths = torch.full((audio.shape[0],), 5, dtype=torch.long, device=audio.device)
+            return logits, lengths
+
+    plugin = NvidiaMarbleNetPlugin.__new__(NvidiaMarbleNetPlugin)
+    plugin.model_id = "spy"
+    plugin.manifest = {
+        "architecture_id": "spy",
+        "source_model": "spy",
+        "aggregation": "max_contiguous_3frame_mean_v1",
+    }
+    plugin.device = torch.device("cpu")
+    plugin.window_spec = spec
+    plugin.model = _SpyModel()
+    result = plugin.predict(np.zeros((2, spec.samples), dtype=np.float32))
+    assert observed["shape"] == (2, model_samples)
+    assert result.metadata["resampled_samples"] == model_samples
+
+
+@pytest.mark.parametrize(
+    "spec",
+    (
+        DownstreamAudioWindowSpec(80, 3_840, 4, 9, 1_280),
+        DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560),
+    ),
+)
+def test_l4_engine_enforces_configured_window_and_probability_count(spec):
+    class _Plugin:
+        model_id = "fixed"
+
+        def predict(self, waveforms):
+            return ModelPrediction("fixed", np.full(len(waveforms), 0.5, np.float32), 0.0, {})
+
+    segment = Layer4AudioSegment(
+        "session", 0, 1, 7_680, 10.0, 48_000,
+        np.zeros(spec.samples, np.float32), (0.5,) * spec.decision_hops,
+    )
+    result = Layer4Engine(_Plugin(), window_spec=spec).process((segment,))
+    assert len(result.detections) == 1
+    assert len(result.input_gain_compensation[0].segments) == spec.decision_hops
 
 
 def test_contiguous_peak_aggregation_is_not_diluted_by_pauses():

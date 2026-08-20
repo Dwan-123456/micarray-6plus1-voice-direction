@@ -5,8 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import yaml
 
-from common.config import load_config
+from common.config import ProjectConfig, load_config
 from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapshot
 from common.geometry import physical_6plus1_geometry
 from layer3_direction_signal import (
@@ -20,6 +21,12 @@ from layer3_direction_signal.steering import steering_vectors
 
 
 CONFIG = Path(__file__).parents[1] / "config/config.yaml"
+
+
+def _project_config(duration_ms: int) -> ProjectConfig:
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    raw["timing"]["downstream_audio_window_ms"] = duration_ms
+    return ProjectConfig.model_validate(raw)
 
 
 def _imcra_hops(
@@ -68,9 +75,10 @@ def test_l3_empty_candidates_skips_outputs():
     assert output.enhanced_audio == ()
 
 
-def test_l3_outputs_one_48khz_mono_audio_per_candidate():
+@pytest.mark.parametrize(("duration_ms", "samples"), ((80, 3_840), (160, 7_680)))
+def test_l3_outputs_one_48khz_mono_audio_per_candidate(duration_ms, samples):
     rng = np.random.default_rng(42)
-    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    processor = Layer3Processor(_project_config(duration_ms))
     output = processor.process(
         _window(rng.normal(0, 0.03, (7_680, 8)).astype(np.float32)),
         (_candidate(0.0), _candidate(359.0)), physical_6plus1_geometry(),
@@ -79,12 +87,30 @@ def test_l3_outputs_one_48khz_mono_audio_per_candidate():
     assert tuple(item.theta_deg for item in output.enhanced_audio) == (0.0, 359.0)
     for item in output.enhanced_audio:
         assert item.sample_rate == 48_000
-        assert item.enhanced_audio.shape == (7_680,)
+        assert item.enhanced_audio.shape == (samples,)
         assert item.enhanced_audio.dtype == np.float32
         assert not item.enhanced_audio.flags.writeable
         assert np.isfinite(item.enhanced_audio).all()
         assert item.diagnostics[0] == "backend=imcra_spatial_separation"
         assert not hasattr(item, "stft_complex")
+
+
+def test_80ms_l3_uses_only_the_tail_of_the_160ms_decision_context():
+    rng = np.random.default_rng(420)
+    shared_tail = rng.normal(0, 0.03, (3_840, 8)).astype(np.float32)
+    first = np.vstack((np.zeros((3_840, 8), np.float32), shared_tail))
+    second = np.vstack((np.ones((3_840, 8), np.float32), shared_tail))
+    config = _project_config(80)
+    geometry = physical_6plus1_geometry()
+
+    output_a = Layer3Processor(config).process(
+        _window(first), (_candidate(30.0),), geometry,
+    ).enhanced_audio[0].enhanced_audio
+    output_b = Layer3Processor(config).process(
+        _window(second), (_candidate(30.0),), geometry,
+    ).enhanced_audio[0].enhanced_audio
+
+    np.testing.assert_array_equal(output_a, output_b)
 
 
 def test_l3_rejects_candidate_from_another_window():
@@ -143,7 +169,7 @@ def test_missing_imcra_context_degrades_the_complete_window_to_das():
         (_candidate(20.0),), physical_6plus1_geometry(),
     ).enhanced_audio[0]
     assert item.algorithm == "das"
-    assert item.fallback_reason is not None and "8个hop" in item.fallback_reason
+    assert item.fallback_reason is not None and "4个20 ms hop" in item.fallback_reason
 
 
 def test_single_candidate_uses_imcra_loaded_mvdr():

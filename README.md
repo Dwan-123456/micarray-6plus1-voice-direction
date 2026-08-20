@@ -102,18 +102,18 @@ WindowWorkItem
         只平滑/预测theta_deg，不创建、重置或关闭ID
     ↓ TrackedDirection[0..3] + active_tracks → 有界L3 latest-wins队列
 【已完成】Layer 3：按公共track_id增强方向音频（BF）
-    输入：同一WindowKey、160 ms LogicalAudio和0～3个权威方向
+    输入：同一WindowKey、160 ms DecisionWindow末尾的配置化80/160 ms LogicalAudio和0～3个权威方向
     当前可用：
         ├── optimized：双候选按rho选择Dual LCMV / Soft-null MVDR / Loaded MVDR
         │     单候选和三候选使用Loaded MVDR；数值失败逐频DAS回退
         └── ds_baseline：7麦Delay-and-Sum；当前只按单声源使用
     实验入口：constant_beamwidth_baseline（固定30° FNBW），当前不作为可用方法
     跳窗重叠STFT/IMCRA/协方差滚动复用；权重仍按当前窗口重新计算
-    每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [7680])
+    每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [3840/7680])
     物理上限：低频波长远大于阵列孔径，80～1500 Hz方向分离效果差
     ↓ 有界L4 latest-wins队列
 【已完成】Layer 4：按公共track_id判断各方向是否为人声
-    增强音频独立副本 + 16个对齐IMCRA概率
+    增强音频独立副本 + 4/8个对齐IMCRA概率
     ↓ imcra_probability_rms_v1响度补偿
       RMS目标-23 dBFS、只放大；新增增益受-3 dBFS峰值保护
     ↓ 48 kHz降采样到16 kHz
@@ -172,7 +172,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 系统为每次采集建立唯一`session_id`，用`stream_epoch`表示连续音频段，并用绝对sample编号描述时间。发生输入丢失或不连续时会切换epoch，防止把不连续音频误拼到同一个算法窗口。
 
-WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个正式窗口直接携带160 ms音频。L2可在自己的有界滚动状态中跨窗口累计配置所需的240/320 ms定位历史；L3和L4只处理当前160 ms窗口。L2、L3、L4使用同一个WindowKey，不能各自重新读取“当前最新音频”。
+WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，L4和Development Test UI复用同一派生长度。该参数第一阶段只允许80或160 ms，当前值为80 ms，对应3840个48 kHz样本、4个20 ms hop、9帧STFT和1280个16 kHz模型样本；改回160 ms时分别派生为7680、8、17和2560，不需要逐层修改常量。L2、L3、L4使用同一个WindowKey，不能各自重新读取“当前最新音频”。
 
 ### 4. Probability Gate
 
@@ -202,7 +202,7 @@ Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking
 
 ### 7. 按方向增强音频
 
-Layer 3对每个候选方向生成一条160 ms、48 kHz单声道增强音频。0/1/2候选完全保持既有BF策略；3候选时三路分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。DAS基线当前只按单声源方法使用。界面和代码中还保留固定30°恒定波束宽度实验入口，但它目前不属于可用方法，不能写入正式能力结论。
+Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`统一控制的48 kHz单声道增强音频；当前为80 ms。0/1/2候选完全保持既有BF策略；3候选时三路分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。DAS基线当前只按单声源方法使用。界面和代码中还保留固定30°恒定波束宽度实验入口，但它目前不属于可用方法，不能写入正式能力结论。
 
 优化BF会按频率和空间可分度选择处理方式：两个方向导向矢量相关度较低时才适合施加较强的双约束分离；相关度较高时必须转为更保守的MVDR或DAS，避免病态求解和目标失真。尤其在低频段，阵列提供的方向差异不足，算法的目标是稳定保留音频而不是承诺把两个低频声源彻底拆开。
 
@@ -221,7 +221,7 @@ Layer 3对每个候选方向生成一条160 ms、48 kHz单声道增强音频。0
 
 ### 8. 人声分类
 
-Layer 4判断L3输出的每条方向音频中是否存在人声。它先根据16个20 ms IMCRA概率对模型输入副本做受限响度补偿，再降采样到16 kHz，交给MarbleNet输出Voice / Non-Voice概率。当前CNN采用NVIDIA发布的多语言预训练模型，训练数据包含中文和英文，但英文训练数据来源多于中文；在尚未使用诊室或R6+1目标数据进行微调的情况下，预期英文人声检测表现可能优于中文。
+Layer 4判断L3输出的每条方向音频中是否存在人声。它先根据同一配置窗口内4/8个20 ms IMCRA概率对模型输入副本做受限响度补偿，再降采样为1280/2560个16 kHz样本，交给MarbleNet输出Voice / Non-Voice概率。当前CNN采用NVIDIA发布的多语言预训练模型，训练数据包含中文和英文，但英文训练数据来源多于中文；在尚未使用诊室或R6+1目标数据进行微调的情况下，预期英文人声检测表现可能优于中文。
 
 这里的“响度补偿”只是送入CNN前的内部增益调整，不是L2的声源响度测量，也不会输出dB SPL或按方向统计的响度结果。
 

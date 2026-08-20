@@ -8,7 +8,7 @@ import sounddevice as sd
 
 
 class PreviewPlayer:
-    """Small non-blocking player for immutable 160 ms engineering snapshots."""
+    """Small non-blocking player for immutable configured engineering snapshots."""
 
     def __init__(
         self,

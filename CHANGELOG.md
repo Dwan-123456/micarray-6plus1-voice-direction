@@ -22,6 +22,20 @@
 
 ---
 
+## 2026-08-20 — L3、L4与Development Test UI统一下游音频窗口为80 ms
+
+- **版本/标签**：项目`1.2.1`跨层配置与契约修复；不创建或移动发布标签。
+- **类型**：统一下游音频窗口配置、派生尺寸、Runtime注入、模型适配、UI显示、文档和自动化门禁。
+- **统一配置与Windowing**：新增唯一参数`timing.downstream_audio_window_ms`，第一阶段只允许80/160 ms且当前设为80 ms；统一派生48 kHz样本数、20 ms hop数、STFT帧数和16 kHz模型样本数。`DecisionWindow [7680,8]`及20 ms发布节拍保持不变，继续作为160 ms上游容器。
+- **L1/L2**：L1采集、IMCRA、预降噪、通道/校准契约均无算法变化；L2 Gate、240 ms Rolling MUSIC、DPD、方向ID、Kalman和20 ms调度均无变化。L3只读取DecisionWindow末尾对应的4/8个IMCRA hop。
+- **L3**：从固定160 ms改为按统一规格截取末尾80/160 ms；STFT、滚动缓存、IMCRA上下文、波束形成批次、特征形状和ISTFT输出全部由规格派生。当前输出为48 kHz `float32[3840]`、9帧内部STFT，160 ms配置仍产生`float32[7680]`和17帧。
+- **L4**：公开波形、响度补偿段数、批次宽度和MarbleNet适配器接受并严格校验统一规格；当前4个20 ms补偿段、48 kHz 3840样本降采样为16 kHz 1280样本，160 ms配置对应8段、7680和2560样本。模型manifest声明两档适配长度，权重和阈值不变。
+- **Development Test UI、Runtime与数据系统**：Runtime向L3、L4和Test UI注入同一规格并只传递末尾4/8个概率；单窗试听波形、按钮文字和按ID恢复范围随规格变化。正式录音流程、Audio Data Manager、Production UI和Pipeline Log UI无功能变化；数据契约仅扩展为接受两档正式增强音频。
+- **测试与文档**：新增80/160配置派生、L3末尾截取、两档STFT/缓存、L4批次和正式MarbleNet 80 ms前向、Test UI显示及跨层Runtime契约覆盖；同步根README、架构、Windowing、L3、L4和Test UI说明。自动化验证不替代真实7通道映射、方位、试听和长时间实机验收。
+- **Git LFS与数据边界**：MarbleNet manifest文本更新，模型权重和其他Git LFS对象无变化；不提交`.venv/`、`data/`、运行录音、scratch、Catalog、日志、缓存、密钥或代理设置。
+
+---
+
 ## 2026-08-20 — Test UI累计试听交叉淡化缩短为2 ms
 
 - **版本/标签**：项目`1.2.1`Development Test UI试听微调；不创建或移动发布标签。

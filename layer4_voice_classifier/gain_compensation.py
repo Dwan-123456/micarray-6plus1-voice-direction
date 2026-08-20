@@ -5,11 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from common.timing import CONTEXT_HOPS
-
-
 _SEGMENT_SAMPLES = 960
-_SEGMENT_COUNT = CONTEXT_HOPS
 _EPSILON = 1.0e-12
 
 
@@ -87,25 +83,32 @@ def compensate_l4_input(
     waveform: NDArray[np.float32],
     probabilities_20ms: tuple[float | None, ...],
     settings: InputGainCompensationSettings,
+    *,
+    segment_count: int = 8,
 ) -> tuple[NDArray[np.float32], InputGainCompensationDiagnostic]:
     """Create a compensated L4-only copy without modifying the L3 waveform."""
     source = np.asarray(waveform)
     if (
-        source.shape != (_SEGMENT_COUNT * _SEGMENT_SAMPLES,)
+        source.shape != (segment_count * _SEGMENT_SAMPLES,)
         or source.dtype != np.float32
         or not source.flags.c_contiguous
         or not np.isfinite(source).all()
     ):
-        raise ValueError("gain compensation requires finite C-contiguous float32 [7680]")
-    if len(probabilities_20ms) != _SEGMENT_COUNT:
-        raise ValueError("gain compensation requires exactly 8 aligned IMCRA probabilities")
+        raise ValueError(
+            f"gain compensation requires finite C-contiguous float32 "
+            f"[{segment_count * _SEGMENT_SAMPLES}]"
+        )
+    if len(probabilities_20ms) != segment_count:
+        raise ValueError(
+            f"gain compensation requires exactly {segment_count} aligned IMCRA probabilities"
+        )
     for probability in probabilities_20ms:
         if probability is not None and (
             not np.isfinite(probability) or not 0.0 <= probability <= 1.0
         ):
             raise ValueError("IMCRA probabilities must be finite values in [0,1] or missing")
 
-    chunks = source.reshape(_SEGMENT_COUNT, _SEGMENT_SAMPLES)
+    chunks = source.reshape(segment_count, _SEGMENT_SAMPLES)
     rms_before = np.sqrt(np.mean(chunks.astype(np.float64) ** 2, axis=1))
     peak_before = np.max(np.abs(chunks.astype(np.float64)), axis=1)
     rms_before_dbfs = np.asarray([_dbfs(value) for value in rms_before])
@@ -125,8 +128,8 @@ def compensate_l4_input(
     target_gain[silent] = 0.0
 
     output = source.copy()
-    applied_mean = np.zeros(_SEGMENT_COUNT, dtype=np.float64)
-    peak_triggered = np.zeros(_SEGMENT_COUNT, dtype=bool)
+    applied_mean = np.zeros(segment_count, dtype=np.float64)
+    peak_triggered = np.zeros(segment_count, dtype=bool)
     previous_gain = float(target_gain[0])
     ceiling_amplitude = float(
         np.nextafter(
@@ -160,7 +163,7 @@ def compensate_l4_input(
         applied_mean[index] = float(np.mean(envelope_db))
         previous_gain = float(envelope_db[-1])
 
-    output_chunks = output.reshape(_SEGMENT_COUNT, _SEGMENT_SAMPLES)
+    output_chunks = output.reshape(segment_count, _SEGMENT_SAMPLES)
     rms_after = np.sqrt(np.mean(output_chunks.astype(np.float64) ** 2, axis=1))
     peak_after = np.max(np.abs(output_chunks.astype(np.float64)), axis=1)
     segment_diagnostics = tuple(
@@ -177,7 +180,7 @@ def compensate_l4_input(
             bool(silent[index]),
             bool(peak_triggered[index]),
         )
-        for index in range(_SEGMENT_COUNT)
+        for index in range(segment_count)
     )
     diagnostic = InputGainCompensationDiagnostic(
         settings.algorithm_version,

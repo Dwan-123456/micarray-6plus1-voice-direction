@@ -8,6 +8,8 @@
 
 本UI只消费同一个ApplicationRuntime快照，不得重开设备、重建时间轴或在界面线程运行算法。普通启动使用真实麦克风；数据管理系统发起完整模拟时，`RecordingReplaySource`把已登记的原始8ch音频和CDC热力图作为同一个虚拟阵列输入，两种方式共用完整L1→L4链路。
 
+L3单窗试听、L4输入和试听恢复范围不在UI内另设长度；它们由Runtime从`timing.downstream_audio_window_ms`统一注入。第一阶段允许80/160 ms，当前为80 ms，面板按钮相应显示“播放/暂停 80 ms”。固定160 ms的DecisionWindow只作为上游容器保留。
+
 只有完整模拟输入模式会在L1显示操作者填写的音频名称以及“开始/继续、暂停、从头重播”控件。暂停不推进sample，也不在继续时追赶；播放结束保留最后结果并等待重播。重播立即清空上一轮L1～L4画面、试听缓存和旧结果邮箱，并通过新的stream epoch重新预热算法状态。普通真实设备模式不创建这些控件。
 
 主界面使用10 ms精确定时器以100 Hz轮询两个容量1的latest-value邮箱。正式审计邮箱仍只接收ResultJoiner按`(session_id, stream_epoch, window_id, decision_sample)`合并并有序提交的快照；L4完成邮箱`latest_l4_dev_ui`只在L4真正`COMPLETED`后立即接收完整同窗L2/L3/L4 `DevUiFrame`，用于减少有序commit等待造成的CNN显示延迟。它不改变DecisionRecord、录音或watermark顺序，也不能混拼不同窗口。算法正式窗口仍为20 ms（50 Hz）；某阶段SKIPPED/FAILED时仍由有序审计快照表达真实终态。
@@ -40,7 +42,7 @@ L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和K
 - Gate关闭时MUSIC显示Blocked且公开方向为空；
 - 原始MUSIC圆环和公共轨迹点同窗显示，UI不执行二次滤波或二次ID关联；
 - Test UI试听ID不产生正式候选之外的L3预测波束批次，普通Runtime不创建该旁路；Center Mic参考、2秒显示门槛、3秒等待、唯一换号续接、近角双ID隔离、跳窗等时补洞和关闭清理均有回归测试；
-- L3只有音频视图，无内部`[17,169]`依赖；
+- L3只有音频视图，无内部`[9/17,169]`依赖；
 - L3三档循环切换、Runtime模式透传、模式切换后试听缓存隔离；恒定波束档固定30° FNBW并在不安全频点回退DAS；
 - L4完成邮箱固定容量1、只发布完整同窗COMPLETED帧、覆盖不改变正式结果；DROPPED/SKIPPED画面保留到stale超时；
 - L4实际完成/丢弃/跳过/Hz/邮箱覆盖诊断与空候选L3免prepare、L4空batch成功路径；

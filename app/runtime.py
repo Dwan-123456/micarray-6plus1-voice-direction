@@ -11,10 +11,15 @@ from typing import Callable
 import numpy as np
 import torch
 
-from common.config import ProjectConfig, calibration_config_hash, config_hash, load_config
+from common.config import (
+    DownstreamAudioWindowSpec,
+    ProjectConfig,
+    calibration_config_hash,
+    config_hash,
+    load_config,
+)
 from common.data_types import DecisionWindow, PipelineStatus
 from common.geometry import physical_6plus1_geometry
-from common.timing import CONTEXT_HOPS
 from data_management import DecisionRecord, RecordingStore, ResultWatermark, SessionMetadata
 from gui.dev_test_ui.aggregator import DevUiAggregator, PerformanceTracker
 from gui.dev_test_ui.contracts import AlgorithmPerformanceSnapshot, BeamformPreview, DevUiFrame
@@ -230,6 +235,7 @@ class ApplicationRuntime:
         self._l3_cuda_stream = torch.cuda.Stream() if self.processing_device == "cuda" else None
         self._l4_cuda_stream = torch.cuda.Stream() if self.processing_device == "cuda" else None
         self._layer3 = Layer3Processor(config, device=self.processing_device)
+        self.downstream_window_spec = config.downstream_audio_window
         self._l3_cache_snapshot: object | None = None
         if layer4_engine is None:
             enabled_l4 = tuple(item for item in config.layer4.models if item.enabled)
@@ -242,7 +248,12 @@ class ApplicationRuntime:
                         artifact = Path(__file__).resolve().parents[1] / item.model_artifact
                 if item.backend != "nvidia_marblenet_window_v1":
                     raise ValueError(f"unsupported Layer4 backend: {item.backend}")
-                plugins.append(NvidiaMarbleNetPlugin(item.model_id, artifact, device=self.processing_device))
+                plugins.append(NvidiaMarbleNetPlugin(
+                    item.model_id,
+                    artifact,
+                    device=self.processing_device,
+                    window_spec=config.downstream_audio_window,
+                ))
             primary = next(plugin for plugin in plugins if plugin.model_id == config.layer4.primary_model_id)
             shadows = tuple(plugin for plugin in plugins if plugin.model_id != config.layer4.primary_model_id)
             layer4_engine = Layer4Engine(
@@ -252,6 +263,7 @@ class ApplicationRuntime:
                 input_gain_compensation=InputGainCompensationSettings(
                     **config.layer4.input_gain_compensation.model_dump()
                 ),
+                window_spec=config.downstream_audio_window,
             )
         self._layer4 = layer4_engine
         self.last_error: str | None = None
@@ -2456,8 +2468,18 @@ class ApplicationRuntime:
             for item in l3_output.enhanced_audio[:stop]
         )
 
-    @staticmethod
-    def _context_probabilities_20ms(window: DecisionWindow) -> tuple[float | None, ...]:
+    def _context_probabilities_20ms(self, window: DecisionWindow) -> tuple[float | None, ...]:
+        spec = getattr(
+            self,
+            "downstream_window_spec",
+            getattr(
+                getattr(self, "_layer3", None),
+                "window_spec",
+                None,
+            ),
+        )
+        if spec is None:
+            spec = DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560)
         hops_by_interval = {
             (hop.start_sample, hop.end_sample): hop for hop in window.imcra_hops
         }
@@ -2468,10 +2490,17 @@ class ApplicationRuntime:
                 or hop.state != "ready"
                 else hop.array_source_probability_20ms
             )
-            for start in range(window.context_start_sample, window.context_end_sample, 960)
+            for start in range(
+                window.context_end_sample - spec.samples,
+                window.context_end_sample,
+                960,
+            )
         )
-        if len(probabilities) != CONTEXT_HOPS:
-            raise RuntimeError("L4 requires exactly 8 context-aligned 20 ms probability slots")
+        expected = spec.decision_hops
+        if len(probabilities) != expected:
+            raise RuntimeError(
+                f"L4 requires exactly {expected} context-aligned 20 ms probability slots"
+            )
         return probabilities
 
     def _layer4_inputs_from_output(self, window, l3_output, formal_count: int):

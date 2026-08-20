@@ -259,22 +259,27 @@ def _primary_l4_engine(config: ProjectConfig, root: Path, device: str) -> Layer4
     artifact = Path(model.model_artifact)
     if not artifact.is_absolute():
         artifact = root / artifact
-    plugin = NvidiaMarbleNetPlugin(model.model_id, artifact, device=device)
+    plugin = NvidiaMarbleNetPlugin(
+        model.model_id, artifact, device=device, window_spec=config.downstream_audio_window,
+    )
     return Layer4Engine(
         plugin,
         threshold=config.layer4.voice_probability_limit,
         input_gain_compensation=InputGainCompensationSettings(
             **config.layer4.input_gain_compensation.model_dump()
         ),
+        window_spec=config.downstream_audio_window,
     )
 
 
-def _l4_batches(total: int, count: int, seed: int) -> tuple[tuple[Layer4AudioSegment, ...], ...]:
+def _l4_batches(
+    total: int, count: int, seed: int, *, window_samples: int, window_hops: int,
+) -> tuple[tuple[Layer4AudioSegment, ...], ...]:
     rng = np.random.default_rng(seed)
     batches: list[tuple[Layer4AudioSegment, ...]] = []
     for window_id in range(total):
         waveforms = np.ascontiguousarray(
-            rng.normal(0.0, 0.01, (count, 7_680)), dtype=np.float32
+            rng.normal(0.0, 0.01, (count, window_samples)), dtype=np.float32
         )
         batches.append(
             tuple(
@@ -286,7 +291,7 @@ def _l4_batches(total: int, count: int, seed: int) -> tuple[tuple[Layer4AudioSeg
                     float(20 + index * 100),
                     48_000,
                     waveforms[index],
-                    (0.9,) * 8,
+                    (0.9,) * window_hops,
                 )
                 for index in range(count)
             )
@@ -311,7 +316,11 @@ def _benchmark_l4(
     stream = torch.cuda.Stream() if device == "cuda" else None
     for repeat in range(repeats):
         batches = _l4_batches(
-            warmup + iterations, candidate_count, seed + repeat
+            warmup + iterations,
+            candidate_count,
+            seed + repeat,
+            window_samples=engine.window_spec.samples,
+            window_hops=engine.window_spec.decision_hops,
         )
         elapsed: list[float] = []
         prediction: list[float] = []

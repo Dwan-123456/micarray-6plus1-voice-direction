@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -71,10 +72,22 @@ class CalibrationConfig(StrictModel):
     frequency_response_asset: CalibrationAssetConfig | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DownstreamAudioWindowSpec:
+    """Single derived L3/L4/Test-UI audio-window contract."""
+
+    duration_ms: int
+    samples: int
+    decision_hops: int
+    stft_frames: int
+    resampled_16k_samples: int
+
+
 class TimingConfig(StrictModel):
     decision_hop_samples: Literal[960]
     doa_window_samples: Literal[1920]
     context_samples: Literal[7680]
+    downstream_audio_window_ms: Literal[80, 160] = 80
     timestamp_tolerance_ms: float = Field(ge=0)
 
 
@@ -261,7 +274,6 @@ class FeatureConfig(StrictModel):
     last_bin_inclusive: int
     log_epsilon: float
     normalization: str
-    expected_shape: tuple[int, int]
 
 
 class Layer4ModelConfig(StrictModel):
@@ -439,6 +451,18 @@ class ProjectConfig(StrictModel):
     recording: RecordingConfig
     privacy: PrivacyConfig
 
+    @property
+    def downstream_audio_window(self) -> DownstreamAudioWindowSpec:
+        duration_ms = self.timing.downstream_audio_window_ms
+        samples = duration_ms * self.device.sample_rate // 1_000
+        return DownstreamAudioWindowSpec(
+            duration_ms=duration_ms,
+            samples=samples,
+            decision_hops=samples // self.timing.decision_hop_samples,
+            stft_frames=1 + samples // self.stft.hop_length,
+            resampled_16k_samples=samples * 16_000 // self.device.sample_rate,
+        )
+
     @model_validator(mode="after")
     def validate_cross_fields(self) -> "ProjectConfig":
         count = self.hardware.physical_mic_count
@@ -481,8 +505,18 @@ class ProjectConfig(StrictModel):
             raise ValueError("L1预降噪启用时必须同时启用IMCRA")
         if self.runtime.max_candidate_batch < self.layer2.max_candidates:
             raise ValueError("max_candidate_batch不能小于max_candidates")
-        if self.feature.expected_shape != (17, 169):
-            raise ValueError("feature shape固定为[17,169]")
+        duration_ms = self.timing.downstream_audio_window_ms
+        if duration_ms not in {80, 160} or duration_ms <= 0 or duration_ms % 20:
+            raise ValueError("downstream_audio_window_ms第一阶段只能为80或160且必须为20 ms整数倍")
+        spec = self.downstream_audio_window
+        if spec.samples > self.timing.context_samples:
+            raise ValueError("downstream audio window不能超过DecisionWindow直接上下文")
+        if spec.samples % self.timing.decision_hop_samples:
+            raise ValueError("downstream audio window必须包含完整decision hops")
+        if not self.stft.center or spec.stft_frames != 1 + spec.samples // self.stft.hop_length:
+            raise ValueError("downstream STFT frame derivation与当前center=true配置不一致")
+        if spec.resampled_16k_samples not in {1280, 2560}:
+            raise ValueError("Layer4模型不支持所选downstream audio window")
         if (self.layer3.main_backend, self.layer3.fallback_backend) != (
             "imcra_spatial_separation",
             "das",

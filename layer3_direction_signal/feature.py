@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 
 from common.data_types import DirectionalSignal, SpectrogramFeature
-from common.timing import STFT_FRAME_COUNT
 
 from .configuration import FeatureSettings
 from .interface import Layer3Error
@@ -35,8 +34,10 @@ class FeatureExtractor:
         if self.freq_mean is not None:
             feature = (feature - self.freq_mean[None, :]) / self.freq_std[None, :]
         feature = np.ascontiguousarray(feature, dtype=np.float32)
-        if feature.shape != (STFT_FRAME_COUNT, 169) or not np.isfinite(feature).all():
-            raise Layer3Error("CNN输入特征不是finite float32 [17,169]")
+        if feature.shape != (self.settings.frame_count, 169) or not np.isfinite(feature).all():
+            raise Layer3Error(
+                f"工程特征不是finite float32 [{self.settings.frame_count},169]"
+            )
         return SpectrogramFeature(
             signal.session_id, signal.stream_epoch, signal.window_id, signal.decision_sample,
             signal.context_start_sample, signal.context_end_sample, signal.theta_deg,

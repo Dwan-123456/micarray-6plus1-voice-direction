@@ -123,7 +123,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 ## 6. Windowing 改动
 
-- `DecisionWindow [7680,8]` 每20 ms发布一次；160 ms是L3/L4的直接上下文，L2可用滚动历史上限仍为320 ms，但更长历史由L2跨窗口状态维护。
+- `DecisionWindow [7680,8]` 每20 ms发布一次并始终保留160 ms上游上下文。L3、L4和Development Test UI共同读取`timing.downstream_audio_window_ms`派生的末尾80/160 ms；当前为80 ms。L2的MUSIC历史独立配置为240 ms并由跨窗口状态维护，不受该下游参数影响。
 - L2维护按session/epoch/sample连续的滚动STFT与协方差状态。每个新DecisionWindow原则上只加入最近20 ms产生的新帧并移出超出MUSIC历史长度的旧帧；禁止每20 ms从头重算320 ms STFT和全部协方差。
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
 - Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有符合条件的人声ID时，Gate关闭会跳过新的MUSIC观测。只有tracking状态已为`confirmed`、至少收到一次L4正向人声反馈且当前未标记为噪声干扰的ID，才能把低于门限的正式概率判决强制放行；仅有MUSIC观测的临时/未获人声确认ID不能强制Gate。ID继续按3秒绝对sample TTL推进到coasting/超时；未获L4人声确认的轨迹漏检后可留在`active_tracks`等待重关联，但不得作为公共coasting方向送入L3。预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
@@ -194,6 +194,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 ## 9. Layer 3 改动
 
+- L3只处理DecisionWindow末尾的配置窗口。80 ms派生为3840个48 kHz样本、4个20 ms hop和9帧STFT；160 ms派生为7680样本、8 hop和17帧。禁止在L3另设窗口常量。
 - 输入从无 ID 的 `CandidateDirection` 改为 `TrackedDirection`，以 `(WindowKey, track_id)` 为方向批次身份。
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
@@ -202,6 +203,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 ## 10. Layer 4 改动
 
+- L4必须继承同一派生窗口：公开输入为3840/7680个48 kHz样本，模型适配后为1280/2560个16 kHz样本，响度补偿严格使用4/8个对齐概率。配置与实际批次不一致时立即拒绝。
 - `Layer4AudioSegment`、`VoiceDetection` 和阶段结果均增加 `track_id`，并按 L3 的 `(WindowKey, track_id)` 原样返回。
 - L4 入口/出口校验 ID 集合、顺序、角度与音频严格对齐；重新阈值判断只能改变 Voice/Non-Voice 结论，不能改变 ID。
 - CNN、48→16 kHz 适配、响度补偿和 primary/shadow 边界保持不变。
@@ -218,6 +220,8 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `DecisionRecord` 升级到 v4。旧 v3 记录继续只读兼容，不原地改写。
 
 ## 12. Development Test UI 与逐 ID 试听
+
+- Test UI不拥有独立的音频窗口配置；面板文字、单窗试听波形和按ID恢复范围全部使用Runtime注入的同一80/160 ms派生规格。当前按钮显示80 ms。
 
 - 删除 “Iterative Multiple Peak” 开关、ID 追踪开关、相关持久化设置和运行时 setter。
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。

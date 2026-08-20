@@ -96,7 +96,7 @@ def _candidates(window: DecisionWindow) -> tuple[CandidateDirection, ...]:
     )
 
 
-def test_rolling_stft_reuses_13_frames_and_is_bit_exact():
+def test_rolling_stft_reuses_5_frames_and_is_bit_exact():
     rng = np.random.default_rng(20260818)
     continuous = rng.normal(0.0, 0.02, (8_640, 8)).astype(np.float32)
     hops = tuple(_hop(index) for index in range(9))
@@ -110,8 +110,8 @@ def test_rolling_stft_reuses_13_frames_and_is_bit_exact():
 
     assert torch.equal(actual, expected)
     snapshot = cache.snapshot()
-    assert (snapshot.reused_frames, snapshot.recomputed_frames) == (13, 4)
-    assert snapshot.temporal_hops == 8
+    assert (snapshot.reused_frames, snapshot.recomputed_frames) == (5, 4)
+    assert snapshot.temporal_hops == 4
     assert snapshot.max_temporal_hops == 50
 
 
@@ -134,10 +134,10 @@ def test_rolling_l3_matches_a_fresh_full_recalculation(hop_gap: int):
     for cached, full in zip(actual.enhanced_audio, expected.enhanced_audio):
         np.testing.assert_allclose(cached.enhanced_audio, full.enhanced_audio, rtol=2e-4, atol=2e-5)
     snapshot = rolling.cache_snapshot()
-    assert snapshot.stft_reused_frames == 15 - 2 * hop_gap
-    assert snapshot.stft_recomputed_frames == 2 + 2 * hop_gap
-    assert snapshot.covariance_rolled
-    assert snapshot.stft_temporal_hops == snapshot.imcra_temporal_hops == 8
+    expected = (0, 9) if hop_gap >= 4 else (7 - 2 * hop_gap, 2 + 2 * hop_gap)
+    assert (snapshot.stft_reused_frames, snapshot.stft_recomputed_frames) == expected
+    assert snapshot.covariance_rolled == (hop_gap < 4)
+    assert snapshot.stft_temporal_hops == snapshot.imcra_temporal_hops == 4
     assert snapshot.max_temporal_hops == 50
 
 
@@ -156,10 +156,8 @@ def test_rolling_stft_reuses_absolute_sample_overlap(hop_gap: int):
     expected = shared_stft(current, settings, device=torch.device("cpu"))
 
     assert torch.equal(actual, expected)
-    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (
-        15 - 2 * hop_gap,
-        2 + 2 * hop_gap,
-    )
+    expected = (0, 9) if hop_gap >= 4 else (7 - 2 * hop_gap, 2 + 2 * hop_gap)
+    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == expected
 
 
 @pytest.mark.parametrize("hop_gap", (2, 4, 7))
@@ -189,7 +187,7 @@ def test_rolling_noise_statistics_match_fresh_recalculation_after_gap(hop_gap: i
         current, current_spectrum, frequencies, config, settings, allow_rolling=True,
     )
 
-    assert rolling.snapshot().rolled
+    assert rolling.snapshot().rolled == (hop_gap < settings.window_hops)
     assert actual_version == expected_version
     torch.testing.assert_close(actual.covariance_fcc, expected.covariance_fcc, rtol=2e-5, atol=2e-6)
     torch.testing.assert_close(actual.noise_confidence_f, expected.noise_confidence_f)
@@ -211,8 +209,8 @@ def test_explicit_noise_context_rolls_across_multi_hop_gap(hop_gap: int):
     frequencies = torch.fft.rfftfreq(settings.n_fft, 1.0 / 48_000, device=device)
     first_spectrum = shared_stft(first, settings, device=device).permute(1, 0, 2).contiguous()
     current_spectrum = shared_stft(current, settings, device=device).permute(1, 0, 2).contiguous()
-    first_context = BeamformerNoiseContext.from_window(first)
-    current_context = BeamformerNoiseContext.from_window(current)
+    first_context = BeamformerNoiseContext.from_window(first, settings)
+    current_context = BeamformerNoiseContext.from_window(current, settings)
 
     rolling = RollingNoiseStatisticsCache()
     rolling.estimate(
@@ -225,7 +223,7 @@ def test_explicit_noise_context_rolls_across_multi_hop_gap(hop_gap: int):
         current_context, current_spectrum, frequencies, config, settings, allow_rolling=True,
     )
 
-    assert rolling.snapshot().rolled
+    assert rolling.snapshot().rolled == (hop_gap < settings.window_hops)
     torch.testing.assert_close(actual.covariance_fcc, expected.covariance_fcc, rtol=2e-5, atol=2e-6)
     torch.testing.assert_close(actual.noise_confidence_f, expected.noise_confidence_f)
     torch.testing.assert_close(actual.frequency_gain_f, expected.frequency_gain_f)
@@ -240,11 +238,11 @@ def test_no_overlap_or_stream_identity_change_forces_complete_rebuild():
 
     cache.process(_window(continuous, hops, 0), settings)
     cache.process(_window(continuous, hops, 8), settings)
-    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (0, 17)
+    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (0, 9)
 
     changed_stream = _window(continuous, hops, 8, session_id="new-session", epoch=1)
     cache.process(changed_stream, settings)
-    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (0, 17)
+    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (0, 9)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device unavailable")
@@ -266,7 +264,7 @@ def test_cuda_rolling_caches_reuse_a_multi_hop_gap():
     expected = shared_stft(current, settings, device=device)
 
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
-    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (1, 16)
+    assert (cache.snapshot().reused_frames, cache.snapshot().recomputed_frames) == (0, 9)
 
     frequencies = torch.fft.rfftfreq(settings.n_fft, 1.0 / 48_000, device=device)
     noise_cache = RollingNoiseStatisticsCache()
@@ -289,7 +287,7 @@ def test_cuda_rolling_caches_reuse_a_multi_hop_gap():
         settings,
         allow_rolling=True,
     )
-    assert noise_cache.snapshot().rolled
+    assert not noise_cache.snapshot().rolled
     torch.testing.assert_close(
         actual_noise.covariance_fcc,
         expected_noise.covariance_fcc,
@@ -327,8 +325,8 @@ def test_temporal_and_angle_caches_have_hard_bounded_capacity():
 
     snapshot = processor.cache_snapshot()
     assert snapshot.max_temporal_hops == 50
-    assert snapshot.stft_temporal_hops <= 8
-    assert snapshot.imcra_temporal_hops <= 8
+    assert snapshot.stft_temporal_hops <= 4
+    assert snapshot.imcra_temporal_hops <= 4
     assert snapshot.steering_entries <= 16
     assert snapshot.p_entries <= 16
     assert snapshot.persistent_tensor_bytes < 8 * 1024 * 1024
@@ -347,7 +345,7 @@ def test_candidate_independent_prepare_matches_compatible_process_api():
     assert prepared.window_key == (
         window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
     )
-    assert prepared.spectrum_fct.shape == (513, 7, 17)
+    assert prepared.spectrum_fct.shape == (513, 7, 9)
     assert not prepared.spectrum_fct.requires_grad
     with pytest.raises(FrozenInstanceError):
         prepared.window_id = 99  # type: ignore[misc]
@@ -398,7 +396,7 @@ def test_two_candidates_use_one_batched_inverse_stft(monkeypatch: pytest.MonkeyP
     result = processor.process(window, _candidates(window), physical_6plus1_geometry())
 
     assert len(result.enhanced_audio) == 2
-    assert calls == [(2, 513, 17)]
+    assert calls == [(2, 513, 9)]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device unavailable")

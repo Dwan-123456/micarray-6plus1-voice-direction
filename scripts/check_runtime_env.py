@@ -37,10 +37,12 @@ def main() -> None:
         import sounddevice
         import yaml
         import safetensors
+        from common.config import load_config
     except Exception as exc:
         fail(f"运行依赖导入失败: {exc}")
 
     cuda_available = bool(torch.cuda.is_available())
+    project_config = load_config(project_root / "config" / "config.yaml", environ={})
     if torch.__version__ != "2.12.1+cu132":
         fail(f"需要PyTorch 2.12.1+cu132，当前为 {torch.__version__}")
     if torch.version.cuda != "13.2":
@@ -103,7 +105,8 @@ def main() -> None:
             fail(f"PyTorch wheel不包含当前GPU架构 {target_arch}: {compiled_arches}")
 
         # Exercise the operations used by the real pipeline, not only device discovery.
-        waveform = torch.randn((7, 7_680), device=device, dtype=torch.float32)
+        window_spec = project_config.downstream_audio_window
+        waveform = torch.randn((7, window_spec.samples), device=device, dtype=torch.float32)
         window = torch.hann_window(960, periodic=True, device=device)
         spectrum = torch.stft(
             waveform,
@@ -117,7 +120,7 @@ def main() -> None:
             onesided=True,
             return_complex=True,
         )
-        if tuple(spectrum.shape) != (7, 513, 17) or spectrum.dtype != torch.complex64:
+        if tuple(spectrum.shape) != (7, 513, window_spec.stft_frames) or spectrum.dtype != torch.complex64:
             fail(f"CUDA STFT契约错误: {tuple(spectrum.shape)} / {spectrum.dtype}")
 
         matrix = torch.randn((513, 7, 7), device=device, dtype=torch.complex64)
@@ -128,13 +131,15 @@ def main() -> None:
             fail("CUDA complex64线性求解产生NaN/Inf")
 
         from layer4_voice_classifier import NvidiaMarbleNetPlugin
-
         l4 = NvidiaMarbleNetPlugin(
             "nv_marblenet_baseline_v1",
             project_root / "models" / "nv_marblenet_baseline_v1",
             device="cuda",
+            window_spec=project_config.downstream_audio_window,
         )
-        l4_output = l4.predict(np.zeros((5, 7_680), dtype=np.float32))
+        l4_output = l4.predict(np.zeros(
+            (5, project_config.downstream_audio_window.samples), dtype=np.float32,
+        ))
         if l4_output.probabilities.shape != (5,) or not np.isfinite(l4_output.probabilities).all():
             fail(f"CUDA MarbleNet波形前向契约错误: {l4_output.probabilities.shape}")
         torch.cuda.synchronize(device)

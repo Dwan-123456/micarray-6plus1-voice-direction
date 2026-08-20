@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-from common.timing import CONTEXT_SAMPLES, STFT_FRAME_COUNT
+from common.timing import CONTEXT_SAMPLES
 from .configuration import SpatialSeparationConfig, StftSettings
 from .interface import (
     L3_MODE_CONSTANT_BEAMWIDTH,
@@ -24,7 +24,7 @@ class PreparedL3Context:
     has no read-only tensor flag, so callers must not mutate them in place.  The
     frozen DTO prevents replacing fields and lets the runtime pass this object
     between its ordered L3 preparation and beamforming stages without copying a
-    160 ms spectrum back through host memory.
+    configured-window spectrum back through host memory.
     """
 
     session_id: str
@@ -58,12 +58,14 @@ class PreparedL3Context:
         if self.mode not in L3_PROCESSING_MODES:
             raise ValueError(f"PreparedL3Context处理模式无效: {self.mode}")
         if (
-            self.spectrum_fct.shape != (513, 7, STFT_FRAME_COUNT)
+            self.spectrum_fct.shape != (513, 7, self.stft.frame_count)
             or self.spectrum_fct.dtype != torch.complex64
             or self.spectrum_fct.requires_grad
             or not torch.isfinite(self.spectrum_fct).all()
         ):
-            raise ValueError("PreparedL3Context STFT必须是finite complex64 [513,7,17]")
+            raise ValueError(
+                f"PreparedL3Context STFT必须是finite complex64 [513,7,{self.stft.frame_count}]"
+            )
         if (
             self.frequencies_hz.shape != (513,)
             or self.frequencies_hz.dtype != torch.float32
@@ -77,7 +79,7 @@ class PreparedL3Context:
             or self.passband_f.device != self.spectrum_fct.device
         ):
             raise ValueError("PreparedL3Context频带mask无效")
-        if not 0 <= self.stft_reused_frames <= STFT_FRAME_COUNT:
+        if not 0 <= self.stft_reused_frames <= self.stft.frame_count:
             raise ValueError("PreparedL3Context复用帧计数无效")
         if self.mode in {L3_MODE_DS_BASELINE, L3_MODE_CONSTANT_BEAMWIDTH}:
             if self.noise_statistics is not None or self.noise_algorithm_version is not None:
@@ -130,7 +132,9 @@ class BeamformedL3Batch:
     def __post_init__(self) -> None:
         count = len(self.theta_degrees)
         if (
-            self.spectra_mft.shape != (count, 513, STFT_FRAME_COUNT)
+            self.spectra_mft.ndim != 3
+            or self.spectra_mft.shape[:2] != (count, 513)
+            or self.spectra_mft.shape[-1] not in {9, 17}
             or self.spectra_mft.dtype != torch.complex64
             or self.spectra_mft.requires_grad
             or not torch.isfinite(self.spectra_mft).all()

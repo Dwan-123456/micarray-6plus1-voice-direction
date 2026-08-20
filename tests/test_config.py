@@ -64,6 +64,42 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert gain.no_compensation_probability == 0.30
     assert gain.full_compensation_probability == 0.80
     assert gain.peak_ceiling_dbfs == -3.0
+    assert config.downstream_audio_window.duration_ms == 80
+    assert config.downstream_audio_window.samples == 3_840
+    assert config.downstream_audio_window.decision_hops == 4
+    assert config.downstream_audio_window.stft_frames == 9
+    assert config.downstream_audio_window.resampled_16k_samples == 1_280
+
+
+@pytest.mark.parametrize(
+    ("duration_ms", "samples", "hops", "frames", "resampled"),
+    ((80, 3_840, 4, 9, 1_280), (160, 7_680, 8, 17, 2_560)),
+)
+def test_downstream_audio_window_derives_every_length(
+    tmp_path, duration_ms, samples, hops, frames, resampled,
+):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "downstream_audio_window_ms: 80",
+        f"downstream_audio_window_ms: {duration_ms}",
+    )
+    candidate = tmp_path / f"downstream-{duration_ms}.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    spec = load_config(candidate, environ={}).downstream_audio_window
+    assert (spec.samples, spec.decision_hops, spec.stft_frames, spec.resampled_16k_samples) == (
+        samples, hops, frames, resampled,
+    )
+
+
+@pytest.mark.parametrize("duration_ms", (60, 100, 200, 81))
+def test_downstream_audio_window_rejects_unsupported_values(tmp_path, duration_ms):
+    text = CONFIG.read_text(encoding="utf-8").replace(
+        "downstream_audio_window_ms: 80",
+        f"downstream_audio_window_ms: {duration_ms}",
+    )
+    candidate = tmp_path / f"bad-downstream-{duration_ms}.yaml"
+    candidate.write_text(text, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(candidate, environ={})
 
 
 def test_only_allowed_deployment_variables_override():

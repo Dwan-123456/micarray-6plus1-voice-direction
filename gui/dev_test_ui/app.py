@@ -183,6 +183,7 @@ def build_window(
     audio_id_tracker = AudioIdTracker(
         f"data/dev_test_ui/l3_audio_cache/current/run_{uuid4().hex}",
         project_root=project_root,
+        downstream_window_samples=config.downstream_audio_window.samples,
     )
     runtime = ApplicationRuntime(
         config, project_root=project_root, pipeline=pipeline,

@@ -20,6 +20,7 @@ class Layer3Processor:
         self, config: ProjectConfig, *, device: str | torch.device = "cpu",
     ) -> None:
         self.stft = StftSettings.from_project(config)
+        self.window_spec = config.downstream_audio_window
         self.beamforming = SpatialSeparationConfig.from_project(config)
         self.beamformer = ImcraSpatialSeparationBeamformer(device=device)
 
@@ -64,13 +65,14 @@ class Layer3Processor:
         batch = self.beamformer.process_prepared_batch(prepared, candidates, geometry)
         return Layer3Output(self._synthesize_prepared(prepared, batch))
 
-    @staticmethod
-    def _validate_input(window: DecisionWindow) -> None:
+    def _validate_input(self, window: DecisionWindow) -> None:
         if window.sample_rate != 48_000 or window.samples.shape != (CONTEXT_SAMPLES, 8):
             raise RuntimeError(
                 f"L3输入必须是48 kHz逻辑8通道 [7680,8]，实际为"
                 f"{window.sample_rate} Hz {window.samples.shape}"
             )
+        if self.window_spec.samples > len(window.samples):
+            raise RuntimeError("L3下游音频窗口超过DecisionWindow可用上下文")
 
     def _synthesize_prepared(
         self,
@@ -82,7 +84,9 @@ class Layer3Processor:
         # Apply the shared passband on-device, invert all candidates in one
         # torch.istft call, and transfer the completed waveform batch once.
         band_limited = batch.spectra_mft * prepared.passband_f[None, :, None]
-        waveforms = inverse_stft(band_limited, prepared.stft)
+        waveforms = inverse_stft(
+            band_limited, prepared.stft, length=self.window_spec.samples,
+        )
         host = np.ascontiguousarray(
             waveforms.detach().cpu().numpy(), dtype=np.float32,
         )

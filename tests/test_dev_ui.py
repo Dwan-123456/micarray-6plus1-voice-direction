@@ -205,6 +205,23 @@ def test_kalman_q_r_control_stages_with_buttons_and_applies_explicitly(monkeypat
     app.processEvents()
 
 
+@pytest.mark.parametrize("duration_ms", (80, 160))
+def test_beamform_preview_button_uses_downstream_window_config(monkeypatch, duration_ms):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from gui.dev_test_ui.panels import BeamformPanel
+
+    base = load_config(CONFIG, environ={})
+    timing = base.timing.model_copy(update={"downstream_audio_window_ms": duration_ms})
+    config = base.model_copy(update={"timing": timing})
+    app = QApplication.instance() or QApplication([])
+    panel = BeamformPanel(config)
+    assert panel.preview_play.text() == f"播放/暂停 {duration_ms} ms"
+    panel.deleteLater()
+    app.processEvents()
+
+
 def test_performance_tracker_resets_on_epoch_and_observes_rate():
     tracker = PerformanceTracker(sample_rate=48_000, required_samples=15_360, window_count=500, rate_seconds=5)
     samples = np.zeros((960, 8), np.float32)
@@ -480,7 +497,9 @@ def test_runtime_connects_probability_gate_to_ui_during_upstream_warmup(tmp_path
     runtime.stop()
     assert frame is not None
     assert frame.gate_decision is not None
-    assert frame.gate_decision.window_id == 0
+    # The UI mailbox intentionally keeps only the newest frame.  Depending on
+    # scheduling, window 1 may replace window 0 before this test consumes it.
+    assert frame.gate_decision.window_id in {0, 1}
     assert frame.gate_decision.state is ProbabilityGateState.WARMING_UP
     assert frame.gate_decision.probability_40ms is None
     assert frame.performance.latency_ms_current >= frame.performance.compute_time_ms_current >= 0
@@ -726,7 +745,10 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
     )
     assert len(frame.previews) == len(frame.candidates) >= 1
     assert all(preview.window_id == frame.spatial_response.window_id for preview in frame.previews)
-    assert all(preview.waveform.shape == (7_680,) for preview in frame.previews)
+    assert all(
+        preview.waveform.shape == (runtime_config.downstream_audio_window.samples,)
+        for preview in frame.previews
+    )
     assert all(not hasattr(preview, "spectrogram") for preview in frame.previews)
 
     app, window = build_window(CONFIG)
