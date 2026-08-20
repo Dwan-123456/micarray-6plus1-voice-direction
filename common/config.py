@@ -182,7 +182,7 @@ class Layer2DirectionIdTrackingConfig(StrictModel):
     birth_cost: float = Field(gt=0)
     stationary_history_ms: int = Field(default=3_000, gt=0)
     stationary_inlier_ratio: float = Field(default=0.70, ge=0, le=1)
-    stationary_inlier_tolerance_deg: float = Field(default=10.0, gt=0, le=180)
+    stationary_inlier_tolerance_deg: float = Field(default=15.0, gt=0, le=180)
     stationary_outlier_window_ms: int = Field(default=1_000, gt=0)
     stationary_outlier_tolerance_deg: float = Field(default=20.0, gt=0, le=180)
     stationary_exit_observations: int = Field(default=4, ge=1)

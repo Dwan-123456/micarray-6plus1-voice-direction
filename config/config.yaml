@@ -127,7 +127,7 @@ layer2:
     # Kalman关闭时，正式ID可在3秒圆周历史满足稳定条件后锁定到动态均值。
     stationary_history_ms: 3000
     stationary_inlier_ratio: 0.70
-    stationary_inlier_tolerance_deg: 10.0
+    stationary_inlier_tolerance_deg: 15.0
     # 1秒内第4个超出静止均值±20°的观测会解除静止锁定。
     stationary_outlier_window_ms: 1000
     stationary_outlier_tolerance_deg: 20.0

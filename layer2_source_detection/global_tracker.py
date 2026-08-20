@@ -37,7 +37,7 @@ class GlobalTrackerConfig:
     birth_cost: float = 1.0
     stationary_history_samples: int = 3 * 48_000
     stationary_inlier_ratio: float = 0.70
-    stationary_inlier_tolerance_deg: float = 10.0
+    stationary_inlier_tolerance_deg: float = 15.0
     stationary_outlier_window_samples: int = 48_000
     stationary_outlier_tolerance_deg: float = 20.0
     stationary_exit_observations: int = 4

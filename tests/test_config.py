@@ -35,7 +35,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.direction_id_tracking.coasting_ttl_ms == 3000
     assert config.layer2.direction_id_tracking.stationary_history_ms == 3000
     assert config.layer2.direction_id_tracking.stationary_inlier_ratio == 0.70
-    assert config.layer2.direction_id_tracking.stationary_inlier_tolerance_deg == 10.0
+    assert config.layer2.direction_id_tracking.stationary_inlier_tolerance_deg == 15.0
     assert config.layer2.direction_id_tracking.stationary_outlier_window_ms == 1000
     assert config.layer2.direction_id_tracking.stationary_outlier_tolerance_deg == 20.0
     assert config.layer2.direction_id_tracking.stationary_exit_observations == 4
