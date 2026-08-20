@@ -72,7 +72,7 @@ def _decision(session_id: str) -> DecisionRecord:
             "track_id": item["track_id"],
             "theta_deg": item["theta_deg"],
             "backend": "test",
-            "start_sample": 32_640,
+            "start_sample": 40_320,
             "end_sample": 48_000,
         }
         for item in directions
@@ -83,7 +83,7 @@ def _decision(session_id: str) -> DecisionRecord:
         8,
         48_000,
         (46_080, 48_000),
-        (32_640, 48_000),
+        (40_320, 48_000),
         "ok",
         candidates=directions,
         active_tracks=directions,
@@ -93,8 +93,8 @@ def _decision(session_id: str) -> DecisionRecord:
         normalized_scores=np.ones(360, np.float32),
         enhanced_audio=enhanced,
         enhanced_waveforms=(
-            np.full(15_360, 0.1, np.float32),
-            np.full(15_360, -0.1, np.float32),
+            np.full(7_680, 0.1, np.float32),
+            np.full(7_680, -0.1, np.float32),
         ),
         music_algorithm_version="normmusic_incremental_v1",
         model_order={"algorithm_version": "mdl_wax_kailath_v1", "estimated_sources": 2, "age_ms": 0},
@@ -120,11 +120,11 @@ def test_v4_rejects_cross_layer_track_id_mismatch() -> None:
             0,
             15_360,
             (13_440, 15_360),
-            (0, 15_360),
+            (7_680, 15_360),
             "error",
             candidates=(_direction(1, 20.0),),
             enhanced_audio=({"track_id": 2, "theta_deg": 20.0},),
-            enhanced_waveforms=(np.zeros(15_360, np.float32),),
+            enhanced_waveforms=(np.zeros(7_680, np.float32),),
         )
 
 

@@ -18,11 +18,11 @@ from layer2_source_detection.global_tracker import GlobalDirectionTracker, Globa
 
 def _window(window_id: int, sample: int, *, epoch: int = 0) -> DecisionWindow:
     samples = np.random.default_rng(window_id + 100 * epoch).normal(
-        0.0, 0.01, (15_360, 8),
+        0.0, 0.01, (7_680, 8),
     ).astype(np.float32)
     return DecisionWindow(
         "runtime-v11", epoch, window_id, sample, sample - 1_920, sample,
-        sample - 15_360, sample, 48_000,
+        sample - 7_680, sample, 48_000,
         samples, (window_id,),
     )
 
@@ -63,13 +63,13 @@ def test_tracker_uses_sample_lifecycle_and_preserves_session_counter_across_epoc
         confirmation_observations=2, confirmation_window_samples=9_600,
         coasting_ttl_samples=1_920, miss_cost=30.0, birth_cost=30.0,
     ))
-    first = _window(0, 15_360)
+    first = _window(0, 7_680)
     directions, _ = tracker.update(
         first.session_id, 0, first.decision_sample, (_candidate(first, 359.0),),
         window_id=0, doa_start_sample=first.doa_start_sample,
     )
     first_id = directions[0].track_id
-    second = _window(1, 16_320)
+    second = _window(1, 8_640)
     directions, _ = tracker.update(
         second.session_id, 0, second.decision_sample, (_candidate(second, 1.0),),
         window_id=1, doa_start_sample=second.doa_start_sample,
@@ -79,13 +79,13 @@ def test_tracker_uses_sample_lifecycle_and_preserves_session_counter_across_epoc
 
     # A sample jump beyond TTL expires the old track; an epoch change clears
     # motion state but must not rewind the session-scoped ID counter.
-    jumped = _window(2, 20_160)
+    jumped = _window(2, 12_480)
     directions, _ = tracker.update(
         jumped.session_id, 0, jumped.decision_sample, (_candidate(jumped, 1.0),),
         window_id=2, doa_start_sample=jumped.doa_start_sample,
     )
     assert directions[0].track_id > first_id
-    next_epoch = _window(3, 15_360, epoch=1)
+    next_epoch = _window(3, 7_680, epoch=1)
     directions, _ = tracker.update(
         next_epoch.session_id, 1, next_epoch.decision_sample, (_candidate(next_epoch, 1.0),),
         window_id=3, doa_start_sample=next_epoch.doa_start_sample,
@@ -98,15 +98,15 @@ def test_music_rolls_continuously_and_rebuilds_on_sample_gap() -> None:
     scan = DirectionScanConfig.from_project(config)
     scanner = RollingNormMusicScanner()
     geometry = physical_6plus1_geometry()
-    first = _window(0, 15_360)
+    first = _window(0, 7_680)
     scanner.scan_detailed(first, geometry, scan, 4)
     assert scanner.last_state_diagnostic.state == "rebuilt"
     assert scanner.last_state_diagnostic.steering_cache_rebuilt
-    second = _window(1, 16_320)
+    second = _window(1, 8_640)
     scanner.scan_detailed(second, geometry, scan, 4)
     assert scanner.last_state_diagnostic.state == "advanced"
     assert scanner.last_state_diagnostic.added_frames == 2
-    jumped = _window(3, 18_240)
+    jumped = _window(3, 10_560)
     scanner.scan_detailed(jumped, geometry, scan, 4)
     assert scanner.last_state_diagnostic.state == "rebuilt"
     assert scanner.last_state_diagnostic.reason == "sample_discontinuity"
@@ -114,7 +114,7 @@ def test_music_rolls_continuously_and_rebuilds_on_sample_gap() -> None:
 
 
 def test_joined_result_rejects_cross_layer_id_order_and_angle_mismatch() -> None:
-    window = _window(0, 15_360)
+    window = _window(0, 7_680)
     key = WindowKey.from_window(window)
     work = WindowWorkItem(
         key, window, ProcessingConfigSnapshot(0, "hash", "geometry", "raw", {}), 1,
