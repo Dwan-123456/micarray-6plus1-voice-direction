@@ -13,6 +13,7 @@ from common.geometry import physical_6plus1_geometry
 from layer3_direction_signal import (
     BeamformedL3Batch,
     L3_MODE_DS_BASELINE,
+    L3_MODE_LOADED_MVDR,
     L3_MODE_SUBBAND_ROBUST,
     Layer3Processor,
 )
@@ -105,8 +106,10 @@ def test_l3_outputs_one_48khz_mono_audio_per_candidate():
         assert not hasattr(item, "stft_complex")
 
 
-@pytest.mark.parametrize("mode", ("optimized", "ds_baseline", "subband_robust_baseline"))
-def test_all_three_modes_preserve_authoritative_ids_angles_and_original_order(mode):
+@pytest.mark.parametrize(
+    "mode", ("optimized", "ds_baseline", "loaded_mvdr_baseline", "subband_robust_baseline"),
+)
+def test_all_four_modes_preserve_authoritative_ids_angles_and_original_order(mode):
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     directions = (
         _candidate(359.5, track_id=73, rank=2),
@@ -278,6 +281,40 @@ def test_ds_baseline_uses_seven_channel_delay_and_sum_without_imcra_or_spatial_p
             "spatial_p=unused",
         )
         assert np.isfinite(item.enhanced_audio).all()
+
+
+def test_loaded_mvdr_baseline_uses_imcra_loading_without_p_or_postfilter():
+    rng = np.random.default_rng(7701)
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    output = processor.process(
+        _window(rng.normal(0, 0.02, (7_680, 8)).astype(np.float32)),
+        (_candidate(20.0), _candidate(110.0)),
+        physical_6plus1_geometry(),
+        mode=L3_MODE_LOADED_MVDR,
+    )
+
+    assert len(output.enhanced_audio) == 2
+    for item in output.enhanced_audio:
+        assert item.algorithm == "loaded_mvdr_baseline"
+        assert item.diagnostics[0] == "backend=loaded_mvdr_baseline"
+        assert "comparison_only=true" in item.diagnostics
+        assert any(value.startswith("imcra=cohen_imcra_2003_l1_v1") for value in item.diagnostics)
+        assert any(value.startswith("loaded_mvdr_bins=") for value in item.diagnostics)
+        assert "frequency_gain=unused" in item.diagnostics
+        assert "spatial_p=unused" in item.diagnostics
+        assert np.isfinite(item.enhanced_audio).all()
+
+
+def test_loaded_mvdr_baseline_missing_imcra_falls_back_to_das():
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    item = processor.process(
+        _window(np.zeros((7_680, 8), np.float32), ready_imcra=False),
+        (_candidate(20.0),),
+        physical_6plus1_geometry(),
+        mode=L3_MODE_LOADED_MVDR,
+    ).enhanced_audio[0]
+    assert item.algorithm == "das"
+    assert item.fallback_reason is not None and "IMCRA adaptive BF unavailable" in item.fallback_reason
 
 
 def test_subband_robust_baseline_uses_imcra_five_bands_without_spatial_p():

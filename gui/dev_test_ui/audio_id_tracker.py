@@ -545,6 +545,7 @@ class AudioIdTracker:
             prediction_flags = tuple(prediction_flags[index] for index in accepted_indices)
         backend_modes = {
             "ds_baseline": "ds_baseline",
+            "loaded_mvdr_baseline": "loaded_mvdr_baseline",
             "subband_robust_baseline": "subband_robust_baseline",
         }
         preview_modes = {

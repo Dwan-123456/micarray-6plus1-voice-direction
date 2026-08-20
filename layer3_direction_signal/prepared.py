@@ -11,6 +11,7 @@ from common.timing import CONTEXT_SAMPLES, STFT_FRAME_COUNT
 from .configuration import SpatialSeparationConfig, StftSettings
 from .interface import (
     L3_MODE_DS_BASELINE,
+    L3_MODE_LOADED_MVDR,
     L3_MODE_OPTIMIZED,
     L3_MODE_SUBBAND_ROBUST,
     L3_PROCESSING_MODES,
@@ -85,7 +86,7 @@ class PreparedL3Context:
         if self.mode == L3_MODE_DS_BASELINE:
             if self.noise_statistics is not None or self.noise_algorithm_version is not None:
                 raise ValueError("固定权重对照模式准备阶段不得携带IMCRA统计")
-        elif self.mode in {L3_MODE_OPTIMIZED, L3_MODE_SUBBAND_ROBUST}:
+        elif self.mode in {L3_MODE_LOADED_MVDR, L3_MODE_OPTIMIZED, L3_MODE_SUBBAND_ROBUST}:
             if (self.noise_statistics is None) == (self.preparation_error is None):
                 raise ValueError("自适应模式必须恰好携带IMCRA统计或准备错误之一")
         for tensor in self._owned_tensors():

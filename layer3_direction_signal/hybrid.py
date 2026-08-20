@@ -17,11 +17,17 @@ from spatial_separability import (
     validate_p_table_context,
 )
 
-from .adaptive_separation import AdaptiveStaticData, adaptive_separation_weights, adaptive_static_data
+from .adaptive_separation import (
+    AdaptiveStaticData,
+    adaptive_separation_weights,
+    adaptive_static_data,
+    loaded_mvdr_weights,
+)
 from .configuration import SpatialSeparationConfig, StftSettings
 from .das import apply_weights, das_weights
 from .interface import (
     L3_MODE_DS_BASELINE,
+    L3_MODE_LOADED_MVDR,
     L3_MODE_OPTIMIZED,
     L3_MODE_SUBBAND_ROBUST,
     Layer3Error,
@@ -220,7 +226,8 @@ class ImcraSpatialSeparationBeamformer:
         """
         self._validate_window(window)
         if mode not in {
-            L3_MODE_OPTIMIZED, L3_MODE_DS_BASELINE, L3_MODE_SUBBAND_ROBUST,
+            L3_MODE_OPTIMIZED, L3_MODE_DS_BASELINE, L3_MODE_LOADED_MVDR,
+            L3_MODE_SUBBAND_ROBUST,
         }:
             raise ValueError(f"未知L3处理模式: {mode}")
         key = (
@@ -250,7 +257,7 @@ class ImcraSpatialSeparationBeamformer:
         preparation_error = None
         covariance_rolled = False
         reused_frames = self._stft_cache.snapshot().reused_frames
-        if mode in {L3_MODE_OPTIMIZED, L3_MODE_SUBBAND_ROBUST}:
+        if mode in {L3_MODE_LOADED_MVDR, L3_MODE_OPTIMIZED, L3_MODE_SUBBAND_ROBUST}:
             try:
                 noise, noise_version = self._noise_cache.estimate_window(
                     window,
@@ -340,6 +347,46 @@ class ImcraSpatialSeparationBeamformer:
             )
             backends = tuple("das" for _item in candidates)
             fallback_reasons = tuple(fallback_reason for _item in candidates)
+        elif prepared.mode == L3_MODE_LOADED_MVDR:
+            try:
+                noise = prepared.noise_statistics
+                solved = loaded_mvdr_weights(
+                    noise.covariance_fcc,
+                    steering,
+                    prepared.frequencies_hz,
+                    noise.noise_confidence_f,
+                    prepared.config,
+                    static=self._adaptive_static_data(prepared.frequencies_hz, prepared.config),
+                )
+                output = apply_weights(solved.weights_mfc, prepared.spectrum_fct)
+                diagnostics = tuple(
+                    (
+                        "backend=loaded_mvdr_baseline",
+                        "comparison_only=true",
+                        f"imcra={prepared.noise_algorithm_version}:{CONTEXT_HOPS}x20ms",
+                        "steering=free_field_direction",
+                        f"loaded_mvdr_bins={solved.loaded_mvdr_bins}",
+                        f"das_fallback_bins={solved.fallback_bins[index]}",
+                        "frequency_gain=unused",
+                        "spatial_p=unused",
+                    )
+                    for index in range(len(candidates))
+                )
+                backends = tuple("loaded_mvdr_baseline" for _item in candidates)
+                fallback_reasons = tuple(
+                    None if count == 0 else f"per-bin DAS fallback bins={count}"
+                    for count in solved.fallback_bins
+                )
+            except (Layer3Error, RuntimeError) as exc:
+                output = apply_weights(das_weights(steering), prepared.spectrum_fct)
+                fallback_reason = f"loaded MVDR baseline unavailable: {exc}"
+                speech_bins = int(prepared.passband_f.sum().item())
+                diagnostics = tuple(
+                    ("backend=das_fallback", fallback_reason, f"fallback_bins={speech_bins}")
+                    for _item in candidates
+                )
+                backends = tuple("das" for _item in candidates)
+                fallback_reasons = tuple(fallback_reason for _item in candidates)
         elif prepared.mode == L3_MODE_SUBBAND_ROBUST:
             try:
                 noise = prepared.noise_statistics

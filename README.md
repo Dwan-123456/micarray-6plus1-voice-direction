@@ -110,6 +110,7 @@ Layer 3：按候选方向增强音频（BF）
     当前可用：
         ├── optimized：0/1/2候选策略不变；3候选分别使用Loaded MVDR，失败逐路DAS回退
         ├── ds_baseline：7麦Delay-and-Sum；当前只按单声源使用
+        ├── loaded_mvdr_baseline：全频段独立diagonal-loaded MVDR对照
         └── subband_robust_baseline：五频段IMCRA/SCM/WNG/Wiener鲁棒对照
     每个候选输出：48 kHz mono EnhancedAudio [7680]
     物理上限：低频波长远大于阵列孔径，80～1500 Hz方向分离效果差
@@ -291,7 +292,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - 第一行是预降噪前Center麦克风原音参考；
 - 方向轨在L2临时ID建立卡尔曼状态后开始缓存，转正式时沿用同一缓存；
 - 候选消失后等待3秒再结束对应方向轨；
-- 可通过按键切换`optimized`、`ds_baseline`和`subband_robust_baseline`三种BF方法；
+- 可通过按键切换`optimized`、`ds_baseline`、`loaded_mvdr_baseline`和
+  `subband_robust_baseline`四种BF方法；
 - 五频段对照依次使用低频温和干扰感知MVDR+Wiener、WNG约束soft-LCMV、
   中频强LCMV及高频防混叠loaded MVDR；第一版用自由场steering作为RTF代理；
 - 切换L3模式会清空旧模式的方向试听缓存；

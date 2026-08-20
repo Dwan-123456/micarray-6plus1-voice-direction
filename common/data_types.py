@@ -403,6 +403,7 @@ class DirectionalSignal:
         if self.beamformer_backend not in {
             "frequency_hybrid", "imcra_spatial_separation", "das", "ds_baseline",
             "subband_robust_baseline",
+            "loaded_mvdr_baseline",
         }:
             raise ValueError("DirectionalSignal后端无效")
         if type(self.track_id) is not int or self.track_id <= 0 or self.rank <= 0:

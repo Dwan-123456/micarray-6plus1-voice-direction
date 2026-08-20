@@ -38,8 +38,10 @@ L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、refl
 ## 契约测试
 
 - 输入8ch、算法只使用7物理麦且不读取HardwareMix做steering；
-- Test UI提供三档实时对照：`optimized`、纯`ds_baseline`和
-  `subband_robust_baseline`。第三档读取同窗IMCRA噪声统计但不查询空间`p`表：80～500 Hz
+- Test UI提供四档实时切换：`optimized`、纯`ds_baseline`、全频独立
+  `loaded_mvdr_baseline`和`subband_robust_baseline`。Loaded MVDR档读取同窗IMCRA噪声协方差，
+  对每个方向的80～8000 Hz统一执行diagonal-loaded MVDR，不查询空间`p`表、不应用频点后滤波，
+  数值不安全频点回退DAS。五频段档读取同窗IMCRA噪声统计但不查询空间`p`表：80～500 Hz
   使用温和干扰感知MVDR和声源专属Wiener增益，500～900 Hz使用WNG约束soft-LCMV，
   900 Hz～1.5 kHz和1.5～4 kHz逐步加强LCMV，4～8 kHz使用防混叠加载MVDR，
   数值不安全频点回退DAS。第一版以自由场steering作为RTF代理，并用当前窗拟合rank-1
@@ -50,6 +52,6 @@ L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、refl
 - 主链不再输出或依赖`[17,169]`；
 - 0/1/2候选及`rho`三分支；
 - LCMV约束、两种MVDR无失真约束和逐频点DAS降级；
-- PSD/SPP确实改变噪声协方差与三种求解权重；
+- PSD/SPP确实改变噪声协方差与自适应求解权重；
 - 音频重建和跨窗口连续性。
 - 连续窗口13帧STFT逐元素复用等价、滚动协方差数值等价、时间/流身份失效边界及缓存容量上限。

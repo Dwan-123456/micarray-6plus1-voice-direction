@@ -17,6 +17,7 @@ from common.data_types import DecisionWindow, IngestedAudioBlock, TrackedDirecti
 from layer1_input.interface import DecodedAudio
 from layer3_direction_signal import (
     L3_MODE_DS_BASELINE,
+    L3_MODE_LOADED_MVDR,
     L3_MODE_OPTIMIZED,
     L3_MODE_SUBBAND_ROBUST,
 )
@@ -224,6 +225,7 @@ def test_runtime_l3_mode_switch_is_available_before_and_during_capture(tmp_path)
     )
     assert runtime.l3_processing_mode == L3_MODE_OPTIMIZED
     assert runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE) == L3_MODE_DS_BASELINE
+    assert runtime.set_l3_processing_mode(L3_MODE_LOADED_MVDR) == L3_MODE_LOADED_MVDR
     assert runtime.set_l3_processing_mode(L3_MODE_SUBBAND_ROBUST) == L3_MODE_SUBBAND_ROBUST
     runtime.start()
     try:
@@ -403,12 +405,17 @@ class _CapturingLayer3:
             raise RuntimeError("formal L3 failure")
         outputs = []
         for candidate in candidates:
+            algorithm = {
+                L3_MODE_DS_BASELINE: "ds_baseline",
+                L3_MODE_LOADED_MVDR: "loaded_mvdr_baseline",
+                L3_MODE_SUBBAND_ROBUST: "subband_robust_baseline",
+            }.get(mode, "imcra_spatial_separation")
             outputs.append(SimpleNamespace(
                 session_id=window.session_id, stream_epoch=window.stream_epoch,
                 window_id=window.window_id, decision_sample=window.decision_sample,
                 track_id=candidate.track_id, rank=candidate.rank,
                 theta_deg=candidate.theta_deg, sample_rate=48_000,
-                algorithm=("ds_baseline" if mode == L3_MODE_DS_BASELINE else "imcra_spatial_separation"),
+                algorithm=algorithm,
                 fallback_reason=None, diagnostics=(),
                 enhanced_audio=np.zeros(7_680, np.float32),
             ))
@@ -480,6 +487,18 @@ def test_runtime_passes_selected_ds_baseline_mode_to_l3():
     assert previews[0].runtime_backend == "ds_baseline"
 
 
+def test_runtime_passes_selected_loaded_mvdr_baseline_mode_to_l3():
+    window, candidate = _listening_window_and_candidate()
+    layer3 = _CapturingLayer3()
+    runtime = _runtime_with_layer3(layer3)
+    runtime.set_l3_processing_mode(L3_MODE_LOADED_MVDR)
+
+    previews, _l4_inputs = runtime._process_l3(window, (candidate,))
+
+    assert layer3.calls[0][1] == L3_MODE_LOADED_MVDR
+    assert previews[0].runtime_backend == "loaded_mvdr_baseline"
+
+
 def test_runtime_mode_switch_never_changes_authoritative_l2_id():
     window, direction = _listening_window_and_candidate()
     layer3 = _CapturingLayer3()
@@ -488,10 +507,11 @@ def test_runtime_mode_switch_never_changes_authoritative_l2_id():
     for mode in (
         L3_MODE_OPTIMIZED,
         L3_MODE_DS_BASELINE,
+        L3_MODE_LOADED_MVDR,
         L3_MODE_SUBBAND_ROBUST,
     ):
         runtime.set_l3_processing_mode(mode)
         runtime._process_l3(window, (direction,))
 
-    assert [call[0][0].track_id for call in layer3.calls] == [7, 7, 7]
-    assert [call[0][0].rank for call in layer3.calls] == [1, 1, 1]
+    assert [call[0][0].track_id for call in layer3.calls] == [7, 7, 7, 7]
+    assert [call[0][0].rank for call in layer3.calls] == [1, 1, 1, 1]

@@ -21,6 +21,32 @@
 
 ---
 
+## 2026-08-20 — 新增全频Loaded MVDR可切换基线
+
+- **版本/标签**：项目`1.1.0`并行迁移分支；未创建或移动发布标签。
+- **类型**：L3实验基线、Test UI模式切换、文档与自动测试。
+- **涉及文件**：`layer3_direction_signal/{adaptive_separation,hybrid,interface,prepared}.py`、
+  `common/data_types.py`、Development Test UI模式显示/试听分区、根/L3 README、1.1架构文档及相关测试。
+
+### L3与Test UI
+
+- 在现有`optimized`、`ds_baseline`和`subband_robust_baseline`之外新增第四档
+  `loaded_mvdr_baseline`。它对每个L2权威方向独立处理，在80～8000 Hz统一使用IMCRA噪声协方差、
+  噪声置信度、混叠保护和重试loading求解diagonal-loaded MVDR；不查询空间`p`表，也不叠加
+  IMCRA频点后滤波，从而保持纯Loaded MVDR对照含义。
+- 单频求解病态或非有限时逐频回退DAS；同窗IMCRA不可用时整窗回退DAS。0～3方向、WindowKey、
+  track_id、rank、角度、原顺序、160 ms/7680点输出及入口/出口严格对齐规则均不变。
+- Test UI按钮与试听缓存增加独立Loaded MVDR分区，支持启动前和运行中四档循环切换；模式切换不改变
+  L2权威ID。
+
+### 未变化组件、验证与资产
+
+- 原有三种L3算法的计算和参数无变化；L1、Windowing、L2、L4、Runtime调度/时间线、Recording、
+  Data Management、Production UI、空间`p`表、模型与音频资产均无变化。
+- 全量自动测试：`361 passed`；修改Python文件Ruff检查和`git diff --check`通过。
+- CPU/CUDA双方向冒烟均输出finite；同窗热运行分别约`2.3 ms`和`3.2～4.4 ms`，仅用于本次
+  实现检查，不作为正式跨窗口性能基线。无Git LFS资产变化。
+
 ## 2026-08-20 — 五频段鲁棒对照替换30°恒定波束宽度模式
 
 - **版本/标签**：项目`1.1.0`并行迁移分支；未创建或移动发布标签。
