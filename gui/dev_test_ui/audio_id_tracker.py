@@ -8,6 +8,8 @@ import threading
 
 import numpy as np
 
+from track_audio_stream import TrackAudioBatch
+
 from .contracts import BeamformPreview, TrackedAudioSnapshot
 
 
@@ -603,6 +605,84 @@ class AudioIdTracker:
             # A visible row must remain playable for the complete capture
             # session.  Do not prune ENDED tracks behind the UI; reset()/close()
             # release every row and file together at the next session boundary.
+            return self.snapshots()
+
+    def consume_stream_batch(
+        self,
+        batch: TrackAudioBatch,
+        *,
+        active_tracks=(),
+    ) -> tuple[TrackedAudioSnapshot, ...]:
+        """Cache the formal compensated stream; no L3 window is reassembled here."""
+        active_tracks = tuple(active_tracks)
+        active_by_id = {item.track_id: item for item in active_tracks}
+        if len(active_by_id) != len(active_tracks):
+            raise ValueError("authoritative L2 track IDs must be unique")
+        stream = (batch.session_id, batch.stream_epoch)
+        modes = {item.processing_mode for item in batch.continuous_audio}
+        if len(modes) > 1:
+            raise ValueError("Test UI cannot cache mixed processing modes in one batch")
+        incoming_mode = None if not modes else next(iter(modes))
+        with self._lock:
+            self._ensure_stream(stream)
+            if (
+                incoming_mode is not None
+                and self._processing_mode is not None
+                and incoming_mode != self._processing_mode
+            ):
+                self.seal_mode(incoming_mode)
+            if incoming_mode is not None:
+                self._processing_mode = incoming_mode
+
+            for hop in batch.emitted_hops:
+                authoritative = active_by_id.get(hop.track_id)
+                if authoritative is None or authoritative.track_state == "tentative":
+                    continue
+                track = self._tracks.get(hop.track_id)
+                if track is None:
+                    mode = incoming_mode or self._processing_mode or "optimized"
+                    track = _Track(
+                        hop.track_id,
+                        float(authoritative.theta_deg),
+                        float(authoritative.normalized_score),
+                        int(batch.decision_sample),
+                        authoritative_id=True,
+                        stream_key=stream,
+                        processing_mode=mode,
+                    )
+                    self._tracks[hop.track_id] = track
+                    self._next_track_id = max(self._next_track_id, hop.track_id + 1)
+                previous = track.last_emitted_decision_sample
+                if previous is not None and hop.end_sample <= previous:
+                    continue
+                if previous is not None and hop.end_sample != previous + _HOP_SAMPLES:
+                    raise ValueError("formal track stream must advance in 20 ms hops")
+                audio = (
+                    np.zeros(_HOP_SAMPLES, np.float32)
+                    if hop.waveform is None
+                    else np.asarray(hop.waveform, dtype=np.float32)
+                )
+                # The hub output is the one canonical compensated waveform
+                # consumed by both playback and CNN. Do not add UI-only fades.
+                self._append_audio(track, audio, observed_hops=(hop.observed,))
+                track.last_emitted_decision_sample = int(hop.end_sample)
+
+            for track_id, authoritative in active_by_id.items():
+                if authoritative.track_state == "tentative":
+                    continue
+                track = self._tracks.get(track_id)
+                if track is None:
+                    continue
+                track.theta_deg = float(authoritative.theta_deg)
+                track.score = float(authoritative.normalized_score)
+                track.last_seen_sample = int(batch.decision_sample)
+                track.state = (
+                    "coasting" if authoritative.track_state == "coasting" else "active"
+                )
+            for track_id, track in self._tracks.items():
+                if track_id not in active_by_id and track.state != "ended":
+                    track.state = "ended"
+            self._remove_quiet_ended_tracks()
             return self.snapshots()
 
     def seal_mode(self, next_mode: str | None = None) -> None:

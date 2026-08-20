@@ -714,13 +714,13 @@ class VoiceClassifier(Protocol):
     def predict(self, waveforms_48k: NDArray[np.float32]) -> ModelPrediction: ...
 ```
 
-稳定公共输入为L3增强后的mono float32 `[m,15360]`，即每个候选方向完整的48 kHz、320 ms音频段，以及同一context中16个严格对齐的L1 IMCRA `array_source_probability_20ms`槽；输出为同顺序的概率 `[m]`。`m=0`返回空结果：Gate开启、空间响应有效但没有候选时，Runtime令L3直接以空`Layer3Output`完成而不执行prepare/STFT/协方差，随后L4调用空batch并返回`COMPLETED`空结果；该窗口不是`SKIPPED/error`。L4内部响度补偿可以按16×20 ms处理独立副本，外部不得为MarbleNet切片或使用L2 40 ms平均概率。模型适配器可在内部重采样和提取自身特征。L3原始输出、试听与录音不受补偿影响；CNN不修改音频、方向，不做跟踪或人数推断。
+当前稳定公共输入由`TrackAudioStreamHub`生成：L3的80/160 ms重叠窗按精确`(session_id, stream_epoch, track_id)`去重，每窗追加一个与IMCRA概率严格对齐的20 ms hop并完成响度补偿，形成最长3200 ms的连续48 kHz轨。Test UI试听、按ID音频资产和CNN使用同一补偿后波形；重叠L3原始窗只作瞬时输入，不再重复保存。`m=0`仍返回`COMPLETED`空结果。
 
-MarbleNet前新增`imcra_probability_rms_v1`输入补偿：每片段计算RMS dBFS，以`-23.0 dBFS`为目标且只放大；`p<=0.30`为0增益、`p>=0.80`为完整增益、中间线性加权。新增增益受`-3 dBFS`峰值上限约束，相邻片段在20 ms内进行dB域线性过渡，过渡包络仍执行逐样本峰值保护。算法不衰减本来已经超过峰值上限的输入。低于`-100 dBFS`的静音、概率缺失或未预热均应用0 dB；波形或已提供概率含NaN/Inf时拒绝正式推理。逐片段及逐窗口诊断随L4结果记录，算法开关和参数位于`layer4.input_gain_compensation`。
+`imcra_probability_rms_v1`每20 ms计算RMS dBFS，以`-23.0 dBFS`为目标且只放大；`p<=0.30`为0增益、`p>=0.80`为完整增益，中间线性加权并受`-3 dBFS`新增增益峰值保护。Test UI开关默认开启且可实时切换；切换不清空轨道，从下一个20 ms平滑过渡到新的增益状态。
 
 ## 9.2 默认模型
 
-第一版基准为NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`。适配器内部把48 kHz、15360 samples整段音频以固定polyphase流程重采样为16 kHz、5120 samples，随后执行官方80维log-mel前处理和预训练Frame VAD MarbleNet。模型产生约20 ms一帧的二类输出；基线窗口概率固定采用`max_contiguous_3frame_mean_v1`：对每组连续3个有效`speech` softmax概率取均值，再取所有连续窗口中的最大值。该规则要求约60 ms可信连续人声峰值，单帧尖峰不能直接触发，其余停顿帧也不得稀释峰值。320 ms中存在该可信连续人声片段即按窗口概率与阈值判断VOICE。此聚合值用于第一版工程基线，目标域微调时仍须重新评估窗口head与概率校准。
+第一版基准为NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`。适配器接收可变长度连续48 kHz轨，polyphase重采样为16 kHz后使用官方80维log-mel和预训练网络，一次得到连续20 ms二类概率。基线标量采用`latest_80ms_max_contiguous_3frame_mean_v2`：完整连续轨提供卷积上下文，但只在最新80 ms内寻找连续3帧均值峰值，防止旧语音粘住当前结论。
 
 L4采用插件架构：同一不可变音频batch可同时送入一个primary和零到多个shadow模型。只有primary输出进入正式`VoiceDetection`、方向点数和`DecisionRecord`；所有模型的原始概率、版本、适配器和延迟分别保存在`ModelPrediction`，用于后续对比。新增模型只实现`VoiceModelPlugin`并添加配置，不得改动L2/L3公共接口。
 

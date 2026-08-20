@@ -49,6 +49,7 @@ from layer4_voice_classifier import (
     Layer4Engine,
     NvidiaMarbleNetPlugin,
 )
+from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow
 from windowing import WindowAssembler
 
 from .compute_cache import CachePartitionLimits, ComputeCache, ComputeCacheError
@@ -79,6 +80,7 @@ class _L4Work:
     work_item: WindowWorkItem
     l2: L2StageResult
     l3: L3StageResult
+    inputs: tuple[Layer4AudioSegment, ...]
 
 
 @dataclass(slots=True)
@@ -246,7 +248,9 @@ class ApplicationRuntime:
                     artifact = self.project_root / artifact
                     if not artifact.exists():
                         artifact = Path(__file__).resolve().parents[1] / item.model_artifact
-                if item.backend != "nvidia_marblenet_window_v1":
+                if item.backend not in {
+                    "nvidia_marblenet_continuous_v2", "nvidia_marblenet_window_v1",
+                }:
                     raise ValueError(f"unsupported Layer4 backend: {item.backend}")
                 plugins.append(NvidiaMarbleNetPlugin(
                     item.model_id,
@@ -266,6 +270,12 @@ class ApplicationRuntime:
                 window_spec=config.downstream_audio_window,
             )
         self._layer4 = layer4_engine
+        self.track_audio_stream = TrackAudioStreamHub(
+            InputGainCompensationSettings(
+                **config.layer4.input_gain_compensation.model_dump()
+            ),
+            context_ms=config.layer4.continuous_context_ms,
+        )
         self.last_error: str | None = None
         self.processing_error: str | None = None
         self.scratch_error: str | None = None
@@ -967,6 +977,13 @@ class ApplicationRuntime:
         return threshold
 
     @property
+    def l4_input_gain_compensation_enabled(self) -> bool:
+        return self.track_audio_stream.gain_compensation_enabled
+
+    def set_l4_input_gain_compensation_enabled(self, value: bool) -> bool:
+        return self.track_audio_stream.set_gain_compensation_enabled(value)
+
+    @property
     def l3_processing_mode(self) -> str:
         with self._l3_mode_lock:
             return self._l3_processing_mode
@@ -1231,6 +1248,7 @@ class ApplicationRuntime:
             self.imcra = Layer1Imcra.from_project(self.config)
             self.pre_denoiser = ImcraWienerPreDenoiser.from_project(self.config)
             self._layer3.clear_cache()
+            self.track_audio_stream.reset()
             self._l3_cache_snapshot = None
             self._reset_processing_graph()
             self._stage_errors = {"l2": None, "l3": None, "l4": None, "commit": None}
@@ -1704,6 +1722,50 @@ class ApplicationRuntime:
                     self._validate_direction_outputs(
                         "L3", candidates, output.enhanced_audio
                     )
+                    probability_slots = self._context_probabilities_20ms(
+                        item.work_item.window
+                    )
+                    audio_windows = tuple(
+                        TrackAudioWindow(
+                            enhanced.session_id,
+                            enhanced.stream_epoch,
+                            enhanced.window_id,
+                            enhanced.decision_sample,
+                            int(enhanced.track_id),
+                            enhanced.theta_deg,
+                            enhanced.enhanced_audio,
+                            probability_slots,
+                            enhanced.algorithm,
+                        )
+                        for enhanced in output.enhanced_audio
+                    )
+                    active_tracks = tuple(
+                        getattr(item.l2.output, "active_tracks", ())
+                    )
+                    active_ids = tuple(
+                        track.track_id for track in active_tracks
+                        if track.track_state != "tentative"
+                    )
+                    audio_batch = self.track_audio_stream.process(
+                        audio_windows,
+                        active_track_ids=active_ids,
+                        identity=(
+                            item.work_item.key.session_id,
+                            item.work_item.key.stream_epoch,
+                            item.work_item.key.window_id,
+                            item.work_item.key.decision_sample,
+                        ),
+                    )
+                    l4_inputs = self._layer4_inputs_from_stream(audio_batch)
+                    self._validate_direction_outputs("track audio", candidates, l4_inputs)
+                    if self.dev_audio_tracker is not None:
+                        try:
+                            self.dev_audio_tracker.consume_stream_batch(
+                                audio_batch, active_tracks=active_tracks
+                            )
+                            self.dev_audio_tracking_error = None
+                        except Exception as exc:
+                            self.dev_audio_tracking_error = str(exc)
                     stage = L3StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
@@ -1722,10 +1784,42 @@ class ApplicationRuntime:
                 except Exception:
                     self._l3_cache_snapshot = None
                 self._cache_publish("l3", item.work_item.key, "stage_result", stage)
+                if stage.state is StageState.COMPLETED:
+                    latest_hop_by_id = {
+                        hop.track_id: hop for hop in audio_batch.emitted_hops
+                        if hop.waveform is not None
+                    }
+                    context_by_id = {
+                        context.track_id: context for context in audio_batch.continuous_audio
+                    }
+                    track_audio_record = tuple(
+                        (
+                            {
+                                "track_id": source.track_id,
+                                "theta_deg": source.theta_deg,
+                                "backend": source.algorithm,
+                                "fallback_reason": source.fallback_reason,
+                                "diagnostics": list(source.diagnostics),
+                                "sample_rate": 48_000,
+                                "start_sample": latest_hop_by_id[source.track_id].start_sample,
+                                "end_sample": latest_hop_by_id[source.track_id].end_sample,
+                                "stream_kind": "id_continuous_gain_compensated",
+                                "gain_compensation_enabled": (
+                                    context_by_id[source.track_id].gain_diagnostic.enabled
+                                ),
+                            },
+                            latest_hop_by_id[source.track_id].waveform,
+                        )
+                        for source in output.enhanced_audio
+                        if source.track_id in latest_hop_by_id
+                    )
+                    self._cache_publish(
+                        "l3", item.work_item.key, "track_audio_record", track_audio_record
+                    )
                 self._joiner_submit(lambda: self._result_joiner.submit_l3(stage))
                 if stage.state is StageState.COMPLETED:
                     if not self._enqueue_l4_latest(
-                        _L4Work(item.work_item, item.l2, stage)
+                        _L4Work(item.work_item, item.l2, stage, l4_inputs)
                     ):
                         break
                 else:
@@ -1763,10 +1857,7 @@ class ApplicationRuntime:
                     formal_directions = tuple(
                         getattr(item.l2.output, "directions", ()) or item.l2.output.candidates
                     )
-                    formal_count = len(formal_directions)
-                    inputs = self._layer4_inputs_from_output(
-                        item.work_item.window, item.l3.output, formal_count
-                    )
+                    inputs = item.inputs
                     if self._l4_cuda_stream is None:
                         output = self._layer4.process(inputs)
                     else:
@@ -2098,27 +2189,14 @@ class ApplicationRuntime:
                 for evidence in search_diagnostics.evidence
             ],
         }
-        enhanced_records = tuple(
-            {
-                **(
-                    {"track_id": int(preview.track_id)}
-                    if type(getattr(preview, "track_id", None)) is int and preview.track_id > 0
-                    else {}
-                ),
-                "theta_deg": preview.theta_deg,
-                "backend": preview.runtime_backend,
-                "fallback_reason": preview.fallback_reason,
-                "diagnostics": list(preview.diagnostics),
-                "sample_rate": 48_000,
-                "start_sample": window.context_start_sample,
-                "end_sample": window.context_end_sample,
-            }
-            for preview in previews
-        )
-        enhanced_waveforms = tuple(
-            item.enhanced_audio
-            for item in (() if l3_output is None else l3_output.enhanced_audio[:len(candidates)])
-        )
+        # Persist only the canonical compensated 20 ms additions. The
+        # overlapping raw L3 windows are transient assembler inputs and are
+        # deliberately not duplicated into the recording corpus.
+        track_audio_record = self._compute_cache.get(
+            "l3", joined.key, "track_audio_record"
+        ) or ()
+        enhanced_records = tuple(item[0] for item in track_audio_record)
+        enhanced_waveforms = tuple(item[1] for item in track_audio_record)
         l4_record = None if l4_result is None else {
             "primary_model_id": l4_result.primary_model_id,
             "threshold": l4_result.threshold,
@@ -2294,25 +2372,10 @@ class ApplicationRuntime:
 
         if self.dev_audio_tracker is not None:
             try:
-                if l3_output is not None:
-                    tracked_audio = self.dev_audio_tracker.update(
-                        window,
-                        getattr(l2_output, "directions", ()),
-                        previews,
-                        active_tracks=getattr(l2_output, "active_tracks", ()),
-                    )
-                elif l2_output is not None:
-                    tracked_audio = self.dev_audio_tracker.update(
-                        window,
-                        getattr(l2_output, "directions", ()),
-                        (),
-                        active_tracks=getattr(l2_output, "active_tracks", ()),
-                    )
-                else:
-                    # A dropped/failed L3 window is not evidence that every
-                    # listening ID disappeared.  Retain the last snapshot so
-                    # the UI does not delete and recreate all rows repeatedly.
-                    tracked_audio = self.dev_audio_tracker.snapshots()
+                # The formal stream hub already fed the exact compensated hops
+                # to this cache in the L3 worker. Commit only projects its
+                # immutable playback state; it never reassembles L3 windows.
+                tracked_audio = self.dev_audio_tracker.snapshots()
                 self.dev_audio_tracking_error = None
             except Exception as exc:
                 self.dev_audio_tracking_error = str(exc)
@@ -2506,6 +2569,28 @@ class ApplicationRuntime:
     def _layer4_inputs_from_output(self, window, l3_output, formal_count: int):
         return self._layer4_audio_segments(
             l3_output, formal_count, self._context_probabilities_20ms(window)
+        )
+
+    @staticmethod
+    def _layer4_inputs_from_stream(batch) -> tuple[Layer4AudioSegment, ...]:
+        """Adapt immutable compensated continuous tracks to the L4 contract."""
+        return tuple(
+            Layer4AudioSegment(
+                item.session_id,
+                item.stream_epoch,
+                item.window_id,
+                item.decision_sample,
+                item.theta_deg,
+                48_000,
+                item.waveform,
+                item.probabilities_20ms,
+                item.track_id,
+                item.effective_start_sample,
+                item.effective_end_sample,
+                True,
+                item.gain_diagnostic,
+            )
+            for item in batch.continuous_audio
         )
 
     @staticmethod
@@ -2726,6 +2811,7 @@ class ApplicationRuntime:
         if not self._processing_threads:
             self._compute_cache.clear("runtime_close")
             self._layer3.clear_cache()
+            self.track_audio_stream.reset()
         if self.dev_audio_tracker is not None:
             try:
                 self.dev_audio_tracker.close(delete_files=delete_dev_test_ui_audio)

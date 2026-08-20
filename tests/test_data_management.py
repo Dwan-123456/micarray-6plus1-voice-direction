@@ -1268,6 +1268,54 @@ def test_enhanced_wav_stays_partial_until_manifest_transaction(tmp_path: Path):
     store.close()
 
 
+def test_compensated_track_hops_are_saved_as_one_continuous_wav_per_id(tmp_path: Path):
+    from data_management import ResultWatermark
+
+    session = str(uuid.uuid4())
+    store = RecordingStore(
+        tmp_path,
+        chunk_seconds=1,
+        min_free_storage_gb=0,
+        settings=_result_retention_test_settings(),
+    )
+    store.start_session(session, SessionMetadata("a", "b"))
+    store.set_recording_mode("continuous")
+    for start in range(0, 48_000, 960):
+        store.append_audio(block(session, start))
+    for window_id, decision, hop_start, value in (
+        (1, 47_040, 44_160, 0.1),
+        (2, 48_000, 45_120, 0.2),
+    ):
+        item = _decision_mapping(session, window_id, decision, waveform_samples=960)
+        item["enhanced_waveforms"] = (np.full(960, value, np.float32),)
+        item["enhanced_audio"] = ({
+            "track_id": 7,
+            "theta_deg": 30.0,
+            "sample_rate": 48_000,
+            "start_sample": hop_start,
+            "end_sample": hop_start + 960,
+            "stream_kind": "id_continuous_gain_compensated",
+            "gain_compensation_enabled": True,
+        },)
+        assert store.append_result(item)
+    store.advance_result_watermark(ResultWatermark(session, 0, 48_000))
+
+    manifest = store.stop_session()
+    assets = [
+        item for item in manifest["chunks"][0]["assets"]
+        if item["kind"] == "enhanced_audio"
+    ]
+    assert len(assets) == 1
+    asset = assets[0]
+    assert asset["track_id"] == 7
+    assert asset["sample_count"] == 1_920
+    assert (asset["start_sample"], asset["end_sample"]) == (44_160, 46_080)
+    root = next(tmp_path.glob(f"runtime_sessions/*/*/{session}"))
+    with wave.open(str(root / asset["path"]), "rb") as wav:
+        assert wav.getnframes() == 1_920
+    store.close()
+
+
 def test_recovery_quarantines_renamed_enhanced_asset_without_manifest(tmp_path: Path):
     from data_management.manifests import atomic_json
 

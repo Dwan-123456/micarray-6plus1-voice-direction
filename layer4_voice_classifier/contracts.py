@@ -25,6 +25,10 @@ class Layer4AudioSegment:
     waveform: NDArray[np.float32]
     array_source_probabilities_20ms: tuple[float | None, ...] = ()
     track_id: int | None = None
+    effective_start_sample: int | None = None
+    effective_end_sample: int | None = None
+    gain_compensated: bool = False
+    gain_compensation_diagnostic: InputGainCompensationDiagnostic | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
@@ -37,12 +41,14 @@ class Layer4AudioSegment:
             raise ValueError("L4 audio track_id must be a positive integer")
         waveform = np.asarray(self.waveform)
         if (
-            waveform.shape not in {(3_840,), (7_680,)}
+            waveform.ndim != 1
+            or len(waveform) < DECISION_HOP_SAMPLES
+            or len(waveform) % DECISION_HOP_SAMPLES
             or waveform.dtype != np.float32
             or not waveform.flags.c_contiguous
             or not np.isfinite(waveform).all()
         ):
-            raise ValueError("L4 audio must be finite C-contiguous float32 [3840 or 7680]")
+            raise ValueError("L4 audio must be finite C-contiguous float32 complete 20 ms hops")
         expected_hops = len(waveform) // DECISION_HOP_SAMPLES
         probabilities = self.array_source_probabilities_20ms or (None,) * expected_hops
         if len(probabilities) != expected_hops or any(
@@ -58,6 +64,22 @@ class Layer4AudioSegment:
             "array_source_probabilities_20ms",
             tuple(None if value is None else float(value) for value in probabilities),
         )
+        effective_start = (
+            self.decision_sample - len(waveform)
+            if self.effective_start_sample is None else int(self.effective_start_sample)
+        )
+        effective_end = (
+            self.decision_sample
+            if self.effective_end_sample is None else int(self.effective_end_sample)
+        )
+        if effective_end - effective_start != len(waveform) or effective_start < 0:
+            raise ValueError("L4 effective audio range must match waveform length")
+        if type(self.gain_compensated) is not bool:
+            raise ValueError("gain_compensated must be bool")
+        if self.gain_compensated != (self.gain_compensation_diagnostic is not None):
+            raise ValueError("pre-compensated L4 audio requires its gain diagnostic")
+        object.__setattr__(self, "effective_start_sample", effective_start)
+        object.__setattr__(self, "effective_end_sample", effective_end)
 
 
 @dataclass(frozen=True, slots=True)

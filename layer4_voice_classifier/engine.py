@@ -28,6 +28,7 @@ def max_contiguous_frame_mean(
     lengths: torch.Tensor,
     *,
     window_frames: int = 3,
+    recent_frames: int | None = None,
 ) -> torch.Tensor:
     """Return the strongest contiguous probability region for each item.
 
@@ -37,23 +38,32 @@ def max_contiguous_frame_mean(
     """
     if frame_probabilities.ndim != 2 or lengths.shape != (frame_probabilities.shape[0],):
         raise ValueError("frame probabilities must be [batch,time] with one length per item")
-    if window_frames <= 0 or frame_probabilities.shape[1] < window_frames:
-        raise ValueError("aggregation window must fit the frame-probability sequence")
-    rolling = frame_probabilities.unfold(1, window_frames, 1).mean(dim=-1)
-    window_ends = torch.arange(
-        window_frames, frame_probabilities.shape[1] + 1, device=frame_probabilities.device
-    )
-    valid_windows = window_ends.unsqueeze(0) <= lengths.unsqueeze(1)
-    peaks = rolling.masked_fill(~valid_windows, float("-inf")).max(dim=1).values
-
-    # Both supported production inputs have enough audio for three frames.
-    # This fallback keeps the helper total for shorter test or
-    # future streaming inputs without inventing padded probabilities.
+    if window_frames <= 0:
+        raise ValueError("aggregation window must be positive")
     valid_frames = (
         torch.arange(frame_probabilities.shape[1], device=frame_probabilities.device).unsqueeze(0)
         < lengths.unsqueeze(1)
     )
     short_means = (frame_probabilities * valid_frames).sum(dim=1) / lengths.clamp_min(1)
+    if frame_probabilities.shape[1] < window_frames:
+        return short_means
+    rolling = frame_probabilities.unfold(1, window_frames, 1).mean(dim=-1)
+    window_ends = torch.arange(
+        window_frames, frame_probabilities.shape[1] + 1, device=frame_probabilities.device
+    )
+    valid_windows = window_ends.unsqueeze(0) <= lengths.unsqueeze(1)
+    if recent_frames is not None:
+        if recent_frames <= 0:
+            raise ValueError("recent frame horizon must be positive")
+        window_starts = window_ends - window_frames
+        valid_windows &= window_starts.unsqueeze(0) >= (
+            lengths - recent_frames
+        ).clamp_min(0).unsqueeze(1)
+    peaks = rolling.masked_fill(~valid_windows, float("-inf")).max(dim=1).values
+
+    # Both supported production inputs have enough audio for three frames.
+    # This fallback keeps the helper total for shorter test or
+    # future streaming inputs without inventing padded probabilities.
     return torch.where(lengths >= window_frames, peaks, short_means)
 
 
@@ -75,25 +85,21 @@ class NvidiaMarbleNetPlugin:
             raise ValueError("MarbleNet weight hash does not match its manifest")
         self.device = torch.device(device)
         self.window_spec = window_spec or DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560)
-        supported = tuple(self.manifest["input"].get("public_samples_supported", ()))
-        if self.window_spec.samples not in supported:
-            raise ValueError("MarbleNet manifest does not support configured public audio length")
         self.model = NvidiaFrameVadMarbleNet.from_artifact(self.artifact, self.device)
 
     def predict(self, waveforms_48k: np.ndarray) -> ModelPrediction:
-        window_spec = getattr(
-            self, "window_spec", DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560),
-        )
         waveforms = np.asarray(waveforms_48k)
         if (
             waveforms.ndim != 2
-            or waveforms.shape[1] != window_spec.samples
+            or waveforms.shape[1] < 960
+            or waveforms.shape[1] % 960
             or waveforms.dtype != np.float32
             or not waveforms.flags.c_contiguous
             or not np.isfinite(waveforms).all()
         ):
             raise ValueError(
-                f"L4 input must be finite float32 [M,{window_spec.samples}] at 48 kHz"
+                "L4 continuous input must be finite float32 [M,T] at 48 kHz "
+                "with complete 20 ms hops"
             )
         started = perf_counter()
         if len(waveforms) == 0:
@@ -105,7 +111,7 @@ class NvidiaMarbleNetPlugin:
                 logits, lengths = self.model(audio)
                 frame_probabilities = logits.softmax(dim=-1)[..., 1]
                 probabilities = max_contiguous_frame_mean(
-                    frame_probabilities, lengths, window_frames=3
+                    frame_probabilities, lengths, window_frames=3, recent_frames=4
                 ).float().cpu().numpy()
         latency_ms = (perf_counter() - started) * 1_000.0
         return ModelPrediction(
@@ -116,10 +122,12 @@ class NvidiaMarbleNetPlugin:
                 "architecture": self.manifest["architecture_id"],
                 "source_model": self.manifest["source_model"],
                 "input_adapter": (
-                    f"48k_{window_spec.duration_ms}ms_to_16k_polyphase_v1"
+                    "48k_continuous_to_16k_polyphase_v2"
                 ),
-                "resampled_samples": window_spec.resampled_16k_samples,
-                "aggregation": self.manifest["aggregation"],
+                "resampled_samples": waveforms.shape[1] // 3,
+                "input_samples_48k": waveforms.shape[1],
+                "frame_shift_ms": 20,
+                "aggregation": "latest_80ms_max_contiguous_3frame_mean_v2",
             },
         )
 
@@ -164,24 +172,46 @@ class Layer4Engine:
             if any(item is None for item in track_ids) or len(set(track_ids)) != len(track_ids):
                 raise ValueError("L4 audio track IDs must be complete and unique")
         compensated = tuple(
-            compensate_l4_input(
+            (item.waveform, item.gain_compensation_diagnostic)
+            if item.gain_compensated
+            else compensate_l4_input(
                 item.waveform,
                 item.array_source_probabilities_20ms,
                 self.input_gain_compensation,
-                segment_count=self.window_spec.decision_hops,
+                segment_count=len(item.waveform) // 960,
             )
             for item in inputs
         )
-        waveforms = (
-            np.ascontiguousarray(np.stack([item[0] for item in compensated]), dtype=np.float32)
-            if compensated else np.empty((0, self.window_spec.samples), np.float32)
-        )
-        if waveforms.shape != (len(inputs), self.window_spec.samples):
-            raise ValueError(
-                f"L4 batch must match configured window length {self.window_spec.samples}"
+        waveforms = tuple(item[0] for item in compensated)
+        grouped_batches = tuple(
+            (
+                tuple(index for index, item in enumerate(waveforms) if len(item) == length),
+                np.ascontiguousarray(np.stack([item for item in waveforms if len(item) == length])),
             )
-        waveforms.setflags(write=False)
-        predictions = tuple(plugin.predict(waveforms) for plugin in (self.primary, *self.shadows))
+            for length in tuple(dict.fromkeys(len(item) for item in waveforms))
+        )
+        for _, batch in grouped_batches:
+            batch.setflags(write=False)
+
+        def predict_grouped(plugin: VoiceModelPlugin) -> ModelPrediction:
+            if not waveforms:
+                return plugin.predict(np.empty((0, self.window_spec.samples), np.float32))
+            values = np.empty(len(waveforms), np.float32)
+            latency_ms = 0.0
+            group_metadata: list[dict[str, object]] = []
+            for indices, batch in grouped_batches:
+                prediction = plugin.predict(batch)
+                if len(prediction.probabilities) != len(indices):
+                    raise RuntimeError("every L4 model must return one probability per audio input")
+                values[list(indices)] = prediction.probabilities
+                latency_ms += prediction.latency_ms
+                group_metadata.append(dict(prediction.metadata))
+            metadata = dict(group_metadata[-1])
+            metadata["continuous_input_lengths_48k"] = tuple(len(item) for item in waveforms)
+            metadata["group_count"] = len(group_metadata)
+            return ModelPrediction(plugin.model_id, values, latency_ms, metadata)
+
+        predictions = tuple(predict_grouped(plugin) for plugin in (self.primary, *self.shadows))
         if any(len(item.probabilities) != len(inputs) for item in predictions):
             raise RuntimeError("every L4 model must return one probability per audio input")
         primary = predictions[0]

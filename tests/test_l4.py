@@ -134,13 +134,15 @@ def test_compensated_distant_official_speech_remains_voice_and_low_probability_n
     plugin = NvidiaMarbleNetPlugin("nv_marblenet_baseline_v1", ARTIFACT, device="cpu")
     sample_rate, audio = wavfile.read(ARTIFACT / "source" / "smoke_speech.wav")
     audio = audio.astype(np.float32) / 32768.0
-    speech = resample_poly(audio, 48_000, sample_rate).astype(np.float32)[53_760:61_440]
+    # Use a continuous 640 ms region whose latest 80 ms contains speech. The
+    # model receives the earlier samples as convolutional context.
+    speech = resample_poly(audio, 48_000, sample_rate).astype(np.float32)[17_280:48_000]
     speech = np.ascontiguousarray(
         speech * (10.0 ** (-45.0 / 20.0) / np.sqrt(np.mean(speech.astype(np.float64) ** 2))),
         dtype=np.float32,
     )
     compensated, _ = compensate_l4_input(
-        speech, (0.9,) * 8, InputGainCompensationSettings()
+        speech, (0.9,) * 32, InputGainCompensationSettings(), segment_count=32
     )
     probability = plugin.predict(compensated[None, :]).probabilities[0]
     assert probability > 0.70
@@ -158,8 +160,10 @@ def test_official_marblenet_weights_detect_official_speech_and_reject_silence():
     sample_rate, audio = wavfile.read(ARTIFACT / "source" / "smoke_speech.wav")
     audio = audio.astype(np.float32) / 32768.0
     audio_48k = resample_poly(audio, 48_000, sample_rate).astype(np.float32)
-    speech_window = audio_48k[53_760:61_440]
-    probabilities = plugin.predict(np.stack((np.zeros(7_680, np.float32), speech_window))).probabilities
+    speech_window = audio_48k[17_280:48_000]
+    probabilities = plugin.predict(
+        np.stack((np.zeros(30_720, np.float32), speech_window))
+    ).probabilities
     assert probabilities.shape == (2,)
     assert probabilities[0] < 0.01
     assert probabilities[1] > 0.70
@@ -303,7 +307,7 @@ def test_layer4_public_contract_and_rethreshold_do_not_rerun_model():
 
 
 def test_layer4_contract_rejects_old_spectrogram_shape_and_wrong_sample_rate():
-    with pytest.raises(ValueError, match="7680"):
+    with pytest.raises(ValueError, match="20 ms"):
         Layer4AudioSegment(
             "session", 0, 1, 7_680, 10.0, 48_000, np.zeros((17, 169), np.float32)
         )

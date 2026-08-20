@@ -53,9 +53,14 @@ L2：Probability Gate
     → TrackedDirection + active_tracks
     ↓
 L3：按同一WindowKey和track_id执行逐方向增强
-    → EnhancedAudio(track_id, theta_deg, samples)
+    → EnhancedAudio(track_id, theta_deg, 80/160 ms重叠窗)
     ↓
-L4：按track_id执行人声分类
+TrackAudioStreamHub：按精确ID每窗追加一个20 ms hop
+    → IMCRA概率响度补偿（Test UI可实时开关）
+    → 同一补偿后连续48 kHz轨供试听、保存和CNN
+    ↓
+L4：连续轨48→16 kHz，NVIDIA Frame-VAD输出20 ms概率序列
+    → 最长3200 ms上下文；只聚合最新80 ms连续3帧
     → VoiceDetection(track_id, theta_deg, probability)
     ↓
 ResultJoiner：按WindowKey有序合并，逐ID精确对齐
@@ -65,6 +70,18 @@ ResultJoiner：按WindowKey有序合并，逐ID精确对齐
 
 Recording/Data公共只读查询边界
     └── Pipeline Log UI / 性能统计、阶段时间线、单窗详情与逐ID回看
+```
+
+```mermaid
+flowchart LR
+    L1["L1 IMCRA概率"] --> HUB["TrackAudioStreamHub<br/>精确ID拼接 + 响度补偿"]
+    L2["L2 MUSIC + track_id"] --> L3["L3 80 ms重叠增强窗"]
+    L3 --> HUB
+    HUB --> TRACK["同一补偿后连续48 kHz轨"]
+    TRACK --> UI["Test UI试听"]
+    TRACK --> REC["Recording/Data按ID轨"]
+    TRACK --> NV["48→16 kHz<br/>NVIDIA Frame-VAD"]
+    NV --> L4["连续20 ms概率<br/>最新80 ms聚合"]
 ```
 
 跨窗口并行仍为 `L2(n) || L3(n-1) || L4(n-2)`；同一窗口仍严格执行 `L2 → L3 → L4`。`track_id` 只增加对齐维度，不允许绕过 `WindowKey = (session_id, stream_epoch, window_id, decision_sample)`。
@@ -203,10 +220,11 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 ## 10. Layer 4 改动
 
-- L4必须继承同一派生窗口：公开输入为3840/7680个48 kHz样本，模型适配后为1280/2560个16 kHz样本，响度补偿严格使用4/8个对齐概率。配置与实际批次不一致时立即拒绝。
+- L3仍公开3840/7680个48 kHz重叠窗；`TrackAudioStreamHub`按精确ID抽取与IMCRA网格对齐的20 ms hop，去重拼接、响度补偿并维护最长3200 ms连续轨。L4公开输入改为一个或多个完整20 ms hop的可变长度连续48 kHz波形。
 - `Layer4AudioSegment`、`VoiceDetection` 和阶段结果均增加 `track_id`，并按 L3 的 `(WindowKey, track_id)` 原样返回。
 - L4 入口/出口校验 ID 集合、顺序、角度与音频严格对齐；重新阈值判断只能改变 Voice/Non-Voice 结论，不能改变 ID。
-- CNN、48→16 kHz 适配、响度补偿和 primary/shadow 边界保持不变。
+- NVIDIA适配器对连续轨执行48→16 kHz polyphase重采样并产生连续20 ms帧概率；最终窗口概率只聚合最新80 ms内连续3帧，较早语音只提供卷积上下文。primary/shadow读取同一不可变连续音频批次。
+- 响度补偿开关默认开启并由Test UI持久化；切换不重建ID、不清空连续缓冲，从下一20 ms开始在dB域平滑过渡。Test UI试听与CNN必须逐样本读取同一补偿后轨。
 - 删除 L4 通过角度向 L2 回送“正式化/续租”证据的路径。L4 是轨迹的语义标签消费者，不是方向 ID 的所有者。
 
 ## 11. Runtime、时间线与并行管理
@@ -222,13 +240,14 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ## 12. Development Test UI 与逐 ID 试听
 
 - Test UI不拥有独立的音频窗口配置；面板文字、单窗试听波形和按ID恢复范围全部使用Runtime注入的同一80/160 ms派生规格。当前按钮显示80 ms。
+- Test UI不再从L3重叠窗自行形成正式试听轨。它只缓存并播放`TrackAudioStreamHub`已经拼好和补偿的连续hop；同一hop也是L4的CNN输入，播放端不得再增加独立响度归一化。L4面板提供默认ON的实时响度补偿开关，开关不切轨、不重置ID或CNN上下文。
 
 - 删除 “Iterative Multiple Peak” 开关、ID 追踪开关、相关持久化设置和运行时 setter。
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。
 - 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始360点MUSIC伪谱，分别显示MDL诊断阶数与实际MUSIC阶数，并提供1/2/3手动阶数上限、默认关闭的`DPD + rank-1 MUSIC`和`IMCRA噪声白化`按钮；三项设置均持久化到Test UI本地设置，L2在每次实际计算前读取最新revision。
 - L2接纳队列丢窗属于Runtime过载状态，不得显示成Gate或L1 IMCRA不可用。Test UI保留同一epoch最近一次成功的MUSIC/Gate快照及原始发布时间，以`STALE | L2 DROPPED`明确标记，下一次成功结果到达后恢复`LIVE`。
 - 候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed、L4 probability`；观测和预测样式可以不同，但颜色稳定绑定权威 ID。
-- 左下试听继续保留 Center Mic 原音参考、20 ms 稳定 hop 拼接、可恢复真实音频补洞、过旧缺口补等时静音、交叉淡化、至少 2 秒显示、3 秒等待、有界分段和三档 L3 模式隔离。
+- 左下试听继续保留 Center Mic 原音参考、公共20 ms稳定hop、过旧缺口补等时静音、至少2秒显示、3秒等待、有界分段和三档L3模式隔离；方向轨的拼接、补洞和增益过渡统一由`TrackAudioStreamHub`完成，GUI不得二次处理缓存样本。
 - 方向音频只按 `(session_id, stream_epoch, track_id)` 拼接。删除 `_formal_aliases`、`_resolve_formal_track_id`、按角度贪心重关联和 ID 换号合并；UI 不再修补 L2 身份错误。
 - coasting 期间保留轨道行并显示状态；当L2将该权威ID放入`directions`时，继续拼接实际L3 BF音频，只有本窗未提供该ID的L3输出时才按绝对时间轴补等时静音；只有 L2 删除轨迹或 session/mode 生命周期结束时封存对应试听轨。
 
@@ -245,7 +264,7 @@ v4 至少保存：
 - `kalman_applied`、配置 revision、calibration version/hash；
 - `active_tracks` 与窗口阶段终态。
 
-增强文件名和 manifest 资产索引必须含 `track_id`，避免同窗多方向或角度跨 0° 时覆盖。Catalog/服务增加按 session + epoch + track ID 查询时间线、持续时间、角度轨迹、L4 概率和增强资产的能力。
+重叠L3原始窗不得作为正式增强资产重复保存。RecordingStore把公共连续20 ms hop在每个录音chunk内按`track_id`和绝对sample合并为长WAV，缺口补等时静音；文件名和manifest资产索引必须含`track_id`，避免同窗多方向或角度跨0°时覆盖。Catalog/服务增加按 session + epoch + track ID 查询时间线、持续时间、角度轨迹、L4 概率和增强资产的能力。
 
 ### 13.2 界面
 

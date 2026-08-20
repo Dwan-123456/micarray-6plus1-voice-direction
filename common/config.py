@@ -278,7 +278,7 @@ class FeatureConfig(StrictModel):
 
 class Layer4ModelConfig(StrictModel):
     model_id: str
-    backend: Literal["nvidia_marblenet_window_v1"]
+    backend: Literal["nvidia_marblenet_continuous_v2", "nvidia_marblenet_window_v1"]
     model_artifact: str
     role: Literal["primary", "shadow"]
     enabled: bool = True
@@ -309,6 +309,7 @@ class Layer4Config(StrictModel):
     allow_mock: bool
     voice_probability_limit: float
     input_gain_compensation: Layer4InputGainCompensationConfig
+    continuous_context_ms: int = Field(default=3_200, ge=60)
 
     @model_validator(mode="after")
     def validate_models(self) -> "Layer4Config":
@@ -321,6 +322,8 @@ class Layer4Config(StrictModel):
             raise ValueError("Layer4 must define exactly one enabled primary model")
         if not 0.0 <= self.voice_probability_limit <= 1.0:
             raise ValueError("Layer4 voice probability threshold must be in [0,1]")
+        if self.continuous_context_ms % 20:
+            raise ValueError("Layer4 continuous context must use complete 20 ms hops")
         return self
 
 

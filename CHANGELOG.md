@@ -22,6 +22,21 @@
 
 ---
 
+## 2026-08-20 — L3/L4之间新增按ID连续补偿音频主链
+
+- **版本/标签**：项目`1.2.1`连续Frame-VAD架构增强；不创建或移动发布标签。
+- **类型**：Runtime公共音频轨、L4输入契约、NVIDIA连续序列推理、Test UI试听/开关、录音资产、架构图、文档和测试。
+- **L1/L2/L3**：L1 IMCRA算法、L2 MUSIC/方向ID和L3波束形成数学算法无变化。L3仍输出当前80 ms重叠增强窗；新增`TrackAudioStreamHub`严格按`(session_id, stream_epoch, track_id)`从每窗抽取一个与IMCRA概率网格对齐的20 ms hop，避免重叠重复并维持绝对sample连续性。
+- **连续轨与响度补偿**：拼接后立即执行`imcra_probability_rms_v1`，目标`-23 dBFS`、概率分段权重和`-3 dBFS`新增增益保护保持不变。Test UI开关默认ON且本地持久化，可在不中断ID、不清空上下文的情况下实时切换，增益从下一20 ms平滑过渡。试听、正式按ID轨和CNN逐样本使用同一补偿后音频。
+- **L4/NVIDIA**：`Layer4AudioSegment`接受由完整20 ms hop组成的可变长度连续48 kHz轨，并记录有效sample范围及既有补偿诊断。NVIDIA Frame-VAD适配器对最长3200 ms连续轨执行48→16 kHz polyphase重采样并输出连续帧概率；窗口标量仅聚合最新80 ms内连续3帧，较早语音只作卷积上下文。primary/shadow仍读取同一不可变批次，阈值重判仍不重跑模型或改变ID。
+- **Development Test UI**：正式长轨不再由GUI私有逻辑从L3窗二次形成；Runtime在L3完成后把公共补偿hop送入现有分段播放缓存，播放端取消额外响度归一化。L4面板新增“连续轨响度补偿”实时开关。旧`AudioIdTracker.update`仅保留兼容测试边界，正式Runtime使用`consume_stream_batch`。
+- **录音/数据管理/Production UI**：重叠L3原始窗只作瞬时计算输入，不再作为正式音频资产重复保存；DecisionRecord接收每轨新增的补偿20 ms音频，RecordingStore按chunk和公共`track_id`合并为长WAV（时间缺口补等时静音），Production UI与数据接口继续按ID回放。Pipeline Log UI只读接口无控制逻辑变化。
+- **Runtime/配置/架构图**：新增`layer4.continuous_context_ms=3200`和`nvidia_marblenet_continuous_v2`后端标识；总架构图增加`TrackAudioStreamHub`及Test UI/Recording/L4三路消费者。WindowKey、阶段队列、ResultJoiner、L2几何生命周期和L4精确ID反馈语义无变化。
+- **验证**：新增按ID隔离、连续20 ms时间轴、缺口恢复/重置、实时开关不断轨、Test UI缓存与CNN逐样本一致、可变长度连续MarbleNet、按ID长WAV录音契约及项目模型库真实20 ms人声音频模拟。自动化验证不替代真实声卡播放、真实7通道阵列、房间声场和长时间GPU验收。
+- **Git LFS与数据边界**：模型权重及其他Git LFS二进制无变化，仅更新文本manifest；不提交`.venv/`、`data/`、运行录音、临时播放缓存、日志、密钥或代理设置。
+
+---
+
 ## 2026-08-20 — L3、L4与Development Test UI统一下游音频窗口为80 ms
 
 - **版本/标签**：项目`1.2.1`跨层配置与契约修复；不创建或移动发布标签。

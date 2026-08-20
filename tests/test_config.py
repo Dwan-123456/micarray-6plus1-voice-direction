@@ -64,6 +64,8 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert gain.no_compensation_probability == 0.30
     assert gain.full_compensation_probability == 0.80
     assert gain.peak_ceiling_dbfs == -3.0
+    assert config.layer4.continuous_context_ms == 3_200
+    assert config.layer4.models[0].backend == "nvidia_marblenet_continuous_v2"
     assert config.downstream_audio_window.duration_ms == 80
     assert config.downstream_audio_window.samples == 3_840
     assert config.downstream_audio_window.decision_hops == 4

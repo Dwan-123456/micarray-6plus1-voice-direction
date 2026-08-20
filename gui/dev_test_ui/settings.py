@@ -9,8 +9,8 @@ import tempfile
 class DevUiSettings:
     """Atomic persistent store for operator-tuned Development Test UI values."""
 
-    SCHEMA_VERSION = "dev_test_ui_settings_v10"
-    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v9"
+    SCHEMA_VERSION = "dev_test_ui_settings_v11"
+    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v10"
     OLDER_SCHEMA_VERSION = "dev_test_ui_settings_v2"
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
     OBSOLETE_KEYS = {
@@ -27,6 +27,7 @@ class DevUiSettings:
             if payload.get("schema_version") not in {
                 self.SCHEMA_VERSION,
                 self.PREVIOUS_SCHEMA_VERSION,
+                "dev_test_ui_settings_v9",
                 "dev_test_ui_settings_v8",
                 "dev_test_ui_settings_v7",
                 "dev_test_ui_settings_v5",
@@ -178,6 +179,20 @@ class DevUiSettings:
     def save_l1_pre_denoise_enabled(self, value: bool) -> bool:
         enabled = self._validate_bool(value)
         self._save_update(layer1_pre_denoise_enabled=enabled)
+        return enabled
+
+    def load_l4_input_gain_compensation_enabled(self, default: bool = True) -> bool:
+        fallback = self._validate_bool(default)
+        try:
+            return self._validate_bool(
+                self._load_payload()["layer4_input_gain_compensation_enabled"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_l4_input_gain_compensation_enabled(self, value: bool) -> bool:
+        enabled = self._validate_bool(value)
+        self._save_update(layer4_input_gain_compensation_enabled=enabled)
         return enabled
 
     @staticmethod

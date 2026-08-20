@@ -172,7 +172,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 系统为每次采集建立唯一`session_id`，用`stream_epoch`表示连续音频段，并用绝对sample编号描述时间。发生输入丢失或不连续时会切换epoch，防止把不连续音频误拼到同一个算法窗口。
 
-WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，L4和Development Test UI复用同一派生长度。该参数第一阶段只允许80或160 ms，当前值为80 ms，对应3840个48 kHz样本、4个20 ms hop、9帧STFT和1280个16 kHz模型样本；改回160 ms时分别派生为7680、8、17和2560，不需要逐层修改常量。L2、L3、L4使用同一个WindowKey，不能各自重新读取“当前最新音频”。
+WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为80 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop，完成IMCRA响度补偿并维护最长3200 ms连续轨；Test UI试听、正式轨音频和L4共同读取该连续轨。L2、L3、公共轨服务和L4沿用同一WindowKey，不能各自重新读取“当前最新音频”。
 
 ### 4. Probability Gate
 
@@ -221,9 +221,9 @@ Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`�
 
 ### 8. 人声分类
 
-Layer 4判断L3输出的每条方向音频中是否存在人声。它先根据同一配置窗口内4/8个20 ms IMCRA概率对模型输入副本做受限响度补偿，再降采样为1280/2560个16 kHz样本，交给MarbleNet输出Voice / Non-Voice概率。当前CNN采用NVIDIA发布的多语言预训练模型，训练数据包含中文和英文，但英文训练数据来源多于中文；在尚未使用诊室或R6+1目标数据进行微调的情况下，预期英文人声检测表现可能优于中文。
+Layer 4判断每条连续方向轨中是否存在人声。公共轨服务先把L3重叠窗变成按ID连续的48 kHz音频，并按每个20 ms自己的IMCRA概率执行受限响度补偿；NVIDIA Frame-VAD适配器随后把最长3200 ms连续上下文降采样到16 kHz，一次产生连续20 ms帧概率，最终只聚合最新80 ms内连续3帧。当前CNN采用NVIDIA发布的多语言预训练模型；尚未使用目标阵列数据微调。
 
-这里的“响度补偿”只是送入CNN前的内部增益调整，不是L2的声源响度测量，也不会输出dB SPL或按方向统计的响度结果。
+Test UI与CNN读取同一份补偿后连续轨。Test UI中的响度补偿开关默认开启，可实时切换且不清空轨道；这里只调整数字波形增益，不是dB SPL测量。
 
 L4继承并标注L2已经分配的公共方向`track_id`，不向L2回送角度、不创建ID，也不改变方向轨迹生命周期。
 
@@ -337,7 +337,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - 原生8通道、逻辑8通道和物理7通道音频；
 - IMCRA噪声与概率sidecar；
 - 360°空间响应和候选方向；
-- Layer 3增强音频；
+- `TrackAudioStreamHub`补偿后的逐ID连续增强音频（每个录音chunk合成长WAV）；
 - Layer 4概率、阶段状态、耗时和错误原因；
 - DecisionRecord、ResultWatermark、manifest和配置hash。
 

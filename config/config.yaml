@@ -209,12 +209,13 @@ layer4:
   primary_model_id: nv_marblenet_baseline_v1
   models:
     - model_id: nv_marblenet_baseline_v1
-      backend: nvidia_marblenet_window_v1
+      backend: nvidia_marblenet_continuous_v2
       model_artifact: models/nv_marblenet_baseline_v1
       role: primary
       enabled: true
   allow_mock: false
   voice_probability_limit: 0.70
+  continuous_context_ms: 3200
   input_gain_compensation:
     enabled: true
     algorithm_version: imcra_probability_rms_v1

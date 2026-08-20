@@ -1456,12 +1456,22 @@ class RecordingStore:
             waveforms = item.get("enhanced_waveforms", ())
             if not waveforms:
                 continue
+            metadata = item.get("enhanced_audio", ())
+            # The post-L3 public stream is already de-overlapped into canonical
+            # 20 ms hops.  Keep those small hops until their recording chunk is
+            # finalized so they can be committed as one long WAV per exact ID,
+            # rather than thousands of unrelated 20 ms files.  Legacy L3
+            # window assets retain the eager bounded-memory spill path.
+            if metadata and all(
+                value.get("stream_kind") == "id_continuous_gain_compensated"
+                for value in metadata
+            ):
+                continue
             decision = self._result_decision(item)
             epoch = int(item.get("stream_epoch", -1))
             if decision is None or not self._decision_has_written_audio(epoch, decision):
                 continue
             assets: list[dict[str, Any]] = []
-            metadata = item.get("enhanced_audio", ())
             for index, (audio_meta, waveform) in enumerate(zip(metadata, waveforms, strict=True)):
                 track_id = int(audio_meta["track_id"])
                 theta_mdeg = int(round(float(audio_meta["theta_deg"]) * 1000))
@@ -1780,6 +1790,7 @@ class RecordingStore:
             ]
             write_jsonl("l4", l4_records, "l4_chunk_v1")
 
+            continuous_by_track: dict[int, list[tuple[dict[str, Any], dict[str, Any], np.ndarray]]] = {}
             for item in chosen:
                 for asset in item.get("_enhanced_audio_assets", ()):
                     chunk["assets"].append(dict(asset))
@@ -1788,6 +1799,11 @@ class RecordingStore:
                 pending_pairs = zip(metadata, waveforms, strict=True) if waveforms else ()
                 for index, (audio_meta, waveform) in enumerate(pending_pairs):
                     track_id = int(audio_meta["track_id"])
+                    if audio_meta.get("stream_kind") == "id_continuous_gain_compensated":
+                        continuous_by_track.setdefault(track_id, []).append(
+                            (item, dict(audio_meta), np.asarray(waveform, np.float32))
+                        )
+                        continue
                     theta_mdeg = int(round(float(audio_meta["theta_deg"]) * 1000))
                     name = (
                         f"epoch{epoch:03d}_window{int(item['window_id']):012d}_"
@@ -1816,6 +1832,57 @@ class RecordingStore:
                         "_partial_path": str(partial.relative_to(self._root)),
                         **_json_ready(dict(audio_meta)),
                     })
+            for track_id, records in sorted(continuous_by_track.items()):
+                records.sort(key=lambda value: int(value[1]["start_sample"]))
+                first_item, first_meta, _ = records[0]
+                track_start = int(first_meta["start_sample"])
+                cursor = track_start
+                pieces: list[np.ndarray] = []
+                for _, audio_meta, waveform in records:
+                    hop_start = int(audio_meta["start_sample"])
+                    hop_end = int(audio_meta["end_sample"])
+                    if hop_end - hop_start != len(waveform):
+                        raise ValueError("连续轨音频sample范围与波形长度不一致")
+                    if hop_start < cursor:
+                        raise ValueError("连续轨录音hop重叠或顺序错误")
+                    if hop_start > cursor:
+                        pieces.append(np.zeros(hop_start - cursor, dtype=np.float32))
+                    pieces.append(np.ascontiguousarray(waveform, dtype=np.float32))
+                    cursor = hop_end
+                continuous = np.concatenate(pieces) if len(pieces) > 1 else pieces[0]
+                last_item, last_meta, _ = records[-1]
+                theta_mdeg = int(round(float(last_meta["theta_deg"]) * 1000))
+                name = (
+                    f"epoch{epoch:03d}_start{track_start:012d}_end{cursor:012d}_"
+                    f"track{track_id:06d}_theta{theta_mdeg:06d}_continuous.wav"
+                )
+                path = self._root / "enhanced_audio" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                partial = Path(str(path) + ".partial")
+                with wave.open(str(partial), "wb") as writer:
+                    writer.setnchannels(1)
+                    writer.setsampwidth(2)
+                    writer.setframerate(48_000)
+                    writer.writeframes(pcm16_bytes(continuous[:, None]))
+                chunk["assets"].append({
+                    "kind": "enhanced_audio",
+                    "path": str(path.relative_to(self._root)),
+                    "sha256": sha256_file(partial),
+                    "sample_rate": 48_000,
+                    "channel_count": 1,
+                    "sample_count": int(len(continuous)),
+                    "stream_epoch": epoch,
+                    "window_id": int(first_item["window_id"]),
+                    "last_window_id": int(last_item["window_id"]),
+                    "decision_sample": int(last_item["decision_sample"]),
+                    "track_id": track_id,
+                    "start_sample": track_start,
+                    "end_sample": cursor,
+                    "stream_kind": "id_continuous_gain_compensated",
+                    "gain_compensation_enabled": bool(last_meta.get("gain_compensation_enabled", True)),
+                    "theta_deg": float(last_meta["theta_deg"]),
+                    "_partial_path": str(partial.relative_to(self._root)),
+                })
             chunk["result_count"] = len(chosen)
             watermark = self._writer_watermarks.get(epoch)
             has_gap = self._chunk_has_result_gap(int(epoch), int(start), int(end))

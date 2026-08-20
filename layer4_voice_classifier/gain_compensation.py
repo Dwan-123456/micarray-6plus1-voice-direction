@@ -62,6 +62,7 @@ class InputGainCompensationDiagnostic:
     mean_applied_gain_db: float
     compensated_segment_count: int
     peak_protection_trigger_count: int
+    final_gain_db: float = 0.0
 
 
 def _dbfs(amplitude: float) -> float:
@@ -85,6 +86,7 @@ def compensate_l4_input(
     settings: InputGainCompensationSettings,
     *,
     segment_count: int = 8,
+    initial_gain_db: float | None = None,
 ) -> tuple[NDArray[np.float32], InputGainCompensationDiagnostic]:
     """Create a compensated L4-only copy without modifying the L3 waveform."""
     source = np.asarray(waveform)
@@ -130,7 +132,13 @@ def compensate_l4_input(
     output = source.copy()
     applied_mean = np.zeros(segment_count, dtype=np.float64)
     peak_triggered = np.zeros(segment_count, dtype=bool)
-    previous_gain = float(target_gain[0])
+    if initial_gain_db is not None and (
+        not np.isfinite(initial_gain_db) or initial_gain_db < 0.0
+    ):
+        raise ValueError("initial gain must be finite, non-negative dB")
+    previous_gain = (
+        float(target_gain[0]) if initial_gain_db is None else float(initial_gain_db)
+    )
     ceiling_amplitude = float(
         np.nextafter(
             np.float32(10.0 ** (settings.peak_ceiling_dbfs / 20.0)),
@@ -139,10 +147,10 @@ def compensate_l4_input(
     )
 
     for index, chunk in enumerate(chunks):
-        desired = (
-            np.full(_SEGMENT_SAMPLES, target_gain[index], dtype=np.float64)
-            if index == 0
-            else np.linspace(previous_gain, target_gain[index], _SEGMENT_SAMPLES, dtype=np.float64)
+        desired = np.full(_SEGMENT_SAMPLES, target_gain[index], dtype=np.float64) if (
+            index == 0 and initial_gain_db is None
+        ) else np.linspace(
+            previous_gain, target_gain[index], _SEGMENT_SAMPLES, dtype=np.float64
         )
         # A previous segment may request more gain than the current segment can
         # safely accept. Cap only the positive gain at those samples; never
@@ -190,5 +198,6 @@ def compensate_l4_input(
         float(np.mean(applied_mean)),
         int(np.count_nonzero(applied_mean > 1.0e-12)),
         int(np.count_nonzero(peak_triggered)),
+        float(previous_gain),
     )
     return np.ascontiguousarray(output), diagnostic

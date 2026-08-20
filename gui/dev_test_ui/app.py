@@ -220,6 +220,11 @@ def build_window(
     runtime.set_l1_pre_denoise_enabled(ui_settings.load_l1_pre_denoise_enabled(
         config.layer1_pre_denoise.enabled
     ))
+    runtime.set_l4_input_gain_compensation_enabled(
+        ui_settings.load_l4_input_gain_compensation_enabled(
+            config.layer4.input_gain_compensation.enabled
+        )
+    )
 
     class MainWindow(QMainWindow):
         def __init__(self):
@@ -284,7 +289,13 @@ def build_window(
             self.bf_panel.track_stop_requested.connect(self._pause_track_audio)
             self.bf_panel.mode_change_requested.connect(self._change_l3_processing_mode)
             self.bf_panel.set_processing_mode(runtime.l3_processing_mode)
-            self.cnn_panel = CnnPanel(config.layer4.voice_probability_limit)
+            self.cnn_panel = CnnPanel(
+                config.layer4.voice_probability_limit,
+                runtime.l4_input_gain_compensation_enabled,
+            )
+            self.cnn_panel.gain_compensation_changed.connect(
+                self._set_l4_input_gain_compensation
+            )
             grid.addWidget(self.bf_panel, 1, 0)
             grid.addWidget(self.cnn_panel, 1, 1)
             for item_index in range(grid.count()):
@@ -512,6 +523,21 @@ def build_window(
                 with QSignalBlocker(self.pre_denoise_switch):
                     self.pre_denoise_switch.setChecked(previous)
                 self.statusBar().showMessage(f"L1预降噪切换失败: {exc}", 8000)
+
+        def _set_l4_input_gain_compensation(self, enabled: bool):
+            previous = runtime.l4_input_gain_compensation_enabled
+            try:
+                enabled = ui_settings.save_l4_input_gain_compensation_enabled(bool(enabled))
+                runtime.set_l4_input_gain_compensation_enabled(enabled)
+                self.cnn_panel.set_gain_compensation_enabled(enabled)
+                self.statusBar().showMessage(
+                    f"连续轨响度补偿{'开启' if enabled else '关闭'}；下一20 ms生效", 3500
+                )
+            except Exception as exc:
+                runtime.set_l4_input_gain_compensation_enabled(previous)
+                with QSignalBlocker(self.cnn_panel.gain_compensation):
+                    self.cnn_panel.set_gain_compensation_enabled(previous)
+                self.statusBar().showMessage(f"响度补偿切换失败: {exc}", 8000)
 
         def _set_srp_threshold(self, threshold: float):
             try:
@@ -876,14 +902,13 @@ def build_window(
                 self.bf_panel.sync_track_playback_stopped()
                 return
             self.preview_player.stop()
-            # Normalize the completed, continuously stitched ID snapshot once;
-            # the entire file then plays with one constant gain at unity volume.
+            # Play the exact TrackAudioStreamHub waveform used by L4.  The
+            # preview backend may still apply attenuation-only output safety,
+            # but must never add a second listening-only loudness boost.
             self.preview_player.set_volume(1.0)
             self.preview_player.load_file(
                 cache_path,
                 delete_on_release=True,
-                target_rms_dbfs=-28.0,
-                max_gain_db=18.0,
             )
             self._audio_source_key = ("track", int(track_id), str(cache_path))
             if not self.preview_player.play():

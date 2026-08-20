@@ -12,9 +12,11 @@
   "license_snapshot": "source/NVIDIA_OPEN_MODEL_LICENSE.html",
   "input": {
     "public_sample_rate_hz": 48000,
-    "public_samples_supported": [3840, 7680],
+    "public_samples_supported": [960, 3840, 7680],
+    "continuous_multiple_samples": 960,
+    "continuous_context_samples": 153600,
     "model_sample_rate_hz": 16000,
-    "model_samples_supported": [1280, 2560],
+    "model_samples_supported": "variable_multiple_of_320",
     "channels": 1
   },
   "preprocessor": {
@@ -26,6 +28,6 @@
     "normalize": null,
     "inference_dither": 0.0
   },
-  "aggregation": "max_contiguous_3frame_mean_v1",
+  "aggregation": "latest_80ms_max_contiguous_3frame_mean_v2",
   "output": "scalar_probability_per_direction"
 }

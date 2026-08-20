@@ -685,8 +685,10 @@ class VoiceProbabilityPolar(QWidget):
 
 class CnnPanel(QGroupBox):
     selection_requested = Signal(float, int)
+    gain_compensation_changed = Signal(bool)
 
-    def __init__(self, configured_threshold: float, parent: QWidget | None = None):
+    def __init__(self, configured_threshold: float, gain_compensation_enabled: bool = True,
+                 parent: QWidget | None = None):
         super().__init__("L4 · CNN Voice Direction", parent)
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -701,9 +703,22 @@ class CnnPanel(QGroupBox):
         top.addWidget(self.threshold, 1)
         top.addWidget(self.threshold_value)
         layout.addLayout(top)
+        self.gain_compensation = QPushButton()
+        self.gain_compensation.setCheckable(True)
+        self.gain_compensation.toggled.connect(self._gain_compensation_toggled)
+        self.set_gain_compensation_enabled(gain_compensation_enabled)
+        layout.addWidget(self.gain_compensation)
         self.polar = VoiceProbabilityPolar()
         layout.addWidget(self.polar, 1)
         self._result = None
+
+    def set_gain_compensation_enabled(self, enabled: bool) -> None:
+        self.gain_compensation.setChecked(bool(enabled))
+        self.gain_compensation.setText(f"连续轨响度补偿: {'ON' if enabled else 'OFF'}")
+
+    def _gain_compensation_toggled(self, enabled: bool) -> None:
+        self.set_gain_compensation_enabled(enabled)
+        self.gain_compensation_changed.emit(bool(enabled))
 
     def _threshold_changed(self, value: int) -> None:
         self.threshold_value.setText(f"UI threshold: {value / 100:.2f}")

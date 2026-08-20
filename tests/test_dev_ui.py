@@ -140,6 +140,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.load_direction_kalman_enabled() is False
     assert settings.load_gate_probability_threshold(0.60) == 0.60
     assert settings.load_l1_pre_denoise_enabled(False) is False
+    assert settings.load_l4_input_gain_compensation_enabled(True) is True
 
     settings.save_direction_threshold(.67)
     settings.save_music_effective_order_limit(1)
@@ -153,6 +154,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.save_direction_kalman_r_scale(0.8) == 0.8
     assert settings.save_gate_probability_threshold(0.73) == 0.73
     assert settings.save_l1_pre_denoise_enabled(True) is True
+    assert settings.save_l4_input_gain_compensation_enabled(False) is False
 
     loaded = DevUiSettings(tmp_path)
     assert loaded.load_direction_threshold(.35) == .42
@@ -164,12 +166,14 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert loaded.load_direction_kalman_r_scale(1.0) == 0.8
     assert loaded.load_gate_probability_threshold(0.60) == 0.73
     assert loaded.load_l1_pre_denoise_enabled(False) is True
+    assert loaded.load_l4_input_gain_compensation_enabled(True) is False
 
     payload = loaded.path.read_text(encoding="utf-8")
     assert '"layer2_direction_threshold": 0.42' in payload
     assert '"layer2_music_effective_order_limit": 1' in payload
     assert '"layer2_music_dpd_rank1_enabled": true' in payload
     assert '"layer2_music_noise_whitening_enabled": true' in payload
+    assert '"layer4_input_gain_compensation_enabled": false' in payload
     assert "layer2_iterative_peak_search_enabled" not in payload
     assert "layer2_direction_id_tracking_enabled" not in payload
 

@@ -8,13 +8,13 @@
 
 本UI只消费同一个ApplicationRuntime快照，不得重开设备、重建时间轴或在界面线程运行算法。普通启动使用真实麦克风；数据管理系统发起完整模拟时，`RecordingReplaySource`把已登记的原始8ch音频和CDC热力图作为同一个虚拟阵列输入，两种方式共用完整L1→L4链路。
 
-L3单窗试听、L4输入和试听恢复范围不在UI内另设长度；它们由Runtime从`timing.downstream_audio_window_ms`统一注入。第一阶段允许80/160 ms，当前为80 ms，面板按钮相应显示“播放/暂停 80 ms”。固定160 ms的DecisionWindow只作为上游容器保留。
+L3单窗仍由`timing.downstream_audio_window_ms`控制（当前80 ms），但按ID长轨不再由UI自行拼接。Runtime中的`TrackAudioStreamHub`每20 ms生成一份已经去重、按IMCRA概率响度补偿的连续轨hop；Test UI试听缓存和L4 CNN逐样本读取同一份波形，播放端不再额外提高响度。L4面板提供默认ON的实时补偿开关，切换不清空ID或连续轨。
 
 只有完整模拟输入模式会在L1显示操作者填写的音频名称以及“开始/继续、暂停、从头重播”控件。暂停不推进sample，也不在继续时追赶；播放结束保留最后结果并等待重播。重播立即清空上一轮L1～L4画面、试听缓存和旧结果邮箱，并通过新的stream epoch重新预热算法状态。普通真实设备模式不创建这些控件。
 
 主界面使用10 ms精确定时器以100 Hz轮询两个容量1的latest-value邮箱。正式审计邮箱仍只接收ResultJoiner按`(session_id, stream_epoch, window_id, decision_sample)`合并并有序提交的快照；L4完成邮箱`latest_l4_dev_ui`只在L4真正`COMPLETED`后立即接收完整同窗L2/L3/L4 `DevUiFrame`，用于减少有序commit等待造成的CNN显示延迟。它不改变DecisionRecord、录音或watermark顺序，也不能混拼不同窗口。算法正式窗口仍为20 ms（50 Hz）；某阶段SKIPPED/FAILED时仍由有序审计快照表达真实终态。
 
-按ID累计试听仍每个决策只追加一个稳定20 ms hop。相邻、时间对齐的L3波束形成估计只在末尾2 ms执行`cos²/sin²`交叉淡化，以减少大比例混合可能带来的音色损失；轨道开始、结束以及静音缺口边界继续保留5 ms淡入淡出。该试听处理不修改L3正式音频、L4输入或录音资产。
+按ID累计试听每个决策只追加`TrackAudioStreamHub`产生的同一稳定20 ms hop；GUI不再自行交叉淡化、拼接或做响度增强。声卡输出仅保留必要的衰减型峰值安全和首尾播放淡化，不会提高或改写缓存、L4输入或录音资产。
 
 顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2/L3/L4/completion队列的“当前深度/容量”、worker RUN/STOP、各阶段完成/错误累计、在途窗口及计算缓存MiB。L4另外显示实际完成、DROPPED、SKIPPED、最近1秒实际完成Hz，以及完成帧邮箱的深度/容量/latest-only覆盖数。悬停可查看入口丢窗和最近阶段错误。该显示不得访问`_processing_windows`等私有字段，也不得反向改变队列或调度；Runtime缺少公开快照时只显示telemetry unavailable，不猜测内部状态。
 
