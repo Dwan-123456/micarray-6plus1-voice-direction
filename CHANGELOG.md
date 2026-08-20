@@ -22,6 +22,37 @@
 
 ---
 
+## 2026-08-20 — 总架构图同步当前连续逐ID音频主链
+
+- **版本/标签**：项目`1.2.1`文档维护；未创建或移动发布标签。
+- **类型**：仅文档架构盘点与已实现状态校准。
+- **涉及文件**：根`README.md`总架构图、算法说明和本`CHANGELOG.md`。
+
+### 架构图与说明
+
+- 按当前代码补充`TrackAudioStreamHub`：它在L3 worker内同步执行，不是独立Layer 3.5，也没有自己的等待队列；按
+  `(session_id, stream_epoch, track_id)`从重叠L3窗口抽取不重复的20 ms hop，并以同一补偿后样本驱动
+  Development Test UI试听、RecordingStore逐ID长WAV与L4 CNN。
+- 将L4更新为连续逐ID音频输入：最长3200 ms的48 kHz上下文降采样到16 kHz，模型产生连续20 ms帧概率，
+  当前窗口只聚合最新80 ms内连续3帧；响度补偿位置、`-23 dBFS`目标及`-3 dBFS`新增增益保护与代码一致。
+- 将L3第三档更新为已接入的`subband_robust_baseline`五频段鲁棒对照，并明确旧
+  `constant_beamwidth_baseline`已经移除和拒绝；保留其自由场steering仅为首版RTF代理、尚未完成在线RTF学习的限制。
+- 按当前L2实现补充DPD逐频投票与圆周核聚类、滚动200 ms内至少6次匹配观测确认轨迹，以及只有已有L4人声证据且
+  非噪声干扰的confirmed轨迹才可在低Gate概率时强制放行。
+- 更新录音与运行关系：重叠L3窗不重复形成正式音频资产，20 ms hop按chunk/track合成长WAV；同窗顺序为
+  `L2 → L3 → TrackAudioStreamHub → L4`，跨窗仍为有界单worker流水。
+
+### 未变化组件、验证与资产
+
+- L1、WindowAssembler、L2/L3/L4实现、Runtime调度、TrackAudioStreamHub实现、ResultJoiner、全部UI、
+  Recording/Data Management、Production UI、配置、模型、测试、音频及空间表资产均无变化。
+- 本次不声称真实7通道阵列、诊室声场、中文语音、五频段模式全链吞吐或长时间运行已经重新验收。
+- README代码块、本地链接、冲突标记和`git diff --check`静态检查通过；L2/L3、连续音频枢纽、L4及
+  Runtime文档契约专项自动测试`56 passed`。
+- 未修改Git LFS管理的模型、音频、空间表或其他二进制资产，无Git LFS对象变化；未提交本地数据、录音、缓存、日志或密钥。
+
+---
+
 ## 2026-08-20 — 五频段鲁棒对照替换30°恒定波束宽度模式
 
 - **版本/标签**：项目`1.2.1`集成；未创建或移动发布标签。

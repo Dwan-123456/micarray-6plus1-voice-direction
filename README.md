@@ -85,19 +85,21 @@ WindowWorkItem
 【已完成】Layer 2 1.1：二维声源方向定位与公共方向轨迹
     Probability Gate
         末尾两个20 ms概率取平均得到40 ms Gate概率，默认阈值0.60
-        无活动ID且Gate关闭时跳过MUSIC；存在活动ID时继续观测直至轨迹结束
+        只有confirmed、已有L4人声证据且非噪声干扰的ID可在低概率时强制放行
+        其他情况下Gate关闭时跳过MUSIC；预热/缺失/无效概率仍保持阻断
     ↓ Gate放行
     2000～4000 Hz Rolling frequency-normalized MUSIC
         240 ms滚动历史；20 ms增量STFT/协方差；0～359°逐度扫描
         MDL与跨频一致性诊断0～6阶
         实际MUSIC阶数=min(MDL诊断阶数, Test UI手动上限1/2/3)
-        可选DPD rank-1 MUSIC、可选IMCRA对角噪声白化（均默认关闭）
+        可选DPD逐频投票 + 圆周核聚类、可选IMCRA对角噪声白化（均默认关闭）
         圆周峰值 + 45° NMS → 最多3个方向
     永久在线全局一对一方向ID
         tentative → confirmed → coasting → deleted
+        滚动200 ms内累计至少6次匹配观测后confirmed
         session内track_id单调且不复用；内部最多4轨，公共输出最多3轨
         几何寿命按绝对sample计算，默认coasting TTL为3秒
-        L4概率只用于噪声干扰标记，不拥有ID或几何寿命
+        L4概率用于Gate/coasting资格与噪声干扰标记，不拥有ID或几何寿命
     可选阻尼圆周Kalman（默认关闭）
         只平滑/预测theta_deg，不创建、重置或关闭ID
     ↓ TrackedDirection[0..3] + active_tracks → 有界L3 latest-wins队列
@@ -107,17 +109,25 @@ WindowWorkItem
         ├── optimized：双候选按rho选择Dual LCMV / Soft-null MVDR / Loaded MVDR
         │     单候选和三候选使用Loaded MVDR；数值失败逐频DAS回退
         ├── ds_baseline：7麦Delay-and-Sum；当前只按单声源使用
-        └── subband_robust_baseline：五频段IMCRA/SCM/WNG/Wiener鲁棒对照
+        └── subband_robust_baseline：五频段IMCRA/声源SCM/WNG/Wiener鲁棒对照
     跳窗重叠STFT/IMCRA/协方差滚动复用；权重仍按当前窗口重新计算
     每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [3840/7680])
     物理上限：低频波长远大于阵列孔径，80～1500 Hz方向分离效果差
+    ↓
+【已完成】TrackAudioStreamHub：公共逐ID连续补偿音频流
+    在L3 worker内同步执行，不是Layer 3.5，也没有独立等待队列
+    按(session_id, stream_epoch, track_id)从每个L3重叠窗只追加一个20 ms hop
+    去除重叠重复；缺口按绝对sample审计；处理模式变化时安全重建该轨上下文
+    每个hop使用自己的IMCRA概率执行imcra_probability_rms_v1（默认开启，可实时切换）
+    RMS目标-23 dBFS、只放大；新增增益受-3 dBFS峰值保护
+    每个方向维护最长3200 ms连续48 kHz缓冲
+    同一补偿后样本同时供Test UI试听、RecordingStore逐ID长WAV和L4 CNN使用
     ↓ 有界L4 latest-wins队列
 【已完成】Layer 4：按公共track_id判断各方向是否为人声
-    增强音频独立副本 + 4/8个对齐IMCRA概率
-    ↓ imcra_probability_rms_v1响度补偿
-      RMS目标-23 dBFS、只放大；新增增益受-3 dBFS峰值保护
-    ↓ 48 kHz降采样到16 kHz
+    输入：由完整20 ms hop组成的可变长度ContinuousTrackAudio
+    ↓ 最长3200 ms连续48 kHz轨降采样到16 kHz
     ↓ NVIDIA Frame VAD Multilingual MarbleNet（预训练直接接入，未微调）
+    ↓ 连续20 ms帧概率；窗口结果只聚合最新80 ms内连续3帧
     ↓ VoiceDetection(track_id, theta_deg, probability, is_voice)
     ↓
 【已完成】ResultJoiner与有序提交
@@ -125,10 +135,11 @@ WindowWorkItem
     按全局window_id顺序提交DecisionRecord v4 + ResultWatermark
     失败、超时、丢弃和取消保留明确error终态，不静默消失
     ├── RecordingStore
-    │     原始/逻辑/物理音频、IMCRA、MUSIC、增强音频和人声判断
-    │     60秒切块、异步写盘、恢复、保留和逐ID音频资产
+    │     原始/逻辑/物理音频、IMCRA、MUSIC、连续补偿音频和人声判断
+    │     重叠L3窗不重复保存；20 ms hop按chunk/track_id合成长WAV
+    │     60秒切块、异步写盘、journal恢复、保留和逐ID音频资产
     ├── Development Test UI
-    │     有序审计帧 + 容量1的最新L4完成帧 + 按权威ID连续试听
+    │     有序审计帧 + 容量1的最新L4完成帧 + 播放公共补偿后连续轨
     └── Audio Data Manager / Production UI
           Runtime/Test Corpus、标注、QA、回收站、导出和逐ID回放
 
@@ -139,10 +150,10 @@ WindowWorkItem
     独立进程尚无跨进程只读端口：未注入provider时明确显示Unavailable
 
 运行约束：
-    同窗严格L2(n) → L3(n) → L4(n)
+    同窗严格L2(n) → L3(n) → TrackAudioStreamHub → L4(n)
     跨窗稳态L2(n) || L3(n-1) || L4(n-2)
     各阶段单worker、队列/Joiner/缓存均有界；满队列按latest-wins替换未开始旧窗
-    隔离L3基准已低于20 ms节拍；真实阵列全链并发吞吐、丢窗率和长时间稳定性仍待复测
+    既有optimized隔离L3基准已低于20 ms节拍；五频段模式与真实阵列全链并发仍待复测
 ```
 
 上图描述当前1.2.1代码实现；`【已完成】`表示模块和自动化契约已经接通，不代表真实阵列、诊室声场、中文目标域或长时间负载已经验收。独立Pipeline Log UI的详细只读边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
@@ -202,7 +213,7 @@ Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking
 
 ### 7. 按方向增强音频
 
-Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`统一控制的48 kHz单声道增强音频；当前为80 ms。0/1/2候选完全保持既有BF策略；3候选时三路分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。DAS基线当前只按单声源方法使用。界面和代码中还保留固定30°恒定波束宽度实验入口，但它目前不属于可用方法，不能写入正式能力结论。
+Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`统一控制的48 kHz单声道增强音频；当前为80 ms。`optimized`模式的0/1/2候选保持既有BF策略，3候选分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。`ds_baseline`只按单声源方法使用。第三档`subband_robust_baseline`是已经接入Test UI的五频段鲁棒对照；旧`constant_beamwidth_baseline`已经从正式代码移除并会被明确拒绝。
 
 优化BF会按频率和空间可分度选择处理方式：两个方向导向矢量相关度较低时才适合施加较强的双约束分离；相关度较高时必须转为更保守的MVDR或DAS，避免病态求解和目标失真。尤其在低频段，阵列提供的方向差异不足，算法的目标是稳定保留音频而不是承诺把两个低频声源彻底拆开。
 
@@ -216,6 +227,8 @@ Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`�
 | `0.3 ≤ rho < 0.7` | Soft-null Loaded MVDR | 对另一人进行较柔和的抑制 |
 | `rho ≥ 0.7` | Loaded MVDR | 不强行分离，只保持目标方向并抑制噪声 |
 | 数值不稳定 | DAS | 单频点安全回退 |
+
+五频段鲁棒对照不使用上述`rho`表，也不查询空间可分度表。它在80～500 Hz使用温和干扰感知Loaded MVDR和声源专属Wiener增益，500～900 Hz、900～1500 Hz及1500～4000 Hz使用不同WNG下限的LCMV/DAS连续混合，4000～8000 Hz使用防混叠Loaded MVDR；第一版仍以自由场steering作为RTF代理，数值不安全频点回退DAS，不能写成已经完成在线RTF学习。
 
 历史实机链路的主要性能瓶颈位于Layer 3 BF。当前实现已经加入跳窗重叠复用，并将LCMV/MVDR改为批量Cholesky求解；本机隔离L3基准已低于20 ms节拍，但真实麦克风下与L1/L2/L4/UI并发的持续吞吐仍待重新验收，因此不能仅凭扩大队列或隔离基准宣称实机丢窗已经清零。
 
@@ -326,7 +339,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 1. 先保持预降噪、DPD、IMCRA白化和卡尔曼关闭，检查基础Gate、MUSIC伪谱和永久ID关联；
 2. 再分别把MUSIC阶数上限设为1、2、3，记录MDL诊断、候选数量和误峰变化；
 3. 需要试验鲁棒定位时，每次只开启DPD或IMCRA白化中的一个；最后再开启卡尔曼并小幅调整Q/R倍率；
-4. 使用同一段单人医患语音比较优化方法和DAS；双声源只使用优化方法。恒定波束宽度入口暂不纳入有效对比；
+4. 使用同一段录音比较`optimized`、`ds_baseline`和`subband_robust_baseline`；DAS只用于单声源，双声源重点比较优化方法与五频段鲁棒对照；
 5. Gate阈值、MUSIC候选阈值和L4分类阈值分别记录，不要把三者当成同一个“灵敏度”。
 
 ## 录音数据和配置
@@ -359,8 +372,8 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 - L1多通道输入、IMCRA和可切换预降噪；
 - 唯一时间轴与160 ms/20 ms窗口装配；
 - L2 Probability Gate、Rolling NormMUSIC、永久公共方向ID和可选Kalman；
-- L3优化BF和单声源DAS基线；恒定波束宽度仅保留实验入口，尚未列为可用能力；
-- L4响度补偿、MarbleNet适配和人声结果；
+- L3优化BF、单声源DAS基线和五频段鲁棒对照；旧恒定波束宽度模式已移除；
+- TrackAudioStreamHub逐ID去重拼接、响度补偿、连续试听/录音轨，以及L4连续MarbleNet人声结果；
 - 有界L2/L3/L4跨窗口流水、ResultJoiner和有序提交；
 - Development Test UI、正式录音、scratch录音、Audio Data Manager、Production UI和独立只读Pipeline Log UI。
 
