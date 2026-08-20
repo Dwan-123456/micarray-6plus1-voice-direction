@@ -530,7 +530,7 @@ def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observati
 def test_only_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
-    audio = _audio((30.0,), seed=29, samples=7_680 + 3 * 960)
+    audio = _audio((30.0,), seed=29, samples=7_680 + 7 * 960)
 
     def probabilities(window: DecisionWindow, value: float) -> tuple[SourceProbability20ms, ...]:
         return tuple(SourceProbability20ms(
@@ -548,17 +548,19 @@ def test_only_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None
     assert first.active_tracks[0].track_state == "tentative"
     assert first.directions == ()
 
-    second_window = _window(audio, 1)
-    confirmed = pipeline.process(
-        second_window, probabilities(second_window, 1.0), physical_6plus1_geometry(),
-        DirectionScanConfig.from_project(config), gate_threshold=0.6,
-        gate_config_revision=0,
-    )
+    confirmed = first
+    for index in range(1, 6):
+        confirming_window = _window(audio, index)
+        confirmed = pipeline.process(
+            confirming_window, probabilities(confirming_window, 1.0),
+            physical_6plus1_geometry(), DirectionScanConfig.from_project(config),
+            gate_threshold=0.6, gate_config_revision=0,
+        )
     assert confirmed.directions[0].track_state == "confirmed"
     track_id = confirmed.directions[0].track_id
 
     # Tracking confirmation without L4 voice evidence cannot sustain scanning.
-    third_window = _window(audio, 2)
+    third_window = _window(audio, 6)
     closed = pipeline.process(
         third_window, probabilities(third_window, 0.0), physical_6plus1_geometry(),
         DirectionScanConfig.from_project(config), gate_threshold=0.6,
@@ -575,7 +577,7 @@ def test_only_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None
         0.95,
         True,
     )
-    forced_window = _window(audio, 3)
+    forced_window = _window(audio, 7)
     forced = pipeline.process(
         forced_window, probabilities(forced_window, 0.0), physical_6plus1_geometry(),
         DirectionScanConfig.from_project(config), gate_threshold=0.6,
@@ -589,7 +591,7 @@ def test_only_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None
 
     expired_decision = forced_window.decision_sample + 3 * 48_000 + 960
     expired_window = DecisionWindow(
-        second_window.session_id, second_window.stream_epoch, 999, expired_decision,
+        forced_window.session_id, forced_window.stream_epoch, 999, expired_decision,
         expired_decision - 1_920, expired_decision,
         expired_decision - 7_680, expired_decision, 48_000,
         np.zeros((7_680, 8), dtype=np.float32), (999,),

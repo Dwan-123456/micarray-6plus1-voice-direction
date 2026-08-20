@@ -20,6 +20,7 @@ DecisionWindow + 两个对齐的20 ms概率
     → 永久开启的全局方向轨迹分配
          birth/miss dummy行列 + linear_sum_assignment
          tentative / confirmed / coasting / deleted
+         滚动200 ms内至少6次匹配才进入confirmed
          session内ID单调且不复用；寿命按48 kHz绝对sample
     → 可选Kalman输出平滑（不拥有、不重置、不改变ID）
     → TrackedDirection[0..3] + active_tracks

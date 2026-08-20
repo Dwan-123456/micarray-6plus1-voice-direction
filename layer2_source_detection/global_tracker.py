@@ -19,7 +19,7 @@ _delta = _residual_deg
 class GlobalTrackerConfig:
     association_gate_deg: float = 45.0
     max_velocity_dps: float = 60.0
-    confirmation_observations: int = 2
+    confirmation_observations: int = 6
     confirmation_window_samples: int = 9_600
     coasting_ttl_samples: int = 48_000
     miss_cost: float = 1.0

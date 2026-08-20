@@ -114,7 +114,10 @@ layer2:
     backend: global_assignment_v1
     association_gate_deg: 45.0
     max_velocity_dps: 60.0
-    confirmation_observations: 2
+    # Current moving-source replay calibration: 6 matches in the rolling
+    # 200 ms window rejects short 2..5-hit false tracks without delaying the
+    # sustained speech trajectories beyond their next stable segment.
+    confirmation_observations: 6
     confirmation_window_ms: 200
     coasting_ttl_ms: 3000
     miss_cost: 1.0
