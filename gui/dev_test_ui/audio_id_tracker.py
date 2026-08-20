@@ -553,7 +553,7 @@ class AudioIdTracker:
             raise ValueError("L3 preview track_id must exist in L2 directions")
         backend_modes = {
             "ds_baseline": "ds_baseline",
-            "constant_beamwidth_baseline": "constant_beamwidth_baseline",
+            "subband_robust_baseline": "subband_robust_baseline",
         }
         preview_modes = {
             backend_modes.get(item.runtime_backend, "optimized") for item in previews

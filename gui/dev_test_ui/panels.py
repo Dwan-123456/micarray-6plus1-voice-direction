@@ -309,24 +309,24 @@ class BeamformPanel(QGroupBox):
         self._playing_track_id: int | None = None
 
     def _cycle_mode(self) -> None:
-        modes = ("optimized", "ds_baseline", "constant_beamwidth_baseline")
+        modes = ("optimized", "ds_baseline", "subband_robust_baseline")
         mode = modes[(modes.index(self._processing_mode) + 1) % len(modes)]
         self.set_processing_mode(mode)
         self.mode_change_requested.emit(mode)
 
     def set_processing_mode(self, mode: str) -> None:
-        if mode not in {"optimized", "ds_baseline", "constant_beamwidth_baseline"}:
+        if mode not in {"optimized", "ds_baseline", "subband_robust_baseline"}:
             raise ValueError(f"unknown L3 processing mode: {mode}")
         self._processing_mode = mode
         labels = {
             "optimized": "BF：优化算法",
             "ds_baseline": "BF：DS基线",
-            "constant_beamwidth_baseline": "BF：恒定波束30°",
+            "subband_robust_baseline": "BF：五频段鲁棒对照",
         }
         colors = {
             "optimized": "",
             "ds_baseline": "background:#9a6b00;color:white",
-            "constant_beamwidth_baseline": "background:#285f9a;color:white",
+            "subband_robust_baseline": "background:#285f9a;color:white",
         }
         self.mode_switch.setText(labels[mode])
         self.mode_switch.setStyleSheet(colors[mode])

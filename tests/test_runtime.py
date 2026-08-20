@@ -20,9 +20,9 @@ from common.data_types import (
 )
 from layer1_input.interface import DecodedAudio
 from layer3_direction_signal import (
-    L3_MODE_CONSTANT_BEAMWIDTH,
     L3_MODE_DS_BASELINE,
     L3_MODE_OPTIMIZED,
+    L3_MODE_SUBBAND_ROBUST,
 )
 
 
@@ -279,7 +279,7 @@ def test_runtime_l3_mode_switch_is_available_before_and_during_capture(tmp_path)
     )
     assert runtime.l3_processing_mode == L3_MODE_OPTIMIZED
     assert runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE) == L3_MODE_DS_BASELINE
-    assert runtime.set_l3_processing_mode(L3_MODE_CONSTANT_BEAMWIDTH) == L3_MODE_CONSTANT_BEAMWIDTH
+    assert runtime.set_l3_processing_mode(L3_MODE_SUBBAND_ROBUST) == L3_MODE_SUBBAND_ROBUST
     runtime.start()
     try:
         assert runtime.running
@@ -558,3 +558,20 @@ def test_runtime_passes_selected_ds_baseline_mode_to_l3():
 
     assert layer3.calls[0][1] == L3_MODE_DS_BASELINE
     assert previews[0].runtime_backend == "ds_baseline"
+
+
+def test_runtime_mode_switch_never_changes_authoritative_l2_id():
+    window, direction = _listening_window_and_candidate()
+    layer3 = _CapturingLayer3()
+    runtime = _runtime_with_layer3(layer3)
+
+    for mode in (
+        L3_MODE_OPTIMIZED,
+        L3_MODE_DS_BASELINE,
+        L3_MODE_SUBBAND_ROBUST,
+    ):
+        runtime.set_l3_processing_mode(mode)
+        runtime._process_l3(window, (direction,))
+
+    assert [call[0][0].track_id for call in layer3.calls] == [7, 7, 7]
+    assert [call[0][0].rank for call in layer3.calls] == [1, 1, 1]

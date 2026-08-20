@@ -11,11 +11,11 @@ from .configuration import SpatialSeparationConfig, StftSettings
 
 L3_MODE_OPTIMIZED = "optimized"
 L3_MODE_DS_BASELINE = "ds_baseline"
-L3_MODE_CONSTANT_BEAMWIDTH = "constant_beamwidth_baseline"
+L3_MODE_SUBBAND_ROBUST = "subband_robust_baseline"
 L3_PROCESSING_MODES = frozenset((
     L3_MODE_OPTIMIZED,
     L3_MODE_DS_BASELINE,
-    L3_MODE_CONSTANT_BEAMWIDTH,
+    L3_MODE_SUBBAND_ROBUST,
 ))
 
 

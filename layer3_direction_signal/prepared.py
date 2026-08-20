@@ -7,9 +7,9 @@ import torch
 from common.timing import CONTEXT_SAMPLES
 from .configuration import SpatialSeparationConfig, StftSettings
 from .interface import (
-    L3_MODE_CONSTANT_BEAMWIDTH,
     L3_MODE_DS_BASELINE,
     L3_MODE_OPTIMIZED,
+    L3_MODE_SUBBAND_ROBUST,
     L3_PROCESSING_MODES,
     Layer3Error,
 )
@@ -81,12 +81,12 @@ class PreparedL3Context:
             raise ValueError("PreparedL3Context频带mask无效")
         if not 0 <= self.stft_reused_frames <= self.stft.frame_count:
             raise ValueError("PreparedL3Context复用帧计数无效")
-        if self.mode in {L3_MODE_DS_BASELINE, L3_MODE_CONSTANT_BEAMWIDTH}:
+        if self.mode == L3_MODE_DS_BASELINE:
             if self.noise_statistics is not None or self.noise_algorithm_version is not None:
                 raise ValueError("固定权重对照模式准备阶段不得携带IMCRA统计")
-        elif self.mode == L3_MODE_OPTIMIZED:
+        elif self.mode in {L3_MODE_OPTIMIZED, L3_MODE_SUBBAND_ROBUST}:
             if (self.noise_statistics is None) == (self.preparation_error is None):
-                raise ValueError("优化模式必须恰好携带IMCRA统计或准备错误之一")
+                raise ValueError("自适应模式必须恰好携带IMCRA统计或准备错误之一")
         for tensor in self._owned_tensors():
             if tensor.device != self.spectrum_fct.device or tensor.requires_grad:
                 raise ValueError("PreparedL3Context张量必须同设备且禁用梯度")

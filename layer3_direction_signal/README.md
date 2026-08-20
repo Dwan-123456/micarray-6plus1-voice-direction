@@ -35,10 +35,12 @@ L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、refl
 
 - 输入8ch、算法只使用7物理麦且不读取HardwareMix做steering；
 - Test UI提供三档实时对照：`optimized`、纯`ds_baseline`和
-  `constant_beamwidth_baseline`。第三档以30°第一零点波束宽度（FNBW）为逐频点目标，
-  根据真实6+1圆阵流形做正则化约束拟合，并用WNG下限保护；物理孔径无法安全实现
-  30°的频点退回DS。该档不读取IMCRA或空间可分度p表，只用于对照，不改变正式默认算法；
-- 平滑候选数量、顺序、角度和时间身份原样继承，不做第二次追踪；
+  `subband_robust_baseline`。第三档读取同窗IMCRA噪声统计但不查询空间`p`表：80～500 Hz
+  使用温和干扰感知MVDR和声源专属Wiener增益，500～900 Hz使用WNG约束soft-LCMV，
+  900 Hz～1.5 kHz和1.5～4 kHz逐步加强LCMV，4～8 kHz使用防混叠加载MVDR，
+  数值不安全频点回退DAS。第一版以自由场steering作为RTF代理，并用当前窗拟合rank-1
+  声源SCM；该模式只用于对照，不改变正式默认算法；
+- 0～3个公开方向的WindowKey、ID、原始顺序和角度逐项继承，不做第二次追踪；
 - 每方向输出配置化48 kHz `float32[3840/7680]`、只读且finite；
 - 主链不跨层输出或依赖内部`[9/17,169]`特征；
 - 0/1/2/3候选及`rho`三分支；

@@ -260,10 +260,11 @@ class Layer3Config(StrictModel):
     condition_number_limit: float
     constraint_tolerance: float
     min_frequency_gain: float
-    constant_beamwidth_fnbw_deg: float
-    constant_beamwidth_design_grid_deg: float
-    constant_beamwidth_regularization: float
-    constant_beamwidth_min_wng_db: float
+    subband_frequency_edges_hz: tuple[float, float, float, float]
+    subband_wng_floors_db: tuple[float, float, float]
+    subband_mild_interference_scale: float
+    subband_wiener_min_gain: float
+    subband_soft_null_steps: int
 
 
 class FeatureConfig(StrictModel):
@@ -535,13 +536,19 @@ class ProjectConfig(StrictModel):
             raise ValueError("Layer3噪声协方差收缩系数必须位于[0,1]")
         if not 0 < self.layer3.min_frequency_gain <= 1:
             raise ValueError("Layer3最小频点增益必须位于(0,1]")
+        edges = self.layer3.subband_frequency_edges_hz
         if not (
-            0 < self.layer3.constant_beamwidth_fnbw_deg < 180
-            and 0 < self.layer3.constant_beamwidth_design_grid_deg <= 5
-            and self.layer3.constant_beamwidth_regularization > 0
-            and -30 <= self.layer3.constant_beamwidth_min_wng_db <= 10
+            self.layer3.frequency_min_hz < edges[0] < edges[1] < edges[2] < edges[3]
+            < self.layer3.frequency_max_hz
+            and all(-30 <= value <= 10 for value in self.layer3.subband_wng_floors_db)
+            and self.layer3.subband_wng_floors_db[0]
+            >= self.layer3.subband_wng_floors_db[1]
+            >= self.layer3.subband_wng_floors_db[2]
+            and 0 <= self.layer3.subband_mild_interference_scale <= 10
+            and 0 < self.layer3.subband_wiener_min_gain <= 1
+            and 1 <= self.layer3.subband_soft_null_steps <= 32
         ):
-            raise ValueError("Layer3恒定波束宽度对照参数无效")
+            raise ValueError("Layer3五频段鲁棒对照参数无效")
         if (
             not self.layer3.loading_retry_factors
             or any(value <= 0 for value in self.layer3.loading_retry_factors)

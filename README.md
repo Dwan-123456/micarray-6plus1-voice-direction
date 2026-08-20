@@ -106,8 +106,8 @@ WindowWorkItem
     当前可用：
         ├── optimized：双候选按rho选择Dual LCMV / Soft-null MVDR / Loaded MVDR
         │     单候选和三候选使用Loaded MVDR；数值失败逐频DAS回退
-        └── ds_baseline：7麦Delay-and-Sum；当前只按单声源使用
-    实验入口：constant_beamwidth_baseline（固定30° FNBW），当前不作为可用方法
+        ├── ds_baseline：7麦Delay-and-Sum；当前只按单声源使用
+        └── subband_robust_baseline：五频段IMCRA/SCM/WNG/Wiener鲁棒对照
     跳窗重叠STFT/IMCRA/协方差滚动复用；权重仍按当前窗口重新计算
     每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [3840/7680])
     物理上限：低频波长远大于阵列孔径，80～1500 Hz方向分离效果差
@@ -307,8 +307,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - 第一行是预降噪前Center麦克风原音参考；
 - 方向轨严格按L2权威`track_id`缓存和显示，Test UI不再按角度创建第二套ID；
 - confirmed方向短时漏检时可进入coasting并在3秒TTL内沿用同一ID；
-- 可通过按键切换bf模型，当前可用的是`optimized`和`ds_baseline`：优化方法支持最多3个候选方向，DAS基线只用于单声源；
-- `constant_beamwidth_baseline`保留在切换入口中，但当前不可作为正式可用方法；
+- 可通过按键切换`optimized`、`ds_baseline`和`subband_robust_baseline`三种BF方法；
+- 五频段对照依次使用低频温和干扰感知MVDR+Wiener、WNG约束soft-LCMV、
+  中频强LCMV及高频防混叠loaded MVDR；第一版用自由场steering作为RTF代理；
 - 切换L3模式会清空旧模式的方向试听缓存；
 
 #### 右下：Layer 4人声判断
