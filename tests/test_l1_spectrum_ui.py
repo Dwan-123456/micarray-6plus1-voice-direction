@@ -97,6 +97,68 @@ def test_light_control_uses_existing_official_cdc_commands() -> None:
     assert host.light_state == "off"
 
 
+def test_each_successful_microphone_connection_sends_one_silent_led_off() -> None:
+    class FakePipeline:
+        def __init__(self):
+            self.host = None
+
+        def start(self):
+            pass
+
+        def read(self, timeout=None):
+            del timeout
+            self.host._stop.set()
+            return None
+
+        def stop(self):
+            pass
+
+    class FakeSerial:
+        def __init__(self):
+            self.packets = []
+
+        def write(self, packet):
+            self.packets.append(packet)
+            return len(packet)
+
+        def stop(self):
+            pass
+
+    pipeline, serial = FakePipeline(), FakeSerial()
+    host = L1SpectrumHost(
+        load_config(CONFIG), pipeline_factory=lambda: pipeline, serial_device=serial,
+    )
+    pipeline.host = host
+
+    host._run()
+    if host._light_thread is not None:
+        host._light_thread.join(timeout=1.0)
+
+    assert serial.packets == [b"e"]
+    assert host.light_state == "off"
+
+
+def test_startup_led_off_failure_is_silent() -> None:
+    class FailingSerial:
+        def write(self, _packet):
+            raise OSError("CDC unavailable")
+
+        def stop(self):
+            pass
+
+    host = L1SpectrumHost(load_config(CONFIG), serial_device=FailingSerial())
+    errors = []
+    states = []
+    host.error.connect(errors.append)
+    host.light_state_changed.connect(states.append)
+
+    host._write_light(False, report_errors=False)
+
+    assert errors == []
+    assert states == ["unknown"]
+    assert host.light_state == "unknown"
+
+
 def test_window_defaults_center_and_snapshot_is_frozen() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")

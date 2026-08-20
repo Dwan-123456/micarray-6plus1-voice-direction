@@ -539,6 +539,65 @@ def test_gate_blocked_frame_clears_previous_polar_snapshot(monkeypatch, tmp_path
         app.processEvents()
 
 
+def test_test_ui_sends_led_off_only_after_microphone_start_succeeds(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    calls = []
+    monkeypatch.setattr(ApplicationRuntime, "start", lambda _self: calls.append("microphone"))
+    monkeypatch.setattr(
+        ApplicationRuntime,
+        "set_light",
+        lambda _self, enabled: calls.append(("light", enabled)),
+    )
+    app, window = build_window(CONFIG)
+    try:
+        window._start_capture()
+        deadline = time.monotonic() + 2.0
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            window._poll_command()
+            time.sleep(0.005)
+        assert calls == ["microphone", ("light", False)]
+        assert window.light_label.text() == "状态: Off (startup default)"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_test_ui_does_not_send_light_command_when_microphone_start_fails(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    calls = []
+
+    def fail_start(_self):
+        calls.append("microphone")
+        raise OSError("microphone unavailable")
+
+    monkeypatch.setattr(ApplicationRuntime, "start", fail_start)
+    monkeypatch.setattr(
+        ApplicationRuntime,
+        "set_light",
+        lambda _self, enabled: calls.append(("light", enabled)),
+    )
+    app, window = build_window(CONFIG)
+    try:
+        window._start_capture()
+        deadline = time.monotonic() + 2.0
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            window._poll_command()
+            time.sleep(0.005)
+        assert calls == ["microphone"]
+        assert "microphone unavailable" in window.statusBar().currentMessage()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_l4_panel_retains_completed_result_across_dropped_frames_until_stale(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")

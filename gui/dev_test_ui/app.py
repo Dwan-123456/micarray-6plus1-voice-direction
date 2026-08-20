@@ -725,7 +725,29 @@ def build_window(
             self.preview_player.close()
             self._audio_source_key = None
             self.bf_panel.clear_tracks()
-            self._submit_command("启动采集", runtime.start)
+            self.light_label.setText("状态: Waiting for microphone")
+
+            def start_and_default_light_off():
+                # Do not touch CDC unless UAC capture has connected first.
+                # A missing microphone therefore produces no light command
+                # and no secondary light-control error.
+                runtime.start()
+                try:
+                    runtime.set_light(False)
+                except Exception:
+                    # Startup LED-off is best effort. A connected microphone
+                    # remains usable even when its optional CDC port is absent.
+                    return False
+                return True
+
+            def completed(light_was_turned_off):
+                if light_was_turned_off:
+                    self.light_label.setText("状态: Off (startup default)")
+                else:
+                    self.light_label.setText("状态: Unknown")
+                self.light_label.setToolTip("")
+
+            self._submit_command("启动采集", start_and_default_light_off, completed)
 
         def _start_or_resume_replay(self):
             if replay_source is None:
@@ -1312,7 +1334,7 @@ def build_window(
     window = MainWindow()
     window.showFullScreen() if config.dev_test_ui.start_fullscreen else window.show()
     if auto_start:
-        QTimer.singleShot(0, lambda: window._submit_command("开始模拟测试", runtime.start))
+        QTimer.singleShot(0, window._start_capture)
     return app, window
 
 

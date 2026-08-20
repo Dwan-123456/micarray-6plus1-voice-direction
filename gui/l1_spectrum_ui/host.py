@@ -81,11 +81,12 @@ class L1SpectrumHost(QObject):
         with self._lock:
             return self._light_state
 
-    def set_light(self, enabled: bool) -> None:
+    def set_light(self, enabled: bool, *, report_errors: bool = True) -> None:
         """Send one official LED command without blocking the Qt event loop."""
         if not self._light_available:
             self.light_state_changed.emit("unavailable")
-            self.error.emit("配置已禁用CDC串口，无法控制灯光")
+            if report_errors:
+                self.error.emit("配置已禁用CDC串口，无法控制灯光")
             return
         with self._lock:
             if self._light_thread is not None and self._light_thread.is_alive():
@@ -94,13 +95,13 @@ class L1SpectrumHost(QObject):
             self.light_state_changed.emit("pending")
             self._light_thread = threading.Thread(
                 target=self._write_light,
-                args=(bool(enabled),),
+                args=(bool(enabled), report_errors),
                 name="l1-spectrum-ui-light",
                 daemon=True,
             )
             self._light_thread.start()
 
-    def _write_light(self, enabled: bool) -> None:
+    def _write_light(self, enabled: bool, report_errors: bool = True) -> None:
         packet = led_command(enabled)
         try:
             with self._light_command_lock:
@@ -108,10 +109,12 @@ class L1SpectrumHost(QObject):
             if count != len(packet):
                 raise OSError(f"灯控命令未完整写入：{count}/{len(packet)}")
         except Exception as exc:
+            state = "error" if report_errors else "unknown"
             with self._lock:
-                self._light_state = "error"
-            self.light_state_changed.emit("error")
-            self.error.emit(str(exc))
+                self._light_state = state
+            self.light_state_changed.emit(state)
+            if report_errors:
+                self.error.emit(str(exc))
             return
         state = "on" if enabled else "off"
         with self._lock:
@@ -169,6 +172,10 @@ class L1SpectrumHost(QObject):
                 self._pipeline = pipeline
                 self._pre_denoise_latency_active = self._pre_denoise_enabled
             pipeline.start()
+            # The LED default belongs to a successfully connected microphone
+            # lifecycle. If UAC start fails this line is never reached, so the
+            # UI neither opens CDC nor reports an unrelated light error.
+            self.set_light(False, report_errors=False)
             self.state_changed.emit("RUNNING | L1 microphone + IMCRA only")
             while not self._stop.is_set():
                 audio = pipeline.read(timeout=0.1)
