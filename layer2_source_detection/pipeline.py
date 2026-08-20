@@ -29,37 +29,20 @@ def _select_l3_directions(
     *,
     limit: int = 3,
     minimum_separation_deg: float = 50.0,
-    voice_confirmed_coasting_ids: frozenset[int] | None = None,
 ) -> tuple[TrackedDirection, ...]:
-    """Keep L4-confirmed human tracks continuous while their geometry TTL is alive."""
+    """Publish every eligible confirmed/coasting ID using only authoritative L2 state."""
 
     observed_confirmed = tuple(item for item in observed if item.track_state == "confirmed")
     observed_by_id = {item.track_id: item for item in observed_confirmed}
-    active_by_id = {item.track_id: item for item in active}
-    if voice_confirmed_coasting_ids is None:
-        # Test/helper compatibility: without an explicit semantic set, retain
-        # the historical observed-first ordering and then append all coasting.
-        prioritized = list(observed_confirmed)
-        prioritized.extend(sorted(
-            (
-                item for item in active
-                if item.track_state == "coasting" and item.track_id not in observed_by_id
-            ),
-            key=lambda item: (item.missed_samples, -item.normalized_score, item.track_id),
-        ))
-    else:
-        # In production an L4-confirmed human ID owns its L3 slot throughout
-        # the three-second geometry TTL. A transient MUSIC peak must not take
-        # that slot and turn a missing observation into a silent audio hop.
-        human: list[TrackedDirection] = []
-        for track_id in sorted(voice_confirmed_coasting_ids):
-            item = observed_by_id.get(track_id, active_by_id.get(track_id))
-            if item is not None and item.track_state in {"confirmed", "coasting"}:
-                human.append(item)
-        human_ids = {item.track_id for item in human}
-        prioritized = human + [
-            item for item in observed_confirmed if item.track_id not in human_ids
-        ]
+    prioritized = list(observed_confirmed)
+    prioritized.extend(sorted(
+        (
+            item for item in active
+            if item.track_state == "coasting"
+            and item.track_id not in observed_by_id
+        ),
+        key=lambda item: (item.missed_samples, -item.normalized_score, item.track_id),
+    ))
 
     selected: list[TrackedDirection] = []
     for item in prioritized:
@@ -157,7 +140,13 @@ class Layer2PipelineResult:
                 raise ValueError("blocked L2 result cannot contain MUSIC observations")
             return
         if self.gate_decision.state is not ProbabilityGateState.OPEN:
-            raise ValueError("processed L2 result requires an open probability Gate")
+            if self.spatial_response is not None or self.search_diagnostics is not None:
+                raise ValueError("closed-Gate prediction output cannot contain MUSIC observations")
+            if not directions or any(
+                item.track_state != "coasting" or item.is_observed for item in directions
+            ):
+                raise ValueError("closed-Gate processed output requires only coasting predictions")
+            return
         if self.spatial_response is None or self.search_diagnostics is None:
             raise ValueError("processed L2 result requires complete MUSIC output")
         response_identity = (self.spatial_response.session_id, self.spatial_response.stream_epoch,
@@ -279,19 +268,16 @@ class Layer2Pipeline:
             q_scale=direction_kalman_q_scale, r_scale=direction_kalman_r_scale,
             allow_births=True if diagnostics is None else diagnostics.births_allowed)
         self.last_id_tracking_error = self.last_kalman_error = None
-        directions = (
-            _select_l3_directions(
-                observed_directions,
-                active,
-                voice_confirmed_coasting_ids=voice_confirmed_ids,
-            )
-            if decision.allow_srp else ()
-        )
+        directions = _select_l3_directions(observed_directions, active)
         candidates = tuple(CandidateDirection(
             item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
             item.doa_start_sample, item.doa_end_sample, item.theta_deg,
             item.raw_score, item.normalized_score) for item in directions)
-        state = Layer2ExecutionState.PROCESSED if decision.allow_srp else Layer2ExecutionState.BLOCKED
+        state = (
+            Layer2ExecutionState.PROCESSED
+            if decision.allow_srp or directions
+            else Layer2ExecutionState.BLOCKED
+        )
         return Layer2PipelineResult(
             state, decision, response, candidates, diagnostics,
             tuple(item.track_id for item in directions),

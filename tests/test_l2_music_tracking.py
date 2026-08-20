@@ -547,20 +547,13 @@ def test_kalman_toggle_changes_only_angle_not_id_or_lifecycle() -> None:
     assert third[0].track_state == "confirmed"
 
 
-def test_only_voice_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> None:
+def test_every_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> None:
     tracker = _tracker()
     _update(tracker, 15_360, (20.0,), kalman_enabled=True)
     confirmed, _ = _update(tracker, 16_320, (22.0,), kalman_enabled=True)
     observed, active = _update(tracker, 17_280, (), kalman_enabled=True)
 
-    assert _select_l3_directions(
-        observed, active, voice_confirmed_coasting_ids=frozenset()
-    ) == ()
-    selected = _select_l3_directions(
-        observed,
-        active,
-        voice_confirmed_coasting_ids=frozenset({confirmed[0].track_id}),
-    )
+    selected = _select_l3_directions(observed, active)
 
     assert len(selected) == 1
     assert selected[0].track_id == confirmed[0].track_id
@@ -568,7 +561,7 @@ def test_only_voice_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> No
     assert not selected[0].is_observed
 
 
-def test_voice_confirmed_coasting_id_keeps_l3_slot_over_nearby_transient_peak() -> None:
+def test_observed_confirmed_id_keeps_l3_slot_over_nearby_coasting_id() -> None:
     tracker = _tracker()
     _update(tracker, 15_360, (20.0,), kalman_enabled=False)
     confirmed, _ = _update(tracker, 16_320, (20.0,), kalman_enabled=False)
@@ -583,16 +576,12 @@ def test_voice_confirmed_coasting_id_keeps_l3_slot_over_nearby_transient_peak() 
         is_new_track=True,
     )
 
-    selected = _select_l3_directions(
-        (transient,),
-        active + (transient,),
-        voice_confirmed_coasting_ids=frozenset({human_id}),
-    )
+    selected = _select_l3_directions((transient,), active + (transient,))
 
     assert len(selected) == 1
-    assert selected[0].track_id == human_id
-    assert selected[0].track_state == "coasting"
-    assert not selected[0].is_observed
+    assert selected[0].track_id == transient.track_id
+    assert selected[0].track_state == "confirmed"
+    assert selected[0].is_observed
 
 
 def test_tentative_missing_id_is_not_selected_as_an_l3_bf_target() -> None:
@@ -748,7 +737,8 @@ def test_only_twice_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -
     assert confirmed.directions[0].track_state == "confirmed"
     track_id = confirmed.directions[0].track_id
 
-    # Tracking confirmation without L4 voice evidence cannot sustain scanning.
+    # Tracking confirmation without L4 voice evidence cannot sustain MUSIC
+    # scanning, but the still-live formal ID continues to L3 as coasting BF.
     third_window = _window(audio, 6)
     closed = pipeline.process(
         third_window, probabilities(third_window, 0.0), physical_6plus1_geometry(),
@@ -756,7 +746,11 @@ def test_only_twice_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -
         gate_config_revision=0,
     )
     assert closed.gate_decision.state is ProbabilityGateState.CLOSED
-    assert closed.directions == ()
+    assert closed.spatial_response is None
+    assert len(closed.directions) == 1
+    assert closed.directions[0].track_id == track_id
+    assert closed.directions[0].track_state == "coasting"
+    assert not closed.directions[0].is_observed
 
     assert pipeline.submit_voice_feedback(
         confirmed.directions[0].session_id,

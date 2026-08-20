@@ -1783,7 +1783,10 @@ class ApplicationRuntime:
                             item.key, "l2_failed"
                         )
                     )
-                elif stage.output.spatial_response is None:
+                elif (
+                    stage.output.spatial_response is None
+                    and not tuple(getattr(stage.output, "directions", ()))
+                ):
                     self._record_l4_terminal(StageState.SKIPPED)
                     self._joiner_submit(
                         lambda: self._result_joiner.skip_missing_downstream(
