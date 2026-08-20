@@ -68,22 +68,22 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert gain.peak_ceiling_dbfs == -3.0
     assert config.layer4.continuous_context_ms == 3_200
     assert config.layer4.models[0].backend == "nvidia_marblenet_continuous_v2"
-    assert config.downstream_audio_window.duration_ms == 80
-    assert config.downstream_audio_window.samples == 3_840
-    assert config.downstream_audio_window.decision_hops == 4
-    assert config.downstream_audio_window.stft_frames == 9
-    assert config.downstream_audio_window.resampled_16k_samples == 1_280
+    assert config.downstream_audio_window.duration_ms == 40
+    assert config.downstream_audio_window.samples == 1_920
+    assert config.downstream_audio_window.decision_hops == 2
+    assert config.downstream_audio_window.stft_frames == 5
+    assert config.downstream_audio_window.resampled_16k_samples == 640
 
 
 @pytest.mark.parametrize(
     ("duration_ms", "samples", "hops", "frames", "resampled"),
-    ((80, 3_840, 4, 9, 1_280), (160, 7_680, 8, 17, 2_560)),
+    ((40, 1_920, 2, 5, 640), (80, 3_840, 4, 9, 1_280), (160, 7_680, 8, 17, 2_560)),
 )
 def test_downstream_audio_window_derives_every_length(
     tmp_path, duration_ms, samples, hops, frames, resampled,
 ):
     text = CONFIG.read_text(encoding="utf-8").replace(
-        "downstream_audio_window_ms: 80",
+        "downstream_audio_window_ms: 40",
         f"downstream_audio_window_ms: {duration_ms}",
     )
     candidate = tmp_path / f"downstream-{duration_ms}.yaml"
@@ -97,7 +97,7 @@ def test_downstream_audio_window_derives_every_length(
 @pytest.mark.parametrize("duration_ms", (60, 100, 200, 81))
 def test_downstream_audio_window_rejects_unsupported_values(tmp_path, duration_ms):
     text = CONFIG.read_text(encoding="utf-8").replace(
-        "downstream_audio_window_ms: 80",
+        "downstream_audio_window_ms: 40",
         f"downstream_audio_window_ms: {duration_ms}",
     )
     candidate = tmp_path / f"bad-downstream-{duration_ms}.yaml"

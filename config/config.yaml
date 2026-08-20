@@ -44,7 +44,7 @@ timing:
   decision_hop_samples: 960
   doa_window_samples: 1920
   context_samples: 7680
-  downstream_audio_window_ms: 80
+  downstream_audio_window_ms: 40
   timestamp_tolerance_ms: 5
 
 layer1_imcra:

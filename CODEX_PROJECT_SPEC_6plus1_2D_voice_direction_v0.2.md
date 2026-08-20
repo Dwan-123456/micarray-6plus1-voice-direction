@@ -714,7 +714,7 @@ class VoiceClassifier(Protocol):
     def predict(self, waveforms_48k: NDArray[np.float32]) -> ModelPrediction: ...
 ```
 
-当前稳定公共输入由`TrackAudioStreamHub`生成：L3的80/160 ms重叠窗按精确`(session_id, stream_epoch, track_id)`去重，每窗追加一个与IMCRA概率严格对齐的20 ms hop并完成响度补偿，形成最长3200 ms的连续48 kHz轨。Test UI试听、按ID音频资产和CNN使用同一补偿后波形；重叠L3原始窗只作瞬时输入，不再重复保存。`m=0`仍返回`COMPLETED`空结果。
+当前稳定公共输入由`TrackAudioStreamHub`生成：L3的40/80/160 ms重叠窗（当前40 ms）按精确`(session_id, stream_epoch, track_id)`去重，每窗追加一个与IMCRA概率严格对齐的20 ms hop并完成响度补偿，形成最长3200 ms的连续48 kHz轨。Test UI试听、按ID音频资产和CNN使用同一补偿后波形；重叠L3原始窗只作瞬时输入，不再重复保存。`m=0`仍返回`COMPLETED`空结果。
 
 `imcra_probability_rms_v1`每20 ms计算RMS dBFS，以`-23.0 dBFS`为目标且只放大；`p<=0.30`为0增益、`p>=0.80`为完整增益，中间线性加权并受`-3 dBFS`新增增益峰值保护。Test UI开关默认开启且可实时切换；切换不清空轨道，从下一个20 ms平滑过渡到新的增益状态。
 

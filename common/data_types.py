@@ -525,8 +525,8 @@ class DirectionalSignal:
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("DirectionalSignal track_id must be a positive integer")
         frames = np.asarray(self.stft_complex).shape[-1] if np.asarray(self.stft_complex).ndim == 2 else -1
-        if frames not in {9, 17}:
-            raise ValueError("stft_complex时间帧必须对应80或160 ms窗口")
+        if frames not in {5, 9, 17}:
+            raise ValueError("stft_complex时间帧必须对应40、80或160 ms窗口")
         object.__setattr__(self, "stft_complex", _readonly_exact_complex64(self.stft_complex, (513, frames), "stft_complex"))
 
 
@@ -554,8 +554,8 @@ class SpectrogramFeature:
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("SpectrogramFeature track_id must be a positive integer")
         frames = np.asarray(self.spectrogram).shape[0] if np.asarray(self.spectrogram).ndim == 2 else -1
-        if frames not in {9, 17}:
-            raise ValueError("spectrogram时间帧必须对应80或160 ms窗口")
+        if frames not in {5, 9, 17}:
+            raise ValueError("spectrogram时间帧必须对应40、80或160 ms窗口")
         object.__setattr__(self, "spectrogram", _readonly_exact_float32(self.spectrogram, (frames, 169), "spectrogram"))
 
 
@@ -589,8 +589,8 @@ class EnhancedAudio:
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("EnhancedAudio track_id must be a positive integer")
         samples = np.asarray(self.enhanced_audio).size
-        if samples not in {3_840, 7_680}:
-            raise ValueError("enhanced_audio长度必须对应80或160 ms窗口")
+        if samples not in {1_920, 3_840, 7_680}:
+            raise ValueError("enhanced_audio长度必须对应40、80或160 ms窗口")
         waveform = _readonly_exact_float32(self.enhanced_audio, (samples,), "enhanced_audio")
         object.__setattr__(self, "diagnostics", tuple(str(item) for item in self.diagnostics))
         object.__setattr__(self, "enhanced_audio", waveform)

@@ -6,13 +6,13 @@
 
 ## 公共契约
 
-L3接收固定160 ms的`DecisionWindow`、L2的0～3个平滑候选角度，并只截取窗口末尾由`timing.downstream_audio_window_ms`指定的80/160 ms音频及4/8个连续20 ms IMCRA结果；当前配置为80 ms。方向增强的目标有效频带为**80～8000 Hz**。内部波束形成只使用前7个物理麦；第8路HardwareMix保留在输入接口中，但不参与导向矢量、协方差矩阵或麦对计算。4个及以上候选属于接口错误，不会截断。L3不接收L2内部ID、不再次滤波角度，也不产生仅供UI的预测方向额外批次。
+L3接收固定160 ms的`DecisionWindow`、L2的0～3个平滑候选角度，并只截取窗口末尾由`timing.downstream_audio_window_ms`指定的40/80/160 ms音频及2/4/8个连续20 ms IMCRA结果；当前配置为40 ms。方向增强的目标有效频带为**80～8000 Hz**。内部波束形成只使用前7个物理麦；第8路HardwareMix保留在输入接口中，但不参与导向矢量、协方差矩阵或麦对计算。4个及以上候选属于接口错误，不会截断。L3不接收L2内部ID、不再次滤波角度，也不产生仅供UI的预测方向额外批次。
 
 每个候选方向输出：
 
 ```text
 theta_deg
-enhanced_audio: float32 [3840/7680]  # 48 kHz mono，由统一配置派生
+enhanced_audio: float32 [1920/3840/7680]  # 48 kHz mono，由统一配置派生
 session/epoch/window/decision_sample
 algorithm/fallback diagnostics
 ```
@@ -27,9 +27,9 @@ IMCRA的先验/后验SNR形成有下限的频点软增益；噪声置信度和4.
 
 ## 有界滚动计算缓存
 
-L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、reflect`定义。80/160 ms分别形成9/17帧STFT；DecisionWindow按绝对sample前进`N`个20 ms hop且仍有配置窗口重叠时，缓存复用对齐内部帧，只重算当前反射边界和新增帧。IMCRA插值状态只搬运新增hop，加权空间协方差分子/分母按相同过期/新增帧集合滚动。BF权重仍按当前窗口和候选角度重新求解，不改变算法选择或公共输出。
+L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、reflect`定义。40/80/160 ms分别形成5/9/17帧STFT；DecisionWindow按绝对sample前进`N`个20 ms hop且仍有配置窗口重叠时，缓存复用对齐内部帧，只重算当前反射边界和新增帧。IMCRA插值状态只搬运新增hop，加权空间协方差分子/分母按相同过期/新增帧集合滚动。BF权重仍按当前窗口和候选角度重新求解，不改变算法选择或公共输出。
 
-所有时间相关缓存使用固定容量状态：正常只保留当前配置的80/160 ms（4/8个20 ms hop），绝不超过1000 ms（50 hop）。steering vector与空间`p`结果继续采用原有16项LRU。session、epoch、非960 sample对齐、时间倒退、跳跃达到配置窗口长度、STFT配置、IMCRA版本/频率轴、阵列几何或处理设备变化时不得沿用不兼容状态并全量重建。缓存张量驻留处理设备，不向其他层发布。
+所有时间相关缓存使用固定容量状态：正常只保留当前配置的40/80/160 ms（2/4/8个20 ms hop），绝不超过1000 ms（50 hop）。steering vector与空间`p`结果继续采用原有16项LRU。session、epoch、非960 sample对齐、时间倒退、跳跃达到配置窗口长度、STFT配置、IMCRA版本/频率轴、阵列几何或处理设备变化时不得沿用不兼容状态并全量重建。缓存张量驻留处理设备，不向其他层发布。
 
 ## 契约测试
 
@@ -41,10 +41,10 @@ L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、refl
   数值不安全频点回退DAS。第一版以自由场steering作为RTF代理，并用当前窗拟合rank-1
   声源SCM；该模式只用于对照，不改变正式默认算法；
 - 0～3个公开方向的WindowKey、ID、原始顺序和角度逐项继承，不做第二次追踪；
-- 每方向输出配置化48 kHz `float32[3840/7680]`、只读且finite；
+- 每方向输出配置化48 kHz `float32[1920/3840/7680]`、只读且finite；
 - 主链不跨层输出或依赖内部`[9/17,169]`特征；
 - 0/1/2/3候选及`rho`三分支；
 - LCMV约束、两种MVDR无失真约束和逐频点DAS降级；
 - PSD/SPP确实改变噪声协方差与三种求解权重；
 - 音频重建和跨窗口连续性。
-- 80/160 ms两档的STFT逐元素复用、跳窗复用与滚动协方差数值等价、达到配置窗口长度时的失效边界及缓存容量上限。
+- 40/80/160 ms三档的STFT逐元素复用、跳窗复用与滚动协方差数值等价、达到配置窗口长度时的失效边界及缓存容量上限。

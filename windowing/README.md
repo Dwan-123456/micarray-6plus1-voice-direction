@@ -4,7 +4,7 @@
 
 权威目标见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。8通道窗口和IMCRA hop对齐已完成迁移。
 
-本层把连续`IngestedAudioBlock [N,8]`组装为每20 ms一个只读`DecisionWindow [7680,8]`。每个窗口保留160 ms完整上下文；`physical_samples`固定为`[7680,7]`，`physical_history(160)`只返回物理麦，超出窗口的请求会被拒绝。HardwareMix不得进入MUSIC。Windowing不裁剪下游音频；L3、L4和Test UI共同使用`timing.downstream_audio_window_ms`从该容器末尾选择80/160 ms，当前为80 ms。
+本层把连续`IngestedAudioBlock [N,8]`组装为每20 ms一个只读`DecisionWindow [7680,8]`。每个窗口保留160 ms完整上下文；`physical_samples`固定为`[7680,7]`，`physical_history(160)`只返回物理麦，超出窗口的请求会被拒绝。HardwareMix不得进入MUSIC。Windowing不裁剪下游音频；L3、L4和Test UI共同使用`timing.downstream_audio_window_ms`从该容器末尾选择40/80/160 ms，当前为40 ms。
 
 `rolling_state_key=(session_id, stream_epoch, decision_sample)`标识L2滚动状态的时间位置；`rolling_update_start_sample`固定指向最近20 ms的起点，连续后继检查要求同session、同epoch且decision sample增加960。epoch变化立即重置assembler；校准hash变化由IngestCoordinator形成新epoch，同一epoch内校准身份变化被拒绝。
 

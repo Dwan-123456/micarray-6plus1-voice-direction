@@ -75,7 +75,9 @@ def test_l3_empty_candidates_skips_outputs():
     assert output.enhanced_audio == ()
 
 
-@pytest.mark.parametrize(("duration_ms", "samples"), ((80, 3_840), (160, 7_680)))
+@pytest.mark.parametrize(
+    ("duration_ms", "samples"), ((40, 1_920), (80, 3_840), (160, 7_680)),
+)
 def test_l3_outputs_one_48khz_mono_audio_per_candidate(duration_ms, samples):
     rng = np.random.default_rng(42)
     processor = Layer3Processor(_project_config(duration_ms))
@@ -169,7 +171,7 @@ def test_missing_imcra_context_degrades_the_complete_window_to_das():
         (_candidate(20.0),), physical_6plus1_geometry(),
     ).enhanced_audio[0]
     assert item.algorithm == "das"
-    assert item.fallback_reason is not None and "4个20 ms hop" in item.fallback_reason
+    assert item.fallback_reason is not None and "2个20 ms hop" in item.fallback_reason
 
 
 def test_single_candidate_uses_imcra_loaded_mvdr():

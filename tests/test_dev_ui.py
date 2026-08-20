@@ -209,7 +209,7 @@ def test_kalman_q_r_control_stages_with_buttons_and_applies_explicitly(monkeypat
     app.processEvents()
 
 
-@pytest.mark.parametrize("duration_ms", (80, 160))
+@pytest.mark.parametrize("duration_ms", (40, 80, 160))
 def test_beamform_preview_button_uses_downstream_window_config(monkeypatch, duration_ms):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")

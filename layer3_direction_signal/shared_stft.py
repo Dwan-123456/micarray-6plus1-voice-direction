@@ -145,7 +145,7 @@ class RollingStftCache:
         if spectrum.shape != (7, 513, settings.frame_count) or not torch.isfinite(spectrum).all():
             self.clear()
             raise Layer3Error("rolling STFT output is invalid")
-        # Only the configured 80/160 ms window persists. This is deliberately
+        # Only the configured 40/80/160 ms window persists. This is deliberately
         # below the project-wide 50-hop/1000 ms temporal-cache ceiling.
         self._identity = identity
         self._settings = settings

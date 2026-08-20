@@ -134,7 +134,7 @@ class BeamformedL3Batch:
         if (
             self.spectra_mft.ndim != 3
             or self.spectra_mft.shape[:2] != (count, 513)
-            or self.spectra_mft.shape[-1] not in {9, 17}
+            or self.spectra_mft.shape[-1] not in {5, 9, 17}
             or self.spectra_mft.dtype != torch.complex64
             or self.spectra_mft.requires_grad
             or not torch.isfinite(self.spectra_mft).all()

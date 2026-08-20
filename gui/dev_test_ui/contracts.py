@@ -87,11 +87,11 @@ class BeamformPreview:
     def __post_init__(self) -> None:
         waveform = np.asarray(self.waveform)
         if (
-            waveform.shape not in {(3_840,), (7_680,)}
+            waveform.shape not in {(1_920,), (3_840,), (7_680,)}
             or waveform.dtype != np.float32
             or not np.isfinite(waveform).all()
         ):
-            raise ValueError("BeamformPreview waveform必须为finite float32 [3840或7680]")
+            raise ValueError("BeamformPreview waveform必须为finite float32 [1920、3840或7680]")
         object.__setattr__(self, "waveform", np.frombuffer(np.ascontiguousarray(waveform).tobytes(), dtype=np.float32))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):

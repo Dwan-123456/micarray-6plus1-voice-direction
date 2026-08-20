@@ -87,7 +87,7 @@ class TimingConfig(StrictModel):
     decision_hop_samples: Literal[960]
     doa_window_samples: Literal[1920]
     context_samples: Literal[7680]
-    downstream_audio_window_ms: Literal[80, 160] = 80
+    downstream_audio_window_ms: Literal[40, 80, 160] = 40
     timestamp_tolerance_ms: float = Field(ge=0)
 
 
@@ -511,8 +511,8 @@ class ProjectConfig(StrictModel):
         if self.runtime.max_candidate_batch < self.layer2.max_candidates:
             raise ValueError("max_candidate_batch不能小于max_candidates")
         duration_ms = self.timing.downstream_audio_window_ms
-        if duration_ms not in {80, 160} or duration_ms <= 0 or duration_ms % 20:
-            raise ValueError("downstream_audio_window_ms第一阶段只能为80或160且必须为20 ms整数倍")
+        if duration_ms not in {40, 80, 160} or duration_ms <= 0 or duration_ms % 20:
+            raise ValueError("downstream_audio_window_ms只能为40、80或160且必须为20 ms整数倍")
         spec = self.downstream_audio_window
         if spec.samples > self.timing.context_samples:
             raise ValueError("downstream audio window不能超过DecisionWindow直接上下文")
@@ -520,7 +520,7 @@ class ProjectConfig(StrictModel):
             raise ValueError("downstream audio window必须包含完整decision hops")
         if not self.stft.center or spec.stft_frames != 1 + spec.samples // self.stft.hop_length:
             raise ValueError("downstream STFT frame derivation与当前center=true配置不一致")
-        if spec.resampled_16k_samples not in {1280, 2560}:
+        if spec.resampled_16k_samples not in {640, 1280, 2560}:
             raise ValueError("Layer4模型不支持所选downstream audio window")
         if (self.layer3.main_backend, self.layer3.fallback_backend) != (
             "imcra_spatial_separation",

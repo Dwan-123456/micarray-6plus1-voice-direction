@@ -34,7 +34,7 @@ def max_contiguous_frame_mean(
 
     MarbleNet emits one value about every 20 ms. A three-frame window requires
     a sustained peak of about 60 ms while preventing silence elsewhere in the
-    configured 80/160 ms input from diluting the decision.
+    configured 40/80/160 ms input from diluting the decision.
     """
     if frame_probabilities.ndim != 2 or lengths.shape != (frame_probabilities.shape[0],):
         raise ValueError("frame probabilities must be [batch,time] with one length per item")

@@ -33,12 +33,14 @@ class TrackAudioWindow:
             raise ValueError("track-audio theta must be finite and in [0,360)")
         if (
             waveform.ndim != 1
-            or len(waveform) not in {3_840, 7_680}
+            or len(waveform) not in {1_920, 3_840, 7_680}
             or waveform.dtype != np.float32
             or not waveform.flags.c_contiguous
             or not np.isfinite(waveform).all()
         ):
-            raise ValueError("track-audio window must be finite contiguous float32 [3840 or 7680]")
+            raise ValueError(
+                "track-audio window must be finite contiguous float32 [1920, 3840 or 7680]"
+            )
         expected = len(waveform) // 960
         if len(self.probabilities_20ms) != expected or any(
             value is not None and (not np.isfinite(value) or not 0.0 <= value <= 1.0)

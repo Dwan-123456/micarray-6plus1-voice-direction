@@ -110,14 +110,14 @@ WindowWorkItem
         只平滑/预测theta_deg，不创建、重置或关闭ID
     ↓ TrackedDirection[0..3] + active_tracks → 有界L3 latest-wins队列
 【已完成】Layer 3：按公共track_id增强方向音频（BF）
-    输入：同一WindowKey、160 ms DecisionWindow末尾的配置化80/160 ms LogicalAudio和0～3个权威方向
+    输入：同一WindowKey、160 ms DecisionWindow末尾的配置化40/80/160 ms LogicalAudio和0～3个权威方向
     当前可用：
         ├── optimized：双候选按rho选择Dual LCMV / Soft-null MVDR / Loaded MVDR
         │     单候选和三候选使用Loaded MVDR；数值失败逐频DAS回退
         ├── ds_baseline：7麦Delay-and-Sum；当前只按单声源使用
         └── subband_robust_baseline：五频段IMCRA/声源SCM/WNG/Wiener鲁棒对照
     跳窗重叠STFT/IMCRA/协方差滚动复用；权重仍按当前窗口重新计算
-    每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [3840/7680])
+    每个方向输出：EnhancedAudio(track_id, theta_deg, 48 kHz mono [1920/3840/7680])
     物理上限：低频波长远大于阵列孔径，80～1500 Hz方向分离效果差
     ↓
 【已完成】TrackAudioStreamHub：公共逐ID连续补偿音频流
@@ -189,7 +189,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 系统为每次采集建立唯一`session_id`，用`stream_epoch`表示连续音频段，并用绝对sample编号描述时间。发生输入丢失或不连续时会切换epoch，防止把不连续音频误拼到同一个算法窗口。
 
-WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为80 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop，完成IMCRA响度补偿并维护最长3200 ms连续轨；Test UI试听、正式轨音频和L4共同读取该连续轨。L2、L3、公共轨服务和L4沿用同一WindowKey，不能各自重新读取“当前最新音频”。
+WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为40 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop，完成IMCRA响度补偿并维护最长3200 ms连续轨；Test UI试听、正式轨音频和L4共同读取该连续轨。L2、L3、公共轨服务和L4沿用同一WindowKey，不能各自重新读取“当前最新音频”。
 
 ### 4. Probability Gate
 
@@ -221,7 +221,7 @@ Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking
 
 ### 7. 按方向增强音频
 
-Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`统一控制的48 kHz单声道增强音频；当前为80 ms。`optimized`模式的0/1/2候选保持既有BF策略，3候选分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。`ds_baseline`只按单声源方法使用。第三档`subband_robust_baseline`是已经接入Test UI的五频段鲁棒对照；旧`constant_beamwidth_baseline`已经从正式代码移除并会被明确拒绝。
+Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`统一控制的48 kHz单声道增强音频；当前为40 ms。`optimized`模式的0/1/2候选保持既有BF策略，3候选分别使用IMCRA噪声协方差Loaded MVDR，失败逐路回退DAS。`ds_baseline`只按单声源方法使用。第三档`subband_robust_baseline`是已经接入Test UI的五频段鲁棒对照；旧`constant_beamwidth_baseline`已经从正式代码移除并会被明确拒绝。
 
 优化BF会按频率和空间可分度选择处理方式：两个方向导向矢量相关度较低时才适合施加较强的双约束分离；相关度较高时必须转为更保守的MVDR或DAS，避免病态求解和目标失真。尤其在低频段，阵列提供的方向差异不足，算法的目标是稳定保留音频而不是承诺把两个低频声源彻底拆开。
 

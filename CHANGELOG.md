@@ -28,7 +28,7 @@
 - **L3与Runtime**：L3从160 ms `DecisionWindow`末尾读取40 ms音频和两个对齐IMCRA hop，每个方向输出`float32[1920]`；Runtime、滚动STFT、波束形成批次和Test UI单窗试听共同读取同一全局规格，不新增局部窗口常量。
 - **L4与连续轨**：`TrackAudioStreamHub`仍从每个重叠L3窗口只追加一个20 ms hop；最长3200 ms连续轨和L4“最新80 ms连续3帧”分类聚合规则不变。
 - **保持不变**：L1采集、160 ms `DecisionWindow`、L2 MUSIC/Gate/ID/Kalman、L3波束形成数学算法、L4模型、录音与数据管理均无变化；不创建或移动发布标签。
-- **测试与资产**：补充40 ms配置、L3输出和Test UI派生规格覆盖；无模型、音频或其他Git LFS资产变化。
+- **测试与资产**：补充40 ms配置、L3输出和Test UI派生规格覆盖；全量pytest为`450 passed`，相关Python文件Ruff检查通过；无模型、音频或其他Git LFS资产变化。
 
 ## 2026-08-20 — 项目1.2.2整合发布
 

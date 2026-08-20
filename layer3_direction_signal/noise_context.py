@@ -33,8 +33,8 @@ class BeamformerNoiseContext:
         if not self.session_id or self.stream_epoch < 0 or not self.algorithm_version:
             raise ValueError("BF噪声上下文身份或算法版本无效")
         context_hops = (self.context_end_sample - self.context_start_sample) // _HOP_SAMPLES
-        if context_hops not in {4, 8}:
-            raise ValueError("BF噪声上下文必须覆盖80或160 ms")
+        if context_hops not in {2, 4, 8}:
+            raise ValueError("BF噪声上下文必须覆盖40、80或160 ms")
         frequencies = np.asarray(self.frequencies_hz)
         expected_spectral = (context_hops, 7, len(frequencies))
         arrays = {

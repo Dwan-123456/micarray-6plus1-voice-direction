@@ -10,7 +10,7 @@
 
 本UI只消费同一个ApplicationRuntime快照，不得重开设备、重建时间轴或在界面线程运行算法。普通启动使用真实麦克风；数据管理系统发起完整模拟时，`RecordingReplaySource`把已登记的原始8ch音频和CDC热力图作为同一个虚拟阵列输入，两种方式共用完整L1→L4链路。
 
-L3单窗仍由`timing.downstream_audio_window_ms`控制（当前80 ms），但按ID长轨不再由UI自行拼接。Runtime中的`TrackAudioStreamHub`每20 ms生成一份已经去重、按IMCRA概率响度补偿的连续轨hop；Test UI试听缓存和L4 CNN逐样本读取同一份波形，播放端不再额外提高响度。L4面板提供默认ON的实时补偿开关，切换不清空ID或连续轨。
+L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但按ID长轨不再由UI自行拼接。Runtime中的`TrackAudioStreamHub`每20 ms生成一份已经去重、按IMCRA概率响度补偿的连续轨hop；Test UI试听缓存和L4 CNN逐样本读取同一份波形，播放端不再额外提高响度。L4面板提供默认ON的实时补偿开关，切换不清空ID或连续轨。
 
 只有完整模拟输入模式会在L1显示操作者填写的音频名称以及“开始/继续、暂停、从头重播”控件。暂停不推进sample，也不在继续时追赶；播放结束保留最后结果并等待重播。重播立即清空上一轮L1～L4画面、试听缓存和旧结果邮箱，并通过新的stream epoch重新预热算法状态。普通真实设备模式不创建这些控件。
 
