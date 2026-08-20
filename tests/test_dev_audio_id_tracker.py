@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import numpy as np
 
 from common.data_types import TrackedDirection
-from gui.dev_test_ui.audio_id_tracker import AudioIdTracker
+from gui.dev_test_ui.audio_id_tracker import (
+    AudioIdTracker,
+    _CROSSFADE_SAMPLES,
+    _EDGE_FADE_SAMPLES,
+)
 from gui.dev_test_ui.contracts import BeamformPreview
 
 
@@ -63,6 +67,11 @@ def _low_level_preview(track_id: int, decision: int, theta: float) -> BeamformPr
 
 def _window(decision: int):
     return SimpleNamespace(session_id="session", stream_epoch=0, decision_sample=decision)
+
+
+def test_listening_track_uses_2ms_crossfade_and_keeps_5ms_edge_fades():
+    assert _CROSSFADE_SAMPLES == round(0.002 * 48_000)
+    assert _EDGE_FADE_SAMPLES == round(0.005 * 48_000)
 
 
 def test_exact_authoritative_id_is_the_only_join_key_and_cross_zero_never_splits(tmp_path):

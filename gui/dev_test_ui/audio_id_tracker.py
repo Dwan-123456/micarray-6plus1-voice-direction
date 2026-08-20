@@ -12,7 +12,10 @@ from .contracts import BeamformPreview, TrackedAudioSnapshot
 
 
 _HOP_SAMPLES = 960
-_CROSSFADE_SAMPLES = 480
+# Blend only the final 2 ms of adjacent, time-aligned BF estimates.  Track
+# starts/ends and silence boundaries deliberately keep the separate 5 ms
+# edge fade below.
+_CROSSFADE_SAMPLES = 96
 _EDGE_FADE_SAMPLES = 240
 _SOUND_RMS_THRESHOLD = 10.0 ** (-60.0 / 20.0)
 _MIN_SOUND_RATIO = 0.30
@@ -405,7 +408,8 @@ class AudioIdTracker:
                 old_weight = np.cos(phase) ** 2
                 new_weight = np.sin(phase) ** 2
                 audio[-_CROSSFADE_SAMPLES:] = (
-                    audio[-_CROSSFADE_SAMPLES:] * old_weight + aligned * new_weight
+                    audio[-_CROSSFADE_SAMPLES:] * old_weight
+                    + aligned[-_CROSSFADE_SAMPLES:] * new_weight
                 )
             self._append_timeline_hop(
                 track,

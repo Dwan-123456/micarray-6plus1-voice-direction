@@ -12,6 +12,8 @@
 
 主界面使用10 ms精确定时器以100 Hz轮询两个容量1的latest-value邮箱。正式审计邮箱仍只接收ResultJoiner按`(session_id, stream_epoch, window_id, decision_sample)`合并并有序提交的快照；L4完成邮箱`latest_l4_dev_ui`只在L4真正`COMPLETED`后立即接收完整同窗L2/L3/L4 `DevUiFrame`，用于减少有序commit等待造成的CNN显示延迟。它不改变DecisionRecord、录音或watermark顺序，也不能混拼不同窗口。算法正式窗口仍为20 ms（50 Hz）；某阶段SKIPPED/FAILED时仍由有序审计快照表达真实终态。
 
+按ID累计试听仍每个决策只追加一个稳定20 ms hop。相邻、时间对齐的L3波束形成估计只在末尾2 ms执行`cos²/sin²`交叉淡化，以减少大比例混合可能带来的音色损失；轨道开始、结束以及静音缺口边界继续保留5 ms淡入淡出。该试听处理不修改L3正式音频、L4输入或录音资产。
+
 顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2/L3/L4/completion队列的“当前深度/容量”、worker RUN/STOP、各阶段完成/错误累计、在途窗口及计算缓存MiB。L4另外显示实际完成、DROPPED、SKIPPED、最近1秒实际完成Hz，以及完成帧邮箱的深度/容量/latest-only覆盖数。悬停可查看入口丢窗和最近阶段错误。该显示不得访问`_processing_windows`等私有字段，也不得反向改变队列或调度；Runtime缺少公开快照时只显示telemetry unavailable，不猜测内部状态。
 
 ## 四象限
