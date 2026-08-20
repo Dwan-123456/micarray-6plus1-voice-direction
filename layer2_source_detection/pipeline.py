@@ -28,7 +28,7 @@ def _select_l3_directions(
     active: tuple[TrackedDirection, ...],
     *,
     limit: int = 3,
-    minimum_separation_deg: float = 45.0,
+    minimum_separation_deg: float = 50.0,
     voice_confirmed_coasting_ids: frozenset[int] | None = None,
 ) -> tuple[TrackedDirection, ...]:
     """Select observed tracks plus L4-voice-confirmed coasting tracks for L3."""
@@ -128,9 +128,9 @@ class Layer2PipelineResult:
             raise ValueError("published directions must be present in active_tracks")
         if len(candidates) > 3:
             raise ValueError("L2 cannot publish more than 3 directions")
-        if any(circular_distance_deg(candidates[i].theta_deg, candidates[j].theta_deg) < 45.0
+        if any(circular_distance_deg(candidates[i].theta_deg, candidates[j].theta_deg) < 50.0
                for i in range(len(candidates)) for j in range(i + 1, len(candidates))):
-            raise ValueError("published directions require 45-degree circular separation")
+            raise ValueError("published directions require 50-degree circular separation")
         if any((item.session_id, item.stream_epoch, item.window_id, item.decision_sample) != identity
                for item in (*candidates, *directions, *active)):
             raise ValueError("all L2 output objects must belong to the same window")

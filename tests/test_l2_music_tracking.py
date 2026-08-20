@@ -120,7 +120,7 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     assert (scan.n_fft, scan.win_length, scan.hop_length) == (1024, 960, 480)
     assert scan.context_ms in {160, 240, 320}
     assert (scan.frequency_min_hz, scan.frequency_max_hz) == (2_000.0, 4_000.0)
-    assert scan.max_candidates == 3 and scan.min_peak_distance_deg == 45.0
+    assert scan.max_candidates == 3 and scan.min_peak_distance_deg == 50.0
     assert not scan.dpd_rank1_enabled
     assert not scan.noise_whitening_enabled
 
@@ -184,7 +184,7 @@ def test_music_hardware_mix_is_excluded_and_incremental_update_is_two_frames() -
     np.testing.assert_allclose(second.raw_scores, fresh.raw_scores, rtol=1e-5, atol=1e-6)
 
 
-def test_music_two_sources_are_45_degree_nms_separated() -> None:
+def test_music_two_sources_are_50_degree_nms_separated() -> None:
     config = replace(
         DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
         direction_threshold=0.15, min_cross_frequency_consistency=0.0,
@@ -195,7 +195,7 @@ def test_music_two_sources_are_45_degree_nms_separated() -> None:
     assert 0 <= diagnostics.model_order.estimated_sources <= 6
     assert len(candidates) <= 3
     assert all(
-        abs(((left.theta_deg - right.theta_deg + 180.0) % 360.0) - 180.0) >= 45.0
+        abs(((left.theta_deg - right.theta_deg + 180.0) % 360.0) - 180.0) >= 50.0
         for index, left in enumerate(candidates) for right in candidates[index + 1:]
     )
     assert response.raw_scores.shape == (360,)

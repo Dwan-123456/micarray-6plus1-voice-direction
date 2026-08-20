@@ -22,6 +22,18 @@
 
 ---
 
+## 2026-08-20 — L2候选圆周最小间距调整为50°
+
+- **版本/标签**：项目`1.2.1` L2参数调整；不创建或移动发布标签。
+- **类型**：L2 MUSIC候选圆周NMS与公共方向间距参数调整。
+- **涉及文件**：`config/config.yaml`、`common/config.py`、`layer2_source_detection/configuration.py`、`layer2_source_detection/pipeline.py`、L2相关文档与对应测试期望。
+- **L2**：`min_peak_distance_deg`从45°调整为50°；普通NormMUSIC与可选DPD路径均通过该配置执行50°圆周NMS，公共方向及coasting补点同步执行两两至少50°。恰好50°允许共存，小于50°时抑制低优先级候选。
+- **未改变**：L1、Gate概率、MUSIC 2～4 kHz与阶数选择、ID的45°关联门限与噪声语义邻域、Kalman、L3、L4、Runtime调度、UI交互和录音数据均无变化。
+- **验证**：按用户明确要求未运行自动测试；仅检查最终差异和Git状态。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-20 — 测试语料选中样式不再遮挡名称
 
 - **版本/标签**：项目`1.2.1`Production UI视觉修复；不创建或移动发布标签。

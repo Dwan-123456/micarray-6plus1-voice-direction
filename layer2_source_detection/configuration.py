@@ -74,7 +74,7 @@ class DirectionScanConfig:
             raise ValueError("Layer 2配置必须全部finite")
         if not 0 <= self.direction_threshold <= 1:
             raise ValueError("MUSIC direction threshold is invalid")
-        if self.peak_prominence < 0 or self.min_peak_distance_deg != 45.0:
+        if self.peak_prominence < 0 or self.min_peak_distance_deg != 50.0:
             raise ValueError("prominence或NMS角距无效")
         if self.max_candidates != 3:
             raise ValueError("Layer 2 max_candidates is fixed at 3")

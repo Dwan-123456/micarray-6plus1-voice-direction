@@ -36,7 +36,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.direction_kalman.max_missed_windows == 150
     assert config.layer2.direction_kalman.process_noise_scale == 1.0
     assert config.layer2.direction_kalman.measurement_noise_scale == 1.0
-    assert config.layer2.min_peak_distance_deg == 45.0
+    assert config.layer2.min_peak_distance_deg == 50.0
     assert config.runtime.max_candidate_batch == 3
     assert AudioConfig.from_project(config).block_size == 960
     assert AudioConfig.from_project(config).handoff_blocks == 500
@@ -151,9 +151,9 @@ def test_candidate_limit_is_fixed_to_three(tmp_path):
         load_config(candidate, environ={})
 
 
-def test_layer2_minimum_peak_distance_is_fixed_to_45_degrees(tmp_path):
+def test_layer2_minimum_peak_distance_is_fixed_to_50_degrees(tmp_path):
     text = CONFIG.read_text(encoding="utf-8").replace(
-        "min_peak_distance_deg: 45.0", "min_peak_distance_deg: 30.0"
+        "min_peak_distance_deg: 50.0", "min_peak_distance_deg: 30.0"
     )
     candidate = tmp_path / "bad-minimum-peak-distance.yaml"
     candidate.write_text(text, encoding="utf-8")

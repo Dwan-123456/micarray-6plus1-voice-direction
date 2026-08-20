@@ -203,7 +203,7 @@ class Layer2Config(StrictModel):
     min_cross_frequency_consistency: float = Field(ge=0, le=1)
     direction_threshold: float
     peak_prominence: float
-    min_peak_distance_deg: Literal[45.0]
+    min_peak_distance_deg: Literal[50.0]
     max_candidates: Literal[3]
     effective_order_limit: Literal[1, 2, 3]
     dpd_rank1_enabled: bool = False
