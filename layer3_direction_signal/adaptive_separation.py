@@ -19,6 +19,13 @@ class AdaptiveWeightResult:
 
 
 @dataclass(frozen=True, slots=True)
+class LoadedMvdrWeightResult:
+    weights_mfc: torch.Tensor
+    loaded_mvdr_bins: int
+    fallback_bins: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AdaptiveStaticData:
     speech_band_f: torch.Tensor
     identity_cc: torch.Tensor
@@ -281,4 +288,62 @@ def adaptive_separation_weights(
         int(diagnostic_values[1]),
         int(diagnostic_values[2]),
         fallback_counts,
+    )
+
+
+def loaded_mvdr_weights(
+    covariance_fcc: torch.Tensor,
+    steering_mfc: torch.Tensor,
+    frequencies_hz: torch.Tensor,
+    noise_confidence_f: torch.Tensor,
+    config: SpatialSeparationConfig,
+    *,
+    static: AdaptiveStaticData | None = None,
+) -> LoadedMvdrWeightResult:
+    """Independent diagonal-loaded MVDR for every supplied target direction."""
+    candidate_count, frequency_count, channel_count = steering_mfc.shape
+    if candidate_count not in {1, 2, 3} or channel_count != 7:
+        raise ValueError("loaded MVDR baseline requires one, two, or three 7-channel directions")
+    static = static or adaptive_static_data(frequencies_hz, config, channel_count=channel_count)
+    if (
+        covariance_fcc.shape != (frequency_count, channel_count, channel_count)
+        or noise_confidence_f.shape != (frequency_count,)
+        or static.speech_band_f.shape != (frequency_count,)
+    ):
+        raise ValueError("loaded MVDR baseline inputs do not share one frequency axis")
+
+    das = das_weights(steering_mfc)
+    output = das.clone()
+    valid = torch.zeros(
+        (candidate_count, frequency_count), dtype=torch.bool, device=steering_mfc.device,
+    )
+    valid[:, ~static.speech_band_f] = True
+    scale = torch.diagonal(covariance_fcc, dim1=-2, dim2=-1).real.mean(dim=-1).clamp_min(1e-8)
+    uncertainty = 1.0 + (1.0 - noise_confidence_f) * config.uncertainty_loading_multiplier
+    loading_multiplier = uncertainty * static.alias_multiplier_f
+
+    for factor in config.loading_retry_factors:
+        pending = static.speech_band_f[None, :] & ~valid
+        if not bool(pending.any()):
+            break
+        loading = float(factor) * loading_multiplier * scale
+        loaded = covariance_fcc + loading[:, None, None] * static.identity_cc[None]
+        indices = torch.nonzero(pending.any(dim=0), as_tuple=False).flatten()
+        weights, ok = _mvdr(
+            loaded[indices], steering_mfc[:, indices],
+            config.condition_number_limit, config.constraint_tolerance,
+        )
+        accept = ok & pending[:, indices]
+        output[:, indices] = torch.where(accept[..., None], weights, output[:, indices])
+        valid[:, indices] |= accept
+
+    fallback = static.speech_band_f[None, :] & ~valid
+    output = torch.where(fallback[..., None], das, output)
+    if not torch.isfinite(output).all():
+        output = das
+        fallback = static.speech_band_f[None, :].expand(candidate_count, -1)
+    return LoadedMvdrWeightResult(
+        output,
+        int(static.speech_band_f.sum().item()),
+        tuple(int(item) for item in fallback.sum(dim=1).tolist()),
     )

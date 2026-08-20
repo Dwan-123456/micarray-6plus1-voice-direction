@@ -217,8 +217,9 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
 - 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。所有仍在有效TTL内的正式coasting ID都可继续占用L3方向槽位：MUSIC有新观测时更新角度，短时漏检进入coasting时仍每20 ms按保持/预测角生成BF音频。L4只决定是否续租预测ID，不影响本窗L3方向槽的准入与排序。最终仍遵守3方向上限和50°分离约束；未确认tentative轨不生成 L3 音频。
-- `optimized`、`ds_baseline`、`subband_robust_baseline`三档保留；第三档用五频段
-  IMCRA/声源SCM/WNG/Wiener鲁棒对照替代30°恒定波束宽度方法。切换模式不改变权威ID，
+- `optimized`、`ds_baseline`、`loaded_mvdr_baseline`、`subband_robust_baseline`四档保留；
+  Loaded MVDR档对所有方向和有效频点统一执行IMCRA协方差驱动的diagonal-loaded MVDR；
+  五频段档使用IMCRA/声源SCM/WNG/Wiener鲁棒对照。切换模式不改变权威ID，
   只隔离各模式的试听缓存。
 
 ## 10. Layer 4 改动
@@ -250,7 +251,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始360点MUSIC伪谱，分别显示MDL诊断阶数与实际MUSIC阶数，并提供1/2/3手动阶数上限、默认关闭的`DPD + rank-1 MUSIC`和`IMCRA噪声白化`按钮；三项设置均持久化到Test UI本地设置，L2在每次实际计算前读取最新revision。
 - L2接纳队列丢窗属于Runtime过载状态，不得显示成Gate或L1 IMCRA不可用。Test UI保留同一epoch最近一次成功的MUSIC/Gate快照及原始发布时间，以`STALE | L2 DROPPED`明确标记，下一次成功结果到达后恢复`LIVE`。
 - 候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed、L4 probability`；观测和预测样式可以不同，但颜色稳定绑定权威 ID。
-- 左下试听继续保留 Center Mic 原音参考、公共20 ms稳定hop、过旧缺口补等时静音、至少2秒显示、3秒等待、有界分段和三档L3模式隔离；方向轨的拼接、补洞和增益过渡统一由`TrackAudioStreamHub`完成，GUI不得二次处理缓存样本。
+- 左下试听继续保留 Center Mic 原音参考、公共20 ms稳定hop、可恢复真实音频补洞、过旧缺口补等时静音、交叉淡化、至少2秒显示、3秒等待、有界分段和四档L3模式隔离；方向轨的拼接、补洞和增益过渡统一由`TrackAudioStreamHub`完成，GUI不得二次处理缓存样本。
 - 方向音频只按 `(session_id, stream_epoch, track_id)` 拼接。删除 `_formal_aliases`、`_resolve_formal_track_id`、按角度贪心重关联和 ID 换号合并；UI 不再修补 L2 身份错误。
 - coasting 期间保留轨道行并显示状态；当L2将该权威ID放入`directions`时，继续拼接实际L3 BF音频，只有本窗未提供该ID的L3输出时才按绝对时间轴补等时静音；只有 L2 删除轨迹或 session/mode 生命周期结束时封存对应试听轨。
 

@@ -22,6 +22,13 @@
 
 ---
 
+## 2026-08-20 — 全部分支统一合入main
+
+- **分支整合**：将`codex/integrate-all-branches-v1.2.1`、`main`发布历史及尚未合入的`codex/l3-loaded-mvdr-baseline`统一为同一提交历史；其余本地功能分支已是该整合历史的祖先。
+- **合并结果**：保留当前L2正式coasting方向持续进入L3的契约，并纳入全频`loaded_mvdr_baseline`第四档L3对照模式及相应Runtime、Development Test UI和文档改动。
+- **保持不变**：不移动或重写`v1.2.2`及既有标签，不删除分支，不修改模型、音频或其他Git LFS资产，不纳入本地运行数据、录音、缓存、日志或密钥。
+- **验证**：按用户要求仅完成合并，本次合并后未运行自动测试；各原提交中的历史测试记录保持原样，不能视为本次整合后的重新验证。
+
 ## 2026-08-20 — L2正式coasting ID持续进入L3波束形成
 
 - **L2→L3方向契约**：解除“必须先获得L4人声确认才能发布coasting方向”的门槛。所有仍在有效绝对sample TTL内的正式`coasting` ID，都按L2权威状态参与最多3路、50°最小角距的`directions`选择，并以原`track_id`和保持/预测角继续进入L3 BF，减少Development Test UI试听缓存中因漏检造成的等时静音段。
@@ -257,6 +264,31 @@
 - 未修改Git LFS管理的模型、音频、空间表或其他二进制资产，无Git LFS对象变化；未提交本地数据、录音、缓存、日志或密钥。
 
 ---
+## 2026-08-20 — 新增全频Loaded MVDR可切换基线
+
+- **版本/标签**：项目`1.1.0`并行迁移分支；未创建或移动发布标签。
+- **类型**：L3实验基线、Test UI模式切换、文档与自动测试。
+- **涉及文件**：`layer3_direction_signal/{adaptive_separation,hybrid,interface,prepared}.py`、
+  `common/data_types.py`、Development Test UI模式显示/试听分区、根/L3 README、1.1架构文档及相关测试。
+
+### L3与Test UI
+
+- 在现有`optimized`、`ds_baseline`和`subband_robust_baseline`之外新增第四档
+  `loaded_mvdr_baseline`。它对每个L2权威方向独立处理，在80～8000 Hz统一使用IMCRA噪声协方差、
+  噪声置信度、混叠保护和重试loading求解diagonal-loaded MVDR；不查询空间`p`表，也不叠加
+  IMCRA频点后滤波，从而保持纯Loaded MVDR对照含义。
+- 单频求解病态或非有限时逐频回退DAS；同窗IMCRA不可用时整窗回退DAS。0～3方向、WindowKey、
+  track_id、rank、角度、原顺序、160 ms/7680点输出及入口/出口严格对齐规则均不变。
+- Test UI按钮与试听缓存增加独立Loaded MVDR分区，支持启动前和运行中四档循环切换；模式切换不改变
+  L2权威ID。
+
+### 未变化组件、验证与资产
+
+- 原有三种L3算法的计算和参数无变化；L1、Windowing、L2、L4、Runtime调度/时间线、Recording、
+  Data Management、Production UI、空间`p`表、模型与音频资产均无变化。
+- 全量自动测试：`361 passed`；修改Python文件Ruff检查和`git diff --check`通过。
+- CPU/CUDA双方向冒烟均输出finite；同窗热运行分别约`2.3 ms`和`3.2～4.4 ms`，仅用于本次
+  实现检查，不作为正式跨窗口性能基线。无Git LFS资产变化。
 
 ## 2026-08-20 — 五频段鲁棒对照替换30°恒定波束宽度模式
 

@@ -730,6 +730,10 @@ def test_l3_mode_button_switches_runtime_before_capture(monkeypatch, tmp_path):
         assert window.bf_panel.mode_switch.isEnabled()
         window.bf_panel.mode_switch.click()
         app.processEvents()
+        assert window._runtime.l3_processing_mode == "loaded_mvdr_baseline"
+        assert window.bf_panel.mode_switch.text() == "BF：Loaded MVDR基线"
+        window.bf_panel.mode_switch.click()
+        app.processEvents()
         assert window._runtime.l3_processing_mode == "subband_robust_baseline"
         assert window.bf_panel.mode_switch.text() == "BF：五频段鲁棒对照"
         window.bf_panel.mode_switch.click()
