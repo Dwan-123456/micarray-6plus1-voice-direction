@@ -116,6 +116,7 @@ class L1SpectrumWindow(QMainWindow):
         self._build_ui()
         self.host.frame_ready.connect(self._on_frame)
         self.host.state_changed.connect(self.status_bar.setText)
+        self.host.light_state_changed.connect(self._on_light_state)
         self.host.error.connect(self._on_error)
         if auto_start:
             QTimer.singleShot(0, self.host.start)
@@ -166,9 +167,17 @@ class L1SpectrumWindow(QMainWindow):
         start.clicked.connect(self.host.start)
         stop.clicked.connect(lambda: self.host.stop())
         self.pre_denoise.toggled.connect(self.host.set_pre_denoise_enabled)
+        self.light_on = QPushButton("灯光开")
+        self.light_off = QPushButton("灯光关")
+        self.light_status = QLabel(f"灯光: {self.host.light_state.upper()}")
+        self.light_on.clicked.connect(lambda: self.host.set_light(True))
+        self.light_off.clicked.connect(lambda: self.host.set_light(False))
         controls.addWidget(start)
         controls.addWidget(stop)
         controls.addWidget(self.pre_denoise)
+        controls.addWidget(self.light_on)
+        controls.addWidget(self.light_off)
+        controls.addWidget(self.light_status)
         controls.addStretch()
         layout.addLayout(controls)
         selectors = QHBoxLayout()
@@ -312,8 +321,17 @@ class L1SpectrumWindow(QMainWindow):
     def _on_error(self, message: str) -> None:
         QMessageBox.critical(self, "L1 Spectrum UI", message)
 
+    def _on_light_state(self, state: str) -> None:
+        self.light_status.setText(f"灯光: {state.upper()}")
+        pending = state == "pending"
+        self.light_on.setEnabled(not pending)
+        self.light_off.setEnabled(not pending)
+
     def closeEvent(self, event) -> None:
         if self.host.stop(timeout=5.0):
+            close = getattr(self.host, "close", None)
+            if callable(close):
+                close()
             event.accept()
         else:
             event.ignore()

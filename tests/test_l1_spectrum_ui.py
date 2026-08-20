@@ -10,6 +10,7 @@ from common.config import load_config
 from common.data_types import IngestedAudioBlock
 from gui.dev_test_ui.meter import L1Meter
 from gui.l1_spectrum_ui import CENTER_CHANNEL_INDEX, CHANNEL_NAMES, L1SpectrumAnalyzer
+from gui.l1_spectrum_ui.host import L1SpectrumHost
 from layer1_input.imcra import Layer1Imcra
 
 
@@ -71,6 +72,31 @@ def test_l1_spectrum_host_has_no_downstream_runtime_dependencies() -> None:
         assert forbidden not in source
 
 
+def test_light_control_uses_existing_official_cdc_commands() -> None:
+    class FakeSerial:
+        def __init__(self):
+            self.packets = []
+
+        def write(self, packet):
+            self.packets.append(packet)
+            return len(packet)
+
+        def stop(self):
+            pass
+
+    serial = FakeSerial()
+    host = L1SpectrumHost(load_config(CONFIG), serial_device=serial)
+    states = []
+    host.light_state_changed.connect(states.append)
+
+    host._write_light(True)
+    host._write_light(False)
+
+    assert serial.packets == [b"E", b"e"]
+    assert states == ["on", "off"]
+    assert host.light_state == "off"
+
+
 def test_window_defaults_center_and_snapshot_is_frozen() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
@@ -82,11 +108,13 @@ def test_window_defaults_center_and_snapshot_is_frozen() -> None:
     class FakeHost(QObject):
         frame_ready = Signal(object)
         state_changed = Signal(str)
+        light_state_changed = Signal(str)
         error = Signal(str)
 
         def __init__(self):
             super().__init__()
             self.pre_denoise_enabled = False
+            self.light_state = "unknown"
 
         def start(self):
             pass
@@ -97,6 +125,10 @@ def test_window_defaults_center_and_snapshot_is_frozen() -> None:
 
         def set_pre_denoise_enabled(self, enabled):
             self.pre_denoise_enabled = bool(enabled)
+
+        def set_light(self, enabled):
+            self.light_state = "on" if enabled else "off"
+            self.light_state_changed.emit(self.light_state)
 
     application = QApplication.instance() or QApplication([])
     window = L1SpectrumWindow(load_config(CONFIG), host=FakeHost(), auto_start=False)
