@@ -29,7 +29,7 @@ class ImcraWienerPreDenoiser:
         periodic_hann = np.hanning(self.frame_samples + 1)[:-1]
         self._window = np.sqrt(np.maximum(periodic_hann, 0.0)).astype(np.float64)
         self._frequencies = np.fft.rfftfreq(config.n_fft, 1.0 / sample_rate)
-        self._output_band = self._frequencies <= 8_000.0
+        self._output_band = self._frequencies <= config.frequency_max_hz
         self._minimum_gain = 10.0 ** (config.minimum_gain_db / 20.0)
         self._identity: tuple[str, int] | None = None
         self._previous_block: IngestedAudioBlock | None = None

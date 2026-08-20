@@ -53,11 +53,11 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
     assert hops[1].source_sequence_ids == (1, 2)
     ready = hops[1]
     assert ready.state == "ready" and ready.array_source_probability_20ms is not None
-    assert ready.frequencies_hz.size == 342
-    assert ready.frequencies_hz[0] == 0.0 and ready.frequencies_hz[-1] <= 8_000.0
-    assert ready.noise_psd.shape == ready.smoothed_psd.shape == ready.minimum_psd.shape == ready.spp.shape == (7, 342)
-    assert ready.conditional_smoothed_psd.shape == ready.conditional_minimum_psd.shape == (7, 342)
-    assert ready.speech_absence_probability.shape == ready.posterior_snr.shape == ready.prior_snr.shape == (7, 342)
+    assert ready.frequencies_hz.size == 427
+    assert ready.frequencies_hz[0] == 0.0 and ready.frequencies_hz[-1] <= 10_000.0
+    assert ready.noise_psd.shape == ready.smoothed_psd.shape == ready.minimum_psd.shape == ready.spp.shape == (7, 427)
+    assert ready.conditional_smoothed_psd.shape == ready.conditional_minimum_psd.shape == (7, 427)
+    assert ready.speech_absence_probability.shape == ready.posterior_snr.shape == ready.prior_snr.shape == (7, 427)
     assert ready.noise_features.shape == (7, 4)
     assert np.isfinite(ready.noise_features).all()
     assert np.all((ready.spp >= 0.0) & (ready.spp <= 1.0))
@@ -68,7 +68,7 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
 
 def test_cohen_2003_table_parameters_and_two_pass_state_are_exposed():
     config = load_config("config/config.yaml").layer1_imcra
-    assert config.algorithm_version == "cohen_imcra_2003_l1_v2"
+    assert config.algorithm_version == "cohen_imcra_2003_l1_v3"
     assert (
         config.frequency_smoothing_half_width,
         config.spectrum_smoothing,

@@ -58,8 +58,8 @@ def test_analyzer_exposes_aligned_imcra_noise_for_seven_physical_mics() -> None:
     frame = L1SpectrumAnalyzer().analyze(block, L1Meter().add(block))
 
     assert frame.noise_levels_dbfs is not None
-    assert frame.noise_levels_dbfs.shape == (7, 342)
-    assert 7_970.0 < frame.noise_frequencies_hz[-1] <= 8_000.0
+    assert frame.noise_levels_dbfs.shape == (7, 427)
+    assert 9_970.0 < frame.noise_frequencies_hz[-1] <= 10_000.0
     assert np.isfinite(frame.noise_levels_dbfs).all()
 
 

@@ -33,7 +33,7 @@ def _imcra_hops(
     *, noise_by_mic: np.ndarray | None = None, spp_by_hop: np.ndarray | None = None,
 ) -> tuple[ImcraHopSnapshot, ...]:
     frequencies = np.fft.rfftfreq(2048, 1 / 48_000).astype(np.float32)
-    frequencies = frequencies[frequencies <= 8_000.0]
+    frequencies = frequencies[frequencies <= 10_000.0]
     spectral = (7, len(frequencies))
     noise_by_mic = np.ones(7, np.float32) if noise_by_mic is None else np.asarray(noise_by_mic, np.float32)
     noise = np.broadcast_to(noise_by_mic[:, None], spectral).copy()
@@ -42,7 +42,7 @@ def _imcra_hops(
     return tuple(
         ImcraHopSnapshot(
             "session", 0, index * 960, (index + 1) * 960, (index,),
-            "cohen_imcra_2003_l1_v2", "ready", frequencies,
+            "cohen_imcra_2003_l1_v3", "ready", frequencies,
             noise, ones * 2.0, ones * 1.5, ones * 0.5, ones * 0.4,
             np.full(spectral, spp_by_hop[index], np.float32),
             np.full(spectral, 1.0 - spp_by_hop[index], np.float32),
@@ -222,7 +222,7 @@ def test_subband_robust_baseline_uses_imcra_five_bands_without_spatial_p():
     for item in output.enhanced_audio:
         assert item.algorithm == "subband_robust_baseline"
         assert item.diagnostics[0] == "backend=subband_robust_baseline"
-        assert any(value.startswith("imcra=cohen_imcra_2003_l1_v2") for value in item.diagnostics)
+        assert any(value.startswith("imcra=cohen_imcra_2003_l1_v3") for value in item.diagnostics)
         assert "rtf_source=free_field_steering_proxy_v1" in item.diagnostics
         assert "source_scm=rank1_direction_fit_v1" in item.diagnostics
         assert any(value.startswith("bands:80-500=") for value in item.diagnostics)

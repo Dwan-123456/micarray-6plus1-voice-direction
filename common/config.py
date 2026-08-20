@@ -93,12 +93,12 @@ class TimingConfig(StrictModel):
 
 class Layer1ImcraConfig(StrictModel):
     enabled: bool
-    algorithm_version: Literal["cohen_imcra_2003_l1_v2"]
+    algorithm_version: Literal["cohen_imcra_2003_l1_v3"]
     hop_samples: Literal[960]
     n_fft: Literal[2048]
     window: Literal["hann_periodic"]
     output_frequency_min_hz: Literal[0.0]
-    output_frequency_max_hz: Literal[8000.0]
+    output_frequency_max_hz: Literal[10000.0]
     frequency_min_hz: Literal[500.0]
     frequency_max_hz: Literal[4000.0]
     frequency_smoothing_half_width: Literal[1]
@@ -128,10 +128,11 @@ class Layer1ImcraConfig(StrictModel):
 
 class Layer1PreDenoiseConfig(StrictModel):
     enabled: bool = False
-    algorithm_version: Literal["imcra_wiener_wola_v2"]
+    algorithm_version: Literal["imcra_wiener_wola_v3"]
     frame_samples: Literal[1920]
     hop_samples: Literal[960]
     n_fft: Literal[2048]
+    frequency_max_hz: Literal[10000.0]
     window: Literal["sqrt_hann_50pct"]
     minimum_gain_db: float = Field(ge=-60.0, le=0.0)
     gain_smoothing: float = Field(ge=0.0, lt=1.0)

@@ -50,7 +50,7 @@ def _imcra_hops(
     prior_snr: float = 3.0,
 ) -> tuple[ImcraHopSnapshot, ...]:
     frequencies = np.fft.rfftfreq(2048, 1.0 / 48_000.0).astype(np.float32)
-    frequencies = frequencies[frequencies <= 8_000.0]
+    frequencies = frequencies[frequencies <= 10_000.0]
     shape = (7, frequencies.size)
     noise_by_mic = (
         np.ones(7, dtype=np.float32)
@@ -64,7 +64,7 @@ def _imcra_hops(
     return tuple(
         ImcraHopSnapshot(
             "music", 0, start + hop * 960, start + (hop + 1) * 960, (index * 8 + hop,),
-            "cohen_imcra_2003_l1_v2", "ready", frequencies,
+            "cohen_imcra_2003_l1_v3", "ready", frequencies,
             noise, ones * 2.0, ones * 1.5, ones * 0.5, ones * 0.4,
             spp_values, 1.0 - spp_values, ones * (prior_snr + 1.0), ones * prior_snr,
             np.ones((7, 4), dtype=np.float32),

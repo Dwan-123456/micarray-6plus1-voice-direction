@@ -72,7 +72,7 @@ Sipeed R6+1 + MA-USB8：48 kHz HostAudio [N,8]
     │     六个外圈麦 + Center，参与几何、MUSIC和波束形成
     ├── HardwareMix [N]
     │     只用于接口、显示、录制和实验，不进入阵列几何
-    ├── 7麦IMCRA：每20 ms更新0～8000 Hz噪声PSD/SPP
+    ├── 7麦IMCRA：每20 ms更新0～10000 Hz噪声PSD/SPP
     │     从500～4000 Hz聚合声源Gate概率p20 ∈ [0,1]
     └── 可选IMCRA-Wiener预降噪（默认关闭）
           40 ms窗 / 20 ms步长；只替换下游7路物理音频
@@ -178,7 +178,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 项目各部分选取不同频率区间
 
-- 0～8000 Hz：用于IMCRA噪声统计和可选预降噪；
+- 0～10000 Hz：用于IMCRA噪声统计和可选预降噪；
 - 80～8000 Hz：用于Layer 3增强和Layer 4分析；
 - 500～4000 Hz：聚合成Layer 2的声源Gate概率；
 - 2000～4000 Hz：用于Rolling NormMUSIC方向定位。

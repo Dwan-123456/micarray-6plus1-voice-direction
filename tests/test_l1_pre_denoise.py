@@ -21,14 +21,14 @@ def _block(samples: np.ndarray, index: int, hop: ImcraHopSnapshot | None = None)
 
 def _hop(index: int, *, spp_by_mic: np.ndarray, state: str = "ready") -> ImcraHopSnapshot:
     frequencies = np.fft.rfftfreq(2048, 1.0 / 48_000).astype(np.float32)
-    frequencies = frequencies[frequencies <= 8_000.0]
+    frequencies = frequencies[frequencies <= 10_000.0]
     shape = (7, frequencies.size)
     ones = np.ones(shape, np.float32)
     spp = np.broadcast_to(np.asarray(spp_by_mic, np.float32)[:, None], shape).copy()
     probability = np.mean(spp, axis=1).astype(np.float32)
     start = index * 960
     return ImcraHopSnapshot(
-        "session", 0, start, start + 960, (index,), "cohen_imcra_2003_l1_v2", state,
+        "session", 0, start, start + 960, (index,), "cohen_imcra_2003_l1_v3", state,
         frequencies, ones, ones, ones, ones, ones, spp, 1.0 - spp, ones,
         np.zeros(shape, np.float32),
         np.column_stack((np.zeros(7), np.zeros(7), np.zeros(7), probability)).astype(np.float32),
@@ -70,11 +70,11 @@ def test_each_microphone_uses_its_own_mask_and_hardware_mix_is_untouched() -> No
     np.testing.assert_allclose(settled[:, 7], np.tile(tone, 5), atol=2.0e-7, rtol=0.0)
 
 
-def test_pre_denoiser_applies_imcra_gain_from_dc_through_8000_hz() -> None:
+def test_pre_denoiser_applies_imcra_gain_from_dc_through_10000_hz() -> None:
     denoiser = ImcraWienerPreDenoiser.from_project(load_config(CONFIG, environ={}))
     assert denoiser._frequencies[denoiser._output_band][0] == 0.0
-    assert denoiser._frequencies[denoiser._output_band][-1] <= 8_000.0
-    assert np.count_nonzero(denoiser._output_band) == 342
+    assert denoiser._frequencies[denoiser._output_band][-1] <= 10_000.0
+    assert np.count_nonzero(denoiser._output_band) == 427
 
     source = np.full((960, 8), 0.1, np.float32)
     output = []
