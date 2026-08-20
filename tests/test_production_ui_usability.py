@@ -280,6 +280,20 @@ def test_recording_page_has_only_requested_actions_and_can_listen_to_any_native_
     window.close()
 
 
+def test_selected_corpus_audio_uses_light_blue_edge_highlight_without_focus_outline(tmp_path):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+    style = window.styleSheet()
+
+    assert window.corpus_table.objectName() == "corpusTable"
+    assert "QTableWidget#corpusTable" in style
+    assert "outline: none" in style
+    assert "background-color: #7dd3fc" in style
+    assert "color: #082f49" in style
+    assert "border: 2px solid #38bdf8" in style
+    window.close()
+
+
 def test_selected_recording_name_can_be_changed_from_corpus_page(tmp_path, monkeypatch):
     app_instance()
     window = AudioDataManager(tmp_path)

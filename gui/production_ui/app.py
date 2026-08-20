@@ -484,6 +484,17 @@ class AudioDataManager(QMainWindow):
                 background-color: #0369a1;
                 color: #ffffff;
             }
+            QTableWidget#corpusTable {
+                outline: none;
+                selection-background-color: #7dd3fc;
+                selection-color: #082f49;
+            }
+            QTableWidget#corpusTable::item:selected {
+                background-color: #7dd3fc;
+                color: #082f49;
+                border: 2px solid #38bdf8;
+                padding: 5px 7px;
+            }
             QHeaderView::section {
                 background-color: #1b3d61;
                 color: #ffffff;
@@ -765,6 +776,7 @@ class AudioDataManager(QMainWindow):
             ],
             "还没有录音，请先使用“测试录制向导”录制一条数据。",
         )
+        self.corpus_table.setObjectName("corpusTable")
         self.corpus_table.setColumnHidden(0, True)
         box.addWidget(self.corpus_table)
         actions = QHBoxLayout()
