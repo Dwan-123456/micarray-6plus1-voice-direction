@@ -589,7 +589,7 @@ class AudioTrackRow(QWidget):
             text = "Center Mic 对照"
             label_style = "font-family:Consolas"
         else:
-            text = str(snapshot.track_id)
+            text = f"{snapshot.track_id}  {snapshot.theta_deg:.1f}°"
             label_style = f"font-family:Consolas;color:{track_colour_hex(snapshot.track_id)}"
         if text != self._rendered_text:
             self.label.setText(text)

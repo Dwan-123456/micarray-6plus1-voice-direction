@@ -990,9 +990,9 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         ]
         assert ordered == [0, 3, 2]
         assert "Center Mic" in window.bf_panel._track_rows[0].label.text()
-        assert window.bf_panel._track_rows[3].label.text() == "3"
+        assert window.bf_panel._track_rows[3].label.text() == "3  30.0°"
         assert "#ffb000" in window.bf_panel._track_rows[3].label.styleSheet().lower()
-        assert window.bf_panel._track_rows[2].label.text() == "2"
+        assert window.bf_panel._track_rows[2].label.text() == "2  20.0°"
         assert "#2ecc71" in window.bf_panel._track_rows[2].label.styleSheet().lower()
         assert "≥2.0s" in window.bf_panel.help.text()
 
