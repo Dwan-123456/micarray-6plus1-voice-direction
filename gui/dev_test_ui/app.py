@@ -1141,7 +1141,8 @@ def build_window(
             if perf is None:
                 text = (
                     "上一秒性能 | L2 N/A / 0.0 Hz | "
-                    "L3 N/A / 0.0 Hz | L4 N/A / 0.0 Hz"
+                    "L3 N/A / 0.0 Hz | L4 N/A / 0.0 Hz | "
+                    "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
                 )
             else:
                 text = (
@@ -1151,10 +1152,14 @@ def build_window(
                     f"L3 {_time(perf.l3_time_ms_last_second_avg)} / "
                     f"{perf.l3_refresh_hz_last_second:.1f} Hz | "
                     f"L4 {_time(perf.l4_time_ms_last_second_avg)} / "
-                    f"{perf.l4_refresh_hz_last_second:.1f} Hz"
+                    f"{perf.l4_refresh_hz_last_second:.1f} Hz | "
+                    f"20ms窗口 {perf.processed_windows_last_second} | "
+                    f"丢窗 {perf.dropped_windows_last_second} | "
+                    f"丢窗率 {perf.drop_rate_last_second * 100.0:.1f}%"
                 )
                 self.performance_bar.setToolTip(
-                    "每1秒刷新；显示上一秒内各层已完成结果的平均耗时和实际输出刷新率。"
+                    "每1秒刷新；显示上一秒内各层平均耗时、实际输出刷新率、"
+                    "完整处理的20 ms窗口数、丢窗数及丢窗率。"
                 )
             self.performance_bar.setText(text)
 

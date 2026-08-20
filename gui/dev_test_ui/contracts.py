@@ -160,6 +160,9 @@ class AlgorithmPerformanceSnapshot:
     l2_refresh_hz_last_second: float = 0.0
     l3_refresh_hz_last_second: float = 0.0
     l4_refresh_hz_last_second: float = 0.0
+    processed_windows_last_second: int = 0
+    dropped_windows_last_second: int = 0
+    drop_rate_last_second: float = 0.0
 
     def __post_init__(self) -> None:
         if self.warmup_required_samples <= 0 or self.configured_sample_rate_hz <= 0:
@@ -180,6 +183,18 @@ class AlgorithmPerformanceSnapshot:
         )
         if any(value is not None and (not np.isfinite(value) or value < 0) for value in values):
             raise ValueError("性能时间必须为非负finite或None")
+        if (
+            type(self.processed_windows_last_second) is not int
+            or self.processed_windows_last_second < 0
+            or type(self.dropped_windows_last_second) is not int
+            or self.dropped_windows_last_second < 0
+        ):
+            raise ValueError("上一秒窗口计数必须为非负整数")
+        if (
+            not np.isfinite(self.drop_rate_last_second)
+            or not 0.0 <= self.drop_rate_last_second <= 1.0
+        ):
+            raise ValueError("上一秒丢窗率必须位于[0,1]")
         if (
             self.compute_time_ms_current is not None
             and self.latency_ms_current is not None

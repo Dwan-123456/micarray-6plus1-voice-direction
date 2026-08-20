@@ -207,8 +207,35 @@ def test_performance_tracker_resets_on_epoch_and_observes_rate():
     assert snap.l2_refresh_hz_last_second == 1.0
     assert snap.l3_refresh_hz_last_second == 1.0
     assert snap.l4_refresh_hz_last_second == 1.0
+    assert snap.processed_windows_last_second == 1
+    assert snap.dropped_windows_last_second == 0
+    assert snap.drop_rate_last_second == 0.0
     reset = tracker.snapshot(PipelineStatus("warming_up", "s", 1, 960, 15_360, "Warming"))
     assert reset.observed_sample_rate_hz is None and reset.compute_time_ms_current is None
+
+
+def test_performance_tracker_reports_last_second_processed_dropped_and_rate(monkeypatch):
+    import gui.dev_test_ui.aggregator as aggregator_module
+
+    tracker = PerformanceTracker(
+        sample_rate=48_000, required_samples=15_360, window_count=500, rate_seconds=5,
+    )
+    tracker.add_timing(
+        "s", 0, 1, 2.0, 3.0,
+        l2_ms=1.0, completed_monotonic=10.2, processed=True,
+    )
+    tracker.add_timing(
+        "s", 0, 2, 2.0, 3.0,
+        l2_ms=1.0, completed_monotonic=10.4, processed=False,
+    )
+    tracker.add_drop("s", 0, dropped_monotonic=10.5)
+    monkeypatch.setattr(aggregator_module, "monotonic", lambda: 10.9)
+
+    snapshot = tracker.snapshot(PipelineStatus("running", "s", 0, 15_360, 15_360, "Ready"))
+
+    assert snapshot.processed_windows_last_second == 1
+    assert snapshot.dropped_windows_last_second == 1
+    assert snapshot.drop_rate_last_second == pytest.approx(0.5)
 
 
 def test_performance_tracker_averages_only_completed_stages_from_last_second(monkeypatch):
@@ -772,7 +799,8 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert layout.columnStretch(0) == layout.columnStretch(1) == 1
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A / 0.0 Hz | L3 N/A / 0.0 Hz | L4 N/A / 0.0 Hz"
+            "上一秒性能 | L2 N/A / 0.0 Hz | L3 N/A / 0.0 Hz | L4 N/A / 0.0 Hz | "
+            "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
         )
         assert window.start_button.text() == "启动采集"
         assert window.stop_button.text() == "停止采集"
