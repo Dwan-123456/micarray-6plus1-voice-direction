@@ -799,7 +799,7 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert layout.columnStretch(0) == layout.columnStretch(1) == 1
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A / 0.0 Hz | L3 N/A / 0.0 Hz | L4 N/A / 0.0 Hz | "
+            "上一秒性能 | L2 N/A | L3 N/A | L4 N/A / 0.0 Hz | "
             "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
         )
         assert window.start_button.text() == "启动采集"
