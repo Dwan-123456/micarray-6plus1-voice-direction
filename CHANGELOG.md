@@ -22,6 +22,21 @@
 
 ---
 
+## 2026-08-20 — 新增独立 L1 输入与 IMCRA 频谱观察界面
+
+- **版本/标签**：项目`1.2.1`独立诊断界面新增；不创建或移动发布标签。
+- **类型**：L1只读观察工具、实时频谱可视化与启动入口。
+- **涉及文件**：新增`gui/l1_spectrum_ui/`、`scripts/launch_l1_spectrum_ui.ps1`和聚焦测试，并更新根`README.md`与本日志。
+- **独立 L1 Spectrum UI**：启动后自动连接配置中的UAC麦克风，只创建校准、Ingest、IMCRA、可选IMCRA预降噪、L1电平和频谱分析，不创建WindowAssembler、L2、L3、L4、正式录音或数据管理服务。界面颜色和四象限布局沿用Development Test UI风格。
+- **左上**：复用八路L1 20 ms RMS电平、IMCRA状态和预降噪开关；按项目真实6+1逻辑映射提供`MIC0`～`MIC5`、`Center`、`Mix`互斥选择，默认`Center`。这里没有重复创建一个虚假的`MIC6`：逻辑通道6本身就是Center。
+- **右上/右下**：对所选通道每20 ms执行一次2048点FFT，以0～10 kHz柱状dBFS频谱刷新；“抓拍到右下”复制并冻结当前频谱及session/epoch/sample/sequence标识，后续实时帧不覆盖该抓拍。
+- **左下**：直接显示正式`ImcraHopSnapshot.noise_psd`换算后的当前噪声频谱折线，并列出同一物理麦的noise、signal、SNR和SPP；硬件`Mix`不属于IMCRA七路物理麦估计，选择时明确显示不可用而不伪造数据。
+- **未改变**：现有Development Test UI、Production UI、Pipeline Log UI、L1算法与公开DTO、L2～L4、Runtime调度、录音/数据管理、配置schema、模型和二进制资产均无变化。
+- **验证**：新增UI、L1 meter、IMCRA、Ingest和输入链聚焦测试`63 passed`，相关新增文件Ruff与Python编译检查通过；完成1500×900离屏四象限渲染检查。尚未在本次自动流程中占用真实麦克风做实机验收。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-20 — Development Test UI试听音轨补充末次角度
 
 - **版本/标签**：项目`1.2.1` Development Test UI显示调整；不创建或移动发布标签。
