@@ -183,7 +183,9 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
 - 默认仅处理本窗 `directions` 中可观测或满足受控短时预测条件的目标。仅用于时间线的长 coasting 轨不生成 L3 音频。
-- optimized、ds_baseline、constant_beamwidth_baseline 三档仍保留；切换模式不改变权威 ID，只隔离各模式的试听缓存。
+- `optimized`、`ds_baseline`、`subband_robust_baseline`三档保留；第三档用五频段
+  IMCRA/声源SCM/WNG/Wiener鲁棒对照替代30°恒定波束宽度方法。切换模式不改变权威ID，
+  只隔离各模式的试听缓存。
 
 ## 10. Layer 4 改动
 

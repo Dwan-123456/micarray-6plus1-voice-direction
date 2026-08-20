@@ -19,12 +19,11 @@ from spatial_separability import (
 
 from .adaptive_separation import AdaptiveStaticData, adaptive_separation_weights, adaptive_static_data
 from .configuration import SpatialSeparationConfig, StftSettings
-from .constant_beamwidth import constant_beamwidth_weights
 from .das import apply_weights, das_weights
 from .interface import (
-    L3_MODE_CONSTANT_BEAMWIDTH,
     L3_MODE_DS_BASELINE,
     L3_MODE_OPTIMIZED,
+    L3_MODE_SUBBAND_ROBUST,
     Layer3Error,
     validate_l3_directions,
 )
@@ -32,6 +31,7 @@ from .noise_context import BeamformerNoiseContext, RollingNoiseStatisticsCache
 from .prepared import BeamformedL3Batch, PreparedL3Context
 from .shared_stft import RollingStftCache
 from .steering import steering_vectors
+from .subband_robust import subband_robust_weights
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,9 +64,6 @@ class ImcraSpatialSeparationBeamformer:
         self._adaptive_static: AdaptiveStaticData | None = None
         self._steering_cache: OrderedDict[tuple[object, ...], torch.Tensor] = OrderedDict()
         self._p_cache: OrderedDict[tuple[int, int], torch.Tensor] = OrderedDict()
-        self._constant_beamwidth_cache: OrderedDict[
-            tuple[object, ...], tuple[torch.Tensor, int, float]
-        ] = OrderedDict()
         self._prepared_cache: OrderedDict[tuple[object, ...], PreparedL3Context] = OrderedDict()
         self._static_cache_limit = 16
         self._prepared_cache_limit = 2
@@ -82,7 +79,6 @@ class ImcraSpatialSeparationBeamformer:
         self._adaptive_static = None
         self._steering_cache.clear()
         self._p_cache.clear()
-        self._constant_beamwidth_cache.clear()
         self._prepared_cache.clear()
         self._p_frequency_indices = None
 
@@ -98,7 +94,6 @@ class ImcraSpatialSeparationBeamformer:
             ))
         static_tensors.extend(self._steering_cache.values())
         static_tensors.extend(self._p_cache.values())
-        static_tensors.extend(item[0] for item in self._constant_beamwidth_cache.values())
         if self._p_frequency_indices is not None:
             static_tensors.append(self._p_frequency_indices)
         static_bytes = sum(item.numel() * item.element_size() for item in static_tensors)
@@ -129,7 +124,6 @@ class ImcraSpatialSeparationBeamformer:
             self._adaptive_static = None
             self._steering_cache.clear()
             self._p_cache.clear()
-            self._constant_beamwidth_cache.clear()
             self._prepared_cache.clear()
             self._p_frequency_indices = None
         return self._frequencies
@@ -210,55 +204,6 @@ class ImcraSpatialSeparationBeamformer:
         spatial_p[self._p_frequency_indices] = table_values
         return self._bounded_put(self._p_cache, key, spatial_p, self._static_cache_limit)
 
-    def _constant_beamwidth_weights(
-        self,
-        frequencies: torch.Tensor,
-        candidates: tuple[TrackedDirection, ...],
-        geometry: MicGeometry,
-        config: SpatialSeparationConfig,
-    ) -> tuple[torch.Tensor, tuple[int, ...], tuple[float, ...]]:
-        geometry_key = (
-            geometry.version,
-            float(geometry.speed_of_sound_mps),
-            geometry.positions_m.tobytes(),
-            self._frequency_key,
-            config.constant_beamwidth_fnbw_deg,
-            config.constant_beamwidth_design_grid_deg,
-            config.constant_beamwidth_regularization,
-            config.constant_beamwidth_min_wng_db,
-            config.frequency_min_hz,
-            config.frequency_max_hz,
-        )
-        output: list[torch.Tensor] = []
-        fallback: list[int] = []
-        minimum_wng: list[float] = []
-        for candidate in candidates:
-            angle_step = config.constant_beamwidth_design_grid_deg
-            quantized_theta = (
-                np.floor((float(candidate.theta_deg) % 360.0) / angle_step + 0.5) * angle_step
-            ) % 360.0
-            key = (*geometry_key, float(quantized_theta))
-            cached = self._constant_beamwidth_cache.get(key)
-            if cached is None:
-                theta = torch.tensor(
-                    [quantized_theta], dtype=torch.float32, device=self.device,
-                )
-                design_steering = steering_vectors(frequencies, theta, geometry)
-                solved = constant_beamwidth_weights(
-                    frequencies, design_steering, theta, geometry, config,
-                )
-                cached = (solved.weights_mfc[0], solved.fallback_bins[0], solved.minimum_wng_db[0])
-                self._constant_beamwidth_cache[key] = cached
-                self._constant_beamwidth_cache.move_to_end(key)
-                while len(self._constant_beamwidth_cache) > self._static_cache_limit:
-                    self._constant_beamwidth_cache.popitem(last=False)
-            else:
-                self._constant_beamwidth_cache.move_to_end(key)
-            output.append(cached[0])
-            fallback.append(cached[1])
-            minimum_wng.append(cached[2])
-        return torch.stack(output), tuple(fallback), tuple(minimum_wng)
-
     def prepare_context(
         self,
         window: DecisionWindow,
@@ -275,7 +220,7 @@ class ImcraSpatialSeparationBeamformer:
         """
         self._validate_window(window)
         if mode not in {
-            L3_MODE_OPTIMIZED, L3_MODE_DS_BASELINE, L3_MODE_CONSTANT_BEAMWIDTH,
+            L3_MODE_OPTIMIZED, L3_MODE_DS_BASELINE, L3_MODE_SUBBAND_ROBUST,
         }:
             raise ValueError(f"未知L3处理模式: {mode}")
         key = (
@@ -305,7 +250,7 @@ class ImcraSpatialSeparationBeamformer:
         preparation_error = None
         covariance_rolled = False
         reused_frames = self._stft_cache.snapshot().reused_frames
-        if mode == L3_MODE_OPTIMIZED:
+        if mode in {L3_MODE_OPTIMIZED, L3_MODE_SUBBAND_ROBUST}:
             try:
                 noise, noise_version = self._noise_cache.estimate_window(
                     window,
@@ -385,31 +330,6 @@ class ImcraSpatialSeparationBeamformer:
             )
             backends = tuple("ds_baseline" for _item in candidates)
             fallback_reasons = tuple(None for _item in candidates)
-        elif prepared.mode == L3_MODE_CONSTANT_BEAMWIDTH:
-            weights, fallback_bins, minimum_wng = self._constant_beamwidth_weights(
-                prepared.frequencies_hz, candidates, geometry, prepared.config,
-            )
-            output = apply_weights(weights, prepared.spectrum_fct)
-            diagnostics = tuple(
-                (
-                    "backend=constant_beamwidth_baseline",
-                    "comparison_only=true",
-                    "geometry=uca_6plus1_numerical_adaptation",
-                    f"target_fnbw_deg={prepared.config.constant_beamwidth_fnbw_deg:.1f}",
-                    f"design_grid_deg={prepared.config.constant_beamwidth_design_grid_deg:.1f}",
-                    f"min_wng_limit_db={prepared.config.constant_beamwidth_min_wng_db:.1f}",
-                    f"minimum_designed_wng_db={minimum_wng[index]:.2f}",
-                    f"das_fallback_bins={fallback_bins[index]}",
-                    "imcra=unused",
-                    "spatial_p=unused",
-                )
-                for index in range(len(candidates))
-            )
-            backends = tuple("constant_beamwidth_baseline" for _item in candidates)
-            fallback_reasons = tuple(
-                None if count == 0 else f"WNG-protected DAS fallback bins={count}"
-                for count in fallback_bins
-            )
         elif prepared.noise_statistics is None:
             output = apply_weights(das_weights(steering), prepared.spectrum_fct)
             fallback_reason = f"IMCRA adaptive BF unavailable: {prepared.preparation_error}"
@@ -420,6 +340,67 @@ class ImcraSpatialSeparationBeamformer:
             )
             backends = tuple("das" for _item in candidates)
             fallback_reasons = tuple(fallback_reason for _item in candidates)
+        elif prepared.mode == L3_MODE_SUBBAND_ROBUST:
+            try:
+                noise = prepared.noise_statistics
+                solved = subband_robust_weights(
+                    noise.covariance_fcc,
+                    prepared.spectrum_fct,
+                    steering,
+                    prepared.frequencies_hz,
+                    noise.noise_confidence_f,
+                    prepared.config,
+                    static=self._adaptive_static_data(prepared.frequencies_hz, prepared.config),
+                )
+                output = (
+                    apply_weights(solved.weights_mfc, prepared.spectrum_fct)
+                    * solved.postfilter_mf[..., None]
+                )
+                edges = prepared.config.subband_frequency_edges_hz
+                band_names = (
+                    f"80-{edges[0]:g}", f"{edges[0]:g}-{edges[1]:g}",
+                    f"{edges[1]:g}-{edges[2]:g}", f"{edges[2]:g}-{edges[3]:g}",
+                    f"{edges[3]:g}-8000",
+                )
+                band_summary = ",".join(
+                    f"{name}={count}" for name, count in zip(
+                        band_names, solved.band_bins, strict=True,
+                    )
+                )
+                diagnostics = tuple(
+                    (
+                        "backend=subband_robust_baseline",
+                        "comparison_only=true",
+                        f"imcra={prepared.noise_algorithm_version}:{CONTEXT_HOPS}x20ms",
+                        "rtf_source=free_field_steering_proxy_v1",
+                        "source_scm=rank1_direction_fit_v1",
+                        f"bands:{band_summary}",
+                        "low=mild_interference_mvdr+wiener",
+                        "low_mid=wng_constrained_soft_lcmv",
+                        "mid_core=strong_lcmv",
+                        "high=alias_loaded_mvdr",
+                        f"minimum_wng_db={solved.minimum_wng_db[index]:.2f}",
+                        f"wiener_gain_min={float(solved.postfilter_mf[index].min().item()):.4f}",
+                        f"das_fallback_bins={solved.fallback_bins[index]}",
+                        "spatial_p=unused",
+                    )
+                    for index in range(len(candidates))
+                )
+                backends = tuple("subband_robust_baseline" for _item in candidates)
+                fallback_reasons = tuple(
+                    None if count == 0 else f"per-bin DAS fallback bins={count}"
+                    for count in solved.fallback_bins
+                )
+            except (Layer3Error, RuntimeError) as exc:
+                output = apply_weights(das_weights(steering), prepared.spectrum_fct)
+                fallback_reason = f"subband robust BF unavailable: {exc}"
+                speech_bins = int(prepared.passband_f.sum().item())
+                diagnostics = tuple(
+                    ("backend=das_fallback", fallback_reason, f"fallback_bins={speech_bins}")
+                    for _item in candidates
+                )
+                backends = tuple("das" for _item in candidates)
+                fallback_reasons = tuple(fallback_reason for _item in candidates)
         else:
             try:
                 spatial_p = None

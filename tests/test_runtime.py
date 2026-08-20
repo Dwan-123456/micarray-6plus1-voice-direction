@@ -16,9 +16,9 @@ from common.config import load_config
 from common.data_types import DecisionWindow, IngestedAudioBlock, TrackedDirection
 from layer1_input.interface import DecodedAudio
 from layer3_direction_signal import (
-    L3_MODE_CONSTANT_BEAMWIDTH,
     L3_MODE_DS_BASELINE,
     L3_MODE_OPTIMIZED,
+    L3_MODE_SUBBAND_ROBUST,
 )
 
 
@@ -224,7 +224,7 @@ def test_runtime_l3_mode_switch_is_available_before_and_during_capture(tmp_path)
     )
     assert runtime.l3_processing_mode == L3_MODE_OPTIMIZED
     assert runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE) == L3_MODE_DS_BASELINE
-    assert runtime.set_l3_processing_mode(L3_MODE_CONSTANT_BEAMWIDTH) == L3_MODE_CONSTANT_BEAMWIDTH
+    assert runtime.set_l3_processing_mode(L3_MODE_SUBBAND_ROBUST) == L3_MODE_SUBBAND_ROBUST
     runtime.start()
     try:
         assert runtime.running
@@ -488,7 +488,7 @@ def test_runtime_mode_switch_never_changes_authoritative_l2_id():
     for mode in (
         L3_MODE_OPTIMIZED,
         L3_MODE_DS_BASELINE,
-        L3_MODE_CONSTANT_BEAMWIDTH,
+        L3_MODE_SUBBAND_ROBUST,
     ):
         runtime.set_l3_processing_mode(mode)
         runtime._process_l3(window, (direction,))

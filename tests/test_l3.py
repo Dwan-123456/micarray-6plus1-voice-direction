@@ -12,12 +12,12 @@ from common.window_key import WindowKey
 from common.geometry import physical_6plus1_geometry
 from layer3_direction_signal import (
     BeamformedL3Batch,
-    L3_MODE_CONSTANT_BEAMWIDTH,
     L3_MODE_DS_BASELINE,
+    L3_MODE_SUBBAND_ROBUST,
     Layer3Processor,
 )
 from layer3_direction_signal.configuration import SpatialSeparationConfig
-from layer3_direction_signal.constant_beamwidth import constant_beamwidth_weights
+from layer3_direction_signal.subband_robust import subband_robust_weights
 from layer3_direction_signal.steering import steering_vectors
 
 
@@ -105,7 +105,7 @@ def test_l3_outputs_one_48khz_mono_audio_per_candidate():
         assert not hasattr(item, "stft_complex")
 
 
-@pytest.mark.parametrize("mode", ("optimized", "ds_baseline", "constant_beamwidth_baseline"))
+@pytest.mark.parametrize("mode", ("optimized", "ds_baseline", "subband_robust_baseline"))
 def test_all_three_modes_preserve_authoritative_ids_angles_and_original_order(mode):
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     directions = (
@@ -280,54 +280,104 @@ def test_ds_baseline_uses_seven_channel_delay_and_sum_without_imcra_or_spatial_p
         assert np.isfinite(item.enhanced_audio).all()
 
 
-def test_constant_beamwidth_baseline_targets_30_degree_fnbw_without_imcra_or_p():
+def test_subband_robust_baseline_uses_imcra_five_bands_without_spatial_p():
     rng = np.random.default_rng(771)
     processor = Layer3Processor(load_config(CONFIG, environ={}))
     output = processor.process(
-        _window(rng.normal(0, 0.02, (7_680, 8)).astype(np.float32), ready_imcra=False),
+        _window(rng.normal(0, 0.02, (7_680, 8)).astype(np.float32)),
         (_candidate(20.0), _candidate(110.0)),
         physical_6plus1_geometry(),
-        mode=L3_MODE_CONSTANT_BEAMWIDTH,
+        mode=L3_MODE_SUBBAND_ROBUST,
     )
 
     assert len(output.enhanced_audio) == 2
     for item in output.enhanced_audio:
-        assert item.algorithm == "constant_beamwidth_baseline"
-        assert item.diagnostics[0] == "backend=constant_beamwidth_baseline"
-        assert "target_fnbw_deg=30.0" in item.diagnostics
-        assert "imcra=unused" in item.diagnostics
+        assert item.algorithm == "subband_robust_baseline"
+        assert item.diagnostics[0] == "backend=subband_robust_baseline"
+        assert any(value.startswith("imcra=cohen_imcra_2003_l1_v1") for value in item.diagnostics)
+        assert "rtf_source=free_field_steering_proxy_v1" in item.diagnostics
+        assert "source_scm=rank1_direction_fit_v1" in item.diagnostics
+        assert any(value.startswith("bands:80-500=") for value in item.diagnostics)
+        assert "low=mild_interference_mvdr+wiener" in item.diagnostics
+        assert "low_mid=wng_constrained_soft_lcmv" in item.diagnostics
+        assert "mid_core=strong_lcmv" in item.diagnostics
+        assert "high=alias_loaded_mvdr" in item.diagnostics
         assert "spatial_p=unused" in item.diagnostics
         assert any(value.startswith("das_fallback_bins=") for value in item.diagnostics)
         assert np.isfinite(item.enhanced_audio).all()
 
 
-def test_constant_beamwidth_has_30_degree_first_null_where_uca_can_realize_it():
+def test_subband_robust_missing_imcra_falls_back_without_affecting_other_modes():
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    item = processor.process(
+        _window(np.zeros((7_680, 8), np.float32), ready_imcra=False),
+        (_candidate(20.0),),
+        physical_6plus1_geometry(),
+        mode=L3_MODE_SUBBAND_ROBUST,
+    ).enhanced_audio[0]
+    assert item.algorithm == "das"
+    assert item.fallback_reason is not None and "IMCRA adaptive BF unavailable" in item.fallback_reason
+
+
+def test_subband_robust_output_responds_to_imcra_noise_psd():
+    rng = np.random.default_rng(773)
+    samples = rng.normal(0, 0.02, (7_680, 8)).astype(np.float32)
+    geometry = physical_6plus1_geometry()
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    balanced = processor.process(
+        _window(samples),
+        (_candidate(30.0), _candidate(120.0)),
+        geometry,
+        mode=L3_MODE_SUBBAND_ROBUST,
+    ).enhanced_audio[0].enhanced_audio
+    noisy_mic0 = processor.process(
+        _window(samples, noise_by_mic=np.asarray((100.0, 1, 1, 1, 1, 1, 1))),
+        (_candidate(30.0), _candidate(120.0)),
+        geometry,
+        mode=L3_MODE_SUBBAND_ROBUST,
+    ).enhanced_audio[0].enhanced_audio
+    assert not np.allclose(balanced, noisy_mic0, rtol=1e-5, atol=1e-7)
+
+
+def test_subband_robust_wng_guard_and_low_frequency_wiener_gain():
     project = load_config(CONFIG, environ={})
     config = SpatialSeparationConfig.from_project(project)
     geometry = physical_6plus1_geometry()
     frequencies = torch.fft.rfftfreq(1024, d=1.0 / 48_000)
-    theta = torch.tensor([0.0])
-    target = steering_vectors(frequencies, theta, geometry)
-    solved = constant_beamwidth_weights(frequencies, target, theta, geometry, config)
-
-    # Around 6 kHz the 4 cm UCA can safely realize the requested +/-15 degree
-    # first null. Low frequencies cannot and must remain the exact DAS fallback.
-    six_khz = round(6_000 / (48_000 / 1024))
-    probes = steering_vectors(frequencies, torch.tensor([0.0, 15.0, 345.0]), geometry)
-    response = torch.einsum(
-        "c,mc->m", solved.weights_mfc[0, six_khz].conj(), probes[:, six_khz],
-    ).abs()
-    assert response[0] == pytest.approx(1.0, abs=1e-4)
-    assert response[1] < 1e-3
-    assert response[2] < 1e-3
-
-    five_hundred_hz = round(500 / (48_000 / 1024))
-    np.testing.assert_allclose(
-        solved.weights_mfc[0, five_hundred_hz].numpy(),
-        (target[0, five_hundred_hz] / 7.0).numpy(),
-        rtol=0,
-        atol=0,
+    target = steering_vectors(frequencies, torch.tensor([0.0, 120.0]), geometry)
+    generator = torch.Generator().manual_seed(772)
+    spectrum = torch.complex(
+        torch.randn((513, 7, 17), generator=generator),
+        torch.randn((513, 7, 17), generator=generator),
+    ).to(torch.complex64)
+    covariance = torch.eye(7, dtype=torch.complex64).expand(513, 7, 7).clone()
+    solved = subband_robust_weights(
+        covariance,
+        spectrum,
+        target,
+        frequencies,
+        torch.ones(513),
+        config,
     )
+    low_mid = (frequencies >= 500) & (frequencies < 900)
+    wng = torch.reciprocal(solved.weights_mfc.abs().square().sum(dim=-1))
+    assert torch.all(wng[:, low_mid] >= 1.0 - 1e-5)
+    assert torch.all(solved.postfilter_mf[:, frequencies >= 500] == 1.0)
+    assert torch.all(solved.postfilter_mf[:, frequencies < 500] <= 1.0)
+    assert torch.any(solved.postfilter_mf[:, frequencies < 500] < 1.0)
+    assert sum(solved.band_bins) == int(((frequencies >= 80) & (frequencies <= 8_000)).sum())
+    assert torch.isfinite(solved.weights_mfc).all()
+
+
+def test_removed_constant_beamwidth_mode_is_rejected():
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    with pytest.raises(ValueError, match="未知L3处理模式"):
+        processor.process(
+            _window(np.zeros((7_680, 8), np.float32)),
+            (_candidate(20.0),),
+            physical_6plus1_geometry(),
+            mode="constant_beamwidth_baseline",
+        )
 
 
 def test_l3_rejects_unknown_processing_mode():

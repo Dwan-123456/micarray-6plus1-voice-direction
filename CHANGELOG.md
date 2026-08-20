@@ -21,6 +21,43 @@
 
 ---
 
+## 2026-08-20 — 五频段鲁棒对照替换30°恒定波束宽度模式
+
+- **版本/标签**：项目`1.1.0`并行迁移分支；未创建或移动发布标签。
+- **类型**：L3实验算法替换、Test UI模式切换、配置、文档与自动测试。
+- **涉及文件**：`layer3_direction_signal/{subband_robust,hybrid,interface,configuration,prepared}.py`、
+  `common/{config,data_types}.py`、`config/config.yaml`、Development Test UI模式显示/试听分区、
+  L3/根README、1.1架构文档及相关测试；旧`constant_beamwidth.py`从Git工作树移除。
+
+### L3
+
+- 保留正式默认`optimized`与纯`ds_baseline`的算法、参数和输出不变；第三档由
+  `constant_beamwidth_baseline`替换为`subband_robust_baseline`，旧模式字符串现在被明确拒绝。
+- 新模式使用同一160 ms滚动STFT与同窗IMCRA噪声协方差，但不查询空间`p`表。80～500 Hz采用
+  温和干扰感知loaded MVDR与声源专属Wiener增益；500～900 Hz、900 Hz～1.5 kHz、
+  1.5～4 kHz采用逐步放宽WNG下限的LCMV/DAS连续混合；4～8 kHz采用防混叠加载MVDR。
+- 第一版以当前自由场steering作为RTF代理，并从当前多通道混合协方差减去IMCRA噪声协方差后，
+  对已知方向拟合非负rank-1声源SCM。所有数值不安全频点仍逐频回退DAS；IMCRA整窗不可用时
+  整窗回退DAS。该限制写入运行诊断和文档，未冒充已经完成在线RTF学习。
+- 0～3个公开`TrackedDirection`、WindowKey、track_id、rank、角度、候选顺序、48 kHz/7680点
+  输出和L3入口/出口严格对齐校验均无变化。
+
+### Development Test UI与其余模块
+
+- Test UI第三个按钮和试听缓存分区改为“五频段鲁棒对照”；启动前及运行中三档循环切换规则不变，
+  切换不会修改L2权威ID。
+- L1、Windowing、L2、L4模型与输入、Runtime调度/时间线、Recording/Data Management、
+  Production UI、空间`p`表、音频/模型/测试资产均无变化。
+
+### 验证与资产
+
+- L3、缓存、Runtime、Test UI、ID试听、配置、阶段契约与文档专项：`141 passed, 1 deselected`；
+  被排除项是与BF无关且受latest-wins采样时序影响的既有UI预热断言，随后单独复跑`1 passed`。
+- 全量自动测试最终复跑：`356 passed`。首次全量运行中的一个Recording异步落盘超时已单独复跑通过，
+  随后的完整全量运行无失败。
+- 修改Python文件Ruff检查、`git diff --check`通过；CPU/CUDA热运行的双方向五频段模式输出finite。
+- 未修改Git LFS管理的音频、模型、空间表或其他二进制资产，无Git LFS对象变化。
+
 ## 2026-08-20 — 公共音频上下文由320 ms缩短为160 ms
 
 - **版本/标签**：项目`1.1.0`并行迁移分支；未创建或移动发布标签。
