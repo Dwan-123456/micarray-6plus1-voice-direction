@@ -473,6 +473,18 @@ def build_window(
                 "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
             )
             self.gate_readout = ProbabilityGateReadout()
+            self.music_status = QLabel("MDL=—  MUSIC=—  valid=—  status=UNAVAILABLE")
+            self.music_status.setFixedHeight(30)
+            self.music_status.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+            )
+            self.music_status.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.music_status.setStyleSheet(
+                "QLabel { background:#202a34; color:#9fb2c5; padding:0 8px; "
+                "font-family:Consolas; font-weight:600; }"
+            )
             right_layout.addWidget(self.gate_threshold)
             processing_switches = QHBoxLayout()
             processing_switches.setContentsMargins(0, 0, 0, 0)
@@ -484,6 +496,7 @@ def build_window(
             right_layout.addWidget(self.srp_kalman_q)
             right_layout.addWidget(self.srp_kalman_r)
             right_layout.addWidget(self.gate_readout)
+            right_layout.addWidget(self.music_status)
             right_layout.addWidget(self.music_order_limit)
             right_layout.addWidget(self.srp_threshold)
             right_layout.addStretch(1)
@@ -695,6 +708,7 @@ def build_window(
             self._last_l1_seen = monotonic()
             self.srp_polar.set_snapshot(None, live=True)
             self.gate_readout.set_unavailable("WARMING")
+            self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=WARMING")
             self.cnn_panel.set_unavailable("WARMING: waiting for completed L4 window")
             self.srp_header.setText("WARMING | session — | epoch 0 | window — | sample — | age —")
             self.l1_header.setText("WARMING | waiting for the first audio block")
@@ -707,6 +721,15 @@ def build_window(
             self._l4_is_stale = False
             self.srp_polar.set_live(False)
             self.gate_readout.set_unavailable("STOPPED")
+            if self._frame is None or self._frame.spatial_response is None:
+                self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=STOPPED")
+            else:
+                status = self.music_status.text()
+                if status.endswith(" LIVE"):
+                    status = status[:-5]
+                elif status.endswith(" STALE"):
+                    status = status[:-6]
+                self.music_status.setText(f"{status} STOPPED")
             self.cnn_panel.set_unavailable("STOPPED")
             self.l1_header.setText("STOPPED | capture closed | age —")
             if self._frame is not None and self._frame.spatial_response is not None:
@@ -804,6 +827,7 @@ def build_window(
             self._last_rendered_window = None
             self.srp_polar.set_snapshot(None, live=True)
             self.gate_readout.set_unavailable("WARMING")
+            self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=WARMING")
             self.cnn_panel.set_unavailable("WARMING: replay restarted")
             self.srp_header.setText("WARMING | replay restarted | waiting for new result")
             self.l1_header.setText("WARMING | replay restarted | waiting for first block")
@@ -1292,6 +1316,19 @@ def build_window(
                 if window_key != self._last_rendered_window:
                     self.srp_polar.set_snapshot(snapshot, live=True)
                     self._last_rendered_window = window_key
+                model = frame.spatial_response.model_order
+                panel_state = (
+                    "STALE"
+                    if snapshot.age_ms > config.dev_test_ui.stale_after_ms
+                    else "LIVE"
+                )
+                self._set_text(
+                    self.music_status,
+                    f"MDL={model.estimated_sources}  "
+                    f"MUSIC={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
+                    f"valid={frame.spatial_response.valid_frequency_bins}  "
+                    f"status={frame.spatial_response.numerical_status}  {panel_state}",
+                )
                 search_suffix = ""
                 diagnostics = frame.search_diagnostics
                 if diagnostics is not None:
@@ -1319,6 +1356,7 @@ def build_window(
             elif "srp" in frame.missing_reasons:
                 self.srp_header.setText(frame.missing_reasons["srp"])
                 self.srp_polar.set_snapshot(None)
+                self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=UNAVAILABLE")
                 self._last_rendered_window = None
             now = monotonic()
             if now - self._last_performance_refresh >= 1.0 / config.dev_test_ui.performance_refresh_hz:

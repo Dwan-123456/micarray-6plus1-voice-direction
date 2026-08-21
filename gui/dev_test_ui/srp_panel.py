@@ -115,15 +115,14 @@ if QWidget is not None:
             painter.fillRect(self.rect(), QColor("#11161d"))
             painter.setPen(QColor("#dce7f2"))
             painter.setFont(QFont("Sans Serif", 11))
-            painter.drawText(16, 24, "DOA / MUSIC 360°")
             snapshot = self._snapshot
             if snapshot is None or snapshot.response.model_order is None:
                 painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "MUSIC UNAVAILABLE")
                 return
 
-            margin, footer = 36.0, 72.0
-            radius = max(20.0, min(self.width(), self.height() - footer) / 2.0 - margin)
-            center = QPointF(self.width() / 2.0, (self.height() - footer) / 2.0 + 28.0)
+            margin = 34.0
+            radius = max(20.0, min(self.width(), self.height()) / 2.0 - margin)
+            center = QPointF(self.width() / 2.0, self.height() / 2.0)
             painter.setPen(QPen(QColor("#526273"), 1.6))
             painter.drawEllipse(center, radius, radius)
             painter.drawEllipse(center, 3.0, 3.0)
@@ -150,23 +149,11 @@ if QWidget is not None:
                 painter.setPen(QPen(QColor("white") if track.track_id == self._selected_track_id else QColor("#11161d"), 2.5))
                 painter.drawEllipse(point, diameter / 2.0, diameter / 2.0)
 
-            model = snapshot.response.model_order
-            state = "STALE" if self._live and snapshot.age_ms > self.stale_after_ms else ("LIVE" if self._live else "STOPPED")
-            painter.setPen(QColor("#9fb2c5"))
-            painter.drawText(
-                16,
-                self.height() - 18,
-                f"MDL={model.estimated_sources}  MUSIC={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
-                f"valid={snapshot.response.valid_frequency_bins}  "
-                f"status={snapshot.response.numerical_status}  {state}",
-            )
-
         def mousePressEvent(self, event) -> None:  # noqa: N802
             snapshot = self._snapshot
             if snapshot is None or not snapshot.active_tracks:
                 return
-            footer = 72.0
-            center = QPointF(self.width() / 2.0, (self.height() - footer) / 2.0 + 28.0)
+            center = QPointF(self.width() / 2.0, self.height() / 2.0)
             dx, dy = event.position().x() - center.x(), center.y() - event.position().y()
             clicked = float(np.rad2deg(np.arctan2(dy, dx)) % 360.0)
             nearest = min(snapshot.active_tracks, key=lambda item: abs((item.theta_deg - clicked + 180) % 360 - 180))

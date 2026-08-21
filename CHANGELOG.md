@@ -48,6 +48,12 @@
 
 ---
 
+## 2026-08-21 — 放大Development Test UI的DOA圆环并迁移状态
+
+- **Development Test UI**：移除左侧极坐标图内的`DOA / MUSIC 360°`标题，把`MDL / MUSIC / valid / status`状态移到右侧Gate概率条正下方；圆环不再为标题和底部状态预留空间，在不裁切角度标记及方向点的前提下放大并居中。
+- **验证**：Ruff检查和Development Test UI渲染/布局定向测试通过。
+- **保持不变**：L1、L2 MUSIC/ID算法及状态内容、L3、L4、Runtime调度、音频缓存、录音、配置、模型资产和发布标签均无变化；无Git LFS资产变化。
+
 ## 2026-08-21 — 合并Development Test UI的处理开关布局
 
 - **Development Test UI**：将右上区域的三个处理开关合并到同一行，等宽各占三分之一；按钮分别简化命名为`Kalman`、`DPD`、`Whitening`，仅通过绿色/灰色表示开启/关闭状态，切换待生效时沿用琥珀色。开关功能、提示和持久化逻辑保持不变。

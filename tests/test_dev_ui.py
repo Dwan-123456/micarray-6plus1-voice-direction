@@ -1065,8 +1065,9 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert right_layout.indexOf(window.srp_kalman_q) == 2
         assert right_layout.indexOf(window.srp_kalman_r) == 3
         assert right_layout.indexOf(window.gate_readout) == 4
-        assert right_layout.indexOf(window.music_order_limit) == 5
-        assert right_layout.indexOf(window.srp_threshold) == 6
+        assert right_layout.indexOf(window.music_status) == 5
+        assert right_layout.indexOf(window.music_order_limit) == 6
+        assert right_layout.indexOf(window.srp_threshold) == 7
         decision = ProbabilityGateDecision(
             "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
             0.55, 0.75, 0.65, 0.60, 4, True, "probability_at_or_above_threshold",
