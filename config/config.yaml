@@ -10,7 +10,7 @@ hardware:
   speed_of_sound_mps: 343.0
   geometry_version: r6plus1_mic_face_ccw_v1
   hardware_calibration_status: verified
-  hardware_calibration_report_hash: null
+  hardware_calibration_report_hash: 230186dcb663e84d436671e0fee7ce6d78b3f28ac5d4aae2694ee4465852bd11
 
 device:
   sample_rate: 48000
@@ -30,11 +30,11 @@ device:
   light_service_url: null
 
 calibration:
-  version: gain_polarity_integer_delay_v1
+  version: office_overhead_20260821_v1
   correction_model: gain_polarity_integer_delay_v1
-  gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  gains: [1.120238, 1.042237, 1.099878, 1.041010, 1.087692, 1.108739, 0.620281]
   polarity: [1, 1, 1, 1, 1, 1, 1]
-  delay_samples: [0, 0, 0, 0, 0, 0, 0]
+  delay_samples: [2, 1, 2, 0, 1, 0, 1]
   # Reserved versioned asset boundaries. Current L1 rejects non-null values
   # until fractional/frequency-domain correction is implemented and verified.
   fractional_delay_asset: null

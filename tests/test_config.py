@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from layer1_input.configuration import AudioConfig, CalibrationConfig, CdcConfig
 
 
 CONFIG = Path(__file__).parents[1] / "config" / "config.yaml"
+CALIBRATION_REPORT = Path(__file__).parents[1] / "docs" / "L1_HARDWARE_CALIBRATION_2026-08-21.json"
 
 
 def test_root_config_is_valid_and_builds_layer1_adapters():
@@ -53,9 +55,12 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert AudioConfig.from_project(config).handoff_blocks == 500
     assert CdcConfig.from_project(config).required is False
     calibration = CalibrationConfig.from_project(config)
-    assert calibration.delay_samples == (0,) * 7
-    assert calibration.version == "gain_polarity_integer_delay_v1"
+    assert calibration.delay_samples == (2, 1, 2, 0, 1, 0, 1)
+    assert calibration.version == "office_overhead_20260821_v1"
     assert calibration.status == "verified"
+    assert calibration.report_hash is not None
+    assert len(calibration.report_hash) == 64
+    assert hashlib.sha256(CALIBRATION_REPORT.read_bytes()).hexdigest() == calibration.report_hash
     assert calibration.calibration_hash == calibration_config_hash(config.calibration)
     assert len(config_hash(config)) == 64
     assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v3"

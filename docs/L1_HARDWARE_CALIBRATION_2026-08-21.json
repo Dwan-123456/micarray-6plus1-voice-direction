@@ -1,0 +1,47 @@
+{
+  "schema_version": "l1_hardware_calibration_report_v1",
+  "calibration_version": "office_overhead_20260821_v1",
+  "correction_model": "gain_polarity_integer_delay_v1",
+  "captured_at_local_date": "2026-08-21",
+  "environment": "occupied office",
+  "sample_rate_hz": 48000,
+  "native_channel_count": 8,
+  "physical_channel_map": [0, 1, 2, 3, 4, 5, 7],
+  "hardware_mix_channel": 6,
+  "stimulus": {
+    "type": "centered overhead loudspeaker",
+    "pink_noise_band_hz": [100, 8000],
+    "chirp_band_hz": [200, 10000],
+    "chirp_count": 30,
+    "chirp_interval_ms": 600,
+    "stimulus_sha256": "e734927d440d328cacf915da43d112c2037b6d2e1b2a268c094cdc18d30aa144"
+  },
+  "capture": {
+    "duration_seconds": 65.0,
+    "capture_sha256": "795778d7db7d04976726bb3fea64db32c5820517241e7bdd3bf48ed40ee8ec07",
+    "raw_capture_committed": false,
+    "clipped_samples": 0
+  },
+  "gain_measurement": {
+    "analysis_band_hz": [100, 8000],
+    "pink_noise_level_dbfs": [-47.46, -46.83, -47.30, -46.83, -47.21, -47.37, -42.35],
+    "quiet_level_dbfs": [-68.23, -67.64, -68.38, -68.21, -68.54, -68.26, -67.83],
+    "pink_over_quiet_db": [20.77, 20.80, 21.08, 21.38, 21.33, 20.89, 25.48],
+    "relative_level_std_db": [0.077, 0.038, 0.129, 0.070, 0.056, 0.078, 0.056],
+    "normalization": "zero-mean relative dB across seven physical microphones"
+  },
+  "timing_measurement": {
+    "reference_channel": "Center/native-7",
+    "arrival_offset_samples_vs_center": [-1, 0, -1, 1, 0, 1, 0],
+    "stable_chirp_results": [30, 28, 30, 30, 30, 30, 30],
+    "chirp_trials": 30,
+    "median_normalized_correlation": [0.8304, 0.8194, 0.8079, 0.8220, 0.8368, 0.8388, 1.0]
+  },
+  "result": {
+    "status": "verified",
+    "gains": [1.120238, 1.042237, 1.099878, 1.041010, 1.087692, 1.108739, 0.620281],
+    "polarity": [1, 1, 1, 1, 1, 1, 1],
+    "delay_samples": [2, 1, 2, 0, 1, 0, 1]
+  },
+  "scope": "Seven physical microphones only; native channel 6 HardwareMix is excluded from calibration and MUSIC. Integer delays include the centered-overhead acoustic measurement and must be replaced by a versioned report if the array or mounting changes."
+}
