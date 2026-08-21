@@ -568,6 +568,7 @@ class GlobalDirectionTracker:
             if not track.noise_interference
         ))
         assigned: dict[int, int] = {}
+        predicted_by_track: dict[int, float] = {}
         if track_ids and candidates:
             rows, columns = len(track_ids), len(candidates)
             size = rows + columns
@@ -579,6 +580,7 @@ class GlobalDirectionTracker:
                     if kalman_enabled
                     else self._raw_forecast(track, decision_sample)
                 )
+                predicted_by_track[track_id] = predicted
                 gate = self._association_gate(track, decision_sample)
                 for column, candidate in enumerate(candidates):
                     distance = abs(_delta(candidate.theta_deg, predicted))
@@ -607,15 +609,21 @@ class GlobalDirectionTracker:
             if track.noise_interference
         ))
         used_noise_ids: set[int] = set()
+        suppressed_birth_indices: set[int] = set()
         for index, candidate in enumerate(candidates):
             if index in assigned:
                 continue
+            # A second peak beside an existing ordinary ID is evidence for the
+            # same direction track, not permission to create a duplicate ID.
+            # Keep this guard narrower than the normal association gate so a
+            # genuinely separate source can still be born outside 20 degrees.
             normal_nearby = any(
-                abs(_delta(candidate.theta_deg, self._tracks[track_id].unwrapped_theta))
-                <= self.config.association_gate_deg
+                abs(_delta(candidate.theta_deg, predicted_by_track[track_id]))
+                <= self.config.association_gate_base_deg
                 for track_id in track_ids
             )
             if normal_nearby:
+                suppressed_birth_indices.add(index)
                 continue
             viable_noise = tuple(
                 (abs(_delta(candidate.theta_deg, self._tracks[track_id].unwrapped_theta)), track_id)
@@ -635,6 +643,7 @@ class GlobalDirectionTracker:
         birth_indices = [
             index for index in range(len(candidates))
             if index not in assigned
+            and index not in suppressed_birth_indices
             and allow_births
         ]
         required_slots = max(

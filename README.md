@@ -220,7 +220,7 @@ Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + ran
 
 方向ID追踪是Layer 2永远开启的正式能力。它使用全局一对一分配，把不同窗口中的观测关联为`tentative / confirmed / coasting / deleted`轨迹；`track_id`在同一session内单调分配且不复用，并原样进入L3、L5、Runtime、DecisionRecord v5、Development Test UI和Production UI。它只表示空间方向轨迹，不表示人物身份。
 
-新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少3次匹配观测才进入tracking `confirmed`。匹配无需覆盖全部20 ms窗口，未达到3次时保持tentative并在后续滚动窗口继续尝试。tentative关联角距固定为20°；confirmed关联角距按距离该ID最后一次真实MUSIC观测的时间扩张：`min(50°, 20° + 15°/s × 漏检时长)`。
+新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少3次匹配观测才进入tracking `confirmed`。匹配无需覆盖全部20 ms窗口，未达到3次时保持tentative并在后续滚动窗口继续尝试。tentative关联角距固定为20°；confirmed关联角距按距离该ID最后一次真实MUSIC观测的时间扩张：`min(50°, 20° + 15°/s × 漏检时长)`。未匹配峰若位于任一现存非噪声ID的当前预测位置±20°内，禁止创建重复ID；噪声干扰ID仍保持非排他。
 
 Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking `confirmed`、至少收到一次L5正向人声反馈且未被标记为噪声干扰的ID。尚无人声证据的轨迹在有当前观测时仍可送往L3/L5分类，但不能靠自身维持Gate，也不会在失去观测后继续作为公共L3方向输出；其内部ID仍在2秒TTL内保留以便重新关联。
 

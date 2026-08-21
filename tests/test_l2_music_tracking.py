@@ -709,6 +709,21 @@ def test_tracker_blocks_birth_for_saturated_mdl_window() -> None:
     assert directions == active == ()
 
 
+@pytest.mark.parametrize("first_theta, duplicate_theta", ((0.0, 15.0), (359.0, 5.0)))
+def test_peak_within_twenty_degrees_of_existing_prediction_cannot_birth_duplicate_id(
+    first_theta: float,
+    duplicate_theta: float,
+) -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (first_theta,), kalman_enabled=True)
+    directions, active = _update(
+        tracker, 16_320, (first_theta, duplicate_theta), kalman_enabled=True,
+    )
+
+    assert {item.track_id for item in directions} == {first[0].track_id}
+    assert {item.track_id for item in active} == {first[0].track_id}
+
+
 def test_kalman_toggle_changes_only_angle_not_id_or_lifecycle() -> None:
     tracker = _tracker()
     first, _ = _update(tracker, 15_360, (50.0,), kalman_enabled=False)
