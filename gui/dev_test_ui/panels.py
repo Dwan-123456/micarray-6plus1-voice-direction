@@ -149,6 +149,10 @@ class MusicNoiseWhiteningControl(_RuntimeSwitchControl):
     label = "Whitening"
 
 
+class ContinuousTrackGainControl(_RuntimeSwitchControl):
+    label = "连续轨响度补偿"
+
+
 class KalmanNoiseScaleControl(QWidget):
     apply_requested = Signal(float)
 
@@ -265,8 +269,12 @@ class BeamformPanel(QGroupBox):
     track_stop_requested = Signal()
     mode_change_requested = Signal(str)
     downstream_processing_changed = Signal(bool)
+    gain_compensation_changed = Signal(bool)
 
-    def __init__(self, config, parent: QWidget | None = None):
+    def __init__(
+        self, config, gain_compensation_enabled: bool = True,
+        parent: QWidget | None = None,
+    ):
         super().__init__("L3 · Directional Audio Preview", parent)
         layout = QVBoxLayout(self)
         self._preprocessing_version = config.feature.preprocessing_version
@@ -293,9 +301,17 @@ class BeamformPanel(QGroupBox):
         )
         self.downstream_switch.toggled.connect(self._toggle_downstream_processing)
         self.set_downstream_processing_enabled(True)
+        self.gain_compensation = ContinuousTrackGainControl(gain_compensation_enabled)
+        self.gain_compensation.setToolTip(
+            "控制正式连续方向音轨的响度补偿；从下一完整20 ms音频块生效。"
+        )
+        self.gain_compensation.enabled_changed.connect(
+            self.gain_compensation_changed.emit
+        )
         preview_controls.addWidget(self.preview_summary, 1)
         preview_controls.addWidget(self.mode_switch)
         preview_controls.addWidget(self.downstream_switch)
+        preview_controls.addWidget(self.gain_compensation)
         layout.addLayout(preview_controls)
         self.help = QLabel("仅按L2权威ID缓存方向音频；Kalman只平滑角度，不控制ID存在。")
         layout.addWidget(self.help)
@@ -417,6 +433,9 @@ class BeamformPanel(QGroupBox):
         else:
             self.downstream_switch.setText("L3/L4：已停止")
             self.downstream_switch.setStyleSheet("background:#8a4b3b;color:white")
+
+    def set_gain_compensation_enabled(self, enabled: bool) -> None:
+        self.gain_compensation.set_enabled(bool(enabled))
 
     def set_unavailable(self, reason: str) -> None:
         self.help.setText(reason)
@@ -699,10 +718,8 @@ class VoiceProbabilityPolar(QWidget):
 
 class CnnPanel(QGroupBox):
     selection_requested = Signal(float, int)
-    gain_compensation_changed = Signal(bool)
 
-    def __init__(self, configured_threshold: float, gain_compensation_enabled: bool = True,
-                 parent: QWidget | None = None):
+    def __init__(self, configured_threshold: float, parent: QWidget | None = None):
         super().__init__("L4 · CNN Voice Direction", parent)
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -717,22 +734,9 @@ class CnnPanel(QGroupBox):
         top.addWidget(self.threshold, 1)
         top.addWidget(self.threshold_value)
         layout.addLayout(top)
-        self.gain_compensation = QPushButton()
-        self.gain_compensation.setCheckable(True)
-        self.gain_compensation.toggled.connect(self._gain_compensation_toggled)
-        self.set_gain_compensation_enabled(gain_compensation_enabled)
-        layout.addWidget(self.gain_compensation)
         self.polar = VoiceProbabilityPolar()
         layout.addWidget(self.polar, 1)
         self._result = None
-
-    def set_gain_compensation_enabled(self, enabled: bool) -> None:
-        self.gain_compensation.setChecked(bool(enabled))
-        self.gain_compensation.setText(f"连续轨响度补偿: {'ON' if enabled else 'OFF'}")
-
-    def _gain_compensation_toggled(self, enabled: bool) -> None:
-        self.set_gain_compensation_enabled(enabled)
-        self.gain_compensation_changed.emit(bool(enabled))
 
     def _threshold_changed(self, value: int) -> None:
         self.threshold_value.setText(f"UI threshold: {value / 100:.2f}")

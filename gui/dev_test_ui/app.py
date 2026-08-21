@@ -283,7 +283,9 @@ def build_window(
                 grid.setColumnStretch(index, 1)
             grid.addWidget(self._l1_panel(), 0, 0)
             grid.addWidget(self._doa_panel(), 0, 1)
-            self.bf_panel = BeamformPanel(config)
+            self.bf_panel = BeamformPanel(
+                config, runtime.l4_input_gain_compensation_enabled
+            )
             self.preview_player = PreviewPlayer(
                 sample_rate=config.device.sample_rate, volume=config.dev_test_ui.preview_volume,
                 loop_gap_ms=config.dev_test_ui.loop_gap_ms, autoplay=config.dev_test_ui.autoplay,
@@ -296,17 +298,14 @@ def build_window(
             self.bf_panel.downstream_processing_changed.connect(
                 self._set_downstream_processing
             )
+            self.bf_panel.gain_compensation_changed.connect(
+                self._set_l4_input_gain_compensation
+            )
             self.bf_panel.set_processing_mode(runtime.l3_processing_mode)
             self.bf_panel.set_downstream_processing_enabled(
                 runtime.downstream_processing_enabled
             )
-            self.cnn_panel = CnnPanel(
-                config.layer4.voice_probability_limit,
-                runtime.l4_input_gain_compensation_enabled,
-            )
-            self.cnn_panel.gain_compensation_changed.connect(
-                self._set_l4_input_gain_compensation
-            )
+            self.cnn_panel = CnnPanel(config.layer4.voice_probability_limit)
             grid.addWidget(self.bf_panel, 1, 0)
             grid.addWidget(self.cnn_panel, 1, 1)
             for item_index in range(grid.count()):
@@ -569,14 +568,14 @@ def build_window(
             try:
                 enabled = ui_settings.save_l4_input_gain_compensation_enabled(bool(enabled))
                 runtime.set_l4_input_gain_compensation_enabled(enabled)
-                self.cnn_panel.set_gain_compensation_enabled(enabled)
+                self.bf_panel.set_gain_compensation_enabled(enabled)
                 self.statusBar().showMessage(
                     f"连续轨响度补偿{'开启' if enabled else '关闭'}；下一20 ms生效", 3500
                 )
             except Exception as exc:
                 runtime.set_l4_input_gain_compensation_enabled(previous)
-                with QSignalBlocker(self.cnn_panel.gain_compensation):
-                    self.cnn_panel.set_gain_compensation_enabled(previous)
+                with QSignalBlocker(self.bf_panel.gain_compensation):
+                    self.bf_panel.set_gain_compensation_enabled(previous)
                 self.statusBar().showMessage(f"响度补偿切换失败: {exc}", 8000)
 
         def _set_srp_threshold(self, threshold: float):

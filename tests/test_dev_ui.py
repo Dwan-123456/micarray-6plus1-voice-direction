@@ -827,6 +827,38 @@ def test_l3_mode_button_switches_runtime_before_capture(monkeypatch, tmp_path):
         app.processEvents()
 
 
+def test_gain_compensation_control_is_in_l3_header_and_uses_state_colors(
+    monkeypatch, tmp_path,
+):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    config_path = tmp_path / "config" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    DevUiSettings(tmp_path).save_l4_input_gain_compensation_enabled(False)
+
+    app, window = build_window(config_path)
+    try:
+        control = window.bf_panel.gain_compensation
+        assert control.text() == "连续轨响度补偿"
+        assert control.parent() is window.bf_panel
+        assert not hasattr(window.cnn_panel, "gain_compensation")
+        assert not control.isChecked()
+        assert "#5b6570" in control.styleSheet()
+
+        control.click()
+        app.processEvents()
+        assert control.isChecked()
+        assert "#16794b" in control.styleSheet()
+        assert window._runtime.l4_input_gain_compensation_enabled is True
+        assert DevUiSettings(tmp_path).load_l4_input_gain_compensation_enabled(False) is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
