@@ -10,6 +10,7 @@ import torch
 from common.config import DownstreamAudioWindowSpec
 
 from layer5_voice_classifier import (
+    FrameModelPrediction,
     Layer5AudioSegment,
     Layer5Engine,
     ModelPrediction,
@@ -169,6 +170,20 @@ def test_official_marblenet_weights_detect_official_speech_and_reject_silence():
     assert probabilities[1] > 0.70
 
 
+def test_official_marblenet_long_audio_returns_finite_frame_aligned_probabilities():
+    plugin = NvidiaMarbleNetPlugin("nv_marblenet_baseline_v1", ARTIFACT, device="cpu")
+    sample_rate, audio = wavfile.read(ARTIFACT / "source" / "smoke_speech.wav")
+    audio = audio.astype(np.float32) / 32768.0
+    long_audio = np.ascontiguousarray(
+        resample_poly(audio, 48_000, sample_rate).astype(np.float32)[17_280:48_000]
+    )
+    prediction = plugin.predict_20ms(long_audio)
+
+    assert len(prediction.probabilities_20ms) == len(long_audio) // 960
+    assert np.isfinite(prediction.probabilities_20ms).all()
+    assert np.max(prediction.probabilities_20ms) > 0.70
+
+
 def test_official_marblenet_accepts_the_configured_80ms_window():
     spec = DownstreamAudioWindowSpec(80, 3_840, 4, 9, 1_280)
     plugin = NvidiaMarbleNetPlugin(
@@ -211,6 +226,66 @@ def test_marblenet_adapter_downsamples_the_complete_160ms_batch_to_16khz():
     result = plugin.predict(np.zeros((2, 7_680), dtype=np.float32))
     assert observed["shape"] == (2, 2_560)
     assert result.probabilities.shape == (2,)
+
+
+def test_nvidia_long_audio_adapter_returns_exactly_one_probability_per_20ms() -> None:
+    observed = {}
+
+    class _FrameSpyModel:
+        def __call__(self, audio):
+            observed["shape"] = tuple(audio.shape)
+            probabilities = torch.tensor((0.1, 0.2, 0.3, 0.4, 0.5, 0.99))
+            logits = torch.stack((torch.zeros_like(probabilities), torch.logit(probabilities)), dim=1)
+            return logits.unsqueeze(0), torch.tensor((6,), dtype=torch.long)
+
+    plugin = NvidiaMarbleNetPlugin.__new__(NvidiaMarbleNetPlugin)
+    plugin.model_id = "nvidia-frame-spy"
+    plugin.manifest = {"architecture_id": "spy", "source_model": "NVIDIA frame VAD"}
+    plugin.device = torch.device("cpu")
+    plugin.model = _FrameSpyModel()
+    prediction = plugin.predict_20ms(np.zeros(5 * 960, dtype=np.float32))
+
+    assert observed["shape"] == (1, 5 * 320)
+    assert len(prediction.probabilities_20ms) == 5
+    np.testing.assert_allclose(
+        prediction.probabilities_20ms,
+        np.asarray((0.1, 0.2, 0.3, 0.4, 0.5), np.float32),
+        atol=1e-6,
+    )
+    assert prediction.metadata["model_frame_count"] == 6
+    assert prediction.metadata["output_frame_count"] == 5
+
+
+def test_layer5_long_audio_engine_preserves_frame_probabilities_and_thresholds_each_hop() -> None:
+    class _FramePlugin:
+        model_id = "nvidia-frame"
+
+        def predict(self, waveforms):
+            return ModelPrediction(self.model_id, np.full(len(waveforms), 0.5, np.float32), 0.0, {})
+
+        def predict_20ms(self, waveform):
+            return FrameModelPrediction(
+                self.model_id,
+                np.asarray((0.1, 0.8, 0.9, 0.2), np.float32),
+                1.0,
+                {"frame_shift_ms": 20},
+            )
+
+    item = Layer5AudioSegment(
+        "session", 0, 4, 3_840, 10.0, 48_000,
+        np.zeros(4 * 960, np.float32),
+    )
+    result = Layer5Engine(
+        _FramePlugin(), threshold=0.7,
+        input_gain_compensation=InputGainCompensationSettings(enabled=False),
+    ).process_long_audio_20ms(item)
+
+    np.testing.assert_array_equal(
+        result.probabilities_20ms, np.asarray((0.1, 0.8, 0.9, 0.2), np.float32),
+    )
+    assert result.is_voice_20ms == (False, True, True, False)
+    assert result.summary_probability == pytest.approx((0.8 + 0.9 + 0.2) / 3)
+    assert result.summary_is_voice is False
 
 
 @pytest.mark.parametrize(

@@ -59,8 +59,8 @@ TrackAudioStreamHub：按精确ID每窗追加一个20 ms hop
     → IMCRA概率响度补偿（Test UI可实时开关）
     → 同一补偿后连续48 kHz轨供试听、保存和CNN
     ↓
-L5：连续轨48→16 kHz，NVIDIA Frame-VAD输出20 ms概率序列
-    → 最长3200 ms上下文；只聚合最新80 ms连续3帧
+L5：完整长轨48→16 kHz，NVIDIA Frame-VAD输出20 ms概率序列
+    → 与每个960样本hop严格对齐；整轨摘要取完整序列连续3帧最大均值
     → VoiceDetection(track_id, theta_deg, probability)
     → 结果按精确ID回填最新20 ms连续轨hop（概率 + Voice/Non-Voice）
     ↓
@@ -82,7 +82,7 @@ flowchart LR
     TRACK --> UI["Test UI试听"]
     TRACK --> REC["Recording/Data按ID轨"]
     TRACK --> NV["48→16 kHz<br/>NVIDIA Frame-VAD"]
-    NV --> L5["连续20 ms概率<br/>最新80 ms聚合"]
+    NV --> L5["逐20 ms原始概率<br/>整轨摘要单独聚合"]
     L5 --> SEM["逐ID 20 ms语义时间线"]
     SEM --> UI
     SEM --> REC
@@ -239,6 +239,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ### 10.1 采集后离线 Layer 4 实现
 
 - 原Layer 4 CNN整体迁移为Layer 5；实时L5 StageResult以`offline_after_l4`明确跳过，保持逐窗有序审计但不得执行模型。
+- L5离线入口一次接收完整48 kHz长音频；NVIDIA Frame-VAD原始softmax输出必须裁齐为与输入每个960样本hop一一对应的概率和Voice判断。整轨摘要不得回填或覆盖逐20 ms时间线。
 - 讲话人数取封存时间范围内L2方向输出数量的最大值。最大值1直接进入L5；最大值2进入所选MossFormer2或TIGER后端；最大值3拒绝当前双人L4。
 - `Layer4LongAudioInput`固定接收带SHA-256、`session_id/stream_epoch/track_id/theta_deg/start_sample`的48 kHz单声道完整20 ms hop音频；后端输入固定16 kHz并必须返回恰好两条匿名、等长、finite `float32`候选。
 - 每条L3输入的两候选只发布一个。原L3 BF参考经相同重采样后，以512点Hann STFT、160点hop在2～4 kHz计算逐帧幅度谱余弦相似度并按参考频带能量加权；高分候选继承原ID和角度，低分候选不发布。平分固定选择索引0；记录两分数和差值，首版不设拒绝阈值。

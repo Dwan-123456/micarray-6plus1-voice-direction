@@ -247,7 +247,7 @@ class OfflineLayer4Pipeline:
             ),
             segment_count=segment_count,
         )
-        l5 = self.layer5.process((Layer5AudioSegment(
+        l5 = self.layer5.process_long_audio_20ms(Layer5AudioSegment(
             source.session_id, source.stream_epoch, source.end_sample // 960,
             source.end_sample, source.theta_deg, 48_000, output_48k,
             track_id=source.track_id,
@@ -255,8 +255,7 @@ class OfflineLayer4Pipeline:
             effective_end_sample=source.end_sample,
             gain_compensated=True,
             gain_compensation_diagnostic=gain_diagnostic,
-        ),))
-        detection = l5.detections[0]
+        ))
         output_hash = _sha256_bytes(output_48k.tobytes())
         return Layer4OfflineResult(
             request_id=processed.request_id,
@@ -264,15 +263,20 @@ class OfflineLayer4Pipeline:
             speaker_count=processed.speaker_count,
             path=processed.path,
             selected=processed.selected,
-            l5_probability=detection.probability,
-            l5_is_voice=detection.is_voice,
-            l5_model_id=detection.model_id,
+            l5_probability=l5.summary_probability,
+            l5_is_voice=l5.summary_is_voice,
+            l5_model_id=l5.model_id,
+            l5_probabilities_20ms=tuple(float(value) for value in l5.probabilities_20ms),
+            l5_is_voice_20ms=l5.is_voice_20ms,
             output_asset_id=processed.output_asset_id,
             output_sha256=output_hash,
             metadata={
                 **processed.metadata,
                 "l5_elapsed_ms": (perf_counter() - started) * 1_000.0,
-                "l5_threshold": float(getattr(self.layer5, "threshold", 0.7)),
+                "l5_threshold": l5.threshold,
+                "l5_frame_shift_ms": 20,
+                "l5_frame_count": len(l5.probabilities_20ms),
+                "l5_model_metadata": dict(l5.metadata),
                 "output_waveform_48k": output_48k,
             },
         )
@@ -360,12 +364,14 @@ def persist_offline_results(
             "l5_probability": result.l5_probability,
             "l5_is_voice": result.l5_is_voice,
             "l5_model_id": result.l5_model_id,
+            "l5_probabilities_20ms": result.l5_probabilities_20ms,
+            "l5_is_voice_20ms": result.l5_is_voice_20ms,
             "output_path": name,
             "output_sha256": hashlib.sha256(final.read_bytes()).hexdigest(),
             "metadata": metadata,
         })
     payload = {
-        "schema_version": "offline_l4_job_v1",
+        "schema_version": "offline_l4_job_v2",
         "job_id": job_id,
         "session_id": manifest["session_id"],
         "result_count": len(rows),

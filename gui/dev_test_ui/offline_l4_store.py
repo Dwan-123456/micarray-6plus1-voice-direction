@@ -69,13 +69,21 @@ class OfflineLayer4UiStore:
                     track_id,
                     result.source.start_sample + index * 960,
                     result.source.start_sample + (index + 1) * 960,
-                    result.l5_probability,
-                    result.l5_is_voice,
+                    probability,
+                    is_voice,
                     result.l5_model_id,
                     float(result.metadata["l5_threshold"]),
                 )
-                for index in range(len(stored.annotations))
+                for index, (probability, is_voice) in enumerate(
+                    zip(
+                        result.l5_probabilities_20ms,
+                        result.l5_is_voice_20ms,
+                        strict=True,
+                    )
+                )
             )
+            if len(annotations) != len(stored.annotations):
+                raise ValueError("L5 20 ms output does not match the displayed L4 audio")
             stored.annotations = annotations
 
     def audio_path(self, track_id: int) -> Path | None:

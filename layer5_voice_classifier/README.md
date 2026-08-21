@@ -8,13 +8,13 @@
 
 响度补偿目标RMS为`-23.0 dBFS`；概率不高于0.30时不补偿、达到0.80时完整补偿，中间线性插值。算法只放大、不主动衰减，并以`-3 dBFS`限制新增增益。Test UI开关默认ON且可实时切换；开关不重建ID、不清空连续上下文，增益从下一20 ms平滑过渡。
 
-NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`适配器接收完整连续48 kHz轨音频，并复用L4拥有的`Layer4Resampler`降采样到16 kHz后输出人声概率。实时Runtime的L5阶段明确记录`offline_after_l4`跳过原因，不执行CNN；离线结果保留模型、阈值和概率审计。
+NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`适配器接收完整连续48 kHz轨音频，并复用L4拥有的`Layer4Resampler`降采样到16 kHz。模型原始softmax输出按NVIDIA帧索引裁齐为与48 kHz输入每960样本严格对应的20 ms概率序列；`center=true`产生的尾部边界帧只在末端丢弃，不用单一概率覆盖整轨。实时Runtime的L5阶段明确记录`offline_after_l4`跳过原因，不执行CNN；离线结果保留完整概率序列、逐帧阈值判断、模型和对齐方式。
 
 L5不接收L2内部ID或`[17,169]`特征，方向标签只继承L3携带的平滑角；它不再次滤波、不做跨窗口Tracking或身份识别，也不反馈改变L2 Gate、SRP或L3音频。primary/shadow模型可读取同一不可变波形；只有primary结果进入正式VoiceDetection和DecisionRecord。
 
 L5判断阈值与L2 Gate阈值是两套不同参数。Development Test UI必须使用不同标签和滑动条；拖动L5阈值只重算已缓存概率的标签，不重跑L3或CNN。
 
-每次成功L5检测按完整`(WindowKey, track_id)`写回连续轨最新20 ms hop，记录绝对sample范围、概率、Voice/Non-Voice、模型和运行时阈值。该回写只增加语义，不向L2反馈、不确认或续租ID，也不改变音频。失败、丢弃或尚无结果的hop保持“无语义结果”。
+每次成功离线L5检测按`(session_id, stream_epoch, track_id)`把第`i`个模型概率写到`[start_sample+i*960,start_sample+(i+1)*960)`，记录概率、Voice/Non-Voice、模型和阈值。整轨概览另取完整概率序列的连续3帧最大均值；它只用于摘要，不得反向覆盖逐20 ms结果。该语义不向L2反馈、不确认或续租ID，也不改变音频。
 
 ## 已实现门禁
 

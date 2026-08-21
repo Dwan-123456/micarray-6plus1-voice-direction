@@ -53,12 +53,19 @@ class _L5:
     def __init__(self):
         self.calls = 0
 
-    def process(self, inputs):
+    def process_long_audio_20ms(self, item):
         self.calls += 1
-        item = inputs[0]
-        return SimpleNamespace(detections=(SimpleNamespace(
-            probability=0.8, is_voice=True, model_id="l5", track_id=item.track_id,
-        ),))
+        count = len(item.waveform) // 960
+        probabilities = np.linspace(0.1, 0.9, count, dtype=np.float32)
+        return SimpleNamespace(
+            model_id="l5",
+            threshold=0.7,
+            probabilities_20ms=probabilities,
+            is_voice_20ms=tuple(bool(value >= 0.7) for value in probabilities),
+            summary_probability=0.8,
+            summary_is_voice=True,
+            metadata={"frame_shift_ms": 20},
+        )
 
 
 def test_direction_count_classifier_uses_maximum_recorded_l2_output_count() -> None:
@@ -131,7 +138,12 @@ def test_l4_and_l5_can_only_run_as_two_explicit_ui_send_steps() -> None:
         assert all(item is None for item in store.snapshots()[0].voice_annotations_20ms)
         store.apply_l5(results)
         annotations = store.snapshots()[0].voice_annotations_20ms
-        assert annotations and all(item is not None and item.is_voice for item in annotations)
+        assert annotations and all(item is not None for item in annotations)
+        probabilities = tuple(item.probability for item in annotations if item is not None)
+        assert probabilities[0] == pytest.approx(0.1)
+        assert probabilities[-1] == pytest.approx(0.9)
+        assert any(not item.is_voice for item in annotations if item is not None)
+        assert any(item.is_voice for item in annotations if item is not None)
     finally:
         store.close()
 

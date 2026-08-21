@@ -218,6 +218,8 @@ class Layer4OfflineResult:
     l5_probability: float
     l5_is_voice: bool
     l5_model_id: str
+    l5_probabilities_20ms: tuple[float, ...]
+    l5_is_voice_20ms: tuple[bool, ...]
     output_asset_id: str
     output_sha256: str
     metadata: Mapping[str, object]
@@ -237,6 +239,17 @@ class Layer4OfflineResult:
             raise ValueError("offline L5 probability must be in [0,1]")
         if type(self.l5_is_voice) is not bool:
             raise ValueError("offline L5 decision must be bool")
+        probabilities = tuple(float(value) for value in self.l5_probabilities_20ms)
+        decisions = tuple(self.l5_is_voice_20ms)
+        expected_hops = len(self.source.waveform) // L3_HOP_SAMPLES
+        if len(probabilities) != expected_hops or any(
+            not np.isfinite(value) or not 0.0 <= value <= 1.0 for value in probabilities
+        ):
+            raise ValueError("offline L5 requires one probability per 20 ms source hop")
+        if len(decisions) != expected_hops or any(type(value) is not bool for value in decisions):
+            raise ValueError("offline L5 requires one bool decision per 20 ms source hop")
         if len(self.output_sha256) != 64 or any(c not in "0123456789abcdef" for c in self.output_sha256):
             raise ValueError("offline output sha256 must be lowercase hexadecimal")
+        object.__setattr__(self, "l5_probabilities_20ms", probabilities)
+        object.__setattr__(self, "l5_is_voice_20ms", decisions)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))

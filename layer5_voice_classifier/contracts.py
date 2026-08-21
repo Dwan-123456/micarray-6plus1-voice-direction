@@ -126,6 +126,61 @@ class ModelPrediction:
 
 
 @dataclass(frozen=True, slots=True)
+class FrameModelPrediction:
+    """One NVIDIA frame-VAD probability for every authoritative 20 ms audio hop."""
+
+    model_id: str
+    probabilities_20ms: NDArray[np.float32]
+    latency_ms: float
+    metadata: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        values = np.asarray(self.probabilities_20ms, dtype=np.float32)
+        if values.ndim != 1 or not len(values) or not np.isfinite(values).all():
+            raise ValueError("frame probabilities must be a non-empty finite float32 vector")
+        if np.any((values < 0) | (values > 1)):
+            raise ValueError("frame probabilities must be in [0,1]")
+        if not self.model_id or not np.isfinite(self.latency_ms) or self.latency_ms < 0:
+            raise ValueError("invalid frame-model prediction metadata")
+        values = np.frombuffer(np.ascontiguousarray(values).tobytes(), dtype=np.float32)
+        object.__setattr__(self, "probabilities_20ms", values)
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True, slots=True)
+class Layer5LongAudioResult:
+    """Frame-aligned NVIDIA VAD output for one complete long audio track."""
+
+    model_id: str
+    threshold: float
+    probabilities_20ms: NDArray[np.float32]
+    is_voice_20ms: tuple[bool, ...]
+    summary_probability: float
+    summary_is_voice: bool
+    latency_ms: float
+    metadata: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        prediction = FrameModelPrediction(
+            self.model_id, self.probabilities_20ms, self.latency_ms, self.metadata,
+        )
+        decisions = tuple(self.is_voice_20ms)
+        if len(decisions) != len(prediction.probabilities_20ms) or any(
+            type(value) is not bool for value in decisions
+        ):
+            raise ValueError("long-audio decisions must align one-to-one with 20 ms probabilities")
+        if not np.isfinite(self.threshold) or not 0.0 <= self.threshold <= 1.0:
+            raise ValueError("long-audio L5 threshold must be in [0,1]")
+        if not np.isfinite(self.summary_probability) or not 0.0 <= self.summary_probability <= 1.0:
+            raise ValueError("long-audio summary probability must be in [0,1]")
+        if type(self.summary_is_voice) is not bool:
+            raise ValueError("long-audio summary decision must be bool")
+        object.__setattr__(self, "probabilities_20ms", prediction.probabilities_20ms)
+        object.__setattr__(self, "is_voice_20ms", decisions)
+        object.__setattr__(self, "metadata", prediction.metadata)
+
+
+@dataclass(frozen=True, slots=True)
 class Layer5Result:
     detections: tuple[VoiceDetection, ...]
     predictions: tuple[ModelPrediction, ...]

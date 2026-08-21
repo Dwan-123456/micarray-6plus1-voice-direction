@@ -13,6 +13,8 @@ Hub 同步记录每个20 ms hop所属 L2 决策窗的方向输出数量。`l2_di
 
 匹配器按`l3_bf_2_4khz_magnitude_cosine_v1`对完整音频执行512点Hann STFT、160点hop和2～4 kHz逐帧幅度余弦相似度，再按原Hub参考频带能量加权。末尾不足一帧会补零，长录音分批计算以限制内存。两个候选只做一次权威选择；同分固定选择索引0。匹配分数、差值、模型revision与最终L5结果均进入离线job manifest。
 
+L4输出送入L5后，NVIDIA Frame-VAD一次读取完整48 kHz长音频并内部降采样到16 kHz。模型的原始softmax人声概率按NVIDIA 20 ms帧索引裁齐到输入hop数量，输出严格与原音频每个960样本一一对应；Test UI按这些逐帧概率着色。整轨概览概率另用完整序列的连续3帧最大均值汇总，不得用概览值覆盖逐帧时间线。离线manifest从`offline_l4_job_v2`开始同时保存逐20 ms概率和判断。
+
 ```text
 sealed TrackAudioStreamHub long track (48 kHz, ID + angle + L2 count history)
   -> Layer4Resampler (16 kHz)
