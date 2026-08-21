@@ -147,7 +147,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `DecisionWindow [7680,8]` 每20 ms发布一次并始终保留160 ms上游上下文。L3、L5和Development Test UI共同读取`timing.downstream_audio_window_ms`派生的末尾40/80/160 ms；当前为40 ms。L2的MUSIC历史独立配置为240 ms并由跨窗口状态维护，不受该下游参数影响。
 - L2维护按session/epoch/sample连续的滚动STFT与协方差状态。每个新DecisionWindow原则上只加入最近20 ms产生的新帧并移出超出MUSIC历史长度的旧帧；禁止每20 ms从头重算320 ms STFT和全部协方差。
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
-- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有符合条件的人声ID时，Gate关闭会跳过新的MUSIC观测。只有tracking状态已为`confirmed`、至少收到一次L5正向人声反馈且当前未标记为噪声干扰的ID，才能把低于门限的正式概率判决强制放行；仅有MUSIC观测的临时/未获人声确认ID不能强制Gate。ID继续按3秒绝对sample TTL推进到coasting/超时；所有仍在有效TTL内的正式coasting ID都可在数量与角距限制内作为公共方向送入L3。L5人声反馈只决定是否续租该预测ID的生命，不参与coasting的L3准入或排序。预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
+- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有符合条件的人声ID时，Gate关闭会跳过新的MUSIC观测。只有tracking状态已为`confirmed`、至少收到一次L5正向人声反馈且当前未标记为噪声干扰的ID，才能把低于门限的正式概率判决强制放行；仅有MUSIC观测的临时/未获人声确认ID不能强制Gate。ID继续按2秒绝对sample TTL推进到coasting/超时；所有仍在有效TTL内的正式coasting ID都可在数量与角距限制内作为公共方向送入L3。L5人声反馈只决定是否续租该预测ID的生命，不参与coasting的L3准入或排序。预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
 
 本分支的Windowing直接提供`DecisionWindow.physical_samples`和`physical_history(160)`，只含7个物理麦，`HardwareMix`只能通过独立属性访问；请求超出当前窗口的240/320 ms历史会被拒绝。`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2跨窗口维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/240/320三档之一、比较集合固定为三档且滚动历史上限为320 ms。WindowAssembler仍只组装160 ms窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
@@ -197,12 +197,12 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ### 8.2 生命周期
 
 - 状态为 `tentative → confirmed → coasting → deleted`。
-- 首次无匹配观测立即分配新 ID；当前正式参数要求滚动200 ms窗口内累计至少6次匹配观测后确认。匹配不要求占满每个20 ms窗口；窗口内不足6次时保持tentative并继续滚动重试。ID 一经分配，在同一 session 内不得给其他轨迹复用。
+- 首次无匹配观测立即分配新 ID；当前正式参数要求滚动200 ms窗口内累计至少3次匹配观测后确认。匹配不要求占满每个20 ms窗口；窗口内不足3次时保持tentative并继续滚动重试。tentative固定使用20°关联角距；confirmed按距离该ID最后一次真实MUSIC观测的时间使用`min(50°, 20° + 15°/s × 漏检时长)`，不得用相邻处理窗口的时间替代。ID 一经分配，在同一 session 内不得给其他轨迹复用。
 - 短时漏检或 Gate 关闭进入内部 coasting；在 TTL 内重新落入关联门限应恢复原 ID。有效TTL内的confirmed/coasting轨迹均可发布为公共L3方向；L5人声反馈只续租预测生命，不参与L3准入或排序。
-- L5必须按权威`track_id`、原窗口sample和epoch回传人声概率。某ID从建立或最近一次正向人声判定起连续3秒没有再次被判为人声时，L2将其标记为非排他的噪声干扰轨：它仍可更新自身方向和3秒TTL，但不占用普通ID的全局关联排他空间，普通ID接近时不得错误归并到噪声ID。只有其±45°内没有其他普通ID，且在滚动3秒时间窗内累计收到5次人声判定，才解除噪声标记；非人声结果不增加次数，也不清空仍在时间窗内的人声记录。反馈不得按迟到角度猜测ID。
+- L5必须按权威`track_id`、原窗口sample和epoch回传人声概率。某ID从建立或最近一次正向人声判定起连续3秒没有再次被判为人声时，L2将其标记为非排他的噪声干扰轨：它仍可更新自身方向和2秒几何TTL，但不占用普通ID的全局关联排他空间，普通ID接近时不得错误归并到噪声ID。只有其±45°内没有其他普通ID，且在滚动3秒时间窗内累计收到5次人声判定，才解除噪声标记；非人声结果不增加次数，也不清空仍在时间窗内的人声记录。反馈不得按迟到角度猜测ID。
 - 超过 TTL 删除轨迹；之后出现的方向即使相近也必须获得新 ID。
 - 所有确认、miss、coast 和 TTL 使用 48 kHz 绝对 sample 计算，不依赖“处理了多少窗”，从而正确应对 latest-wins 丢窗和 sample 跳跃。
-- L5不拥有ID确认权、语音租约或几何生命周期；它只通过完整track key回传人声概率，驱动噪声干扰标记，不能按角度猜测ID，也不能延长或缩短ID的3秒几何TTL。
+- L5不拥有ID确认权、语音租约或几何生命周期；它只通过完整track key回传人声概率，驱动噪声干扰标记，不能按角度猜测ID，也不能延长或缩短ID的2秒几何TTL。
 
 ### 8.3 圆周与 Kalman
 

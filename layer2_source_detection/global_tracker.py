@@ -28,11 +28,13 @@ def _circular_mean_deg(values: list[float]) -> float | None:
 
 @dataclass(frozen=True, slots=True)
 class GlobalTrackerConfig:
-    association_gate_deg: float = 45.0
+    association_gate_deg: float = 50.0
+    association_gate_base_deg: float = 20.0
+    association_gate_growth_dps: float = 15.0
     max_velocity_dps: float = 60.0
-    confirmation_observations: int = 6
+    confirmation_observations: int = 3
     confirmation_window_samples: int = 9_600
-    coasting_ttl_samples: int = 48_000
+    coasting_ttl_samples: int = 2 * 48_000
     miss_cost: float = 1.0
     birth_cost: float = 1.0
     stationary_history_samples: int = 3 * 48_000
@@ -41,9 +43,18 @@ class GlobalTrackerConfig:
     stationary_outlier_window_samples: int = 48_000
     stationary_outlier_tolerance_deg: float = 20.0
     stationary_exit_observations: int = 4
+    kalman_process_angle_std_deg: float = 1.5
+    kalman_process_velocity_std_dps: float = 25.0
+    kalman_measurement_std_deg: float = 5.0
+    kalman_velocity_half_life_seconds: float = 0.5
+    kalman_prediction_freeze_std_deg: float = float("inf")
 
     def __post_init__(self) -> None:
-        if not 0 < self.association_gate_deg <= 180 or not 0 < self.max_velocity_dps <= 360:
+        if (
+            not 0 < self.association_gate_base_deg <= self.association_gate_deg <= 180
+            or not 0 <= self.association_gate_growth_dps <= 360
+            or not 0 < self.max_velocity_dps <= 360
+        ):
             raise ValueError("global tracker angular limits are invalid")
         if min(
             self.confirmation_observations, self.confirmation_window_samples,
@@ -58,6 +69,14 @@ class GlobalTrackerConfig:
             < self.stationary_outlier_tolerance_deg <= 180
         ):
             raise ValueError("stationary angular limits are invalid")
+        if min(
+            self.kalman_process_angle_std_deg,
+            self.kalman_process_velocity_std_dps,
+            self.kalman_measurement_std_deg,
+            self.kalman_velocity_half_life_seconds,
+            self.kalman_prediction_freeze_std_deg,
+        ) <= 0:
+            raise ValueError("Kalman model values must be positive")
 
 
 @dataclass(slots=True)
@@ -84,6 +103,9 @@ class _Track:
     stationary_locked: bool = False
     stationary_theta: float | None = None
     stationary_outlier_samples: list[int] = field(default_factory=list)
+    kalman_covariance: np.ndarray | None = None
+    kalman_last_sample: int | None = None
+    kalman_last_trusted_theta: float | None = None
 
 
 class GlobalDirectionTracker:
@@ -385,6 +407,130 @@ class GlobalDirectionTracker:
             track.confirmed = True
             track.confirmation_samples.clear()
 
+    def _association_gate(self, track: _Track, decision_sample: int) -> float:
+        """Angle gate derived from time since this ID's last real observation."""
+
+        if not track.confirmed:
+            return self.config.association_gate_base_deg
+        missed_seconds = max(0, decision_sample - track.last_observed) / 48_000.0
+        return min(
+            self.config.association_gate_deg,
+            self.config.association_gate_base_deg
+            + self.config.association_gate_growth_dps * missed_seconds,
+        )
+
+    def _damped_transition(self, dt: float) -> tuple[np.ndarray, float]:
+        half_life = self.config.kalman_velocity_half_life_seconds
+        gamma = float(2.0 ** (-dt / half_life))
+        velocity_time = half_life / np.log(2.0) * (1.0 - gamma)
+        return np.asarray(((1.0, velocity_time), (0.0, gamma)), dtype=np.float64), gamma
+
+    def _raw_forecast(self, track: _Track, decision_sample: int) -> float:
+        dt = max(0, decision_sample - track.last_observed) / 48_000.0
+        transition, _ = self._damped_transition(dt)
+        return float((transition @ np.asarray((track.unwrapped_theta, track.velocity_dps)))[0])
+
+    def _kalman_initialize(self, track: _Track, decision_sample: int) -> None:
+        track.filtered_theta = track.unwrapped_theta
+        track.filtered_velocity_dps = float(np.clip(
+            track.velocity_dps, -self.config.max_velocity_dps, self.config.max_velocity_dps
+        ))
+        track.kalman_covariance = np.diag((
+            self.config.kalman_measurement_std_deg**2,
+            self.config.kalman_process_velocity_std_dps**2,
+        )).astype(np.float64)
+        track.kalman_last_sample = decision_sample
+        track.kalman_last_trusted_theta = track.filtered_theta
+
+    def _kalman_predict(self, track: _Track, decision_sample: int, q_scale: float) -> None:
+        if track.filtered_theta is None or track.kalman_covariance is None:
+            self._kalman_initialize(track, decision_sample)
+            return
+        assert track.kalman_last_sample is not None
+        delta = decision_sample - track.kalman_last_sample
+        if delta < 0:
+            raise ValueError("Kalman sample time cannot move backwards")
+        if delta == 0:
+            return
+        dt = delta / 48_000.0
+        transition, _ = self._damped_transition(dt)
+        vector = transition @ np.asarray(
+            (track.filtered_theta, track.filtered_velocity_dps), dtype=np.float64
+        )
+        process = np.diag((
+            self.config.kalman_process_angle_std_deg**2,
+            self.config.kalman_process_velocity_std_dps**2,
+        )) * max(dt, 0.02) * q_scale
+        covariance = transition @ track.kalman_covariance @ transition.T + process
+        if not np.isfinite(vector).all() or not np.isfinite(covariance).all():
+            raise ValueError("non-finite damped circular Kalman prediction")
+        track.filtered_theta = float(vector[0])
+        track.filtered_velocity_dps = float(np.clip(
+            vector[1], -self.config.max_velocity_dps, self.config.max_velocity_dps
+        ))
+        track.kalman_covariance = covariance
+        track.kalman_last_sample = decision_sample
+
+    def _kalman_forecast(self, track: _Track, decision_sample: int) -> float:
+        if (
+            track.filtered_theta is None
+            or track.kalman_last_sample is None
+            or decision_sample < track.kalman_last_sample
+        ):
+            return self._raw_forecast(track, decision_sample)
+        dt = (decision_sample - track.kalman_last_sample) / 48_000.0
+        transition, _ = self._damped_transition(dt)
+        return float((transition @ np.asarray(
+            (track.filtered_theta, track.filtered_velocity_dps), dtype=np.float64
+        ))[0])
+
+    def _kalman_correct(
+        self,
+        track: _Track,
+        theta_deg: float,
+        r_scale: float,
+        measurement_confidence: float,
+    ) -> None:
+        assert track.filtered_theta is not None and track.kalman_covariance is not None
+        measurement = track.filtered_theta + _delta(theta_deg, track.filtered_theta)
+        h = np.asarray((1.0, 0.0), dtype=np.float64)
+        measurement_variance = (
+            self.config.kalman_measurement_std_deg**2
+            * r_scale
+            / measurement_confidence
+        )
+        innovation_variance = float(h @ track.kalman_covariance @ h + measurement_variance)
+        if not np.isfinite(innovation_variance) or innovation_variance <= 0:
+            raise ValueError("invalid damped circular Kalman innovation variance")
+        gain = track.kalman_covariance @ h / innovation_variance
+        vector = np.asarray(
+            (track.filtered_theta, track.filtered_velocity_dps), dtype=np.float64
+        )
+        vector += gain * (measurement - track.filtered_theta)
+        identity_minus_kh = np.eye(2) - np.outer(gain, h)
+        covariance = (
+            identity_minus_kh @ track.kalman_covariance @ identity_minus_kh.T
+            + np.outer(gain, gain) * measurement_variance
+        )
+        track.filtered_theta = float(vector[0])
+        track.filtered_velocity_dps = float(np.clip(
+            vector[1], -self.config.max_velocity_dps, self.config.max_velocity_dps
+        ))
+        track.kalman_covariance = covariance
+        track.kalman_last_trusted_theta = track.filtered_theta
+
+    def _kalman_output_theta(self, track: _Track) -> float:
+        assert track.filtered_theta is not None
+        covariance = track.kalman_covariance
+        if (
+            covariance is not None
+            and np.sqrt(max(0.0, float(covariance[0, 0])))
+            > self.config.kalman_prediction_freeze_std_deg
+            and track.kalman_last_trusted_theta is not None
+        ):
+            return float(track.kalman_last_trusted_theta % 360.0)
+        return float(track.filtered_theta % 360.0)
+
     def _new_id(self, session_id: str) -> int:
         track_id = self._next_by_session.setdefault(session_id, 1)
         self._next_by_session[session_id] = track_id + 1
@@ -428,9 +574,12 @@ class GlobalDirectionTracker:
             cost = np.full((size, size), 1.0e6, dtype=np.float64)
             for row, track_id in enumerate(track_ids):
                 track = self._tracks[track_id]
-                dt = max(0.0, (decision_sample - (self._last_sample or decision_sample)) / 48_000.0)
-                predicted = track.unwrapped_theta + track.velocity_dps * dt
-                gate = min(180.0, self.config.association_gate_deg + self.config.max_velocity_dps * dt)
+                predicted = (
+                    self._kalman_forecast(track, decision_sample)
+                    if kalman_enabled
+                    else self._raw_forecast(track, decision_sample)
+                )
+                gate = self._association_gate(track, decision_sample)
                 for column, candidate in enumerate(candidates):
                     distance = abs(_delta(candidate.theta_deg, predicted))
                     if distance <= gate:
@@ -520,6 +669,7 @@ class GlobalDirectionTracker:
         for index, candidate in enumerate(candidates):
             track_id = assigned.get(index)
             is_new = track_id is None
+            missed_before = 0
             if is_new:
                 if index not in allowed_births:
                     continue
@@ -535,6 +685,7 @@ class GlobalDirectionTracker:
                     )
             else:
                 track = self._tracks[track_id]
+                missed_before = max(0, decision_sample - track.last_observed)
                 if not kalman_enabled and track.stationary_locked:
                     elapsed = max(1, decision_sample - track.last_observed)
                     self._update_locked_stationary(track, candidate, decision_sample)
@@ -551,21 +702,22 @@ class GlobalDirectionTracker:
                 self._maybe_lock_stationary(track, decision_sample)
             if kalman_enabled:
                 if track.filtered_theta is None:
-                    track.filtered_theta = track.unwrapped_theta
-                    track.filtered_velocity_dps = track.velocity_dps
+                    self._kalman_initialize(track, decision_sample)
                 else:
-                    alpha = float(np.clip(q_scale / (q_scale + r_scale), 0.02, 0.98))
-                    predicted_filter = track.filtered_theta + track.filtered_velocity_dps * (elapsed / 48_000.0)
-                    track.filtered_theta = predicted_filter + alpha * _delta(
-                        candidate.theta_deg, predicted_filter
+                    self._kalman_predict(track, decision_sample, q_scale)
+                    reacquisition_confidence = 1.0 + min(
+                        1.0, missed_before / max(1, self.config.coasting_ttl_samples)
                     )
-                    track.filtered_velocity_dps = (
-                        (1.0 - alpha) * track.filtered_velocity_dps + alpha * track.velocity_dps
+                    self._kalman_correct(
+                        track, candidate.theta_deg, r_scale, reacquisition_confidence
                     )
-                output_theta = float(track.filtered_theta % 360.0)
+                output_theta = self._kalman_output_theta(track)
             else:
                 track.filtered_theta = None
                 track.filtered_velocity_dps = 0.0
+                track.kalman_covariance = None
+                track.kalman_last_sample = None
+                track.kalman_last_trusted_theta = None
                 output_theta = float(
                     (track.stationary_theta if track.stationary_locked else track.unwrapped_theta)
                     % 360.0
@@ -589,27 +741,19 @@ class GlobalDirectionTracker:
                 continue
             missed = decision_sample - track.last_observed
             if kalman_enabled:
-                # Prediction is an explicit Kalman-only output feature.  If
-                # Kalman was enabled after the last observation, initialize
-                # its forecast from the last real ID position instead of
-                # inventing a discontinuity or changing the trajectory ID.
-                base_theta = (
-                    track.unwrapped_theta
-                    if track.filtered_theta is None
-                    else track.filtered_theta
-                )
-                forecast_velocity = (
-                    track.velocity_dps
-                    if track.filtered_theta is None
-                    else track.filtered_velocity_dps
-                )
-                theta = (base_theta + forecast_velocity * missed / 48_000.0) % 360.0
+                self._kalman_predict(track, decision_sample, q_scale)
+                theta = self._kalman_output_theta(track)
             else:
                 # ID lifetime and association remain active with Kalman OFF,
                 # but the published/coasting angle is a zero-order hold of
                 # the last real observation.  Raw velocity may still be used
                 # internally by the global assignment and is never exposed
                 # as an OFF-mode angle prediction.
+                track.filtered_theta = None
+                track.filtered_velocity_dps = 0.0
+                track.kalman_covariance = None
+                track.kalman_last_sample = None
+                track.kalman_last_trusted_theta = None
                 theta = track.unwrapped_theta % 360.0
             active.append(TrackedDirection(
                 session_id, stream_epoch,

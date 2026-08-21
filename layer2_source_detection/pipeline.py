@@ -181,6 +181,8 @@ class Layer2Pipeline:
         return cls(ProbabilityGate(), scanner or RollingNormMusicScanner(), GlobalDirectionTracker(
             GlobalTrackerConfig(
                 association_gate_deg=tracking.association_gate_deg,
+                association_gate_base_deg=tracking.association_gate_base_deg,
+                association_gate_growth_dps=tracking.association_gate_growth_dps,
                 max_velocity_dps=tracking.max_velocity_dps,
                 confirmation_observations=tracking.confirmation_observations,
                 confirmation_window_samples=tracking.confirmation_window_ms * 48,
@@ -193,6 +195,11 @@ class Layer2Pipeline:
                 stationary_outlier_window_samples=tracking.stationary_outlier_window_ms * 48,
                 stationary_outlier_tolerance_deg=tracking.stationary_outlier_tolerance_deg,
                 stationary_exit_observations=tracking.stationary_exit_observations,
+                kalman_process_angle_std_deg=config.layer2.direction_kalman.process_angle_std_deg,
+                kalman_process_velocity_std_dps=config.layer2.direction_kalman.process_velocity_std_dps,
+                kalman_measurement_std_deg=config.layer2.direction_kalman.measurement_std_deg,
+                kalman_velocity_half_life_seconds=config.layer2.direction_kalman.velocity_half_life_seconds,
+                kalman_prediction_freeze_std_deg=config.layer2.direction_kalman.prediction_freeze_std_deg,
             )
         ))
 

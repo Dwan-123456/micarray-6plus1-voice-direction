@@ -116,14 +116,16 @@ layer2:
   # diagnostic switch that can bypass/reset tracking and skip L3/L5.
   direction_id_tracking:
     backend: global_assignment_v1
-    association_gate_deg: 45.0
+    # Confirmed IDs expand from 20 degrees according to time since their last
+    # real MUSIC observation, capped at 50 degrees. Tentative IDs stay at 20.
+    association_gate_deg: 50.0
+    association_gate_base_deg: 20.0
+    association_gate_growth_dps: 15.0
     max_velocity_dps: 60.0
-    # Current moving-source replay calibration: 6 matches in the rolling
-    # 200 ms window rejects short 2..5-hit false tracks without delaying the
-    # sustained speech trajectories beyond their next stable segment.
-    confirmation_observations: 6
+    # Three one-to-one matches in a rolling 200 ms window promote a tentative ID.
+    confirmation_observations: 3
     confirmation_window_ms: 200
-    coasting_ttl_ms: 3000
+    coasting_ttl_ms: 2000
     miss_cost: 1.0
     birth_cost: 1.0
     # Kalman关闭时，正式ID可在3秒圆周历史满足稳定条件后锁定到动态均值。

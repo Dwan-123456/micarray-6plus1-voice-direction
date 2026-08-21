@@ -102,9 +102,9 @@ WindowWorkItem
         圆周峰值 + 50° NMS → 最多3个方向
     永久在线全局一对一方向ID
         tentative → confirmed → coasting → deleted
-        滚动200 ms内累计至少6次匹配观测后confirmed
+        滚动200 ms内累计至少3次匹配观测后confirmed
         session内track_id单调且不复用；内部最多4轨，公共输出最多3轨
-        几何寿命按绝对sample计算，默认coasting TTL为3秒
+        几何寿命按绝对sample计算，默认coasting TTL为2秒
         L5概率用于Gate/coasting资格与噪声干扰标记，不拥有ID或几何寿命
     可选阻尼圆周Kalman（默认关闭）
         只平滑/预测theta_deg，不创建、重置或关闭ID
@@ -210,7 +210,7 @@ MUSIC维护多帧STFT的逐频7×7协方差，只使用7个物理麦和2000～40
 
 Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + rank-1 MUSIC`按逐频主特征值间隙、平面波拟合度以及IMCRA的SPP/先验SNR筛选可靠频点，每个可靠频点按单源噪声子空间产生方向票，再执行跨359°/0°连续的圆周核聚类。当前每个合格簇至少需要5个支持频点、覆盖4个等宽子带中的2个、加权支持率不低于0.25、圆周集中度不低于0.95。归一化峰值均严格大于0.70且组内任意峰圆周距离不超过40°时，先按唯一支持频点权重融合为圆周平均角，再执行50°圆周NMS；蓝色投票谱不做二次归一化。合格簇数量决定0～手动上限个候选，MDL在此路径只保留为诊断。`IMCRA噪声白化`只读取DecisionWindow已有的READY IMCRA `noise_psd`，构造逐频、逐麦的对角噪声协方差，同时白化观测协方差和steering；当前公开IMCRA不提供跨麦互谱，因此不宣称完整噪声CSM。对角模型以逐麦逆平方根直接缩放，等价于对角Cholesky但避免通用7×7分解；没有READY数据或有效对角项时本窗明确标记`unavailable`并安全退回未白化计算。L2队列丢窗是独立的Runtime过载状态，不代表Gate或L1 IMCRA不可用，Test UI会保留最近一次成功结果并标记`STALE | L2 DROPPED`。
 
-已获得L5人声确认的方向ID在最后一次MUSIC观测后的3秒几何TTL内优先保留L3 BF槽位。新MUSIC峰用于更新角度；短时漏检时按该ID的保持/预测角继续每20 ms生成BF音频，不让临时候选峰抢占槽位并在试听缓存中造成空hop。未获得L5人声证据的tentative/coasting轨迹仍不会因几何存活而自动获得连续L3音频。
+已获得L5人声确认的方向ID在最后一次MUSIC观测后的2秒几何TTL内优先保留L3 BF槽位。新MUSIC峰用于更新角度；短时漏检时按该ID的保持/预测角继续每20 ms生成BF音频，不让临时候选峰抢占槽位并在试听缓存中造成空hop。未获得L5人声证据的tentative/coasting轨迹仍不会因几何存活而自动获得连续L3音频。
 
 50°是同一窗口内两个候选之间的最小角距。完整360°空间响应会保留供诊断，公共候选只保留角度、分数和时间身份。
 
@@ -220,9 +220,9 @@ Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + ran
 
 方向ID追踪是Layer 2永远开启的正式能力。它使用全局一对一分配，把不同窗口中的观测关联为`tentative / confirmed / coasting / deleted`轨迹；`track_id`在同一session内单调分配且不复用，并原样进入L3、L5、Runtime、DecisionRecord v5、Development Test UI和Production UI。它只表示空间方向轨迹，不表示人物身份。
 
-新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少6次匹配观测才进入tracking `confirmed`。匹配无需覆盖全部20 ms窗口，未达到6次时保持tentative并在后续滚动窗口继续尝试。
+新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少3次匹配观测才进入tracking `confirmed`。匹配无需覆盖全部20 ms窗口，未达到3次时保持tentative并在后续滚动窗口继续尝试。tentative关联角距固定为20°；confirmed关联角距按距离该ID最后一次真实MUSIC观测的时间扩张：`min(50°, 20° + 15°/s × 漏检时长)`。
 
-Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking `confirmed`、至少收到一次L5正向人声反馈且未被标记为噪声干扰的ID。尚无人声证据的轨迹在有当前观测时仍可送往L3/L5分类，但不能靠自身维持Gate，也不会在失去观测后继续作为公共L3方向输出；其内部ID仍在3秒TTL内保留以便重新关联。
+Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking `confirmed`、至少收到一次L5正向人声反馈且未被标记为噪声干扰的ID。尚无人声证据的轨迹在有当前观测时仍可送往L3/L5分类，但不能靠自身维持Gate，也不会在失去观测后继续作为公共L3方向输出；其内部ID仍在2秒TTL内保留以便重新关联。
 
 圆周卡尔曼是独立的可选平滑器，默认关闭。开启后按权威ID平滑角度和角速度并允许短时预测；关闭、重新开启或调整Q/R都不会关闭追踪、重置已有ID或改变几何寿命。
 
@@ -336,7 +336,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 
 - 第一行是预降噪前Center麦克风原音参考；
 - 方向轨严格按L2权威`track_id`缓存和显示，Test UI不再按角度创建第二套ID；
-- confirmed方向短时漏检时可进入coasting并在3秒TTL内沿用同一ID；
+- confirmed方向短时漏检时可进入coasting并在2秒TTL内沿用同一ID；
 - 可通过按键切换`optimized`、`ds_baseline`、`loaded_mvdr_baseline`和
   `subband_robust_baseline`四种BF方法；
 - 五频段对照依次使用低频温和干扰感知MVDR+Wiener、WNG约束soft-LCMV、

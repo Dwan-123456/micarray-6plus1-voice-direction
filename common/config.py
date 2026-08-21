@@ -174,6 +174,8 @@ class Layer2DirectionKalmanConfig(StrictModel):
 class Layer2DirectionIdTrackingConfig(StrictModel):
     backend: Literal["global_assignment_v1"]
     association_gate_deg: float = Field(gt=0, le=180)
+    association_gate_base_deg: float = Field(default=20.0, gt=0, le=180)
+    association_gate_growth_dps: float = Field(default=15.0, ge=0, le=360)
     max_velocity_dps: float = Field(gt=0, le=360)
     confirmation_observations: int = Field(ge=1)
     confirmation_window_ms: int = Field(gt=0)
@@ -189,6 +191,8 @@ class Layer2DirectionIdTrackingConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_stationary_tracking(self) -> "Layer2DirectionIdTrackingConfig":
+        if self.association_gate_base_deg > self.association_gate_deg:
+            raise ValueError("ID关联基础角距不能大于最大角距")
         if self.stationary_inlier_tolerance_deg >= self.stationary_outlier_tolerance_deg:
             raise ValueError("静止ID内点角度范围必须小于退出判断角度范围")
         return self

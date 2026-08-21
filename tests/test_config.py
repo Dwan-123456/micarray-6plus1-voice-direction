@@ -27,14 +27,17 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.direction_kalman.max_velocity_dps == 60.0
     assert config.layer2.direction_kalman.enabled is False
     assert not hasattr(config.layer2.direction_id_tracking, "enabled")
-    assert config.layer2.direction_id_tracking.association_gate_deg == 45.0
-    assert config.layer2.direction_id_tracking.confirmation_observations == 6
+    assert config.layer2.direction_id_tracking.association_gate_deg == 50.0
+    assert config.layer2.direction_id_tracking.association_gate_base_deg == 20.0
+    assert config.layer2.direction_id_tracking.association_gate_growth_dps == 15.0
+    assert config.layer2.direction_id_tracking.confirmation_observations == 3
+    assert config.layer2.direction_id_tracking.confirmation_window_ms == 200
+    assert config.layer2.direction_id_tracking.coasting_ttl_ms == 2_000
     assert config.layer2.effective_order_limit == 3
     assert config.layer2.dpd_rank1_enabled is False
     assert config.layer2.dpd_peak_fusion_distance_deg == 40.0
     assert config.layer2.dpd_peak_fusion_min_normalized_score == 0.70
     assert config.layer2.noise_whitening_enabled is False
-    assert config.layer2.direction_id_tracking.coasting_ttl_ms == 3000
     assert config.layer2.direction_id_tracking.stationary_history_ms == 3000
     assert config.layer2.direction_id_tracking.stationary_inlier_ratio == 0.70
     assert config.layer2.direction_id_tracking.stationary_inlier_tolerance_deg == 15.0
@@ -203,7 +206,7 @@ def test_probability_gate_threshold_must_be_in_unit_interval(tmp_path):
     ("source", "replacement"),
     (
         ("backend: damped_circular_kalman_v2", "backend: unknown_tracker_v9"),
-        ("association_gate_deg: 45.0", "association_gate_deg: 181.0"),
+        ("association_gate_deg: 50.0", "association_gate_deg: 181.0"),
         ("measurement_std_deg: 5.0", "measurement_std_deg: 0.0"),
         ("process_noise_scale: 1.00", "process_noise_scale: 0.03"),
         ("max_missed_windows: 150", "max_missed_windows: -1"),

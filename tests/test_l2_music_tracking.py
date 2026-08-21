@@ -630,6 +630,75 @@ def test_tentative_confirmation_retries_in_a_rolling_sample_window() -> None:
     assert _select_l3_directions(confirmed, active) == confirmed
 
 
+def test_three_observations_within_200ms_confirm_tentative_track() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=50.0,
+        association_gate_base_deg=20.0,
+        association_gate_growth_dps=15.0,
+        max_velocity_dps=60.0,
+        confirmation_observations=3,
+        confirmation_window_samples=9_600,
+        coasting_ttl_samples=96_000,
+        miss_cost=1.0,
+        birth_cost=1.0,
+    ))
+    first, _ = _update(tracker, 15_360, (10.0,))
+    second, _ = _update(tracker, 19_200, (11.0,))
+    third, active = _update(tracker, 23_040, (12.0,))
+
+    assert first[0].track_state == second[0].track_state == "tentative"
+    assert third[0].track_state == "confirmed"
+    assert first[0].track_id == second[0].track_id == third[0].track_id
+    assert _select_l3_directions(third, active) == third
+
+
+def test_confirmed_association_gate_expands_from_last_real_observation() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=50.0,
+        association_gate_base_deg=20.0,
+        association_gate_growth_dps=15.0,
+        max_velocity_dps=60.0,
+        confirmation_observations=2,
+        confirmation_window_samples=9_600,
+        coasting_ttl_samples=96_000,
+        miss_cost=1.0,
+        birth_cost=1.0,
+    ))
+    first, _ = _update(tracker, 15_360, (0.0,), kalman_enabled=False)
+    confirmed, _ = _update(tracker, 16_320, (0.0,), kalman_enabled=False)
+    for sample in range(17_280, 64_320, 960):
+        _update(tracker, sample, (), kalman_enabled=False)
+    reacquired, _ = _update(tracker, 64_320, (34.0,), kalman_enabled=False)
+
+    assert confirmed[0].track_state == "confirmed"
+    assert first[0].track_id == reacquired[0].track_id
+    assert reacquired[0].is_observed
+
+
+def test_kalman_coasting_velocity_decays_with_half_second_half_life() -> None:
+    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
+        association_gate_deg=50.0,
+        association_gate_base_deg=20.0,
+        association_gate_growth_dps=15.0,
+        max_velocity_dps=60.0,
+        confirmation_observations=2,
+        confirmation_window_samples=9_600,
+        coasting_ttl_samples=200_000,
+        miss_cost=1.0,
+        birth_cost=1.0,
+        kalman_velocity_half_life_seconds=0.5,
+    ))
+    _update(tracker, 15_360, (0.0,), kalman_enabled=True)
+    observed, _ = _update(tracker, 16_320, (10.0,), kalman_enabled=True)
+    active = ()
+    for sample in range(17_280, 112_321, 960):
+        _, active = _update(tracker, sample, (), kalman_enabled=True)
+
+    track = next(iter(tracker._tracks.values()))
+    assert abs(track.filtered_velocity_dps) < 5.0
+    assert _circular_error_deg(active[0].theta_deg, observed[0].theta_deg) < 50.0
+
+
 def test_tracker_blocks_birth_for_saturated_mdl_window() -> None:
     tracker = _tracker()
     directions, active = tracker.update(
@@ -979,10 +1048,10 @@ def test_normal_track_moving_near_noise_track_is_not_merged_into_it() -> None:
     noise_id = noise[0].track_id
     tracker._tracks[noise_id].noise_interference = True
 
-    moving, _ = _update(tracker, first_sample + 960, (120.0,))
+    moving, _ = _update(tracker, first_sample + 960, (110.0,))
     moving_id = moving[0].track_id
     assert moving_id != noise_id
-    moved, active = _update(tracker, first_sample + 1_920, (85.0,))
+    moved, active = _update(tracker, first_sample + 1_920, (94.0,))
     assert moved[0].track_id == moving_id
     assert any(item.track_id == noise_id and item.is_noise_interference for item in active)
     for offset in range(5):
