@@ -2,7 +2,7 @@
 
 > 当前开发版本：`1.3.1`；Layer 2公开版本：`1.1`。最终发布基线为`v1.2.4`。
 
-> **开发状态：项目 `1.3.1`。** 实时链运行到L3与`TrackAudioStreamHub`；采集停止并排空后，Hub封存按ID拼接的完整长音频，再进入离线L4与L5。L4已接入官方MossFormer2/TIGER可选对比模型、基于L2方向数最大值的1/2人路由、统一48→16 kHz重采样、2～4 kHz完整音频匹配和离线结果契约。UI只预留接口，本次未实现离线作业页面。自动化验收不替代真实双人录音和GPU质量门禁。
+> **开发状态：项目 `1.3.1`。** 实时链运行到L3与`TrackAudioStreamHub`；采集停止并排空后，Hub封存按ID拼接的完整长音频。Test UI手动发送到L4后统一降为16 kHz，完成1/2人路由、MossFormer2/TIGER分离和2～4 kHz匹配；L4输出以原生16 kHz试听，再由第二个按钮把同一音频直接发送到唯一的离线L5。自动化验收不替代真实双人录音和GPU质量门禁。
 
 > 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L5、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
@@ -128,15 +128,14 @@ WindowWorkItem
     每个hop使用自己的IMCRA概率执行imcra_probability_rms_v1（默认开启，可实时切换）
     RMS目标-23 dBFS、只放大；新增增益受-3 dBFS峰值保护
     每个方向维护最长3200 ms连续48 kHz缓冲
-    同一补偿后样本同时供Test UI试听、RecordingStore逐ID长WAV和L5 CNN使用
-    ↓ 有界L5 latest-wins队列
-【已完成】Layer 5：按公共track_id判断各方向是否为人声
-    输入：由完整20 ms hop组成的可变长度ContinuousTrackAudio
-    ↓ 最长3200 ms连续48 kHz轨降采样到16 kHz
+    同一补偿后样本供L3试听、RecordingStore逐ID长WAV和停机封存
+    ↓ 手动发送到L4，L4统一48→16 kHz并输出可试听WAV
+【已完成】Layer 5：仅接收L4输出并按公共track_id判断人声
+    输入：L4完整16 kHz单声道音频；不再重采样
     ↓ NVIDIA Frame VAD Multilingual MarbleNet（预训练直接接入，未微调）
     ↓ 连续20 ms帧概率；窗口结果只聚合最新80 ms内连续3帧
     ↓ VoiceDetection(track_id, theta_deg, probability, is_voice)
-    ↓ 按精确ID回填连续轨最新20 ms：概率 + Voice/Non-Voice
+    ↓ 将逐20 ms概率和Voice/Non-Voice返回L4预览条标黄
     ↓
 【已完成】ResultJoiner与有序提交
     按WindowKey和track_id逐项校验并合并L2/L3/L5终态
@@ -249,7 +248,7 @@ Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`�
 
 ### 8. L5人声分类
 
-Layer 5判断每条连续方向轨中的逐20 ms人声状态。公共轨服务先把L3重叠窗变成按ID连续的48 kHz长音频，并按每个20 ms自己的IMCRA概率执行受限响度补偿；采集结束后，NVIDIA Frame-VAD适配器把整条长音频降采样到16 kHz，一次输出与48 kHz每960样本严格对齐的原始20 ms人声概率。完整序列的连续3帧最大均值仅作为整轨概览，不能覆盖逐帧结果。当前CNN采用NVIDIA发布的多语言预训练模型；尚未使用目标阵列数据微调。
+Layer 5只判断L4输出中的逐20 ms人声状态。公共轨服务先把L3重叠窗变成按ID连续的48 kHz长音频；采集结束后，L4只执行一次48→16 kHz并把该16 kHz结果同时用于试听和L5。NVIDIA Frame-VAD直接读取每20 ms 320样本，一次输出逐帧人声概率，不再进行任何重采样。完整序列的连续3帧最大均值仅作为整轨概览，不能覆盖逐帧结果。
 
 Test UI与CNN读取同一份补偿后连续轨。Test UI中的响度补偿开关默认开启，可实时切换且不清空轨道；这里只调整数字波形增益，不是dB SPL测量。
 

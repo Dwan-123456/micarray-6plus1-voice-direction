@@ -7,8 +7,6 @@ from typing import Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from common.timing import DECISION_HOP_SAMPLES
-
 from .gain_compensation import InputGainCompensationDiagnostic
 
 
@@ -35,21 +33,22 @@ class Layer5AudioSegment:
             raise ValueError("invalid L5 audio stream/window identity")
         if not np.isfinite(self.theta_deg) or not 0.0 <= self.theta_deg < 360.0:
             raise ValueError("L5 audio theta_deg must be finite and in [0,360)")
-        if self.sample_rate != 48_000:
-            raise ValueError("L5 audio must be sampled at 48 kHz")
+        if self.sample_rate not in {16_000, 48_000}:
+            raise ValueError("L5 audio must be sampled at 16 or 48 kHz")
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("L5 audio track_id must be a positive integer")
         waveform = np.asarray(self.waveform)
+        hop_samples = self.sample_rate // 50
         if (
             waveform.ndim != 1
-            or len(waveform) < DECISION_HOP_SAMPLES
-            or len(waveform) % DECISION_HOP_SAMPLES
+            or len(waveform) < hop_samples
+            or len(waveform) % hop_samples
             or waveform.dtype != np.float32
             or not waveform.flags.c_contiguous
             or not np.isfinite(waveform).all()
         ):
             raise ValueError("L5 audio must be finite C-contiguous float32 complete 20 ms hops")
-        expected_hops = len(waveform) // DECISION_HOP_SAMPLES
+        expected_hops = len(waveform) // hop_samples
         probabilities = self.array_source_probabilities_20ms or (None,) * expected_hops
         if len(probabilities) != expected_hops or any(
             value is not None and (not np.isfinite(value) or not 0.0 <= value <= 1.0)

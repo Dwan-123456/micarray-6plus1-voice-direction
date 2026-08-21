@@ -23,6 +23,19 @@
 
 ---
 
+## 2026-08-21 — L4试听与离线L5统一使用原生16 kHz输出
+
+- **版本/标签**：当前`1.3.1`开发线L3→L4→L5离线工作流修复；不创建或移动发布标签。
+- **L4输出与试听**：`Layer4ProcessedAudio`终端波形改为完整16 kHz、每20 ms 320样本；Test UI写标准16 kHz单声道PCM16 WAV。播放器解析WAV容器后按16 kHz直接建立PortAudio输出流，L3裸float32试听仍保持48 kHz，明确禁止L4试听16→48 kHz重采样。
+- **L5接线**：点击“发送到L5”时直接传递L4的同一份16 kHz波形；离线NVIDIA Frame-VAD新增原生16 kHz逐帧入口并拒绝48 kHz长音频，删除L4的16→48 kHz回升及L5再次48→16 kHz降采样。逐20 ms概率仍按原ID/角度返回，只用于L4预览条黄色标记。
+- **实时边界**：Runtime继续只运行L2、L3和TrackAudioStreamHub；L3 worker不再创建未使用的实时L5音频输入，逐窗L5仅保留`offline_after_l4`跳过审计，不执行CNN。
+- **持久化与兼容**：新离线L4结果WAV和manifest内嵌输出统一为16 kHz；这是当前开发线离线输出契约变更，不兼容依赖旧`waveform_48k/output_waveform_48k`字段的未发布调用方。
+- **验证**：覆盖L4 WAV采样率/帧数、PCM16逐样本解码、16 kHz声卡流建立、L4同一波形直送L5、逐20 ms结果回写及官方MarbleNet真实语音帧检测；聚焦和完整测试结果记录于本次提交。
+- **未改变**：L1、L2 MUSIC/ID/Kalman、L3 BF数值算法、L4人数分类/两种分离模型/2～4 kHz匹配、L5模型权重与UI布局均无变化。
+- **Git LFS资产**：无变化。
+
+---
+
 ## 2026-08-21 — 修复L4试听将PCM16 WAV误读为裸float32
 
 - **版本/标签**：当前`1.3.1`开发线Development Test UI试听修复；不创建或移动发布标签。

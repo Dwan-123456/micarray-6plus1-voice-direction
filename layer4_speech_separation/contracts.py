@@ -191,7 +191,7 @@ class Layer4ProcessedAudio:
     selected: Layer4PrimarySelection | None
     output_asset_id: str
     output_sha256: str
-    waveform_48k: NDArray[np.float32]
+    waveform_16k: NDArray[np.float32]
     metadata: Mapping[str, object]
 
     def __post_init__(self) -> None:
@@ -205,10 +205,10 @@ class Layer4ProcessedAudio:
             char not in "0123456789abcdef" for char in self.output_sha256
         ):
             raise ValueError("processed L4 output sha256 must be lowercase hexadecimal")
-        waveform = _readonly_float32_1d(self.waveform_48k, "processed L4 waveform")
-        if len(waveform) != len(self.source.waveform) or len(waveform) % 960:
-            raise ValueError("processed L4 audio must preserve complete 48 kHz Hub hops")
-        object.__setattr__(self, "waveform_48k", waveform)
+        waveform = _readonly_float32_1d(self.waveform_16k, "processed L4 waveform")
+        if len(waveform) * 3 != len(self.source.waveform) or len(waveform) % 320:
+            raise ValueError("processed L4 audio must preserve complete 16 kHz 20 ms hops")
+        object.__setattr__(self, "waveform_16k", waveform)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 

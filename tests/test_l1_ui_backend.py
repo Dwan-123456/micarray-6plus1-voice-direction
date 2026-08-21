@@ -187,7 +187,7 @@ def test_l4_preview_player_decodes_pcm16_wav_instead_of_memmapping_it_as_float32
         sample_rate=48_000, volume=1.0, loop_gap_ms=0, autoplay=False,
         fade_ms=0,
     )
-    time_axis = np.arange(48_000, dtype=np.float64) / 48_000
+    time_axis = np.arange(16_000, dtype=np.float64) / 16_000
     audio = np.ascontiguousarray(
         0.1 * np.sin(2 * np.pi * 1_000 * time_axis), dtype=np.float32,
     )
@@ -196,7 +196,7 @@ def test_l4_preview_player_decodes_pcm16_wav_instead_of_memmapping_it_as_float32
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(48_000)
+        output.setframerate(16_000)
         output.writeframes(pcm.tobytes())
 
     player.load_wav_file(path)
@@ -204,6 +204,7 @@ def test_l4_preview_player_decodes_pcm16_wav_instead_of_memmapping_it_as_float32
     expected = pcm.astype(np.float32) / 32768.0
     assert len(player._audio) == len(expected)
     assert not isinstance(player._audio, np.memmap)
+    assert player._audio_sample_rate == 16_000
     assert np.isfinite(player._audio).all()
     np.testing.assert_allclose(player._audio, expected, atol=1e-7)
     player.close()
@@ -217,11 +218,44 @@ def test_l4_preview_player_rejects_wrong_wav_format(tmp_path):
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(16_000)
+        output.setframerate(48_000)
         output.writeframes(np.zeros(160, dtype="<i2").tobytes())
 
-    with pytest.raises(ValueError, match="48000 Hz mono PCM16"):
+    with pytest.raises(ValueError, match="16000 Hz mono PCM16"):
         player.load_wav_file(path)
+    player.close()
+
+
+def test_l4_preview_opens_a_native_16khz_output_stream(tmp_path, monkeypatch):
+    created = []
+
+    class FakeStream:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+            self.active = False
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        def close(self):
+            pass
+
+    path = tmp_path / "l4.wav"
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(16_000)
+        output.writeframes(np.zeros(320, dtype="<i2").tobytes())
+    monkeypatch.setattr(PreviewPlayer, "_default_output_device", staticmethod(lambda: 7))
+    monkeypatch.setattr("gui.dev_test_ui.preview_player.sd.OutputStream", FakeStream)
+    player = PreviewPlayer(sample_rate=48_000, volume=1.0, loop_gap_ms=0, autoplay=False)
+    player.load_wav_file(path)
+
+    assert player.play() is True
+    assert created[-1]["samplerate"] == 16_000
     player.close()
 
 

@@ -91,7 +91,6 @@ class _L5Work:
     work_item: WindowWorkItem
     l2: L2StageResult
     l3: L3StageResult
-    inputs: tuple[Layer5AudioSegment, ...]
 
 
 @dataclass(slots=True)
@@ -2119,8 +2118,9 @@ class ApplicationRuntime:
                         ),
                         l2_direction_count=len(candidates),
                     )
-                    l5_inputs = self._layer5_inputs_from_stream(audio_batch)
-                    self._validate_direction_outputs("track audio", candidates, l5_inputs)
+                    self._validate_direction_outputs(
+                        "track audio", candidates, audio_batch.continuous_audio
+                    )
                     if self.dev_audio_tracker is not None:
                         try:
                             self.dev_audio_tracker.consume_stream_batch(
@@ -2182,7 +2182,7 @@ class ApplicationRuntime:
                 self._joiner_submit(lambda: self._result_joiner.submit_l3(stage))
                 if stage.state is StageState.COMPLETED:
                     if not self._enqueue_l5_latest(
-                        _L5Work(item.work_item, item.l2, stage, l5_inputs)
+                        _L5Work(item.work_item, item.l2, stage)
                     ):
                         break
                 else:
@@ -2880,28 +2880,6 @@ class ApplicationRuntime:
             for item in l3_output.enhanced_audio[start:stop]
         )
 
-    @staticmethod
-    def _layer5_audio_segments(
-        l3_output,
-        stop: int | None = None,
-        probabilities_20ms: tuple[float | None, ...] = (),
-    ) -> tuple[Layer5AudioSegment, ...]:
-        """Adapt the formal immutable L3 audio batch to L5's audio contract."""
-        return tuple(
-            Layer5AudioSegment(
-                item.session_id,
-                item.stream_epoch,
-                item.window_id,
-                item.decision_sample,
-                item.theta_deg,
-                item.sample_rate,
-                item.enhanced_audio,
-                probabilities_20ms,
-                getattr(item, "track_id", None),
-            )
-            for item in l3_output.enhanced_audio[:stop]
-        )
-
     def _context_probabilities_20ms(self, window: DecisionWindow) -> tuple[float | None, ...]:
         spec = getattr(
             self,
@@ -2937,33 +2915,6 @@ class ApplicationRuntime:
             )
         return probabilities
 
-    def _layer5_inputs_from_output(self, window, l3_output, formal_count: int):
-        return self._layer5_audio_segments(
-            l3_output, formal_count, self._context_probabilities_20ms(window)
-        )
-
-    @staticmethod
-    def _layer5_inputs_from_stream(batch) -> tuple[Layer5AudioSegment, ...]:
-        """Adapt immutable compensated continuous tracks to the L5 contract."""
-        return tuple(
-            Layer5AudioSegment(
-                item.session_id,
-                item.stream_epoch,
-                item.window_id,
-                item.decision_sample,
-                item.theta_deg,
-                48_000,
-                item.waveform,
-                item.probabilities_20ms,
-                item.track_id,
-                item.effective_start_sample,
-                item.effective_end_sample,
-                True,
-                item.gain_diagnostic,
-            )
-            for item in batch.continuous_audio
-        )
-
     @staticmethod
     def _validate_direction_outputs(layer: str, candidates, outputs) -> None:
         """Enforce exact, ordered one-output-per-candidate stage contracts."""
@@ -2998,11 +2949,8 @@ class ApplicationRuntime:
         with self._l3_mode_lock:
             mode = self._l3_processing_mode
         l3_output = self._layer3.process(window, candidates, self._geometry, mode=mode)
-        formal_count = len(candidates)
         self._validate_direction_outputs("L3", candidates, l3_output.enhanced_audio)
-        formal_previews = self._beamform_previews(l3_output, 0, formal_count)
-        l5_inputs = self._layer5_inputs_from_output(window, l3_output, formal_count)
-        return formal_previews, l5_inputs
+        return self._beamform_previews(l3_output, 0, len(candidates))
 
     def set_light(self, enabled: bool) -> None:
         packet = led_command(enabled)

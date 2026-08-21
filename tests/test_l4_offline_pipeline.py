@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from types import SimpleNamespace
+import wave
 
 import numpy as np
 import pytest
@@ -55,7 +56,8 @@ class _L5:
 
     def process_long_audio_20ms(self, item):
         self.calls += 1
-        count = len(item.waveform) // 960
+        assert item.sample_rate == 16_000
+        count = len(item.waveform) // 320
         probabilities = np.linspace(0.1, 0.9, count, dtype=np.float32)
         return SimpleNamespace(
             model_id="l5",
@@ -135,6 +137,9 @@ def test_l4_and_l5_can_only_run_as_two_explicit_ui_send_steps() -> None:
     try:
         store.set_processed(processed)
         assert store.audio_path(9).is_file()
+        with wave.open(str(store.audio_path(9)), "rb") as preview:
+            assert preview.getframerate() == 16_000
+            assert preview.getnframes() == len(processed[0].waveform_16k)
         assert all(item is None for item in store.snapshots()[0].voice_annotations_20ms)
         store.apply_l5(results)
         annotations = store.snapshots()[0].voice_annotations_20ms
@@ -201,5 +206,5 @@ def test_l4_output_is_attenuated_before_pcm16_clipping() -> None:
         default_backend="mossformer2_ss_16k",
     )
     processed = pipeline.process_l4(_source((1, 1)), request_id="peak-safe")
-    assert np.max(np.abs(processed.waveform_48k)) <= 32767.0 / 32768.0
+    assert np.max(np.abs(processed.waveform_16k)) <= 32767.0 / 32768.0
     assert float(processed.metadata["pcm16_peak_safety_gain"]) < 1.0

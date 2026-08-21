@@ -49,9 +49,9 @@ class OfflineLayer4UiStore:
             with wave.open(str(path), "wb") as writer:
                 writer.setnchannels(1)
                 writer.setsampwidth(2)
-                writer.setframerate(48_000)
-                writer.writeframes(self._pcm16(item.waveform_48k))
-            hops = len(item.waveform_48k) // 960
+                writer.setframerate(16_000)
+                writer.writeframes(self._pcm16(item.waveform_16k))
+            hops = len(item.waveform_16k) // 320
             self._tracks[track_id] = _StoredTrack(item, path, (None,) * hops)
 
     def apply_l5(self, results: tuple[Layer4OfflineResult, ...]) -> None:
@@ -94,7 +94,7 @@ class OfflineLayer4UiStore:
         outputs = []
         for track_id, stored in self._tracks.items():
             item = stored.processed
-            hops = item.waveform_48k.reshape(-1, 960)
+            hops = item.waveform_16k.reshape(-1, 320)
             envelope = tuple(float(value) for value in np.max(np.abs(hops), axis=1))
             outputs.append(TrackedAudioSnapshot(
                 item.source.session_id,
@@ -103,7 +103,7 @@ class OfflineLayer4UiStore:
                 "ended",
                 item.source.theta_deg,
                 1.0,
-                len(item.waveform_48k),
+                len(item.waveform_16k) * 3,
                 waveform_envelope=envelope,
                 voice_annotations_20ms=stored.annotations,
             ))

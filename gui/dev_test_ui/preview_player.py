@@ -22,10 +22,14 @@ class PreviewPlayer:
         fade_ms: int = 5,
     ) -> None:
         self.sample_rate = sample_rate
+        self._audio_sample_rate = sample_rate
+        self._stream_sample_rate: int | None = None
         self.volume = float(volume)
         self.peak_amplitude = 10.0 ** (float(peak_dbfs) / 20.0)
-        self.fade_samples = round(sample_rate * int(fade_ms) / 1000)
-        self.loop_gap = round(sample_rate * loop_gap_ms / 1000)
+        self._fade_ms = int(fade_ms)
+        self._loop_gap_ms = int(loop_gap_ms)
+        self.fade_samples = round(sample_rate * self._fade_ms / 1000)
+        self.loop_gap = round(sample_rate * self._loop_gap_ms / 1000)
         self.loop = bool(autoplay)
         self._lock = threading.Lock()
         self._audio = np.zeros(0, dtype=np.float32)
@@ -79,7 +83,10 @@ class PreviewPlayer:
             self._last_error = None
             return error
 
-    def load(self, waveform: np.ndarray) -> None:
+    def load(self, waveform: np.ndarray, *, sample_rate: int | None = None) -> None:
+        audio_sample_rate = self.sample_rate if sample_rate is None else int(sample_rate)
+        if audio_sample_rate <= 0:
+            raise ValueError("preview sample rate must be positive")
         audio = np.asarray(waveform, dtype=np.float32).copy()
         audio -= np.mean(audio, dtype=np.float64)
         peak = float(np.max(np.abs(audio), initial=0.0))
@@ -87,7 +94,8 @@ class PreviewPlayer:
         # boost a quiet signal/noise floor to the configured peak target.
         if peak > self.peak_amplitude:
             audio *= self.peak_amplitude / peak
-        fade = min(self.fade_samples, len(audio) // 2)
+        fade_samples = round(audio_sample_rate * self._fade_ms / 1000)
+        fade = min(fade_samples, len(audio) // 2)
         if fade:
             ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
             audio[:fade] *= ramp
@@ -95,6 +103,8 @@ class PreviewPlayer:
         with self._lock:
             self._release_audio_locked()
             self._audio, self._position, self._gap_remaining = audio, 0, 0
+            self._audio_sample_rate = audio_sample_rate
+            self.loop_gap = round(audio_sample_rate * self._loop_gap_ms / 1000)
             self._last_error = None
 
     def load_file(
@@ -146,6 +156,8 @@ class PreviewPlayer:
         with self._lock:
             self._release_audio_locked()
             self._audio, self._position, self._gap_remaining = audio, 0, 0
+            self._audio_sample_rate = self.sample_rate
+            self.loop_gap = round(self.sample_rate * self._loop_gap_ms / 1000)
             self._dc_offset = dc_offset
             self._gain = playback_gain
             self._callback_fade_samples = min(self.fade_samples, len(audio) // 2)
@@ -154,7 +166,7 @@ class PreviewPlayer:
             self._last_error = None
 
     def load_wav_file(self, path: str | Path) -> None:
-        """Decode a 48 kHz mono PCM16 WAV before sending float32 to PortAudio."""
+        """Decode L4's native 16 kHz mono PCM16 WAV for direct playback."""
 
         path = Path(path)
         if not path.is_file() or path.stat().st_size == 0:
@@ -168,14 +180,12 @@ class PreviewPlayer:
                 payload = source.readframes(frame_count)
         except (EOFError, wave.Error) as exc:
             raise ValueError("invalid L4 WAV preview file") from exc
-        if channels != 1 or sample_width != 2 or sample_rate != self.sample_rate:
-            raise ValueError(
-                f"L4 WAV preview must be {self.sample_rate} Hz mono PCM16"
-            )
+        if channels != 1 or sample_width != 2 or sample_rate != 16_000:
+            raise ValueError("L4 WAV preview must be 16000 Hz mono PCM16")
         if frame_count <= 0 or len(payload) != frame_count * sample_width:
             raise ValueError("invalid L4 WAV preview payload")
         audio = np.frombuffer(payload, dtype="<i2").astype(np.float32) / 32768.0
-        self.load(audio)
+        self.load(audio, sample_rate=sample_rate)
 
     def _release_audio_locked(self) -> None:
         if isinstance(self._audio, np.memmap):
@@ -214,7 +224,12 @@ class PreviewPlayer:
     def _ensure_output_stream(self) -> None:
         desired_device = self._default_output_device()
         stream = self._stream
-        stale = stream is None or self._stream_device != desired_device or self._stream_faulted
+        stale = (
+            stream is None
+            or self._stream_device != desired_device
+            or self._stream_sample_rate != self._audio_sample_rate
+            or self._stream_faulted
+        )
         if stream is not None and not stale:
             try:
                 stale = not bool(stream.active)
@@ -223,6 +238,7 @@ class PreviewPlayer:
         if stale:
             self._stream = None
             self._stream_device = None
+            self._stream_sample_rate = None
             self._stream_faulted = False
             try:
                 self._dispose_stream(stream)
@@ -230,7 +246,7 @@ class PreviewPlayer:
                 pass
             replacement = sd.OutputStream(
                 device=desired_device,
-                samplerate=self.sample_rate,
+                samplerate=self._audio_sample_rate,
                 channels=1,
                 dtype="float32",
                 callback=self._callback,
@@ -238,6 +254,7 @@ class PreviewPlayer:
             replacement.start()
             self._stream = replacement
             self._stream_device = desired_device
+            self._stream_sample_rate = self._audio_sample_rate
 
     def play(self) -> bool:
         with self._lock:
@@ -289,6 +306,7 @@ class PreviewPlayer:
         stream = self._stream
         self._stream = None
         self._stream_device = None
+        self._stream_sample_rate = None
         self._stream_faulted = False
         try:
             self._dispose_stream(stream)

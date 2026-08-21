@@ -174,12 +174,10 @@ def test_official_marblenet_long_audio_returns_finite_frame_aligned_probabilitie
     plugin = NvidiaMarbleNetPlugin("nv_marblenet_baseline_v1", ARTIFACT, device="cpu")
     sample_rate, audio = wavfile.read(ARTIFACT / "source" / "smoke_speech.wav")
     audio = audio.astype(np.float32) / 32768.0
-    long_audio = np.ascontiguousarray(
-        resample_poly(audio, 48_000, sample_rate).astype(np.float32)[17_280:48_000]
-    )
-    prediction = plugin.predict_20ms(long_audio)
+    long_audio = np.ascontiguousarray(audio[5_760:16_000])
+    prediction = plugin.predict_16k_20ms(long_audio)
 
-    assert len(prediction.probabilities_20ms) == len(long_audio) // 960
+    assert len(prediction.probabilities_20ms) == len(long_audio) // 320
     assert np.isfinite(prediction.probabilities_20ms).all()
     assert np.max(prediction.probabilities_20ms) > 0.70
 
@@ -243,7 +241,7 @@ def test_nvidia_long_audio_adapter_returns_exactly_one_probability_per_20ms() ->
     plugin.manifest = {"architecture_id": "spy", "source_model": "NVIDIA frame VAD"}
     plugin.device = torch.device("cpu")
     plugin.model = _FrameSpyModel()
-    prediction = plugin.predict_20ms(np.zeros(5 * 960, dtype=np.float32))
+    prediction = plugin.predict_16k_20ms(np.zeros(5 * 320, dtype=np.float32))
 
     assert observed["shape"] == (1, 5 * 320)
     assert len(prediction.probabilities_20ms) == 5
@@ -263,7 +261,7 @@ def test_layer5_long_audio_engine_preserves_frame_probabilities_and_thresholds_e
         def predict(self, waveforms):
             return ModelPrediction(self.model_id, np.full(len(waveforms), 0.5, np.float32), 0.0, {})
 
-        def predict_20ms(self, waveform):
+        def predict_16k_20ms(self, waveform):
             return FrameModelPrediction(
                 self.model_id,
                 np.asarray((0.1, 0.8, 0.9, 0.2), np.float32),
@@ -272,8 +270,8 @@ def test_layer5_long_audio_engine_preserves_frame_probabilities_and_thresholds_e
             )
 
     item = Layer5AudioSegment(
-        "session", 0, 4, 3_840, 10.0, 48_000,
-        np.zeros(4 * 960, np.float32),
+        "session", 0, 4, 1_280, 10.0, 16_000,
+        np.zeros(4 * 320, np.float32),
     )
     result = Layer5Engine(
         _FramePlugin(), threshold=0.7,
@@ -386,9 +384,9 @@ def test_layer5_contract_rejects_old_spectrogram_shape_and_wrong_sample_rate():
         Layer5AudioSegment(
             "session", 0, 1, 7_680, 10.0, 48_000, np.zeros((17, 169), np.float32)
         )
-    with pytest.raises(ValueError, match="48 kHz"):
+    with pytest.raises(ValueError, match="16 or 48 kHz"):
         Layer5AudioSegment(
-            "session", 0, 1, 7_680, 10.0, 16_000, np.zeros(7_680, np.float32)
+            "session", 0, 1, 7_680, 10.0, 44_100, np.zeros(7_680, np.float32)
         )
 
 

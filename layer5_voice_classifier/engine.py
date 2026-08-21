@@ -144,30 +144,40 @@ class NvidiaMarbleNetPlugin:
             },
         )
 
-    def predict_20ms(self, waveform_48k: np.ndarray) -> FrameModelPrediction:
-        """Run NVIDIA frame VAD once and expose one raw probability per 20 ms input hop."""
+    def predict_16k_20ms(self, waveform_16k: np.ndarray) -> FrameModelPrediction:
+        """Run frame VAD directly on L4's native 16 kHz terminal audio."""
 
-        waveform = np.asarray(waveform_48k)
+        waveform = np.asarray(waveform_16k)
         if (
             waveform.ndim != 1
-            or len(waveform) < 960
-            or len(waveform) % 960
+            or len(waveform) < 320
+            or len(waveform) % 320
             or waveform.dtype != np.float32
             or not waveform.flags.c_contiguous
             or not np.isfinite(waveform).all()
         ):
             raise ValueError(
-                "L5 long audio must be finite C-contiguous float32 mono 48 kHz audio "
+                "L5 long audio must be finite C-contiguous float32 mono 16 kHz audio "
                 "with complete 20 ms hops"
             )
+        return self._predict_16k_20ms(
+            waveform,
+            input_adapter="16k_l4_direct_v1",
+        )
+
+    def _predict_16k_20ms(
+        self,
+        audio_16k: np.ndarray,
+        *,
+        input_adapter: str,
+    ) -> FrameModelPrediction:
         started = perf_counter()
-        audio_16k = self.resampler.to_16k(waveform)
         audio = torch.from_numpy(audio_16k).unsqueeze(0).to(self.device)
         with torch.inference_mode():
             logits, lengths = self.model(audio)
             frame_probabilities = logits.softmax(dim=-1)[0, :, 1]
         model_frames = int(lengths[0].item())
-        hop_count = len(waveform) // 960
+        hop_count = len(audio_16k) // 320
         if model_frames < hop_count:
             raise RuntimeError(
                 f"NVIDIA frame VAD returned {model_frames} frames for {hop_count} audio hops"
@@ -185,8 +195,8 @@ class NvidiaMarbleNetPlugin:
             {
                 "architecture": self.manifest["architecture_id"],
                 "source_model": self.manifest["source_model"],
-                "input_adapter": "48k_long_audio_to_16k_polyphase_v1",
-                "input_samples_48k": len(waveform),
+                "input_adapter": input_adapter,
+                "input_samples_16k": len(audio_16k),
                 "resampled_samples": len(audio_16k),
                 "frame_shift_ms": 20,
                 "model_frame_count": model_frames,
@@ -299,9 +309,12 @@ class Layer5Engine:
     def process_long_audio_20ms(self, item: Layer5AudioSegment) -> Layer5LongAudioResult:
         """Return raw NVIDIA probabilities aligned to every complete 20 ms input hop."""
 
-        predictor = getattr(self.primary, "predict_20ms", None)
+        if item.sample_rate != 16_000:
+            raise ValueError("offline L5 accepts only native 16 kHz L4 output")
+        predictor = getattr(self.primary, "predict_16k_20ms", None)
         if not callable(predictor):
-            raise TypeError("the primary L5 model does not expose NVIDIA 20 ms frame output")
+            raise TypeError("the primary L5 model does not expose direct 16 kHz frame output")
+        hop_samples = 320
         if item.gain_compensated:
             waveform = item.waveform
         else:
@@ -309,10 +322,11 @@ class Layer5Engine:
                 item.waveform,
                 item.array_source_probabilities_20ms,
                 self.input_gain_compensation,
-                segment_count=len(item.waveform) // 960,
+                segment_count=len(item.waveform) // hop_samples,
+                segment_samples=hop_samples,
             )
         prediction = predictor(np.ascontiguousarray(waveform, dtype=np.float32))
-        expected = len(item.waveform) // 960
+        expected = len(item.waveform) // hop_samples
         probabilities = np.asarray(prediction.probabilities_20ms, dtype=np.float32)
         if len(probabilities) != expected:
             raise RuntimeError(

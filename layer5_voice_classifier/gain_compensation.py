@@ -86,19 +86,21 @@ def compensate_l5_input(
     settings: InputGainCompensationSettings,
     *,
     segment_count: int = 8,
+    segment_samples: int = _SEGMENT_SAMPLES,
     initial_gain_db: float | None = None,
 ) -> tuple[NDArray[np.float32], InputGainCompensationDiagnostic]:
     """Create a compensated L5-only copy without modifying the L3 waveform."""
     source = np.asarray(waveform)
     if (
-        source.shape != (segment_count * _SEGMENT_SAMPLES,)
+        segment_samples <= 0
+        or source.shape != (segment_count * segment_samples,)
         or source.dtype != np.float32
         or not source.flags.c_contiguous
         or not np.isfinite(source).all()
     ):
         raise ValueError(
             f"gain compensation requires finite C-contiguous float32 "
-            f"[{segment_count * _SEGMENT_SAMPLES}]"
+            f"[{segment_count * segment_samples}]"
         )
     if len(probabilities_20ms) != segment_count:
         raise ValueError(
@@ -110,7 +112,7 @@ def compensate_l5_input(
         ):
             raise ValueError("IMCRA probabilities must be finite values in [0,1] or missing")
 
-    chunks = source.reshape(segment_count, _SEGMENT_SAMPLES)
+    chunks = source.reshape(segment_count, segment_samples)
     rms_before = np.sqrt(np.mean(chunks.astype(np.float64) ** 2, axis=1))
     peak_before = np.max(np.abs(chunks.astype(np.float64)), axis=1)
     rms_before_dbfs = np.asarray([_dbfs(value) for value in rms_before])
@@ -147,16 +149,16 @@ def compensate_l5_input(
     )
 
     for index, chunk in enumerate(chunks):
-        desired = np.full(_SEGMENT_SAMPLES, target_gain[index], dtype=np.float64) if (
+        desired = np.full(segment_samples, target_gain[index], dtype=np.float64) if (
             index == 0 and initial_gain_db is None
         ) else np.linspace(
-            previous_gain, target_gain[index], _SEGMENT_SAMPLES, dtype=np.float64
+            previous_gain, target_gain[index], segment_samples, dtype=np.float64
         )
         # A previous segment may request more gain than the current segment can
         # safely accept. Cap only the positive gain at those samples; never
         # attenuate an input that already exceeds the configured ceiling.
         absolute = np.abs(chunk.astype(np.float64))
-        safe_gain = np.full(_SEGMENT_SAMPLES, np.inf, dtype=np.float64)
+        safe_gain = np.full(segment_samples, np.inf, dtype=np.float64)
         nonzero = absolute > _EPSILON
         safe_gain[nonzero] = 20.0 * np.log10(ceiling_amplitude / absolute[nonzero])
         safe_gain = np.maximum(0.0, safe_gain)
@@ -165,13 +167,13 @@ def compensate_l5_input(
             requested_gain[index] > target_gain[index] + 1.0e-12
             or np.any(envelope_db < desired - 1.0e-12)
         )
-        output[index * _SEGMENT_SAMPLES:(index + 1) * _SEGMENT_SAMPLES] = (
+        output[index * segment_samples:(index + 1) * segment_samples] = (
             chunk.astype(np.float64) * np.power(10.0, envelope_db / 20.0)
         ).astype(np.float32)
         applied_mean[index] = float(np.mean(envelope_db))
         previous_gain = float(envelope_db[-1])
 
-    output_chunks = output.reshape(segment_count, _SEGMENT_SAMPLES)
+    output_chunks = output.reshape(segment_count, segment_samples)
     rms_after = np.sqrt(np.mean(output_chunks.astype(np.float64) ** 2, axis=1))
     peak_after = np.max(np.abs(output_chunks.astype(np.float64)), axis=1)
     segment_diagnostics = tuple(

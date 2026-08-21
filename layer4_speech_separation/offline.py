@@ -193,20 +193,19 @@ class OfflineLayer4Pipeline:
                 "used_reference_fallback": selected.used_reference_fallback,
                 "fallback_reason": selected.fallback_reason,
             }
-        output_48k = self.resampler.to_48k(output_16k)
-        expected = len(source.waveform)
-        if len(output_48k) < expected:
-            output_48k = np.pad(output_48k, (0, expected - len(output_48k)))
-        output_48k = np.ascontiguousarray(output_48k[:expected], dtype=np.float32)
-        peak = float(np.max(np.abs(output_48k)))
+        expected = len(source.waveform) // 3
+        if len(output_16k) < expected:
+            output_16k = np.pad(output_16k, (0, expected - len(output_16k)))
+        output_16k = np.ascontiguousarray(output_16k[:expected], dtype=np.float32)
+        peak = float(np.max(np.abs(output_16k)))
         pcm16_ceiling = 32767.0 / 32768.0
         peak_safety_gain = 1.0
         if peak > pcm16_ceiling:
             peak_safety_gain = pcm16_ceiling / peak
-            output_48k = np.ascontiguousarray(
-                output_48k * np.float32(peak_safety_gain), dtype=np.float32,
+            output_16k = np.ascontiguousarray(
+                output_16k * np.float32(peak_safety_gain), dtype=np.float32,
             )
-        output_hash = _sha256_bytes(output_48k.tobytes())
+        output_hash = _sha256_bytes(output_16k.tobytes())
         return Layer4ProcessedAudio(
             request_id=request_id,
             source=source,
@@ -215,7 +214,7 @@ class OfflineLayer4Pipeline:
             selected=selected,
             output_asset_id=f"{source.asset_id}:l4:{request_id}",
             output_sha256=output_hash,
-            waveform_48k=output_48k,
+            waveform_16k=output_16k,
             metadata={
                 **model_metadata,
                 "resampler": self.resampler.algorithm_version,
@@ -229,15 +228,15 @@ class OfflineLayer4Pipeline:
         """Run L5 only after the caller explicitly sends completed L4 audio."""
 
         started = perf_counter()
-        output_48k = np.ascontiguousarray(processed.waveform_48k, dtype=np.float32)
+        output_16k = np.ascontiguousarray(processed.waveform_16k, dtype=np.float32)
         source = processed.source
         # Hub archives are already gain-compensated. Produce the normal L5
         # diagnostic with compensation disabled so L5 never applies gain twice.
-        segment_count = len(output_48k) // 960
-        if segment_count * 960 != len(output_48k):
-            raise ValueError("sealed Hub audio must contain complete 20 ms hops")
-        output_48k, gain_diagnostic = compensate_l5_input(
-            output_48k,
+        segment_count = len(output_16k) // 320
+        if segment_count * 320 != len(output_16k):
+            raise ValueError("L4 output must contain complete 16 kHz 20 ms hops")
+        output_16k, gain_diagnostic = compensate_l5_input(
+            output_16k,
             (None,) * segment_count,
             replace(
                 getattr(
@@ -248,17 +247,18 @@ class OfflineLayer4Pipeline:
                 enabled=False,
             ),
             segment_count=segment_count,
+            segment_samples=320,
         )
         l5 = self.layer5.process_long_audio_20ms(Layer5AudioSegment(
             source.session_id, source.stream_epoch, source.end_sample // 960,
-            source.end_sample, source.theta_deg, 48_000, output_48k,
+            source.end_sample // 3, source.theta_deg, 16_000, output_16k,
             track_id=source.track_id,
-            effective_start_sample=source.start_sample,
-            effective_end_sample=source.end_sample,
+            effective_start_sample=source.start_sample // 3,
+            effective_end_sample=source.end_sample // 3,
             gain_compensated=True,
             gain_compensation_diagnostic=gain_diagnostic,
         ))
-        output_hash = _sha256_bytes(output_48k.tobytes())
+        output_hash = _sha256_bytes(output_16k.tobytes())
         return Layer4OfflineResult(
             request_id=processed.request_id,
             source=source,
@@ -279,7 +279,7 @@ class OfflineLayer4Pipeline:
                 "l5_frame_shift_ms": 20,
                 "l5_frame_count": len(l5.probabilities_20ms),
                 "l5_model_metadata": dict(l5.metadata),
-                "output_waveform_48k": output_48k,
+                "output_waveform_16k": output_16k,
             },
         )
 
@@ -336,18 +336,18 @@ def persist_offline_results(
     output_root.mkdir(parents=True, exist_ok=False)
     rows: list[dict[str, object]] = []
     for result in results:
-        waveform = np.asarray(result.metadata["output_waveform_48k"], dtype=np.float32)
+        waveform = np.asarray(result.metadata["output_waveform_16k"], dtype=np.float32)
         name = f"epoch{result.source.stream_epoch:03d}_track{result.source.track_id:06d}.wav"
         final = output_root / name
         partial = final.with_suffix(".wav.partial")
         with wave.open(str(partial), "wb") as writer:
             writer.setnchannels(1)
             writer.setsampwidth(2)
-            writer.setframerate(48_000)
+            writer.setframerate(16_000)
             pcm = np.clip(np.rint(waveform * 32768.0), -32768, 32767).astype("<i2")
             writer.writeframes(pcm.tobytes())
         os.replace(partial, final)
-        metadata = {k: v for k, v in result.metadata.items() if k != "output_waveform_48k"}
+        metadata = {k: v for k, v in result.metadata.items() if k != "output_waveform_16k"}
         rows.append({
             "request_id": result.request_id,
             "source_asset_id": result.source.asset_id,

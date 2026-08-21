@@ -3,7 +3,6 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -526,37 +525,12 @@ def test_runtime_passes_only_formal_smoothed_candidates_to_l3_once():
     layer3 = _CapturingLayer3()
     runtime = _runtime_with_layer3(layer3)
 
-    formal, l5_inputs = runtime._process_l3(window, (candidate,))
+    formal = runtime._process_l3(window, (candidate,))
 
     assert len(layer3.calls) == 1
     assert tuple(item.theta_deg for item in layer3.calls[0][0]) == (30.0,)
     assert layer3.calls[0][1] == L3_MODE_OPTIMIZED
     assert len(formal) == 1 and formal[0].theta_deg == 30.0
-    assert len(l5_inputs) == 1 and l5_inputs[0].waveform.shape == (7_680,)
-    assert l5_inputs[0].array_source_probabilities_20ms == (None,) * 8
-
-
-def test_runtime_aligns_all_eight_context_imcra_probabilities_to_l5_audio():
-    window, candidate = _listening_window_and_candidate()
-    hops = tuple(
-        SimpleNamespace(
-            session_id=window.session_id,
-            stream_epoch=window.stream_epoch,
-            start_sample=index * 960,
-            end_sample=(index + 1) * 960,
-            state="ready",
-            array_source_probability_20ms=index / 7.0,
-        )
-        for index in range(8)
-    )
-    window = replace(window, imcra_hops=hops)
-    runtime = _runtime_with_layer3(_CapturingLayer3())
-
-    _, l5_inputs = runtime._process_l3(window, (candidate,))
-
-    assert l5_inputs[0].array_source_probabilities_20ms == pytest.approx(
-        tuple(index / 7.0 for index in range(8))
-    )
 
 
 def test_runtime_does_not_hide_a_formal_l3_failure():
@@ -572,7 +546,7 @@ def test_runtime_passes_selected_ds_baseline_mode_to_l3():
     runtime = _runtime_with_layer3(layer3)
     runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE)
 
-    previews, _l5_inputs = runtime._process_l3(window, (candidate,))
+    previews = runtime._process_l3(window, (candidate,))
 
     assert layer3.calls[0][1] == L3_MODE_DS_BASELINE
     assert previews[0].runtime_backend == "ds_baseline"
@@ -584,7 +558,7 @@ def test_runtime_passes_selected_loaded_mvdr_baseline_mode_to_l3():
     runtime = _runtime_with_layer3(layer3)
     runtime.set_l3_processing_mode(L3_MODE_LOADED_MVDR)
 
-    previews, _l5_inputs = runtime._process_l3(window, (candidate,))
+    previews = runtime._process_l3(window, (candidate,))
 
     assert layer3.calls[0][1] == L3_MODE_LOADED_MVDR
     assert previews[0].runtime_backend == "loaded_mvdr_baseline"
