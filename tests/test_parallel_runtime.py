@@ -609,15 +609,21 @@ def test_late_ordered_commit_from_old_epoch_cannot_update_new_epoch_ui(tmp_path:
     assert runtime.latest_dev_ui.empty()
 
 
-def test_completed_l4_returns_track_probability_to_l2(tmp_path: Path) -> None:
-    runtime, _store, _probe = _start_with_stubs(tmp_path)
+def test_completed_l4_annotates_track_audio_without_feedback_to_l2(tmp_path: Path) -> None:
+    runtime, store, _probe = _start_with_stubs(tmp_path)
     try:
         runtime._admit_window(_window(0))
         _wait_until(lambda: runtime.processing_status["l4_actual_completed"] >= 1)
-        feedback = runtime._layer2.voice_feedback
-        assert len(feedback) == 1
-        assert feedback[0][:4] == ("parallel-session", 0, 7_680, 1)
-        assert feedback[0][4:] == (0.8, True)
+        _wait_until(lambda: len(store.record_snapshot()) == 1)
+        assert runtime._layer2.voice_feedback == []
+        audio = store.record_snapshot()[0].enhanced_audio[0]
+        annotation = audio["l4_voice_20ms"]
+        assert annotation["track_id"] == audio["track_id"] == 1
+        assert annotation["probability"] == 0.8
+        assert annotation["is_voice"] is True
+        assert (annotation["start_sample"], annotation["end_sample"]) == (
+            audio["start_sample"], audio["end_sample"],
+        )
     finally:
         runtime.stop()
 

@@ -49,7 +49,7 @@ from layer4_voice_classifier import (
     Layer4Engine,
     NvidiaMarbleNetPlugin,
 )
-from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow
+from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoiceAnnotation
 from windowing import WindowAssembler
 
 from .compute_cache import CachePartitionLimits, ComputeCache, ComputeCacheError
@@ -1339,9 +1339,16 @@ class ApplicationRuntime:
             None,
         )
         published = monotonic()
+        tracked_audio = ()
+        if self.dev_audio_tracker is not None:
+            try:
+                tracked_audio = self.dev_audio_tracker.snapshots()
+            except Exception as exc:
+                self.dev_audio_tracking_error = str(exc)
         frame = DevUiFrame(
             l1=None, spatial_response=response, candidates=candidates,
-            previews=previews, tracked_audio=(), gate_decision=l2_output.gate_decision,
+            previews=previews, tracked_audio=tracked_audio,
+            gate_decision=l2_output.gate_decision,
             gate_threshold=float(values["gate_threshold"]),
             gate_config_revision=int(values["gate_config_revision"]),
             direction_threshold=scan.direction_threshold,
@@ -1375,6 +1382,49 @@ class ApplicationRuntime:
             with self._l4_diagnostics_lock:
                 self._l4_ui_overwrites += 1
             self.latest_l4_dev_ui.put_nowait(frame)
+
+    @staticmethod
+    def _track_voice_annotations(
+        inputs: tuple[Layer4AudioSegment, ...],
+        output: object,
+    ) -> tuple[TrackVoiceAnnotation, ...]:
+        detections = tuple(getattr(output, "detections", ()))
+        if len(inputs) != len(detections):
+            raise ValueError("L4 results must align with continuous track audio inputs")
+        threshold = float(getattr(output, "threshold"))
+        annotations: list[TrackVoiceAnnotation] = []
+        for audio, detection in zip(inputs, detections, strict=True):
+            if (
+                audio.track_id is None
+                or detection.track_id != audio.track_id
+                or (
+                    detection.session_id, detection.stream_epoch,
+                    detection.window_id, detection.decision_sample,
+                ) != (
+                    audio.session_id, audio.stream_epoch,
+                    audio.window_id, audio.decision_sample,
+                )
+                or not np.isclose(
+                    detection.theta_deg, audio.theta_deg, atol=1e-6, rtol=0.0
+                )
+            ):
+                raise ValueError("L4 annotation identity/order/theta mismatch")
+            end_sample = int(audio.effective_end_sample)
+            annotations.append(TrackVoiceAnnotation(
+                audio.session_id,
+                audio.stream_epoch,
+                audio.window_id,
+                audio.decision_sample,
+                int(audio.track_id),
+                end_sample - 960,
+                end_sample,
+                float(detection.probability),
+                bool(detection.is_voice),
+                str(detection.model_id),
+                threshold,
+            ))
+        return tuple(annotations)
+
     def _capture_processing_config(self) -> ProcessingConfigSnapshot:
         with self._gate_config_lock:
             gate_threshold = self._gate_probability_threshold
@@ -2183,24 +2233,11 @@ class ApplicationRuntime:
                     self._validate_direction_outputs(
                         "L4", formal_directions, output.detections
                     )
+                    annotations = self._track_voice_annotations(inputs, output)
                     stage = L4StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
                     )
-                    submit_voice_feedback = getattr(
-                        self._layer2, "submit_voice_feedback", None
-                    )
-                    if callable(submit_voice_feedback):
-                        for detection in output.detections:
-                            if detection.track_id is not None:
-                                submit_voice_feedback(
-                                    detection.session_id,
-                                    detection.stream_epoch,
-                                    detection.decision_sample,
-                                    detection.track_id,
-                                    detection.probability,
-                                    detection.is_voice,
-                                )
                     self._stage_errors["l4"] = None
                 except Exception as exc:
                     self._set_stage_error("l4", exc)
@@ -2212,6 +2249,17 @@ class ApplicationRuntime:
                 self._stage_completed_counts["l4"] += 1
                 self._record_l4_terminal(stage.state)
                 if stage.state is StageState.COMPLETED and stage.output is not None:
+                    self._cache_publish(
+                        "l4", item.work_item.key, "track_voice_annotations", annotations
+                    )
+                    if self.dev_audio_tracker is not None:
+                        try:
+                            self.dev_audio_tracker.apply_l4_annotations(annotations)
+                            self.dev_audio_tracking_error = None
+                        except Exception as exc:
+                            # UI history is diagnostic only. Formal L4 and its
+                            # persisted annotation remain authoritative.
+                            self.dev_audio_tracking_error = str(exc)
                     try:
                         self._publish_completed_l4_ui(item, stage.output)
                     except Exception as exc:
@@ -2511,7 +2559,32 @@ class ApplicationRuntime:
         track_audio_record = self._compute_cache.get(
             "l3", joined.key, "track_audio_record"
         ) or ()
-        enhanced_records = tuple(item[0] for item in track_audio_record)
+        track_voice_annotations = self._compute_cache.get(
+            "l4", joined.key, "track_voice_annotations"
+        ) or ()
+        annotation_by_id = {item.track_id: item for item in track_voice_annotations}
+        if len(annotation_by_id) != len(track_voice_annotations):
+            raise ValueError("L4 track voice annotations contain duplicate IDs")
+        enhanced_records = tuple(
+            {
+                **item[0],
+                **(
+                    {
+                        "l4_voice_20ms": asdict(annotation_by_id[int(item[0]["track_id"])])
+                    }
+                    if int(item[0]["track_id"]) in annotation_by_id
+                    else {}
+                ),
+            }
+            for item in track_audio_record
+        )
+        for audio_meta in enhanced_records:
+            annotation = audio_meta.get("l4_voice_20ms")
+            if annotation is not None and (
+                int(annotation["start_sample"]) != int(audio_meta["start_sample"])
+                or int(annotation["end_sample"]) != int(audio_meta["end_sample"])
+            ):
+                raise ValueError("L4 voice result is not aligned to its 20 ms audio hop")
         enhanced_waveforms = tuple(item[1] for item in track_audio_record)
         l4_record = None if l4_result is None else {
             "primary_model_id": l4_result.primary_model_id,

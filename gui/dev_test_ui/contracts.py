@@ -14,6 +14,7 @@ from common.data_types import (
 from layer2_source_detection.music import MusicDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
 from layer4_voice_classifier.contracts import Layer4Result
+from track_audio_stream import TrackVoiceAnnotation
 
 
 def _readonly(value: object, dtype: object, name: str):
@@ -115,6 +116,7 @@ class TrackedAudioSnapshot:
     audio_sample_count: int
     sample_rate: int = 48_000
     waveform_envelope: tuple[float, ...] = ()
+    voice_annotations_20ms: tuple[TrackVoiceAnnotation | None, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.track_id, self.audio_sample_count) < 0:
@@ -128,7 +130,19 @@ class TrackedAudioSnapshot:
         envelope = tuple(float(item) for item in self.waveform_envelope)
         if any(not np.isfinite(item) or item < 0.0 for item in envelope):
             raise ValueError("tracked audio waveform envelope must be finite and non-negative")
+        annotations = self.voice_annotations_20ms or (None,) * len(envelope)
+        if len(annotations) != len(envelope) or any(
+            item is not None and (
+                not isinstance(item, TrackVoiceAnnotation)
+                or item.session_id != self.session_id
+                or item.stream_epoch != self.stream_epoch
+                or item.track_id != self.track_id
+            )
+            for item in annotations
+        ):
+            raise ValueError("tracked audio voice annotations must align with its envelope/ID")
         object.__setattr__(self, "waveform_envelope", envelope)
+        object.__setattr__(self, "voice_annotations_20ms", tuple(annotations))
 
     @property
     def duration_seconds(self) -> float:

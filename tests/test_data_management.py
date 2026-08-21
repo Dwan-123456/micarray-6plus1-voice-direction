@@ -1284,7 +1284,7 @@ def test_compensated_track_hops_are_saved_as_one_continuous_wav_per_id(tmp_path:
         store.append_audio(block(session, start))
     for window_id, decision, hop_start, value in (
         (1, 47_040, 44_160, 0.1),
-        (2, 48_000, 45_120, 0.2),
+        (2, 48_000, 46_080, 0.2),
     ):
         item = _decision_mapping(session, window_id, decision, waveform_samples=960)
         item["enhanced_waveforms"] = (np.full(960, value, np.float32),)
@@ -1296,6 +1296,19 @@ def test_compensated_track_hops_are_saved_as_one_continuous_wav_per_id(tmp_path:
             "end_sample": hop_start + 960,
             "stream_kind": "id_continuous_gain_compensated",
             "gain_compensation_enabled": True,
+            "l4_voice_20ms": {
+                "session_id": session,
+                "stream_epoch": 0,
+                "window_id": window_id,
+                "decision_sample": decision,
+                "track_id": 7,
+                "start_sample": hop_start,
+                "end_sample": hop_start + 960,
+                "probability": 0.8 if window_id == 1 else 0.2,
+                "is_voice": window_id == 1,
+                "model_id": "nv_marblenet",
+                "threshold": 0.7,
+            },
         },)
         assert store.append_result(item)
     store.advance_result_watermark(ResultWatermark(session, 0, 48_000))
@@ -1308,11 +1321,22 @@ def test_compensated_track_hops_are_saved_as_one_continuous_wav_per_id(tmp_path:
     assert len(assets) == 1
     asset = assets[0]
     assert asset["track_id"] == 7
-    assert asset["sample_count"] == 1_920
-    assert (asset["start_sample"], asset["end_sample"]) == (44_160, 46_080)
+    assert asset["sample_count"] == 2_880
+    assert (asset["start_sample"], asset["end_sample"]) == (44_160, 47_040)
+    assert asset["voice_result_count"] == 3
+    assert asset["classified_voice_result_count"] == 2
+    assert [item["probability"] for item in asset["voice_results_20ms"]] == [
+        0.8, None, 0.2,
+    ]
+    assert [item["is_voice"] for item in asset["voice_results_20ms"]] == [
+        True, None, False,
+    ]
+    assert [item["status"] for item in asset["voice_results_20ms"]] == [
+        "completed", "missing", "completed",
+    ]
     root = next(tmp_path.glob(f"runtime_sessions/*/*/{session}"))
     with wave.open(str(root / asset["path"]), "rb") as wav:
-        assert wav.getnframes() == 1_920
+        assert wav.getnframes() == 2_880
     store.close()
 
 

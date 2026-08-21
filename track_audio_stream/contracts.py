@@ -91,6 +91,47 @@ class TrackAudioHop:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackVoiceAnnotation:
+    """One formal L4 semantic result aligned to one exact 20 ms track hop."""
+
+    session_id: str
+    stream_epoch: int
+    window_id: int
+    decision_sample: int
+    track_id: int
+    start_sample: int
+    end_sample: int
+    probability: float
+    is_voice: bool
+    model_id: str
+    threshold: float
+
+    def __post_init__(self) -> None:
+        if (
+            not self.session_id
+            or min(
+                self.stream_epoch, self.window_id, self.decision_sample,
+                self.start_sample,
+            ) < 0
+            or type(self.track_id) is not int
+            or self.track_id <= 0
+            or self.end_sample - self.start_sample != 960
+        ):
+            raise ValueError("invalid track voice annotation identity/timeline")
+        if (
+            not np.isfinite(self.probability)
+            or not 0.0 <= self.probability <= 1.0
+            or not np.isfinite(self.threshold)
+            or not 0.0 <= self.threshold <= 1.0
+        ):
+            raise ValueError("track voice probability/threshold must be in [0,1]")
+        if type(self.is_voice) is not bool or not self.model_id:
+            raise ValueError("track voice result/model must be valid")
+        if self.is_voice != (self.probability >= self.threshold):
+            raise ValueError("track voice result must use the recorded inclusive threshold")
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuousTrackAudio:
     session_id: str
     stream_epoch: int

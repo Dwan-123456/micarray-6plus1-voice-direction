@@ -30,7 +30,7 @@ IMCRA NPZ字段固定为`start_samples、end_samples、source_sequence_ids、alg
 - 存储容量扫描只在新事件段开始前执行，连续合并触发在锁内O(1)扩展审计和post-roll，不以50 Hz重复扫描磁盘。若新触发发生在旧post-roll之后、但2秒pre-roll仍与旧事件相交，则从有界音频环补回间隙再延长事件，避免manifest标记连续而实际音频有洞。`off`和非活动`manual`模式在复制大数组前就丢弃非录制结果。
 - Hotmap按CDC sequence去重并直接流式写入`hotmaps.jsonl.partial`，session内不累积矩阵列表；停机时flush/fsync、原子改名并记录SHA-256与count。
 - 普通chunk的WAV、NPY、noise NPZ和IMCRA NPZ使用同一个`chunk_asset_commit_<stem>.json`事务journal，且journal在首次final改名前持久化。恢复时，只有manifest已按hash完整索引全批资产才视为已提交；否则partial、未完整索引的final与journal整批进入quarantine。崩溃留下的open manifest会校验已索引资产，移除临时增强项后原子改写为incomplete恢复状态。
-- 旧式重叠增强窗在其音频区间已写盘后仍立即落到WAV `.partial`并释放内存；新的公共连续轨hop则保留到对应chunk封闭，按公共`track_id`和绝对sample合并为一份长WAV，缺口补等时静音。session封存使用`enhanced_asset_commit_v2` journal保护“逐ID WAV改名→写manifest”窗口；恢复时，只有已被完整manifest按hash和track索引的终态文件视为已提交，其他partial或孤立终态文件全部进quarantine。
+- 旧式重叠增强窗在其音频区间已写盘后仍立即落到WAV `.partial`并释放内存；新的公共连续轨hop则保留到对应chunk封闭，按公共`track_id`和绝对sample合并为一份长WAV，缺口补等时静音。长WAV资产的manifest同时保存已到达的逐20 ms L4概率、Voice/Non-Voice、模型、阈值和绝对sample范围；无结果hop不伪造Non-Voice。session封存使用`enhanced_asset_commit_v2` journal保护“逐ID WAV改名→写manifest”窗口；恢复时，只有已被完整manifest按hash和track索引的终态文件视为已提交，其他partial或孤立终态文件全部进quarantine。
 
 DecisionRecord v4中任一阶段`failed/timed_out/dropped/cancelled`都必须对应`status=error`；只有算法输出完整、但成功使用已声明回退路径时才是`degraded`。一旦一个方向批次携带ID，L2、L3、L4的ID集合与顺序必须一致，同窗ID不得重复。每个Runtime丢弃窗口在JSONL只保留一条正式终态DecisionRecord，watermark中的drop信息不再重复写第二条结果行。
 

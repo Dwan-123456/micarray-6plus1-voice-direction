@@ -3,6 +3,7 @@ from .contracts import (
     TrackAudioBatch,
     TrackAudioHop,
     TrackAudioWindow,
+    TrackVoiceAnnotation,
 )
 from .service import TrackAudioStreamHub
 
@@ -12,4 +13,5 @@ __all__ = [
     "TrackAudioHop",
     "TrackAudioStreamHub",
     "TrackAudioWindow",
+    "TrackVoiceAnnotation",
 ]

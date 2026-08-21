@@ -136,6 +136,7 @@ WindowWorkItem
     ↓ NVIDIA Frame VAD Multilingual MarbleNet（预训练直接接入，未微调）
     ↓ 连续20 ms帧概率；窗口结果只聚合最新80 ms内连续3帧
     ↓ VoiceDetection(track_id, theta_deg, probability, is_voice)
+    ↓ 按精确ID回填连续轨最新20 ms：概率 + Voice/Non-Voice
     ↓
 【已完成】ResultJoiner与有序提交
     按WindowKey和track_id逐项校验并合并L2/L3/L4终态
@@ -143,10 +144,11 @@ WindowWorkItem
     失败、超时、丢弃和取消保留明确error终态，不静默消失
     ├── RecordingStore
     │     原始/逻辑/物理音频、IMCRA、MUSIC、连续补偿音频和人声判断
-    │     重叠L3窗不重复保存；20 ms hop按chunk/track_id合成长WAV
+    │     重叠L3窗不重复保存；20 ms hop按chunk/track_id合成长WAV并附带逐20 ms人声结果
     │     60秒切块、异步写盘、journal恢复、保留和逐ID音频资产
     ├── Development Test UI
     │     有序审计帧 + 容量1的最新L4完成帧 + 播放公共补偿后连续轨
+    │     Voice区间黄色底色；Non-Voice/无结果/失败保留默认底色
     └── Audio Data Manager / Production UI
           Runtime/Test Corpus、标注、QA、回收站、导出和逐ID回放
 

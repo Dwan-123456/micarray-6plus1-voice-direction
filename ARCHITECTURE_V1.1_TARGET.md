@@ -62,6 +62,7 @@ TrackAudioStreamHub：按精确ID每窗追加一个20 ms hop
 L4：连续轨48→16 kHz，NVIDIA Frame-VAD输出20 ms概率序列
     → 最长3200 ms上下文；只聚合最新80 ms连续3帧
     → VoiceDetection(track_id, theta_deg, probability)
+    → 结果按精确ID回填最新20 ms连续轨hop（概率 + Voice/Non-Voice）
     ↓
 ResultJoiner：按WindowKey有序合并，逐ID精确对齐
     ├── DecisionRecord v4 / RecordingStore / ID时间线
@@ -82,6 +83,9 @@ flowchart LR
     TRACK --> REC["Recording/Data按ID轨"]
     TRACK --> NV["48→16 kHz<br/>NVIDIA Frame-VAD"]
     NV --> L4["连续20 ms概率<br/>最新80 ms聚合"]
+    L4 --> SEM["逐ID 20 ms语义时间线"]
+    SEM --> UI
+    SEM --> REC
 ```
 
 跨窗口并行仍为 `L2(n) || L3(n-1) || L4(n-2)`；同一窗口仍严格执行 `L2 → L3 → L4`。`track_id` 只增加对齐维度，不允许绕过 `WindowKey = (session_id, stream_epoch, window_id, decision_sample)`。
@@ -229,6 +233,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - L4 入口/出口校验 ID 集合、顺序、角度与音频严格对齐；重新阈值判断只能改变 Voice/Non-Voice 结论，不能改变 ID。
 - NVIDIA适配器对连续轨执行48→16 kHz polyphase重采样并产生连续20 ms帧概率；最终窗口概率只聚合最新80 ms内连续3帧，较早语音只提供卷积上下文。primary/shadow读取同一不可变连续音频批次。
 - 响度补偿开关默认开启并由Test UI持久化；切换不重建ID、不清空连续缓冲，从下一20 ms开始在dB域平滑过渡。Test UI试听与CNN必须逐样本读取同一补偿后轨。
+- 每次成功检测必须以完整`(WindowKey, track_id)`回填到该连续输入的最新20 ms hop，并保存`probability、is_voice、model_id、threshold`及绝对sample范围；失败、丢弃或无结果的hop保持无语义结果，不能伪造Non-Voice。
 - 删除 L4 通过角度向 L2 回送“正式化/续租”证据的路径。L4 是轨迹的语义标签消费者，不是方向 ID 的所有者。
 
 ## 11. Runtime、时间线与并行管理
@@ -245,6 +250,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 - Test UI不拥有独立的音频窗口配置；面板文字、单窗试听波形和按ID恢复范围全部使用Runtime注入的同一40/80/160 ms派生规格。当前按钮显示40 ms。
 - Test UI不再从L3重叠窗自行形成正式试听轨。它只缓存并播放`TrackAudioStreamHub`已经拼好和补偿的连续hop；同一hop也是L4的CNN输入，播放端不得再增加独立响度归一化。L4面板提供默认ON的实时响度补偿开关，开关不切轨、不重置ID或CNN上下文。
+- 方向轨波形按同一20 ms时间线接收L4概率。使用当前Test UI L4阈值重新判断并将Voice区间底色显示为黄色；Non-Voice、无结果及失败区间保留既有默认底色。滑块只读取已有概率，不重跑CNN。
 
 - 删除 “Iterative Multiple Peak” 开关。Development Test UI保留一个默认开启、持久化的`ID Tracking`诊断开关：开启时显示并发布L2权威ID；关闭时只显示360点MUSIC伪谱和原始峰值灰色小点，清空追踪状态，并将该窗L3/L4正常标记为`SKIPPED`，不得把原始峰值当作下游ID。重新开启后从新的权威ID状态开始。
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。
@@ -264,11 +270,11 @@ v4 至少保存：
 - L2 MUSIC 空间谱引用、model order、有效频点/协方差质量和算法版本；
 - 每个候选的 `track_id`、观测角、输出角、状态、分数、是否观测/新建及生命周期 sample；
 - L3 每个增强资产对应的 `track_id`；
-- L4 每个检测对应的 `track_id`、概率和判断；
+- L4 每个检测对应的 `track_id`、概率和判断，以及绑定连续轨最新20 ms hop的绝对sample范围；
 - `kalman_applied`、配置 revision、calibration version/hash；
 - `active_tracks` 与窗口阶段终态。
 
-重叠L3原始窗不得作为正式增强资产重复保存。RecordingStore把公共连续20 ms hop在每个录音chunk内按`track_id`和绝对sample合并为长WAV，缺口补等时静音；文件名和manifest资产索引必须含`track_id`，避免同窗多方向或角度跨0°时覆盖。Catalog/服务增加按 session + epoch + track ID 查询时间线、持续时间、角度轨迹、L4 概率和增强资产的能力。
+重叠L3原始窗不得作为正式增强资产重复保存。RecordingStore把公共连续20 ms hop在每个录音chunk内按`track_id`和绝对sample合并为长WAV，缺口补等时静音；同一资产保存已到达的逐20 ms L4概率、判断、阈值、模型和sample范围。文件名和manifest资产索引必须含`track_id`，避免同窗多方向或角度跨0°时覆盖。Catalog/服务增加按 session + epoch + track ID 查询时间线、持续时间、角度轨迹、L4 概率和增强资产的能力。
 
 ### 13.2 界面
 

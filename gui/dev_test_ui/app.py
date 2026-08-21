@@ -306,6 +306,10 @@ def build_window(
                 runtime.downstream_processing_enabled
             )
             self.cnn_panel = CnnPanel(config.layer4.voice_probability_limit)
+            self.bf_panel.set_voice_threshold(config.layer4.voice_probability_limit)
+            self.cnn_panel.threshold_changed.connect(
+                self.bf_panel.set_voice_threshold
+            )
             grid.addWidget(self.bf_panel, 1, 0)
             grid.addWidget(self.cnn_panel, 1, 1)
             for item_index in range(grid.count()):

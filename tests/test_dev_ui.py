@@ -26,9 +26,32 @@ from layer2_source_detection.probability_gate import (
     SourceProbabilityState,
 )
 from layer4_voice_classifier import Layer4Result, ModelPrediction, VoiceDetection
+from track_audio_stream import TrackVoiceAnnotation
 
 
 CONFIG = Path(__file__).parents[1] / "config/config.yaml"
+
+
+def test_waveform_voice_background_uses_stored_probability_and_live_ui_threshold():
+    from PySide6.QtWidgets import QApplication
+
+    from gui.dev_test_ui.panels import AudioWaveformThumbnail
+
+    app = QApplication.instance() or QApplication([])
+    widget = AudioWaveformThumbnail()
+    annotations = (
+        TrackVoiceAnnotation("s", 0, 1, 960, 7, 0, 960, 0.8, True, "nv", 0.7),
+        TrackVoiceAnnotation("s", 0, 2, 1_920, 7, 960, 1_920, 0.2, False, "nv", 0.7),
+        None,
+    )
+    widget.set_voice_annotations(annotations)
+
+    widget.set_voice_threshold(0.7)
+    assert widget._voice_columns(3) == (True, False, False)
+    widget.set_voice_threshold(0.9)
+    assert widget._voice_columns(3) == (False, False, False)
+    widget.close()
+    app.processEvents()
 
 
 def _write_test_wav(path: Path, samples: np.ndarray) -> None:

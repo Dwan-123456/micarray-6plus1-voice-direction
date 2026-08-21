@@ -22,6 +22,17 @@
 
 ---
 
+## 2026-08-21 — 连续方向音轨增加逐20 ms L4人声语义与黄色显示
+
+- **L4/Runtime公共契约**：新增不可变`TrackVoiceAnnotation`，把每个成功L4检测按完整`(WindowKey, track_id)`严格绑定到其连续输入最新20 ms hop，保存绝对sample范围、概率、Voice/Non-Voice、模型和运行时阈值；ID、顺序、角度或音频区间不一致时拒绝关联。移除Runtime向L2提交语义正式化/续租反馈的调用，L4仅为已有方向轨增加语义。
+- **连续音轨与录音**：Development Test UI的按ID分段缓存为每个20 ms音频位置保留对应L4结果或明确的无结果状态。DecisionRecord的连续hop元数据携带同一语义，RecordingStore合成长WAV时在manifest资产中按绝对sample顺序保存`voice_results_20ms`；失败、丢弃和缺失结果不伪造为Non-Voice。
+- **Development Test UI**：方向波形在当前L4 UI阈值下把Voice区间底色显示为黄色；Non-Voice、无结果和失败区间保留原默认底色。阈值滑块只使用已缓存概率实时重绘，不重新运行L3或CNN。试听波形和CNN仍使用同一份连续响度补偿音频。
+- **文档与测试**：同步总架构、根README、L4、Test UI和数据管理说明；增加精确ID/sample回填、错误ID拒绝、运行时最新hop映射、长WAV逐20 ms语义及动态阈值着色测试。
+- **保持不变**：L1、L2 MUSIC/Gate/ID/Kalman几何生命周期、L3波束形成和连续音频样本、NVIDIA模型/权重/48→16 kHz推理、响度补偿、primary/shadow、正式分类阈值边界、Production UI布局和模型/Git LFS资产均无变化；不创建或移动发布标签。
+- **验证**：Ruff全仓检查、Git差异检查及全量pytest `470 passed`；自动测试不替代真实阵列、GPU推理、声卡试听和长时间运行验收。
+
+---
+
 ## 2026-08-21 — Development Test UI L3标题按钮尺寸统一
 
 - **Development Test UI**：L3标题行的“BF模式”“L3/L4运行/停止”和“连续轨响度补偿”三个按钮统一宽度与高度；尺寸根据当前字体和最长BF模式名称计算，避免不同显示缩放比例下文字截断或按钮大小不一致。

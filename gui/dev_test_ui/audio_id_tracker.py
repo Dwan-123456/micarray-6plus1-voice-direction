@@ -8,7 +8,7 @@ import threading
 
 import numpy as np
 
-from track_audio_stream import TrackAudioBatch
+from track_audio_stream import TrackAudioBatch, TrackVoiceAnnotation
 
 from .contracts import BeamformPreview, TrackedAudioSnapshot
 
@@ -39,6 +39,7 @@ class _Track:
     fade_in_next: bool = True
     authoritative_id: bool = False
     envelope_peaks: deque[float] = field(default_factory=deque)
+    voice_annotations: deque[TrackVoiceAnnotation | None] = field(default_factory=deque)
     total_hops: int = 0
     sound_hops: int = 0
     stream_key: tuple[str, int] | None = None
@@ -269,6 +270,7 @@ class AudioIdTracker:
         track.envelope_peaks.extend(
             float(item) for item in np.max(np.abs(hops), axis=1)
         )
+        track.voice_annotations.extend(None for _item in hops)
         rms_values = np.sqrt(np.mean(np.square(hops, dtype=np.float64), axis=1))
         for rms, observed in zip(rms_values, observed_hops, strict=True):
             # Exact-duration silence inserted for a missing/coasting result is
@@ -285,6 +287,7 @@ class AudioIdTracker:
         maximum = self.retained_segments * self.segment_samples // _HOP_SAMPLES
         while len(track.envelope_peaks) > maximum:
             track.envelope_peaks.popleft()
+            track.voice_annotations.popleft()
 
     @staticmethod
     def _stable_hop(waveform: np.ndarray) -> np.ndarray:
@@ -487,6 +490,7 @@ class AudioIdTracker:
         track.segments.clear()
         track.segment_samples = 0
         track.envelope_peaks.clear()
+        track.voice_annotations.clear()
 
     def _remove_quiet_ended_tracks(self) -> None:
         for track_id, track in tuple(self._tracks.items()):
@@ -686,6 +690,51 @@ class AudioIdTracker:
             self._remove_quiet_ended_tracks()
             return self.snapshots()
 
+    def apply_l4_annotations(
+        self,
+        annotations: tuple[TrackVoiceAnnotation, ...],
+    ) -> tuple[TrackedAudioSnapshot, ...]:
+        """Attach formal L4 results to already cached exact-ID 20 ms hops."""
+
+        annotations = tuple(annotations)
+        identities = {
+            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample)
+            for item in annotations
+        }
+        ids = tuple(item.track_id for item in annotations)
+        if len(identities) > 1 or len(ids) != len(set(ids)):
+            raise ValueError("L4 track annotations must be one unique-ID window batch")
+        with self._lock:
+            updates: list[tuple[_Track, int, TrackVoiceAnnotation]] = []
+            for annotation in annotations:
+                if self._stream != (annotation.session_id, annotation.stream_epoch):
+                    raise ValueError("L4 track annotation stream does not match Test UI cache")
+                track = self._tracks.get(annotation.track_id)
+                if track is None or track.last_emitted_decision_sample is None:
+                    raise ValueError("L4 track annotation has no matching cached audio ID")
+                cached_end = int(track.last_emitted_decision_sample)
+                cached_start = cached_end - len(track.voice_annotations) * _HOP_SAMPLES
+                if annotation.end_sample <= cached_start:
+                    # Formal recording retains delayed results that have
+                    # already fallen outside this bounded UI cache.
+                    continue
+                if (
+                    annotation.start_sample < cached_start
+                    or annotation.end_sample > cached_end
+                    or (annotation.start_sample - cached_start) % _HOP_SAMPLES
+                ):
+                    raise ValueError("L4 annotation does not align with cached 20 ms audio")
+                index = (annotation.start_sample - cached_start) // _HOP_SAMPLES
+                if cached_start + (index + 1) * _HOP_SAMPLES != annotation.end_sample:
+                    raise ValueError("L4 annotation sample interval is misaligned")
+                existing = track.voice_annotations[index]
+                if existing is not None and existing != annotation:
+                    raise ValueError("conflicting L4 annotation for one cached audio hop")
+                updates.append((track, index, annotation))
+            for track, index, annotation in updates:
+                track.voice_annotations[index] = annotation
+            return self.snapshots()
+
     def seal_mode(self, next_mode: str | None = None) -> None:
         """Seal current exact-ID files and start an isolated L3 mode partition."""
         with self._lock:
@@ -709,6 +758,7 @@ class AudioIdTracker:
                     self._stream[0], self._stream[1], track.track_id, track.state,
                     track.theta_deg, track.score, self._cached_samples(track),
                     waveform_envelope=tuple(track.envelope_peaks),
+                    voice_annotations_20ms=tuple(track.voice_annotations),
                 )
                 for track in sorted(self._tracks.values(), key=lambda item: item.track_id)
             )

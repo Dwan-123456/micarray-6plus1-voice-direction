@@ -328,6 +328,7 @@ class BeamformPanel(QGroupBox):
         self._track_snapshots = {}
         self._track_stream: tuple[str, int] | None = None
         self._playing_track_id: int | None = None
+        self._voice_threshold = 0.7
 
     def _cycle_mode(self) -> None:
         modes = (
@@ -506,6 +507,7 @@ class BeamformPanel(QGroupBox):
             row = self._track_rows.get(track.track_id)
             if row is None:
                 row = AudioTrackRow(track.track_id)
+                row.set_voice_threshold(self._voice_threshold)
                 row.toggle_requested.connect(self._toggle_track)
                 self._track_rows[track.track_id] = row
                 self.track_layout.insertWidget(self.track_layout.count() - 1, row)
@@ -565,6 +567,14 @@ class BeamformPanel(QGroupBox):
         for row in self._track_rows.values():
             row.set_playback_progress(None)
 
+    def set_voice_threshold(self, threshold: float) -> None:
+        value = float(threshold)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("voice threshold must be in [0,1]")
+        self._voice_threshold = value
+        for row in self._track_rows.values():
+            row.set_voice_threshold(value)
+
 
 class AudioWaveformThumbnail(QWidget):
     """Compact fixed-scale dBFS envelope; no audio-file rescans on UI refresh."""
@@ -572,6 +582,8 @@ class AudioWaveformThumbnail(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._envelope: tuple[float, ...] = ()
+        self._voice_annotations = ()
+        self._voice_threshold = 0.7
         self._playback_progress: float | None = None
         self.setMinimumWidth(180)
         self.setFixedHeight(42)
@@ -581,6 +593,34 @@ class AudioWaveformThumbnail(QWidget):
         if value != self._envelope:
             self._envelope = value
             self.update()
+
+    def set_voice_annotations(self, annotations) -> None:
+        value = tuple(annotations)
+        if value != self._voice_annotations:
+            self._voice_annotations = value
+            self.update()
+
+    def set_voice_threshold(self, threshold: float) -> None:
+        value = float(threshold)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("voice threshold must be in [0,1]")
+        if value != self._voice_threshold:
+            self._voice_threshold = value
+            self.update()
+
+    def _voice_columns(self, width: int) -> tuple[bool, ...]:
+        if width <= 0 or not self._voice_annotations:
+            return ()
+        annotations = self._voice_annotations
+        columns = []
+        for x in range(width):
+            start = x * len(annotations) // width
+            stop = max(start + 1, (x + 1) * len(annotations) // width)
+            columns.append(any(
+                item is not None and float(item.probability) >= self._voice_threshold
+                for item in annotations[start:stop]
+            ))
+        return tuple(columns)
 
     def set_playback_progress(self, progress: float | None) -> None:
         value = None if progress is None else float(np.clip(progress, 0.0, 1.0))
@@ -592,6 +632,9 @@ class AudioWaveformThumbnail(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.fillRect(self.rect(), QColor("#10161d"))
+        for x, is_voice in enumerate(self._voice_columns(self.width())):
+            if is_voice:
+                painter.fillRect(x, 0, 1, self.height(), QColor("#6b5714"))
         middle = self.height() // 2
         painter.setPen(QPen(QColor("#526170"), 1))
         painter.drawLine(0, middle, self.width(), middle)
@@ -653,6 +696,7 @@ class AudioTrackRow(QWidget):
             self.label.setStyleSheet(label_style)
         self.duration.setText(f"{snapshot.duration_seconds:5.1f} s")
         self.waveform.set_envelope(snapshot.waveform_envelope)
+        self.waveform.set_voice_annotations(snapshot.voice_annotations_20ms)
         self.set_playing(playing)
 
     def set_playing(self, playing: bool) -> None:
@@ -663,6 +707,9 @@ class AudioTrackRow(QWidget):
 
     def set_playback_progress(self, progress: float | None) -> None:
         self.waveform.set_playback_progress(progress)
+
+    def set_voice_threshold(self, threshold: float) -> None:
+        self.waveform.set_voice_threshold(threshold)
 
 
 class VoiceProbabilityPolar(QWidget):
@@ -740,6 +787,7 @@ class VoiceProbabilityPolar(QWidget):
 
 class CnnPanel(QGroupBox):
     selection_requested = Signal(float, int)
+    threshold_changed = Signal(float)
 
     def __init__(self, configured_threshold: float, parent: QWidget | None = None):
         super().__init__("L4 · CNN Voice Direction", parent)
@@ -761,7 +809,9 @@ class CnnPanel(QGroupBox):
         self._result = None
 
     def _threshold_changed(self, value: int) -> None:
-        self.threshold_value.setText(f"UI threshold: {value / 100:.2f}")
+        threshold = value / 100.0
+        self.threshold_value.setText(f"UI threshold: {threshold:.2f}")
+        self.threshold_changed.emit(threshold)
         self._render()
 
     def set_result(self, result) -> None:

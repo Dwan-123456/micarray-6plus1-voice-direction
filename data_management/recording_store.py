@@ -1838,17 +1838,54 @@ class RecordingStore:
                 track_start = int(first_meta["start_sample"])
                 cursor = track_start
                 pieces: list[np.ndarray] = []
+                voice_results_20ms: list[dict[str, Any]] = []
                 for _, audio_meta, waveform in records:
                     hop_start = int(audio_meta["start_sample"])
                     hop_end = int(audio_meta["end_sample"])
-                    if hop_end - hop_start != len(waveform):
+                    if hop_end - hop_start != len(waveform) or len(waveform) != 960:
                         raise ValueError("连续轨音频sample范围与波形长度不一致")
                     if hop_start < cursor:
                         raise ValueError("连续轨录音hop重叠或顺序错误")
                     if hop_start > cursor:
+                        if (hop_start - cursor) % 960:
+                            raise ValueError("连续轨录音缺口未对齐20 ms网格")
                         pieces.append(np.zeros(hop_start - cursor, dtype=np.float32))
+                        while cursor < hop_start:
+                            voice_results_20ms.append({
+                                "track_id": track_id,
+                                "start_sample": cursor,
+                                "end_sample": cursor + 960,
+                                "probability": None,
+                                "is_voice": None,
+                                "model_id": None,
+                                "threshold": None,
+                                "status": "missing",
+                            })
+                            cursor += 960
                     pieces.append(np.ascontiguousarray(waveform, dtype=np.float32))
                     cursor = hop_end
+                    voice_result = audio_meta.get("l4_voice_20ms")
+                    if voice_result is not None:
+                        result = dict(voice_result)
+                        if (
+                            int(result["track_id"]) != track_id
+                            or int(result["start_sample"]) != hop_start
+                            or int(result["end_sample"]) != hop_end
+                        ):
+                            raise ValueError("L4人声结果与连续轨20 ms音频不一致")
+                        result["status"] = "completed"
+                        voice_results_20ms.append(result)
+                    else:
+                        voice_results_20ms.append({
+                            "track_id": track_id,
+                            "start_sample": hop_start,
+                            "end_sample": hop_end,
+                            "probability": None,
+                            "is_voice": None,
+                            "model_id": None,
+                            "threshold": None,
+                            "status": "missing",
+                        })
                 continuous = np.concatenate(pieces) if len(pieces) > 1 else pieces[0]
                 last_item, last_meta, _ = records[-1]
                 theta_mdeg = int(round(float(last_meta["theta_deg"]) * 1000))
@@ -1881,6 +1918,11 @@ class RecordingStore:
                     "stream_kind": "id_continuous_gain_compensated",
                     "gain_compensation_enabled": bool(last_meta.get("gain_compensation_enabled", True)),
                     "theta_deg": float(last_meta["theta_deg"]),
+                    "voice_results_20ms": _json_ready(voice_results_20ms),
+                    "voice_result_count": len(voice_results_20ms),
+                    "classified_voice_result_count": sum(
+                        item["status"] == "completed" for item in voice_results_20ms
+                    ),
                     "_partial_path": str(partial.relative_to(self._root)),
                 })
             chunk["result_count"] = len(chosen)
