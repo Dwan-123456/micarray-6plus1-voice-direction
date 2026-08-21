@@ -1124,6 +1124,16 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         assert "L5" in window.cnn_panel.title()
         assert window.bf_panel.send.text() == "发送到L4"
         assert window.l4_panel.send.text() == "发送到L5"
+        l5_send_size = window.l4_panel.send.size()
+        assert all(
+            control.size() == l5_send_size
+            for control in (
+                window.bf_panel.mode_switch,
+                window.bf_panel.downstream_switch,
+                window.bf_panel.gain_compensation,
+                window.bf_panel.send,
+            )
+        )
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
             "上一秒性能 | L2 N/A | L3 N/A | L5 N/A / 0.0 Hz | "

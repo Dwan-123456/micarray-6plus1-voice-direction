@@ -20,6 +20,10 @@ from PySide6.QtWidgets import (
 from .srp_panel import track_colour_hex
 
 
+_AUDIO_STAGE_ACTION_WIDTH = 160
+_AUDIO_STAGE_ACTION_HEIGHT = 42
+
+
 class UnavailableCanvas(QWidget):
     def __init__(self, title: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -351,20 +355,8 @@ class BeamformPanel(QGroupBox):
             self.gain_compensation,
             self.send,
         )
-        mode_labels = (
-            "BF：优化算法",
-            "BF：DS基线",
-            "BF：Loaded MVDR基线",
-            "BF：五频段鲁棒对照",
-        )
-        mode_width = max(
-            self.mode_switch.fontMetrics().horizontalAdvance(label)
-            for label in mode_labels
-        ) + 32
-        common_width = max(mode_width, *(control.sizeHint().width() for control in controls))
-        common_height = max(34, *(control.sizeHint().height() for control in controls))
         for control in controls:
-            control.setFixedSize(common_width, common_height)
+            control.setFixedSize(_AUDIO_STAGE_ACTION_WIDTH, _AUDIO_STAGE_ACTION_HEIGHT)
 
     def set_processing_mode(self, mode: str) -> None:
         if mode not in {
@@ -598,6 +590,7 @@ class Layer4AudioPanel(QGroupBox):
         self.summary = QLabel("等待L3长音频")
         self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.send = QPushButton("发送到L5")
+        self.send.setFixedSize(_AUDIO_STAGE_ACTION_WIDTH, _AUDIO_STAGE_ACTION_HEIGHT)
         self.send.setEnabled(False)
         self.send.setToolTip("全部L4音频处理完成后，将这些音频发送到L5 CNN。")
         self.send.clicked.connect(self.send_requested.emit)
