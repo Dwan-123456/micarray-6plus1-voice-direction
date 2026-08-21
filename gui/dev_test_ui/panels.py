@@ -20,8 +20,13 @@ from PySide6.QtWidgets import (
 from .srp_panel import track_colour_hex
 
 
-_AUDIO_STAGE_ACTION_WIDTH = 130
-_AUDIO_STAGE_ACTION_HEIGHT = 32
+def _l1_action_button_size(parent: QWidget):
+    """Use the same style-derived size as the longest L1 action button."""
+
+    probe = QPushButton("正式录音开始", parent)
+    size = probe.sizeHint()
+    probe.deleteLater()
+    return size
 
 
 class UnavailableCanvas(QWidget):
@@ -358,8 +363,9 @@ class BeamformPanel(QGroupBox):
             self.gain_compensation,
             self.send,
         )
+        action_size = _l1_action_button_size(self)
         for control in controls:
-            control.setFixedSize(_AUDIO_STAGE_ACTION_WIDTH, _AUDIO_STAGE_ACTION_HEIGHT)
+            control.setFixedSize(action_size)
 
     def set_processing_mode(self, mode: str) -> None:
         if mode not in {
@@ -595,7 +601,7 @@ class Layer4AudioPanel(QGroupBox):
         self.summary = QLabel("等待L3长音频")
         self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.send = QPushButton("发送到L5")
-        self.send.setFixedSize(_AUDIO_STAGE_ACTION_WIDTH, _AUDIO_STAGE_ACTION_HEIGHT)
+        self.send.setFixedSize(_l1_action_button_size(self))
         self.send.setEnabled(False)
         self.send.setToolTip("全部L4音频处理完成后，将这些音频发送到L5 CNN。")
         self.send.clicked.connect(self.send_requested.emit)

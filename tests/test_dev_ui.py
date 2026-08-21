@@ -1152,7 +1152,7 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
             == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         l5_send_size = window.l4_panel.send.size()
-        assert (l5_send_size.width(), l5_send_size.height()) == (130, 32)
+        assert l5_send_size == window.runtime_record.sizeHint()
         assert all(
             control.size() == l5_send_size
             for control in (
