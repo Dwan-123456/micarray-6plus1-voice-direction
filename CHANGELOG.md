@@ -23,6 +23,40 @@
 
 ---
 
+## 2026-08-21 — 新增完整架构图与首次使用手册
+
+- **版本/标签**：项目仍为`1.3.1`，不创建或移动`v1.3.1`及任何发布标签。
+- **类型**：文档与架构说明；不改变运行行为。
+- **涉及文件**：`docs/COMPLETE_ARCHITECTURE_AND_USAGE.md`、根`README.md`、
+  `ARCHITECTURE_V1.1_TARGET.md`和本`CHANGELOG.md`。
+
+### 文档
+
+- 按当前代码绘制实时主链、采集后L4/L5链、存储旁路和独立观察工具的完整Mermaid架构图。
+- 为硬件输入、L1、Ingest、Windowing、Runtime封装、L2、L3、TrackAudioStreamHub、实时L5审计、
+  ResultJoiner、RecordingStore、离线L4与L5逐项列出正式输入、内部处理单元、正式输出、数据形状、频段和节拍。
+- 增加L1、L2、L3及Hub→L4→L5内部处理图，并明确`WindowKey`、绝对sample时间轴、公共`track_id`
+  以及实时/离线结果的保存边界。
+- 补充环境创建、自检、Development Test UI从采集到离线结果的完整操作顺序，以及L1 Spectrum UI、
+  Audio Data Manager、命令行离线L4/L5和Pipeline Log UI入口说明。
+- 补充界面区域数据来源、正式与临时资产位置、推荐测试场景、常见状态排查和当前物理/模型/性能限制。
+- 根README与1.3.1架构契约增加手册入口；同时修正根README中测试WAV说明末尾的标点错误。
+
+### 未改变
+
+- L1、Ingest、Windowing、L2、L3、TrackAudioStreamHub、离线L4/L5、Runtime调度、ResultJoiner、
+  RecordingStore和所有UI代码均未改变。
+- `config/config.yaml`、模型、测试音频、数据目录、依赖和发布版本均未改变；没有Git LFS资产变化。
+
+### 验证
+
+- Markdown代码围栏、全部本地相对链接及Mermaid主图的`flowchart/subgraph/end`结构检查通过。
+- 使用严格配置加载器核对48 kHz/8通道/20 ms、160 ms上下文、L2 2～4 kHz/240 ms/50°/最多3方向、
+  L3 80～8000 Hz、L5阈值0.70、L4最短2秒和4 cm阵列半径，均与手册一致。
+- Development Test UI与`python -m scripts.run_offline_l4`帮助入口验证通过；后者也用于修正手册中的离线命令写法。
+- `pytest tests/test_config.py tests/test_parallel_config_and_docs.py tests/test_packaging_contract.py -q`：`39 passed`。
+- `git diff --check`通过。
+
 ## 2026-08-21 — 完成7路物理麦实机增益、极性与整数延迟校准
 
 - **版本/标签**：当前`v1.3.1`分支的实机校准更新；不修改项目版本，不创建或移动发布标签。

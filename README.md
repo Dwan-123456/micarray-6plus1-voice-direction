@@ -6,6 +6,8 @@
 
 > 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L5、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
+> 面向首次接触项目的完整数据流、逐层输入/输出/内部处理单元和操作步骤，见[《完整架构与使用手册》](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)。
+
 > L3双声源分离、4 cm 6+1阵列物理边界和Python实时优化的深度研究报告收录在[`docs/references/`](docs/references/README.md)。这些报告是重要研究参考，不替代当前代码、配置和架构契约。
 
 ## 独立 L1 频谱观察界面
@@ -58,6 +60,8 @@ IMCRA当前噪声频谱及手动频谱抓拍。详细契约见 [`gui/l1_spectrum
 - 若必须提升低频空间分离能力，需要增大阵列物理孔径、改变麦克风布局、使用多阵列或引入额外先验，而不能只依赖当前BF权重优化。
 
 ## 完整架构图
+
+本节给出便于快速浏览的文本总图；包含逐层接口表、内部处理单元图、运行时边界和完整操作方法的版本见[《完整架构与使用手册》](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)。
 
 ```text
 诊室中的医生、患者及环境声音
@@ -307,7 +311,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 .\.venv\Scripts\python.exe -m gui.dev_test_ui.app --input-wav "D:\audio\test.wav" --auto-start
 ```
 
-输入WAV必须是48 kHz、7通道或8通道。7通道离线素材没有原生HardwareMix时由输入适配器按离线契约处理；。
+输入WAV必须是48 kHz、7通道或8通道。7通道离线素材没有原生HardwareMix时由输入适配器按离线契约处理。
 
 ### 2. 推荐操作顺序
 
@@ -496,6 +500,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 
 ## 进一步阅读
 
+- [完整架构、逐层输入输出与使用手册](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)
 - [总执行规格](CODEX_PROJECT_SPEC_6plus1_2D_voice_direction_v0.2.md)
 - [v0.3目标架构与迁移契约](ARCHITECTURE_V0.3_TARGET.md)
 - [1.3.1 MUSIC、公共方向ID与平行子系统架构](ARCHITECTURE_V1.1_TARGET.md)
