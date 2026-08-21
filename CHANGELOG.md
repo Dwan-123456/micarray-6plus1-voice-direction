@@ -22,6 +22,13 @@
 
 ---
 
+## 2026-08-21 — 修复coasting方向进入L3时Development Test UI停止
+
+- **根因**：L2已允许有效TTL内的正式`coasting` ID在没有当前MUSIC响应时按预测角继续进入L3 BF，但`DevUiFrame`仍强制要求所有L3预览必须附带MUSIC响应；首个prediction-only预览因此触发契约异常并停止处理线程。
+- **Runtime与Test UI契约**：无MUSIC响应时，Runtime现在同步传递该窗的权威`directions/active_tracks`。Test UI以`(session_id, stream_epoch, window_id, decision_sample)`和`track_id`校验prediction-only L3/L4结果，只接受`confirmed/coasting`正式ID，拒绝跨窗、缺ID、换序或tentative音频。
+- **保持不变**：L1、MUSIC计算、Gate判决、L2 ID/Kalman、L3 BF与拼接算法、L4模型、录音和数据管理、UI布局均无变化；不创建或移动发布标签，无Git LFS资产变化。
+- **验证**：Development Test UI、L2 MUSIC/ID与并行Runtime聚焦回归`104 passed`；全量pytest回归`457 passed`。自动测试不替代真实阵列长时间试听验收。
+
 ## 2026-08-21 — 归档DOA追踪文献与6+1阵列空间可分离度图
 
 - **版本/标签**：当前`1.2.4`开发主线参考资料补充；不创建或移动发布标签。

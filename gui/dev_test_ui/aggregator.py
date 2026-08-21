@@ -405,20 +405,33 @@ class DevUiAggregator:
             }
             if len(detection_streams) > 1:
                 raise ValueError("Layer 4 detections must belong to one stream")
-            # L1 owns the current stream and SRP owns the current window.  A
-            # late ordered commit must be a no-op rather than poisoning the
-            # new epoch's warming-up frame with an old L4 result.
-            if self._status is None or self._response is None:
+            # L1 owns the current stream.  The current MUSIC response owns an
+            # observed window; a prediction-only coasting window is instead
+            # owned by its authoritative L2 directions.
+            if self._status is None:
                 return self.frame()
             expected_stream = (self._status.session_id, self._status.stream_epoch)
             if detection_streams and detection_streams != {expected_stream}:
                 return self.frame()
-            expected_window = (
-                self._response.session_id,
-                self._response.stream_epoch,
-                self._response.window_id,
-                self._response.decision_sample,
-            )
+            if self._response is not None:
+                expected_window = (
+                    self._response.session_id,
+                    self._response.stream_epoch,
+                    self._response.window_id,
+                    self._response.decision_sample,
+                )
+            elif self._directions:
+                first = self._directions[0]
+                expected_window = (
+                    first.session_id,
+                    first.stream_epoch,
+                    first.window_id,
+                    first.decision_sample,
+                )
+            elif result.detections:
+                return self.frame()
+            else:
+                expected_window = None
             if any(
                 (
                     item.session_id,

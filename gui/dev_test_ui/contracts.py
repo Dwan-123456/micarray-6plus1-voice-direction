@@ -239,6 +239,13 @@ class DevUiFrame:
             self.pipeline_status.session_id, self.pipeline_status.stream_epoch
         ) for item in (*directions, *active_tracks)):
             raise ValueError("TrackedDirection rows must match the pipeline stream")
+        direction_identities = {
+            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample)
+            for item in directions
+        }
+        if len(direction_identities) > 1:
+            raise ValueError("DevUiFrame directions must belong to one authoritative L2 window")
+        direction_identity = next(iter(direction_identities), None)
         if len({item.track_id for item in active_tracks}) != len(active_tracks):
             raise ValueError("active_tracks must contain unique authoritative L2 IDs")
         object.__setattr__(self, "directions", directions)
@@ -261,12 +268,12 @@ class DevUiFrame:
             raise ValueError("没有SpatialResponse时不能携带候选")
         if len(self.candidates) > 3:
             raise ValueError("DevUiFrame cannot publish more than 3 Layer 2 candidates")
-        if self.spatial_response is None and self.previews:
-            raise ValueError("DevUiFrame cannot publish L3 previews without an SRP response")
+        if self.spatial_response is None and self.previews and direction_identity is None:
+            raise ValueError(
+                "DevUiFrame prediction-only L3 previews require authoritative L2 directions"
+            )
         if self.spatial_response is None and self.search_diagnostics is not None:
             raise ValueError("DevUiFrame cannot publish search diagnostics without an SRP response")
-        if self.spatial_response is None and self.l4_result is not None:
-            raise ValueError("DevUiFrame cannot publish L4 results without an SRP response")
         if self.spatial_response is not None:
             identity = (
                 self.spatial_response.session_id,
@@ -295,6 +302,21 @@ class DevUiFrame:
             for preview in self.previews:
                 if (preview.session_id, preview.stream_epoch, preview.window_id, preview.decision_sample) != identity:
                     raise ValueError("DevUiFrame预览不能混合不同window")
+        elif direction_identity is not None:
+            if any(
+                (item.session_id, item.stream_epoch, item.window_id, item.decision_sample)
+                != direction_identity
+                for item in self.previews
+            ):
+                raise ValueError("prediction-only L3 previews must match the authoritative L2 window")
+            direction_ids = tuple(item.track_id for item in directions)
+            preview_ids = tuple(item.track_id for item in self.previews)
+            if self.previews and (
+                any(item is None for item in preview_ids) or preview_ids != direction_ids
+            ):
+                raise ValueError("prediction-only L3 previews must preserve authoritative L2 IDs")
+            if any(item.track_state not in {"confirmed", "coasting"} for item in directions):
+                raise ValueError("prediction-only L3 previews require formal L2 IDs")
         for track in self.tracked_audio:
             if (track.session_id, track.stream_epoch) != pipeline_stream:
                 raise ValueError("DevUiFrame tracked audio must match the pipeline stream")
@@ -311,6 +333,20 @@ class DevUiFrame:
                     or detection.decision_sample != self.spatial_response.decision_sample
                 ):
                     raise ValueError("DevUiFrame L4 result must match the SRP window")
+                if self.spatial_response is None and direction_identity is not None and (
+                    detection.session_id,
+                    detection.stream_epoch,
+                    detection.window_id,
+                    detection.decision_sample,
+                ) != direction_identity:
+                    raise ValueError("prediction-only L4 result must match the authoritative L2 window")
+            if self.spatial_response is None and self.l4_result.detections:
+                if direction_identity is None:
+                    raise ValueError("prediction-only L4 result requires authoritative L2 directions")
+                if tuple(item.track_id for item in self.l4_result.detections) != tuple(
+                    item.track_id for item in directions
+                ):
+                    raise ValueError("prediction-only L4 result must preserve authoritative L2 IDs")
         if self.gate_decision is not None:
             gate_identity = (
                 self.gate_decision.session_id,
@@ -320,6 +356,10 @@ class DevUiFrame:
             )
             if self.spatial_response is not None and gate_identity != identity:
                 raise ValueError("DevUiFrame gate decision must match the SRP window")
+            if self.spatial_response is None and direction_identity is not None and (
+                gate_identity != direction_identity
+            ):
+                raise ValueError("prediction-only directions must match the Gate window")
             if gate_identity[:2] != pipeline_stream:
                 raise ValueError("DevUiFrame gate decision must match the pipeline stream")
         if self.gate_decision is not None:

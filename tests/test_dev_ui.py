@@ -14,7 +14,7 @@ from common.config import load_config
 from common.data_types import CandidateDirection, IngestedAudioBlock, ModelOrderEstimate, PipelineStatus, SpatialResponse, TrackedDirection
 from common.geometry import MIC_POSITIONS_M
 from gui.dev_test_ui.aggregator import DevUiAggregator, PerformanceTracker
-from gui.dev_test_ui.contracts import L1MeterSnapshot, TrackedAudioSnapshot
+from gui.dev_test_ui.contracts import BeamformPreview, L1MeterSnapshot, TrackedAudioSnapshot
 from gui.dev_test_ui.settings import DevUiSettings
 from layer1_input.interface import DecodedAudio
 from layer1_input.sources import LiveSipeedSource, WavAudioSource
@@ -398,6 +398,81 @@ def test_gate_unavailable_preserves_l3_listening_rows_across_epoch_recovery():
     )
     assert warming.pipeline_status.stream_epoch == 1
     assert warming.tracked_audio == (row1,)
+
+
+def test_prediction_only_coasting_window_can_publish_l3_and_l4_without_music_response():
+    performance = PerformanceTracker(
+        sample_rate=48_000, required_samples=15_360, window_count=10, rate_seconds=5,
+    )
+    aggregator = DevUiAggregator(performance)
+    status = PipelineStatus(
+        "running", "aggregator-test", 0, 15_360, 15_360, "Ready",
+    )
+    aggregator.update_l1(_aggregator_meter(), status)
+    decision_sample = 16_320
+    direction = TrackedDirection(
+        session_id="aggregator-test",
+        stream_epoch=0,
+        window_id=1,
+        decision_sample=decision_sample,
+        doa_start_sample=decision_sample - 1_920,
+        doa_end_sample=decision_sample,
+        track_id=7,
+        rank=1,
+        measured_theta_deg=None,
+        theta_deg=30.0,
+        raw_score=0.2,
+        normalized_score=0.8,
+        track_state="coasting",
+        is_observed=False,
+        is_new_track=False,
+        first_seen_sample=12_480,
+        last_observed_sample=15_360,
+        missed_samples=960,
+        kalman_applied=False,
+    )
+    gate = ProbabilityGateDecision(
+        "aggregator-test", 0, 1, decision_sample, "mean_2x20ms_v1",
+        ProbabilityGateState.CLOSED, 0.1, 0.1, 0.1, 0.7, 2, False,
+        "probability_below_threshold",
+    )
+    aggregator.update_srp(
+        None,
+        (),
+        "UNAVAILABLE: probability_below_threshold",
+        gate_decision=gate,
+        gate_threshold=0.7,
+        gate_config_revision=2,
+        direction_threshold=0.35,
+        direction_kalman_enabled=False,
+        direction_kalman_q_scale=1.0,
+        direction_kalman_r_scale=1.0,
+        scan_config_revision=3,
+        directions=(direction,),
+        active_tracks=(direction,),
+    )
+    preview = BeamformPreview(
+        "aggregator-test", 0, 1, decision_sample, 30.0,
+        np.zeros(1_920, np.float32), "optimized", track_id=7,
+    )
+    frame = aggregator.update_l3((preview,))
+    assert frame.spatial_response is None
+    assert frame.directions == (direction,)
+    assert frame.previews == (preview,)
+
+    probability = np.asarray([0.9], dtype=np.float32)
+    l4 = Layer4Result(
+        (
+            VoiceDetection(
+                "aggregator-test", 0, 1, decision_sample,
+                30.0, 0.9, True, "test-model", track_id=7,
+            ),
+        ),
+        (ModelPrediction("test-model", probability, 1.0, {}),),
+        "test-model",
+        0.7,
+    )
+    assert aggregator.update_l4(l4).l4_result is l4
 
 
 def test_l2_drop_retains_last_music_and_gate_as_stale_snapshot():

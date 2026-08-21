@@ -2608,6 +2608,8 @@ class ApplicationRuntime:
                     direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                     direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     scan_config_revision=int(values["scan_config_revision"]),
+                    directions=getattr(l2_output, "directions", ()),
+                    active_tracks=getattr(l2_output, "active_tracks", ()),
                 )
             else:
                 self._ui_aggregator.update_srp(
