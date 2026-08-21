@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (
 from .srp_panel import track_colour_hex
 
 
-_AUDIO_STAGE_ACTION_WIDTH = 160
-_AUDIO_STAGE_ACTION_HEIGHT = 42
+_AUDIO_STAGE_ACTION_WIDTH = 130
+_AUDIO_STAGE_ACTION_HEIGHT = 32
 
 
 class UnavailableCanvas(QWidget):
