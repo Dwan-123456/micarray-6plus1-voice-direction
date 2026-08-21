@@ -10,7 +10,7 @@
 
 ## 独立 L1 频谱观察界面
 
-运行 `scripts/launch_l1_spectrum_ui.ps1` 可启动只连接麦克风、校准、IMCRA和L1电平/频谱分析的独立界面；
+运行 `scripts/launch_l1_spectrum_ui.ps1` 可无控制台启动只连接麦克风、校准、IMCRA和L1电平/频谱分析的独立界面；该界面每1秒自动扫描麦克风，允许先启动程序再插入设备，并默认最大化；
 它不会启动L2、L3、L4或正式录音链。界面提供CDC灯光开关、八路互斥选择、当前20 ms输入频谱、
 IMCRA当前噪声频谱及手动频谱抓拍。详细契约见 [`gui/l1_spectrum_ui/README.md`](gui/l1_spectrum_ui/README.md)。
 

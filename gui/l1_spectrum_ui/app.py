@@ -116,8 +116,10 @@ class L1SpectrumWindow(QMainWindow):
         self._build_ui()
         self.host.frame_ready.connect(self._on_frame)
         self.host.state_changed.connect(self.status_bar.setText)
+        self.host.connection_changed.connect(self._on_connection_changed)
         self.host.light_state_changed.connect(self._on_light_state)
         self.host.error.connect(self._on_error)
+        self._on_connection_changed(self.host.connected)
         if auto_start:
             QTimer.singleShot(0, self.host.start)
 
@@ -126,7 +128,7 @@ class L1SpectrumWindow(QMainWindow):
         outer = QVBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.status_bar = QLabel("STARTING | L1 microphone + IMCRA only")
+        self.status_bar = QLabel("WAITING | L1 microphone disconnected | retry in 1 s")
         self.status_bar.setFixedHeight(30)
         self.status_bar.setStyleSheet("background:#17212b;color:#dce7f2;padding-left:10px;font-family:Consolas")
         outer.addWidget(self.status_bar)
@@ -159,21 +161,20 @@ class L1SpectrumWindow(QMainWindow):
         self.l1_header.setStyleSheet("font-family:Consolas")
         layout.addWidget(self.l1_header)
         controls = QHBoxLayout()
-        start = QPushButton("连接麦克风")
-        stop = QPushButton("停止采集")
+        self.connection_status = QPushButton("未连接")
+        self.connection_status.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.connection_status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.connection_status.setToolTip("程序每1秒自动扫描配置的麦克风；该按键仅显示状态")
         self.pre_denoise = QPushButton("IMCRA预降噪")
         self.pre_denoise.setCheckable(True)
         self.pre_denoise.setChecked(self.host.pre_denoise_enabled)
-        start.clicked.connect(self.host.start)
-        stop.clicked.connect(lambda: self.host.stop())
         self.pre_denoise.toggled.connect(self.host.set_pre_denoise_enabled)
         self.light_on = QPushButton("灯光开")
         self.light_off = QPushButton("灯光关")
         self.light_status = QLabel(f"灯光: {self.host.light_state.upper()}")
         self.light_on.clicked.connect(lambda: self.host.set_light(True))
         self.light_off.clicked.connect(lambda: self.host.set_light(False))
-        controls.addWidget(start)
-        controls.addWidget(stop)
+        controls.addWidget(self.connection_status)
         controls.addWidget(self.pre_denoise)
         controls.addWidget(self.light_on)
         controls.addWidget(self.light_off)
@@ -321,6 +322,20 @@ class L1SpectrumWindow(QMainWindow):
     def _on_error(self, message: str) -> None:
         QMessageBox.critical(self, "L1 Spectrum UI", message)
 
+    def _on_connection_changed(self, connected: bool) -> None:
+        if connected:
+            self.connection_status.setText("已连接")
+            self.connection_status.setStyleSheet(
+                "QPushButton{background:#16844b;color:white;border:1px solid #0f6b3c;"
+                "border-radius:3px;padding:6px 18px;font-weight:700;}"
+            )
+        else:
+            self.connection_status.setText("未连接")
+            self.connection_status.setStyleSheet(
+                "QPushButton{background:#c63f3f;color:white;border:1px solid #9f2929;"
+                "border-radius:3px;padding:6px 18px;font-weight:700;}"
+            )
+
     def _on_light_state(self, state: str) -> None:
         self.light_status.setText(f"灯光: {state.upper()}")
         pending = state == "pending"
@@ -348,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     application = QApplication.instance() or QApplication(sys.argv[:1])
     window = L1SpectrumWindow(load_config(args.config))
-    window.show()
+    window.showMaximized()
     return application.exec()
 
 

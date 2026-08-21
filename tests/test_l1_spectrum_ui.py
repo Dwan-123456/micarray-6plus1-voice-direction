@@ -159,6 +159,63 @@ def test_startup_led_off_failure_is_silent() -> None:
     assert host.light_state == "unknown"
 
 
+def test_host_retries_missing_microphone_and_connects_without_error_popup_signal() -> None:
+    attempts = []
+
+    class FakePipeline:
+        def __init__(self, succeeds):
+            self.succeeds = succeeds
+            self.host = None
+
+        def start(self):
+            if not self.succeeds:
+                raise RuntimeError("microphone absent")
+
+        def read(self, timeout=None):
+            del timeout
+            self.host._stop.set()
+            return None
+
+        def stop(self):
+            pass
+
+    host = None
+
+    def factory():
+        pipeline = FakePipeline(succeeds=bool(attempts))
+        pipeline.host = host
+        attempts.append(pipeline)
+        return pipeline
+
+    host = L1SpectrumHost(
+        load_config(CONFIG),
+        pipeline_factory=factory,
+        retry_interval_seconds=0.01,
+        no_audio_timeout_seconds=0.5,
+    )
+    errors = []
+    connections = []
+    states = []
+    host.error.connect(errors.append)
+    host.connection_changed.connect(connections.append)
+    host.state_changed.connect(states.append)
+
+    host._run()
+
+    assert len(attempts) == 2
+    assert connections == [True, False]
+    assert errors == []
+    assert any("retry in 1 s" in state for state in states)
+    assert host.connected is False
+
+
+def test_launcher_uses_detached_pythonw_and_main_opens_maximized() -> None:
+    launcher = (ROOT / "scripts/launch_l1_spectrum_ui.ps1").read_text(encoding="utf-8")
+    application = (ROOT / "gui/l1_spectrum_ui/app.py").read_text(encoding="utf-8")
+    assert "Start-Process -FilePath $pythonw" in launcher
+    assert "window.showMaximized()" in application
+
+
 def test_window_defaults_center_and_snapshot_is_frozen() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
@@ -170,12 +227,14 @@ def test_window_defaults_center_and_snapshot_is_frozen() -> None:
     class FakeHost(QObject):
         frame_ready = Signal(object)
         state_changed = Signal(str)
+        connection_changed = Signal(bool)
         light_state_changed = Signal(str)
         error = Signal(str)
 
         def __init__(self):
             super().__init__()
             self.pre_denoise_enabled = False
+            self.connected = False
             self.light_state = "unknown"
 
         def start(self):
@@ -195,6 +254,11 @@ def test_window_defaults_center_and_snapshot_is_frozen() -> None:
     application = QApplication.instance() or QApplication([])
     window = L1SpectrumWindow(load_config(CONFIG), host=FakeHost(), auto_start=False)
     try:
+        assert window.connection_status.text() == "未连接"
+        assert "#c63f3f" in window.connection_status.styleSheet()
+        window._on_connection_changed(True)
+        assert window.connection_status.text() == "已连接"
+        assert "#16844b" in window.connection_status.styleSheet()
         assert window.channel_group.checkedId() == CENTER_CHANNEL_INDEX
         assert sum(button.isChecked() for button in window.channel_buttons) == 1
 

@@ -15,4 +15,5 @@ if (-not (Test-Path -LiteralPath $pythonw)) {
 }
 
 Set-Location -LiteralPath $projectRoot
-& $pythonw -m gui.l1_spectrum_ui --config $config
+$arguments = "-m gui.l1_spectrum_ui --config `"$config`""
+Start-Process -FilePath $pythonw -ArgumentList $arguments -WorkingDirectory $projectRoot -WindowStyle Hidden

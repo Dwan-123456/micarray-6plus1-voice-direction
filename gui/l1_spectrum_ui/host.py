@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 from typing import Callable
 
@@ -26,6 +27,7 @@ class L1SpectrumHost(QObject):
 
     frame_ready = Signal(object)
     state_changed = Signal(str)
+    connection_changed = Signal(bool)
     light_state_changed = Signal(str)
     error = Signal(str)
 
@@ -35,6 +37,8 @@ class L1SpectrumHost(QObject):
         *,
         pipeline_factory: Callable[[], InputPipeline] | None = None,
         serial_device: SerialDevice | None = None,
+        retry_interval_seconds: float = 1.0,
+        no_audio_timeout_seconds: float = 2.0,
     ) -> None:
         super().__init__()
         self.config = config
@@ -49,6 +53,9 @@ class L1SpectrumHost(QObject):
         self._pipeline: InputPipeline | None = None
         self._stop = threading.Event()
         self._lock = threading.RLock()
+        self._connected = False
+        self._retry_interval_seconds = max(0.01, float(retry_interval_seconds))
+        self._no_audio_timeout_seconds = max(0.5, float(no_audio_timeout_seconds))
         self._pre_denoise_enabled = config.layer1_pre_denoise.enabled
         self._pre_denoise_latency_active = config.layer1_pre_denoise.enabled
 
@@ -71,6 +78,19 @@ class L1SpectrumHost(QObject):
     def pre_denoise_enabled(self) -> bool:
         with self._lock:
             return self._pre_denoise_enabled
+
+    @property
+    def connected(self) -> bool:
+        with self._lock:
+            return self._connected
+
+    def _set_connected(self, connected: bool) -> None:
+        value = bool(connected)
+        with self._lock:
+            changed = value != self._connected
+            self._connected = value
+        if changed:
+            self.connection_changed.emit(value)
 
     def set_pre_denoise_enabled(self, enabled: bool) -> None:
         with self._lock:
@@ -157,62 +177,76 @@ class L1SpectrumHost(QObject):
         return tuple(item.denoised if enabled else item.raw for item in pairs)
 
     def _run(self) -> None:
-        pipeline = None
         try:
-            coordinator = IngestCoordinator(
-                sample_rate=self.config.device.sample_rate,
-                timestamp_tolerance_ms=self.config.timing.timestamp_tolerance_ms,
-            )
-            imcra = Layer1Imcra.from_project(self.config)
-            pre_denoiser = ImcraWienerPreDenoiser.from_project(self.config)
-            meter = L1Meter()
-            analyzer = L1SpectrumAnalyzer(sample_rate=self.config.device.sample_rate)
-            pipeline = self._pipeline_factory()
-            with self._lock:
-                self._pipeline = pipeline
-                self._pre_denoise_latency_active = self._pre_denoise_enabled
-            pipeline.start()
-            # The LED default belongs to a successfully connected microphone
-            # lifecycle. If UAC start fails this line is never reached, so the
-            # UI neither opens CDC nor reports an unrelated light error.
-            self.set_light(False, report_errors=False)
-            self.state_changed.emit("RUNNING | L1 microphone + IMCRA only")
             while not self._stop.is_set():
-                audio = pipeline.read(timeout=0.1)
-                if audio is None:
-                    continue
-                block = coordinator.ingest(audio, tuple(pipeline.take_health_events()))
-                hops = imcra.process(block) if self.config.layer1_imcra.enabled else ()
-                if (
-                    len(hops) == 1
-                    and hops[0].start_sample == block.start_sample
-                    and hops[0].end_sample == block.end_sample
-                    and hops[0].source_sequence_ids == (block.sequence_id,)
-                ):
-                    block = replace(block, imcra_hop=hops[0])
-                for selected in self._select_pre_denoise(block, pre_denoiser):
-                    enabled = self.pre_denoise_enabled and self._pre_denoise_latency_active
-                    snapshot = meter.add(
-                        selected,
-                        light_state=self.light_state,
-                        pre_denoise_enabled=enabled,
-                        pre_denoise_mean_gain_db=pre_denoiser.last_mean_gain_db if enabled else 0.0,
-                    )
-                    self.frame_ready.emit(analyzer.analyze(selected, snapshot))
-        except Exception as exc:
-            if not self._stop.is_set():
-                self.error.emit(str(exc))
-                self.state_changed.emit(f"ERROR | {exc}")
-        finally:
-            if pipeline is not None:
+                pipeline = None
                 try:
-                    pipeline.stop()
+                    coordinator = IngestCoordinator(
+                        sample_rate=self.config.device.sample_rate,
+                        timestamp_tolerance_ms=self.config.timing.timestamp_tolerance_ms,
+                    )
+                    imcra = Layer1Imcra.from_project(self.config)
+                    pre_denoiser = ImcraWienerPreDenoiser.from_project(self.config)
+                    meter = L1Meter()
+                    analyzer = L1SpectrumAnalyzer(sample_rate=self.config.device.sample_rate)
+                    pipeline = self._pipeline_factory()
+                    with self._lock:
+                        self._pipeline = pipeline
+                        self._pre_denoise_latency_active = self._pre_denoise_enabled
+                    pipeline.start()
+                    self._set_connected(True)
+                    # Default LED-off belongs only to a successful UAC lifecycle.
+                    self.set_light(False, report_errors=False)
+                    self.state_changed.emit("RUNNING | L1 microphone connected | IMCRA only")
+                    last_audio_at = time.monotonic()
+                    while not self._stop.is_set():
+                        audio = pipeline.read(timeout=0.1)
+                        if audio is None:
+                            if time.monotonic() - last_audio_at >= self._no_audio_timeout_seconds:
+                                raise ConnectionError("麦克风已停止提供音频")
+                            continue
+                        last_audio_at = time.monotonic()
+                        block = coordinator.ingest(audio, tuple(pipeline.take_health_events()))
+                        hops = imcra.process(block) if self.config.layer1_imcra.enabled else ()
+                        if (
+                            len(hops) == 1
+                            and hops[0].start_sample == block.start_sample
+                            and hops[0].end_sample == block.end_sample
+                            and hops[0].source_sequence_ids == (block.sequence_id,)
+                        ):
+                            block = replace(block, imcra_hop=hops[0])
+                        for selected in self._select_pre_denoise(block, pre_denoiser):
+                            enabled = self.pre_denoise_enabled and self._pre_denoise_latency_active
+                            snapshot = meter.add(
+                                selected,
+                                light_state=self.light_state,
+                                pre_denoise_enabled=enabled,
+                                pre_denoise_mean_gain_db=(
+                                    pre_denoiser.last_mean_gain_db if enabled else 0.0
+                                ),
+                            )
+                            self.frame_ready.emit(analyzer.analyze(selected, snapshot))
                 except Exception:
-                    pass
+                    if not self._stop.is_set():
+                        self.state_changed.emit("WAITING | L1 microphone disconnected | retry in 1 s")
+                finally:
+                    if pipeline is not None:
+                        try:
+                            pipeline.stop()
+                        except Exception:
+                            pass
+                    with self._lock:
+                        if self._pipeline is pipeline:
+                            self._pipeline = None
+                    self._set_connected(False)
+                if not self._stop.is_set():
+                    self._stop.wait(self._retry_interval_seconds)
+        finally:
             with self._lock:
                 self._pipeline = None
                 if self._thread is threading.current_thread():
                     self._thread = None
+            self._set_connected(False)
             self.state_changed.emit("STOPPED | L1 microphone disconnected")
 
     def close(self) -> None:
