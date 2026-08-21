@@ -8,24 +8,24 @@
 
 每次麦克风采集成功连接后，Test UI会尽力发送一次官方关灯命令`e`。麦克风未连接时不会访问CDC或发送灯控命令；启动默认关灯失败也不弹出灯控错误，手动“灯光开/灯光关”仍保留完整错误提示。
 
-本UI只消费同一个ApplicationRuntime快照，不得重开设备、重建时间轴或在界面线程运行算法。普通启动使用真实麦克风并保留实时CDC热力图；数据管理系统发起模拟测试时，`RecordingReplaySource`只读取已登记的原始8ch音频。实时链到Hub封存为止；L4和L5由下半区两个“发送”按钮依次触发，并在后台工作线程执行。
+本UI只消费同一个ApplicationRuntime快照，不得重开设备、重建时间轴或在界面线程运行算法。普通启动使用真实麦克风并保留实时CDC热力图；数据管理系统发起模拟测试时，`RecordingReplaySource`只读取已登记的原始8ch音频。实时链到Hub封存为止；下半区只保留“发送到L4”按钮，L4整批完成后由同一后台工作自动且仅一次运行L5。
 
 主窗口默认以系统最大化窗口启动，保留标题栏、最小化和还原能力，不进入无边框全屏；只有配置显式启用`start_fullscreen`时才使用全屏模式。
 
-L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但按ID长轨不再由UI自行拼接。Runtime中的`TrackAudioStreamHub`每20 ms生成一份已经去重、按IMCRA概率响度补偿的连续轨hop；Test UI试听缓存和L5 CNN逐样本读取同一份波形，播放端不再额外提高响度。L5面板提供默认ON的实时补偿开关，切换不清空ID或连续轨。
+L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但按ID长轨不再由UI自行拼接。Runtime中的`TrackAudioStreamHub`每20 ms生成一份已经去重、按IMCRA概率响度补偿的连续轨hop；Test UI的L3试听和停机封存读取同一份48 kHz波形，播放端不再额外提高响度。L3栏提供默认ON的补偿开关，切换不清空ID或连续轨；L5读取的是L4最终原生16 kHz输出。
 
 只有完整模拟输入模式会在L1显示操作者填写的音频名称以及“开始/继续、暂停、从头重播”控件。暂停不推进sample，也不在继续时追赶；播放结束保留最后结果并等待重播。重播立即清空上一轮L1～L5画面、试听缓存和旧结果邮箱，并通过新的stream epoch重新预热算法状态。普通真实设备模式不创建这些控件。
 
-主界面使用10 ms精确定时器以100 Hz轮询两个容量1的latest-value邮箱。正式审计邮箱仍只接收ResultJoiner按`(session_id, stream_epoch, window_id, decision_sample)`合并并有序提交的快照；L5完成邮箱`latest_l5_dev_ui`只在L5真正`COMPLETED`后立即接收完整同窗L2/L3/L5 `DevUiFrame`，用于减少有序commit等待造成的CNN显示延迟。它不改变DecisionRecord、录音或watermark顺序，也不能混拼不同窗口。算法正式窗口仍为20 ms（50 Hz）；某阶段SKIPPED/FAILED时仍由有序审计快照表达真实终态。
+主界面使用10 ms精确定时器以100 Hz轮询容量1的latest-value邮箱。正式审计邮箱只接收ResultJoiner按`(session_id, stream_epoch, window_id, decision_sample)`合并并有序提交的快照；实时L5固定写入`offline_after_l4`跳过终态，因此兼容邮箱`latest_l5_dev_ui`不会发布CNN结果。离线L5结果由当前后台作业直接写入L4/L5面板，不进入DecisionRecord或watermark。算法正式窗口仍为20 ms（50 Hz）；某阶段SKIPPED/FAILED时仍由有序审计快照表达真实终态。
 
 按ID累计试听每个决策只追加`TrackAudioStreamHub`产生的同一稳定20 ms hop；GUI不再自行交叉淡化、拼接或做响度增强。声卡输出仅保留必要的衰减型峰值安全和首尾播放淡化，不会提高或改写缓存、L5输入或录音资产。
 
-顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2/L3/L5/completion队列的“当前深度/容量”、worker RUN/STOP、各阶段完成/错误累计、在途窗口及计算缓存MiB。L5另外显示实际完成、DROPPED、SKIPPED、最近1秒实际完成Hz，以及完成帧邮箱的深度/容量/latest-only覆盖数。悬停可查看入口丢窗和最近阶段错误。该显示不得访问`_processing_windows`等私有字段，也不得反向改变队列或调度；Runtime缺少公开快照时只显示telemetry unavailable，不猜测内部状态。
+顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2/L3/L5审计/completion队列的“当前深度/容量”、worker RUN/STOP、各阶段完成/错误累计、在途窗口及计算缓存MiB。实时L5诊断主要显示DROPPED与`offline_after_l4`的SKIPPED数量；离线CNN进度由L4/L5面板单独显示。悬停可查看入口丢窗和最近阶段错误。该显示不得访问`_processing_windows`等私有字段，也不得反向改变队列或调度；Runtime缺少公开快照时只显示telemetry unavailable，不猜测内部状态。
 
 ## 上二栏与下三栏
 
 - 左上L1：MIC0～MIC5、Center、HardwareMix共8路电平；显示IMCRA预热状态与7个物理麦的0～10000 Hz噪声dB摘要，并提供持久化“IMCRA预降噪”开关和当前采集流的历史平均频率增益；不在L1显示20/40 ms概率；保留灯控与scratch录音。
-- 右上L2：显示500～4000 Hz Gate概率、状态和原始MUSIC 360°伪谱；紧凑的`MUSIC阶数`下拉框右侧提供`ID Tracking`按钮。追踪开启时，候选点严格使用L2最终输出角度：首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点，正式ID使用稳定颜色且观测为大点、预测为小点。追踪关闭时只显示原始MUSIC峰值对应的灰色小点，不显示彩色ID，L3/L5按正常跳过终态停止运行而不报错。
+- 右上L2：显示500～4000 Hz Gate概率、状态和原始MUSIC 360°伪谱；紧凑的`MUSIC阶数`下拉框右侧提供`ID Tracking`按钮。追踪开启时，候选点严格使用L2最终输出角度：首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点，正式ID使用稳定颜色且观测为大点、预测为小点。追踪关闭时只显示原始MUSIC峰值对应的灰色小点，不显示彩色ID，L3与实时L5审计按正常跳过终态停止运行而不报错。
 - 下左L3：连续试听首行固定为Center Mic参考，其余方向轨显示L2权威ID和角度。停止采集并等待L3排空后，“发送到L4”把Hub已经拼好的完整长音频整体交给L4。L3波形不再读取或绘制L5黄色人声区间。
 - 下中L4：试听缓存是L4原生16 kHz单声道PCM16 WAV；播放端解析RIFF/WAV后以16 kHz直接建立声卡流，不做16→48 kHz重采样，也不得复用L3裸`.f32`缓存入口。L4全部音轨完成后，Test UI自动把同一份16 kHz波形交给L5；播放只做去直流、必要的衰减型峰值保护和首尾淡化，不改写缓存或L5输入。
 - 下中L4：逐轨保存L4输出WAV并提供与L3一致的ID、角度、时长、波形和播放控件；不再提供手动“发送到L5”按钮。L5自动一次读取完整长音频并为每个20 ms hop返回独立概率；达到当前UI阈值的区间直接在本栏对应时间位置显示黄色背景。
@@ -33,11 +33,11 @@ L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但�
 
 L2 Gate滑条范围`0.00～1.00`、建议步长`0.01`。拖动后在下一完整DecisionWindow生效并显示新的`config_revision`，默认不写回`config.yaml`。L5阈值滑条只重判缓存的CNN概率。两个滑条必须用“L2声源Gate”和“L5人声判断”清晰区分。
 
-L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3。实际阶数始终为`min(MDL实际诊断阶数, 手动上限)`；右侧状态条同时显示`MDL`和`MUSIC`，便于直接比较。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不修改MDL 0～6诊断结果，也不启用逐频支持或可靠性加权门禁。
+L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3，并直接决定普通路径的实际子空间阶数与最多搜峰数；MDL只保留0～6阶诊断。右侧状态条同时显示`MDL`和`MUSIC`，便于直接比较。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不启用逐频支持或可靠性加权门禁。
 
 所有算法信息按session、epoch、window和sample endpoint对齐。缺少任一20 ms IMCRA概率、跨epoch或尚未预热时，右上明确显示`WARMING_UP/UNAVAILABLE`，不能拼接旧数据或显示假SRP结果。
 
-L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和Kalman应用状态。右上MUSIC面板只据此绘制；左下试听按同一公共ID拼接L3音频，不执行第二套角度关联或换号补救。这些显示逻辑不能改变L2轨迹、L3/L5结果或正式录音。
+L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和Kalman应用状态。右上MUSIC面板只据此绘制；左下试听按同一公共ID拼接L3音频，不执行第二套角度关联或换号补救。离线L4/L5继承同一ID；这些显示逻辑不能改变L2轨迹、音频结果或正式录音。
 
 ## 回归测试
 
@@ -51,6 +51,6 @@ L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和K
 - L3只有音频视图，无内部`[17,169]`依赖；
 - L3四档循环切换、Runtime模式透传、模式切换后试听缓存隔离；包括优化算法、DS、
   全频Loaded MVDR和五频段鲁棒对照，后三种均保持独立试听分区；
-- L5完成邮箱固定容量1、只发布完整同窗COMPLETED帧、覆盖不改变正式结果；DROPPED/SKIPPED画面保留到stale超时；
-- L5实际完成/丢弃/跳过/Hz/邮箱覆盖诊断与空候选L3免prepare、L5空batch成功路径；
+- 实时L5固定以`offline_after_l4`跳过，兼容完成邮箱不发布CNN结果；DROPPED/SKIPPED画面保留到stale超时；
+- L5丢弃/跳过诊断、空候选L3免prepare，以及离线L4完成后自动L5的独立工作流；
 - latest-value邮箱、不卡采集、scratch与正式录音隔离。

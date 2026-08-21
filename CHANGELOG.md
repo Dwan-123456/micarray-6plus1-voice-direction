@@ -23,6 +23,43 @@
 
 ---
 
+## 2026-08-21 — 按1.3.1代码重绘实时与离线总架构
+
+- **版本/标签**：已发布`v1.3.1`的文档维护；不创建、移动或替换发布标签。
+- **类型**：全项目只读盘点后的架构图、权威契约及分层README同步；不修改程序行为。
+- **涉及文件**：根`README.md`、`ARCHITECTURE_V1.1_TARGET.md`、`app/README.md`、
+  `layer2_source_detection/README.md`、`layer4_speech_separation/README.md`、
+  `layer5_voice_classifier/README.md`、`gui/dev_test_ui/README.md`和本`CHANGELOG.md`。
+
+### 架构同步
+
+- 将主链明确拆成两部分：实时链只计算L2、L3与`TrackAudioStreamHub`，实时L5 worker仅提交
+  `SKIPPED(reason=offline_after_l4)`供ResultJoiner逐窗审计；真正的L4/L5不进入实时ResultJoiner。
+- 补全停机离线链：Hub按权威ID封存完整48 kHz长轨，Test UI选择MossFormer2或TIGER后提交L4；
+  L4按`min(2, 整轨L2方向数最大值)`进行一人旁路或双人分离，以2～4 kHz复频谱相干匹配主候选，
+  低可信时回退L3参考，并输出保留原ID/角度的原生16 kHz音频。
+- 明确L4整批完成后由同一后台任务自动且仅一次运行离线MarbleNet L5；L5不再重采样，逐320样本
+  输出20 ms概率并回写L4音频条，离线结果不伪装成实时DecisionRecord或自动回写RecordingStore。
+- 将独立L1 Spectrum UI补入项目级架构，标明其自建L1-only链且不创建WindowAssembler、L2～L5、
+  正式录音或数据管理服务。
+- 按当前配置校准L2文档：普通MUSIC实际阶数直接取Test UI手动上限，MDL仅作诊断；DPD方向簇门禁为
+  至少4个频点、支持率0.20、覆盖2/4子带、集中度0.85；确认门禁为200 ms内3次观测、TTL为2秒。
+- 澄清离线L5不向L2反馈：代码保留精确ID在线反馈兼容接口，但当前ApplicationRuntime没有调用方；
+  confirmed/coasting公共方向由L2自身状态投影，普通运行不会因离线语义强制开Gate或改变ID寿命。
+
+### 未变化组件、验证与资产
+
+- L1～L5代码、Windowing、Runtime实现、TrackAudioStreamHub、ResultJoiner、Recording/Data Management、
+  Development/Production/Log/L1 Spectrum UI代码、配置schema与参数、测试、模型和音频资产均无变化。
+- 文档代码块、Mermaid、本地链接、冲突标记、配置关键值与`git diff --check`静态检查通过；配置、L2、
+  Runtime审计、TrackAudioStreamHub、离线L4/L5、Development Test UI与L1 Spectrum UI专项自动测试
+  `190 passed`。
+- 未修改Git LFS管理的模型、音频、空间表、论文或其他二进制资产，无新增LFS对象；未提交`data/`、
+  录音、Catalog、临时L4 WAV、缓存、日志、密钥、Token或本地代理设置。
+- 本次文档同步不代表真实7通道阵列、诊室双声源、中文目标域、两种L4模型音质或长时间负载已重新验收。
+
+---
+
 ## 2026-08-21 — 项目1.3.1整合发布
 
 - **版本/标签与分支**：将`codex/develop-v1.3.1`自`v1.2.4`以来的全部开发提交快进合入`main`，并创建新的不可变标签`v1.3.1`；既有发布标签、远端分支和历史保持原位，不移动、不覆盖、不删除。

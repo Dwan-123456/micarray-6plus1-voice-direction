@@ -8,9 +8,9 @@ Runtime负责唯一L1→Ingest→Window装配，以及L2、L3与Hub长音频封�
 
 Runtime保留L2、L3、L5三个有界阶段队列和有序审计结构；当前实时计算只执行L2与L3，L5 worker为每个成功L3窗口提交`offline_after_l4`的`SKIPPED`终态。L2 worker独占滚动MUSIC/方向轨迹状态和预计算导向缓存；连续窗口增量推进，sample跳跃或revision变化时安全重建并发布诊断。L4与真正的L5推理不占用实时队列，只消费停机排空后的Hub封存包。
 
-`ResultJoiner`接收乱序完成的L2/L3/L5终态，只在同一WindowKey完整后生成一个`JoinedWindowResult`。每层`StageResult`携带有序公共`(track_id, theta_deg)`信息；Joiner逐项校验L2 directions、L3 enhanced与L5 detections的ID集合、顺序、角度及WindowKey。commit阶段按全局window ID有序调用RecordingStore的原子`append_result_with_watermark`，之后再做Test UI投影；stage worker不得绕过Joiner直接发布正式结果。Gate阻断产生L3/L5 `SKIPPED`；任一阶段`FAILED/TIMED_OUT/DROPPED/CANCELLED`都产生唯一`error` DecisionRecord v5；仅完整成功但使用声明回退的结果为`degraded`。旧DecisionRecord v3仅支持只读，不原地改写。
+`ResultJoiner`接收乱序完成的L2/L3/L5终态，只在同一WindowKey完整后生成一个`JoinedWindowResult`。L2与L3完成结果携带有序公共`(track_id, theta_deg)`并逐项校验；当前实时L5是没有检测输出的`offline_after_l4`跳过终态。commit阶段按全局window ID有序调用RecordingStore的原子`append_result_with_watermark`，之后再做Test UI投影；stage worker不得绕过Joiner直接发布正式结果。Gate阻断产生L3/L5 `SKIPPED`；任一阶段`FAILED/TIMED_OUT/DROPPED/CANCELLED`都产生唯一`error` DecisionRecord v5；仅完整成功但使用声明回退的结果为`degraded`。旧DecisionRecord v3仅支持只读，不原地改写。
 
-`latest_l5_dev_ui` side channel为兼容性保留；全离线L5架构下实时链不会向其发布CNN结果。本期只预留离线L4/L5代码接口，不新增UI页面或控件。
+`latest_l5_dev_ui` side channel为兼容性保留；全离线L5架构下实时链不会向其发布CNN结果。Development Test UI已经提供L3/L4/L5三栏和唯一的“发送到L4”入口；整批L4完成后由同一后台任务自动运行L5并直接更新离线面板。
 
 ResultJoiner注册前若在途窗口/字节容量已满，Runtime不保留新窗口的160 ms音频，只在有界范围审计中压缩保留身份、sample边界与原因；commit遇到对应window ID时展开为轻量`error` DecisionRecord和watermark。这条pre-joiner拒绝路径不会把容量异常抛回L1采集循环。
 
@@ -20,9 +20,9 @@ Join后也没有无界队列：completion主队列和后备backlog均受`complet
 
 Runtime还负责L1预降噪选择：IMCRA始终先读取原始音频；`ImcraWienerPreDenoiser`持续维护40 ms/20 ms WOLA状态。开关关闭时发布原始hop，开启时等待一个hop固定延迟并发布sample边界相同、前7路已替换的降噪hop。开关从关闭切到开启时不得重复发布此前已经旁路的音频。
 
-L2的`TrackedDirection`是唯一权威方向身份。Runtime把同一`track_id`、角度和原始顺序传给L3、L5、DecisionRecord v5、Development Test UI与Production数据服务；任何下游都不得按角度、rank或试听状态创建、合并、续租或修补ID。同一session切换epoch时L2清空运动状态，但ID计数器继续单调递增。Gate关闭、latest-wins丢窗和sample跳跃都按绝对sample推进coasting/TTL，不重置整个tracker。
+L2的`TrackedDirection`是唯一权威方向身份。Runtime把同一`track_id`、角度和原始顺序传给L3、DecisionRecord v5、Development Test UI与Production数据服务；停机封存后的L4/L5继续继承该ID。任何下游都不得按角度、rank或试听状态创建、合并、续租或修补ID。同一session切换epoch时L2清空运动状态，但ID计数器继续单调递增。Gate关闭、latest-wins丢窗和sample跳跃都按绝对sample推进coasting/TTL，不重置整个tracker。
 
-Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`拼接，保留20 ms hop、真实音频补洞、过旧缺口等时静音、交叉淡化、Center Mic参考、有界分段和L3模式隔离。UI不再维护私有ID投影、角度贪心关联或别名合并。已删除angle-only L5反馈邮箱；L5只消费公共ID并返回该ID的人声语义结果，不拥有方向轨迹生命周期。
+Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`拼接，保留20 ms hop、真实音频补洞、过旧缺口等时静音、交叉淡化、Center Mic参考、有界分段和L3模式隔离。UI不再维护私有ID投影、角度贪心关联或别名合并。当前离线L5只继承公共ID并返回该ID的人声语义结果，不向L2反馈，也不拥有方向轨迹生命周期。
 
 Development Test UI可实时关闭下游处理。关闭后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L5 `SKIPPED`终态，已经排队但尚未开始的L3/L5工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner、DecisionRecord或watermark顺序；重新开启后从下一条L2结果恢复L3/L5。
 

@@ -45,7 +45,7 @@ L2：Probability Gate
     → 7麦多帧STFT与频点协方差
     → 宽带frequency-normalized MUSIC 0～359°空间谱
     → MDL/跨频一致性估计0～6阶空间模态
-    → effective_order=min(MDL诊断阶数, Test UI手动上限1/2/3)
+    → MDL只作诊断；effective_order=Test UI手动上限1/2/3
     → 候选仍限制为0～3个方向
     → 圆周峰值与50° NMS
     → 默认启用的全局分配方向ID（Test UI诊断模式可旁路）
@@ -58,19 +58,25 @@ L3：按同一WindowKey和track_id执行逐方向增强
 TrackAudioStreamHub：按精确ID每窗追加一个20 ms hop
     → IMCRA概率响度补偿（Test UI可实时开关）
     → 同一补偿后连续48 kHz轨供L3试听、保存和停机封存
+    ↓ 实时L5审计队列
+L5 StageResult：SKIPPED(reason=offline_after_l4)，不执行CNN
     ↓
-L4：手动接收封存长轨，统一48→16 kHz并完成一/二人路由、分离和匹配
-    → 输出原生16 kHz音频，直接保存和试听
-    ↓ 手动发送
-L5：只接收L4的完整16 kHz音频，NVIDIA Frame-VAD输出20 ms概率序列
-    → 与每个320样本hop严格对齐；整轨摘要取完整序列连续3帧最大均值
-    → VoiceDetection(track_id, theta_deg, probability)
-    → 结果按精确ID回填最新20 ms连续轨hop（概率 + Voice/Non-Voice）
-    ↓
-ResultJoiner：按WindowKey有序合并，逐ID精确对齐
+ResultJoiner：按WindowKey有序合并L2/L3/L5审计终态
     ├── DecisionRecord v5 / RecordingStore / ID时间线
-    ├── Development Test UI / 按ID连续试听
+    ├── Development Test UI / L1-L3实时显示与按ID连续试听
     └── Production UI / 运行录音详情与逐ID回放
+
+停止采集并完全排空实时队列
+    ↓ TrackAudioStreamHub.seal()：每个权威ID一条完整48 kHz长轨
+L4：Test UI手动提交，统一48→16 kHz并完成一/二人路由、分离和匹配
+    → 人数=min(2, 整轨L2方向数最大值)
+    → 一人旁路；二人使用MossFormer2或TIGER
+    → 2～4 kHz复频谱相干匹配或低可信回退L3参考
+    → 输出保留原ID/角度的原生16 kHz音频，直接保存和试听
+    ↓ 整批L4完成后自动且仅一次运行
+L5：NVIDIA Frame-VAD输出逐20 ms概率序列
+    → 与每个320样本hop严格对齐；整轨摘要取完整序列连续3帧最大均值
+    → 结果按精确ID回写L4预览条（概率 + Voice/Non-Voice）
 
 Recording/Data公共只读查询边界
     └── Pipeline Log UI / 性能统计、阶段时间线、单窗详情与逐ID回看
@@ -78,19 +84,22 @@ Recording/Data公共只读查询边界
 
 ```mermaid
 flowchart LR
-    L1["L1 IMCRA概率"] --> HUB["TrackAudioStreamHub<br/>精确ID拼接 + 响度补偿"]
-    L2["L2 MUSIC + track_id"] --> L3["L3 40 ms重叠增强窗"]
+    L1["L1 + WindowAssembler"] --> L2["L2 MUSIC + track_id"]
+    L2 --> L3["L3 40 ms重叠增强窗"]
     L3 --> HUB
+    HUB["TrackAudioStreamHub<br/>精确ID拼接 + 响度补偿"] --> AUDIT["实时L5审计<br/>offline_after_l4"]
+    L2 --> JOIN["ResultJoiner<br/>逐窗有序提交"]
+    L3 --> JOIN
+    AUDIT --> JOIN
     HUB --> TRACK["同一补偿后连续48 kHz轨"]
     TRACK --> UI["Test UI试听"]
     TRACK --> REC["Recording/Data按ID轨"]
-    TRACK -->|"手动发送"| L4["L4 48→16 kHz<br/>分离与匹配"]
+    TRACK -->|"停机封存后手动发送"| L4["L4 48→16 kHz<br/>分离与匹配"]
     L4 --> L4UI["16 kHz WAV试听"]
-    L4 -->|"手动发送同一音频"| NV["16 kHz直接进入<br/>NVIDIA Frame-VAD"]
+    L4 -->|"整批完成后自动"| NV["16 kHz直接进入<br/>NVIDIA Frame-VAD"]
     NV --> L5["逐20 ms原始概率<br/>返回L4预览标黄"]
     L5 --> SEM["逐ID 20 ms语义时间线"]
     SEM --> UI
-    SEM --> REC
 ```
 
 跨窗口实时并行为 `L2(n) || L3(n-1)`；同一窗口的实时审计严格执行 `L2 → L3 → L5(SKIPPED: offline_after_l4)`。真正的L4/L5只消费停机排空后的Hub封存包。
@@ -149,10 +158,10 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 ## 6. Windowing 改动
 
-- `DecisionWindow [7680,8]` 每20 ms发布一次并始终保留160 ms上游上下文。L3、L5和Development Test UI共同读取`timing.downstream_audio_window_ms`派生的末尾40/80/160 ms；当前为40 ms。L2的MUSIC历史独立配置为240 ms并由跨窗口状态维护，不受该下游参数影响。
+- `DecisionWindow [7680,8]` 每20 ms发布一次并始终保留160 ms上游上下文。L3和Development Test UI读取`timing.downstream_audio_window_ms`派生的末尾40/80/160 ms；当前为40 ms。离线L5只读取L4原生16 kHz长音频，不使用该实时窗口参数。L2的MUSIC历史独立配置为240 ms并由跨窗口状态维护，不受该下游参数影响。
 - L2维护按session/epoch/sample连续的滚动STFT与协方差状态。每个新DecisionWindow原则上只加入最近20 ms产生的新帧并移出超出MUSIC历史长度的旧帧；禁止每20 ms从头重算320 ms STFT和全部协方差。
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
-- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率；没有符合条件的人声ID时，Gate关闭会跳过新的MUSIC观测。只有tracking状态已为`confirmed`、至少收到一次L5正向人声反馈且当前未标记为噪声干扰的ID，才能把低于门限的正式概率判决强制放行；仅有MUSIC观测的临时/未获人声确认ID不能强制Gate。ID继续按2秒绝对sample TTL推进到coasting/超时；所有仍在有效TTL内的正式coasting ID都可在数量与角距限制内作为公共方向送入L3。L5人声反馈只决定是否续租该预测ID的生命，不参与coasting的L3准入或排序。预热、缺失和无效概率仍保持阻断，epoch变化不得继承旧ID的强制状态。
+- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率，达到阈值才运行MUSIC。L2保留按精确ID接收在线语义反馈后强制放行的兼容接口，但当前L5仅在停机后的离线链执行，ApplicationRuntime不把结果回传L2，因此1.3.1普通运行不会触发语义强制放行。ID继续按2秒绝对sample TTL推进到coasting/超时；所有仍在有效TTL内的正式coasting ID都可在数量与角距限制内作为公共方向送入L3。预热、缺失和无效概率保持阻断，epoch变化不得继承旧状态。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
 
 本分支的Windowing直接提供`DecisionWindow.physical_samples`和`physical_history(160)`，只含7个物理麦，`HardwareMix`只能通过独立属性访问；请求超出当前窗口的240/320 ms历史会被拒绝。`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2跨窗口维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/240/320三档之一、比较集合固定为三档且滚动历史上限为320 ms。WindowAssembler仍只组装160 ms窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
@@ -179,7 +188,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ### 7.3 声源数与候选
 
 - 使用 MDL 估计 `0～6` 阶信号子空间维度；MDL诊断值不被Test UI覆盖，但不再控制普通MUSIC路径的实际阶数、搜峰数或新ID诞生。诊断阶数大于3时仍标记`saturated/model_mismatch`供诊断。
-- 可选`DPD + rank-1 MUSIC`默认关闭。开启后，逐频主特征值间隙与平面波steering拟合度先筛选直达声主导频点，IMCRA `spp/prior_snr`参与可靠性加权；每个可靠频点使用rank-1 MUSIC产生一张方向票，再以圆周核投票形成方向簇，359°/0°按同一邻域处理。每个簇必须同时满足绝对支持频点数、加权支持率、跨子频带覆盖、圆周集中度和峰门限；当前参数为至少5个频点、覆盖4个等宽子带中的至少2个、支持率至少0.25、集中度至少0.95。归一化峰值均严格大于0.70且组内任意两峰圆周距离不超过40°时，使用唯一支持频点并集计算`theta_group`与`w_merge`，重复频点只计一次，组直径约束禁止链式跨范围合并；融合结果重新检查原方向簇门禁，蓝色投票谱保持不变且不做二次归一化，之后才执行50°圆周NMS。合格方向簇数量决定0～手动上限个候选，MDL只作诊断，不直接规定候选数；每个候选诊断记录支持频点、支持率、子带数、集中度、平均平面波拟合度和簇权重。
+- 可选`DPD + rank-1 MUSIC`默认关闭。开启后，逐频主特征值间隙与平面波steering拟合度先筛选直达声主导频点，IMCRA `spp/prior_snr`参与可靠性加权；每个可靠频点使用rank-1 MUSIC产生一张方向票，再以圆周核投票形成方向簇，359°/0°按同一邻域处理。每个簇必须同时满足绝对支持频点数、加权支持率、跨子频带覆盖、圆周集中度和峰门限；当前参数为至少4个频点、覆盖4个等宽子带中的至少2个、支持率至少0.20、集中度至少0.85。归一化峰值均严格大于0.70且组内任意两峰圆周距离不超过40°时，使用唯一支持频点并集计算`theta_group`与`w_merge`，重复频点只计一次，组直径约束禁止链式跨范围合并；融合结果重新检查原方向簇门禁，蓝色投票谱保持不变且不做二次归一化，之后才执行50°圆周NMS。合格方向簇数量决定0～手动上限个候选，MDL只作诊断，不直接规定候选数；每个候选诊断记录支持频点、支持率、子带数、集中度、平均平面波拟合度和簇权重。
 - 可选`IMCRA噪声白化`默认关闭。开启后只消费DecisionWindow中READY的IMCRA逐麦`noise_psd`，构造对角`Rn(f)`并对白化后的协方差与steering执行MUSIC；因为当前IMCRA接口没有跨麦互谱，该实现不等同于完整的full-CSM白化。对角噪声模型必须以逐麦逆平方根直接缩放，数学上等价于对角Cholesky白化但不得逐频调用通用7×7分解/求解；缺少READY快照或有效对角项时标记`unavailable`并退回未白化路径，不学习私有噪声模型，也不读取外部风扇录音。
 - 普通MUSIC路径的Test UI阶数上限1/2/3同时是实际信号子空间阶数和峰搜索上限，MDL只保留为0～6阶诊断，不再减少实际搜索数。候选搜索每轮从当前未屏蔽区域选择符合Test UI候选门限与prominence的最强圆周局部极大值，再屏蔽与已选峰距离小于50°的区域；恰好50°允许共存。下一轮无达标峰时提前停止，因此最终输出0～阶数上限个备选方向。
 - 峰值选择必须原生处理数组首尾相邻，`359°` 和 `0°` 属于相邻角度。
@@ -203,16 +212,16 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 - 状态为 `tentative → confirmed → coasting → deleted`。
 - 首次无匹配观测立即分配新 ID；当前正式参数要求滚动200 ms窗口内累计至少3次匹配观测后确认。匹配不要求占满每个20 ms窗口；窗口内不足3次时保持tentative并继续滚动重试。tentative固定使用20°关联角距；confirmed按距离该ID最后一次真实MUSIC观测的时间使用`min(50°, 20° + 15°/s × 漏检时长)`，不得用相邻处理窗口的时间替代。未匹配峰若位于任一现存非噪声ID预测位置±20°内，必须抑制birth；噪声干扰轨继续保持非排他。ID 一经分配，在同一 session 内不得给其他轨迹复用。
-- 短时漏检或 Gate 关闭进入内部 coasting；在 TTL 内重新落入关联门限应恢复原 ID。有效TTL内的confirmed/coasting轨迹均可发布为公共L3方向；L5人声反馈只续租预测生命，不参与L3准入或排序。
-- L5必须按权威`track_id`、原窗口sample和epoch回传人声概率。某ID从建立或最近一次正向人声判定起连续3秒没有再次被判为人声时，L2将其标记为非排他的噪声干扰轨：它仍可更新自身方向和2秒几何TTL，但不占用普通ID的全局关联排他空间，普通ID接近时不得错误归并到噪声ID。只有其±45°内没有其他普通ID，且在滚动3秒时间窗内累计收到5次人声判定，才解除噪声标记；非人声结果不增加次数，也不清空仍在时间窗内的人声记录。反馈不得按迟到角度猜测ID。
+- 短时漏检或 Gate 关闭进入内部 coasting；在 TTL 内重新落入关联门限应恢复原 ID。有效TTL内的confirmed/coasting轨迹均可发布为公共L3方向，准入与排序只依赖L2状态。
+- GlobalDirectionTracker保留精确`track_id`在线语义反馈与噪声干扰标记接口，供兼容测试或未来实时分类器使用；当前离线L5不调用该接口，因此普通1.3.1运行不会产生语义续租、噪声标记或恢复。
 - 超过 TTL 删除轨迹；之后出现的方向即使相近也必须获得新 ID。
 - 所有确认、miss、coast 和 TTL 使用 48 kHz 绝对 sample 计算，不依赖“处理了多少窗”，从而正确应对 latest-wins 丢窗和 sample 跳跃。
-- L5不拥有ID确认权、语音租约或几何生命周期；它只通过完整track key回传人声概率，驱动噪声干扰标记，不能按角度猜测ID，也不能延长或缩短ID的2秒几何TTL。
+- 离线L5不拥有ID确认权、语音租约或几何生命周期；它只继承完整track key并返回离线语义，不能按角度猜测ID，也不能延长或缩短ID的2秒几何TTL。
 
 ### 8.3 圆周与 Kalman
 
 - 轨迹内部维护 unwrapped angle；`359° → 0°` 应表现为 `+1°`，反向为 `-1°`，公开时再 `% 360`。
-- ID 关联永远开启，不存在 `enable_id_tracking` UI/配置开关。
+- 项目配置不提供ID开关，正式运行默认启用；Development Test UI保留本地持久化的MUSIC-only诊断开关，关闭时重置追踪并跳过下游，不改变正式配置schema。
 - 内部活动方向ID最多4个，公共输出仍最多3个；达到上限时只能淘汰未被本窗关联的低优先级轨迹，不得清空整个tracker、重置epoch或把Gate改成`WARMING_UP`。
 - Kalman 可以开关，但只影响 `theta_deg` 平滑和短时预测，不影响 ID 的分配、确认、miss 或删除。
 - 开关 Kalman 不得清空 tracker 或改变已有 ID。Kalman 状态按 `track_id` 建立；重新开启时安全重建滤波状态。
@@ -225,7 +234,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 输入从无 ID 的 `CandidateDirection` 改为 `TrackedDirection`，以 `(WindowKey, track_id)` 为方向批次身份。
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
-- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。所有仍在有效TTL内的正式coasting ID都可继续占用L3方向槽位：MUSIC有新观测时更新角度，短时漏检进入coasting时仍每20 ms按保持/预测角生成BF音频。L5只决定是否续租预测ID，不影响本窗L3方向槽的准入与排序。最终仍遵守3方向上限和50°分离约束；未确认tentative轨不生成 L3 音频。
+- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。所有仍在有效TTL内的正式coasting ID都可继续占用L3方向槽位：MUSIC有新观测时更新角度，短时漏检进入coasting时仍每20 ms按保持/预测角生成BF音频。当前离线L5不参与本窗L3方向槽的准入与排序。最终仍遵守3方向上限和50°分离约束；未确认tentative轨不生成 L3 音频。
 - `optimized`、`ds_baseline`、`loaded_mvdr_baseline`、`subband_robust_baseline`四档保留；
   Loaded MVDR档对所有方向和有效频点统一执行IMCRA协方差驱动的diagonal-loaded MVDR；
   五频段档使用IMCRA/声源SCM/WNG/Wiener鲁棒对照。切换模式不改变权威ID，
@@ -238,14 +247,14 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - L5 入口/出口校验 ID 集合、顺序、角度与音频严格对齐；重新阈值判断只能改变 Voice/Non-Voice 结论，不能改变 ID。
 - 停止采集且L3完全排空后，Hub封存完整长音频和逐窗L2方向输出数量；48→16 kHz只在L4执行一次，L4试听和L5读取同一份16 kHz输出。
 - 响度补偿开关默认开启并由Test UI持久化；切换不重建ID、不清空连续缓冲，从下一20 ms开始在dB域平滑过渡。Test UI试听与CNN必须逐样本读取同一补偿后轨。
-- 每次成功检测必须以完整`(WindowKey, track_id)`回填到该连续输入的最新20 ms hop，并保存`probability、is_voice、model_id、threshold`及绝对sample范围；失败、丢弃或无结果的hop保持无语义结果，不能伪造Non-Voice。
+- 每次成功离线检测必须按`(session_id, stream_epoch, track_id)`把每个20 ms概率映射回原48 kHz绝对sample范围，并保存`probability、is_voice、model_id、threshold`；失败或无结果的hop保持无语义结果，不能伪造Non-Voice。
 - 删除 L5 通过角度向 L2 回送“正式化/续租”证据的路径。L5 是轨迹的语义标签消费者，不是方向 ID 的所有者。
 
 ### 10.1 采集后离线 Layer 4 实现
 
 - 原Layer 4 CNN整体迁移为Layer 5；实时L5 StageResult以`offline_after_l4`明确跳过，保持逐窗有序审计但不得执行模型。
 - L5离线入口只接收L4完整16 kHz长音频，不执行重采样；NVIDIA Frame-VAD原始softmax输出必须裁齐为与输入每个320样本hop一一对应的概率和Voice判断。结果返回L4预览条标黄，整轨摘要不得覆盖逐20 ms时间线。
-- 讲话人数取封存时间范围内L2方向输出数量的最大值。最大值1直接进入L5；最大值2进入所选MossFormer2或TIGER后端；最大值3拒绝当前双人L4。
+- 讲话人数按`min(2, 封存时间范围内L2方向输出数量最大值)`路由。最大值1旁路分离；最大值2或3均按当前双人上限进入所选MossFormer2或TIGER后端，同时保留原始最大值与实际人数供审计。
 - `Layer4LongAudioInput`固定接收带SHA-256、`session_id/stream_epoch/track_id/theta_deg/start_sample`的48 kHz单声道完整20 ms hop音频；后端输入固定16 kHz并必须返回恰好两条匿名、等长、finite `float32`候选。
 - 每条L3输入的两候选最多发布一个。原L3 BF参考经相同重采样后，以512点Hann STFT、160点hop在2～4 kHz计算逐帧复频谱相干度并按参考频带能量加权；复内积保留相位和时序身份，同时以绝对值容忍全局极性翻转。可靠高分候选继承原ID和角度。音轨短于2秒、最高相干度低于0.50或两分数差小于0.025时，不发布不可靠模型候选，改用同一条L3参考音频并记录回退原因；其他平分仍固定候选索引0。
 - 官方MossFormer2/TIGER源码和权重作为可选对比模型，以manifest固定revision、SHA-256与许可证。模型适配器用重叠分块稳定匿名输出排列；匹配器只对两条完整候选做一次整段选择。
@@ -256,10 +265,10 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 保留 staged 单 worker、各层有界 latest-wins 队列、分区缓存和 ResultJoiner 有序提交。
 - L2 worker持有滚动MUSIC状态，ComputeCache保存预计算导向张量和有界频点工作区；状态只能按worker实际取走且sample连续的窗口推进。发现sample跳跃时按缺口大小更新/重建滚动状态，并发布明确诊断，不能把不连续帧当作连续快照。
 - 配置快照删除 iterative 和 ID enable 字段，增加 MUSIC、模型阶数、关联生命周期与 Kalman revision；旧配置加载必须显式迁移或拒绝未知冲突，不能悄悄保留旧开关语义。
-- 每层 StageResult 都携带完整 ID 对齐信息；ResultJoiner 校验 L2 `directions`、L3 enhanced 与 L5 detections 的 `track_id` 一一对应。
+- 每层 StageResult 都携带完整窗口身份；ResultJoiner校验实时L2 `directions`与L3 enhanced的`track_id`一一对应，并要求实时L5以`offline_after_l4`的SKIPPED终态收束。真正的离线L5结果不进入逐窗ResultJoiner。
 - 丢弃、超时和跳窗按绝对 sample 更新轨迹；不得因某一层队列替换而重置整个 tracker。
 - 移除 angle-only L5 feedback mailbox 和 Test UI 私有 ID 投影；Runtime 只传递正式公共 ID。
-- `DecisionRecord` 升级到 v4。旧 v3 记录继续只读兼容，不原地改写。
+- `DecisionRecord` 当前为v5。旧v3/v4记录继续只读兼容，不原地改写。
 
 ## 12. Development Test UI 与逐 ID 试听
 
@@ -271,7 +280,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。
 - 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始360点MUSIC伪谱，分别显示MDL诊断阶数与实际MUSIC阶数，并提供1/2/3手动阶数上限、默认关闭的`DPD + rank-1 MUSIC`和`IMCRA噪声白化`按钮；三项设置均持久化到Test UI本地设置，L2在每次实际计算前读取最新revision。
 - L2接纳队列丢窗属于Runtime过载状态，不得显示成Gate或L1 IMCRA不可用。Test UI保留同一epoch最近一次成功的MUSIC/Gate快照及原始发布时间，以`STALE | L2 DROPPED`明确标记，下一次成功结果到达后恢复`LIVE`。
-- 候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed、L5 probability`；观测和预测样式可以不同，但颜色稳定绑定权威 ID。
+- L2候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed`；离线L5概率只显示在下右L5结果和下中L4黄色时间区间，不混入实时L2候选状态。
 - 左下试听继续保留 Center Mic 原音参考、公共20 ms稳定hop、可恢复真实音频补洞、过旧缺口补等时静音、交叉淡化、至少2秒显示、3秒等待、有界分段和四档L3模式隔离；方向轨的拼接、补洞和增益过渡统一由`TrackAudioStreamHub`完成，GUI不得二次处理缓存样本。
 - 方向音频只按 `(session_id, stream_epoch, track_id)` 拼接。删除 `_formal_aliases`、`_resolve_formal_track_id`、按角度贪心重关联和 ID 换号合并；UI 不再修补 L2 身份错误。
 - coasting 期间保留轨道行并显示状态；当L2将该权威ID放入`directions`时，继续拼接实际L3 BF音频，只有本窗未提供该ID的L3输出时才按绝对时间轴补等时静音；只有 L2 删除轨迹或 session/mode 生命周期结束时封存对应试听轨。
@@ -285,15 +294,15 @@ v4 至少保存：
 - L2 MUSIC 空间谱引用、model order、有效频点/协方差质量和算法版本；
 - 每个候选的 `track_id`、观测角、输出角、状态、分数、是否观测/新建及生命周期 sample；
 - L3 每个增强资产对应的 `track_id`；
-- L5 每个检测对应的 `track_id`、概率和判断，以及绑定连续轨最新20 ms hop的绝对sample范围；
+- 实时L5的`offline_after_l4`跳过终态；离线L4/L5结果由显式离线作业独立保存，不伪装成逐窗检测；
 - `kalman_applied`、配置 revision、calibration version/hash；
 - `active_tracks` 与窗口阶段终态。
 
-重叠L3原始窗不得作为正式增强资产重复保存。RecordingStore把公共连续20 ms hop在每个录音chunk内按`track_id`和绝对sample合并为长WAV，缺口补等时静音；同一资产保存已到达的逐20 ms L5概率、判断、阈值、模型和sample范围。文件名和manifest资产索引必须含`track_id`，避免同窗多方向或角度跨0°时覆盖。Catalog/服务增加按 session + epoch + track ID 查询时间线、持续时间、角度轨迹、L5 概率和增强资产的能力。
+重叠L3原始窗不得作为正式增强资产重复保存。RecordingStore把公共连续20 ms hop在每个录音chunk内按`track_id`和绝对sample合并为长WAV，缺口补等时静音。文件名和manifest资产索引必须含`track_id`，避免同窗多方向或角度跨0°时覆盖。当前离线L4/L5输出由Test UI临时缓存或`scripts/run_offline_l4.py`显式输出目录保存，不自动回写实时RecordingStore或Catalog。
 
 ### 13.2 界面
 
-- Production UI 的 Runtime Session/运行录音详情增加方向 ID 列表、持续时间、首末 sample、角度变化、当前状态、L5 概率和逐 ID 增强音频试听，同时保留 Center 参考。
+- Production UI 的 Runtime Session/运行录音详情提供方向 ID 列表、持续时间、首末 sample、角度变化、当前状态和逐 ID 增强音频试听，同时保留 Center 参考；L5概率仅在旧记录或未来显式导入离线结果时显示，缺失时为`N/A`。
 - 专用“测试录音向导”只采原始 L1 音频和热力图，不运行算法时明确显示“无算法方向 ID”，不得伪造 ID。
 - 现有 native/logical/physical 通道试听、模拟测试、QA、标注、hash、恢复、Trash 和本地数据边界保持。
 - `data/`、运行录音、Catalog、日志和临时缓存继续只保存在本地，不提交 GitHub。
@@ -330,11 +339,11 @@ v4 至少保存：
 
 ### 15.3 跨层、存储和 UI
 
-- L2→L3→L5→DecisionRecord 的 WindowKey、ID 集合、顺序、角度和数量逐项一致。
-- L3/L5 失败、超时、空候选、队列丢弃和停机 drain 仍生成唯一终态并推进正确 watermark。
+- 实时L2→L3→L5审计→DecisionRecord的WindowKey一致；L2/L3的ID集合、顺序、角度和数量逐项一致，L5必须是`offline_after_l4`跳过终态。
+- L3失败、超时、空候选、队列丢弃和停机drain，以及L5审计丢弃/跳过，仍生成唯一终态并推进正确watermark；离线L4/L5另测模型路由、原ID继承和20 ms对齐。
 - DecisionRecord v5、逐 ID 文件名、manifest、Catalog、恢复、旧 v3 读取和本地数据不入库。
-- Test UI 不再存在 iterative/ID 开关或二次关联；按 ID 拼接、补洞、等待、封存、模式隔离和 Center 参考均有自动测试。
-- Test UI底部性能栏每1秒刷新，显示上一秒各层平均耗时，并仅在L5后显示统一输出刷新率；同时显示完整处理的20 ms窗口数、丢窗数和以`丢窗/(完整处理+丢窗)`计算的丢窗率，不得用启动以来累计丢窗数冒充一秒指标。
+- Test UI不再存在iterative开关或二次关联；本地MUSIC-only ID诊断开关、按ID拼接、补洞、等待、封存、模式隔离和Center参考均有自动测试。
+- Test UI底部性能栏每1秒刷新，显示实时L2/L3和L5审计耗时、完整处理的20 ms窗口数、丢窗数及以`丢窗/(完整处理+丢窗)`计算的丢窗率；离线L4/L5进度由各自面板显示，不得混作实时输出帧率。
 - Production UI 可查询并试听逐 ID 结果；L1-only 录音明确无 ID。
 - Log UI 的 v3/v4、缺字段、完整阶段终态、统计公式、十万窗加载和严格只读门禁通过；封存静态记录读取前后文件与Catalog不变，Live场景以调用审计和对照运行证明不消费邮箱、不调用写接口或引入额外状态变化。
 
@@ -350,11 +359,11 @@ v4 至少保存：
 1. **L1 + Windowing**：补 MUSIC 输入/校准契约和测试，不引入 ID。
 2. **L2 MUSIC**：完成多帧 STFT、协方差、MDL、NormMUSIC、圆周峰值，并移除 iterative 正式路径。
 3. **L2 Tracking**：完成公共 DTO、全局分配、生命周期、跨 0° 与可选 Kalman；不依赖 UI 修补。
-4. **L3 + L5**：贯通公共 ID，删除 L5 angle-only lease feedback。
+4. **L3 + Hub**：贯通公共ID与完整轨封存；离线L4/L5继承ID，删除angle-only lease feedback。
 5. **Runtime**：更新配置快照、StageResult、Joiner、时间线和 DecisionRecord v5。
 6. **Development Test UI**：删除旧开关，展示 MUSIC/ID，并按权威 ID 拼接试听。
 7. **Recording/Data + Production UI**：保存、查询和试听逐 ID 资产，兼容 v3 只读。
 8. **Pipeline Log UI**：公共只读查询契约冻结后，完成离线统计/回看与可选聚合 Live；不修改实时处理链。
-9. **整合验收**：全量自动测试、性能记录、实机边界、CHANGELOG、语义版本与未来`v1.3.1`发布。
+9. **整合验收**：全量自动测试、性能记录、实机边界、CHANGELOG、语义版本与当前`v1.3.1`发布。
 
 并行分支可以分别修改，但公共 DTO、字段命名、WindowKey/ID 对齐和 DecisionRecord v5 schema 必须先冻结；合并时以本文件为共同契约，禁止每个分支自行发明不同 ID 语义。

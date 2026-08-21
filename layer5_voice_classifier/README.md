@@ -4,13 +4,13 @@
 
 权威目标契约见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。L3按统一配置输出40/80/160 ms重叠增强窗（当前40 ms）；`TrackAudioStreamHub`按`(session_id, stream_epoch, track_id)`把它们拼接并封存为完整长音频。L5不再实时消费连续片段，只在停机排空、Hub封存并完成L4一/二人路由后执行。
 
-公共服务每窗只追加一个内部稳定且与IMCRA网格严格对齐的20 ms hop，避免40 ms重叠重复；随后执行`imcra_probability_rms_v1`并维护最长3200 ms连续缓冲。Test UI试听、正式按ID轨音频和CNN读取同一份补偿后波形。重叠L3原始窗只作瞬时输入，不再作为正式音频资产重复保存。
+公共服务每窗只追加一个内部稳定且与IMCRA网格严格对齐的20 ms hop，避免40 ms重叠重复；随后执行`imcra_probability_rms_v1`并维护最长3200 ms实时缓冲，同时归档完整补偿后长轨。L3试听与正式按ID轨读取该48 kHz波形；停机后L4把它路由、必要时分离并转换成16 kHz，L5只读取L4最终输出。重叠L3原始窗只作瞬时输入，不再作为正式音频资产重复保存。
 
 响度补偿目标RMS为`-23.0 dBFS`；概率不高于0.30时不补偿、达到0.80时完整补偿，中间线性插值。算法只放大、不主动衰减，并以`-3 dBFS`限制新增增益。Test UI开关默认ON且可实时切换；开关不重建ID、不清空连续上下文，增益从下一20 ms平滑过渡。
 
-NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`适配器接收完整连续48 kHz轨音频，并复用L4拥有的`Layer4Resampler`降采样到16 kHz。模型原始softmax输出按NVIDIA帧索引裁齐为与48 kHz输入每960样本严格对应的20 ms概率序列；`center=true`产生的尾部边界帧只在末端丢弃，不用单一概率覆盖整轨。实时Runtime的L5阶段明确记录`offline_after_l4`跳过原因，不执行CNN；离线结果保留完整概率序列、逐帧阈值判断、模型和对齐方式。
+NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`离线适配器直接接收L4的完整原生16 kHz输出，不再执行48→16 kHz重采样。模型原始softmax输出按NVIDIA帧索引裁齐为与16 kHz输入每320样本严格对应的20 ms概率序列；`center=true`产生的尾部边界帧只在末端丢弃，不用单一概率覆盖整轨。实时Runtime的L5阶段明确记录`offline_after_l4`跳过原因，不执行CNN；离线结果保留完整概率序列、逐帧阈值判断、模型和对齐方式。
 
-L5不接收L2内部ID或`[17,169]`特征，方向标签只继承L3携带的平滑角；它不再次滤波、不做跨窗口Tracking或身份识别，也不反馈改变L2 Gate、SRP或L3音频。primary/shadow模型可读取同一不可变波形；只有primary结果进入正式VoiceDetection和DecisionRecord。
+L5不接收L2内部ID或`[17,169]`特征，方向标签只继承L3携带的平滑角；它不再次滤波、不做跨窗口Tracking或身份识别，也不反馈改变L2 Gate、MUSIC或L3音频。primary/shadow模型可读取同一不可变波形；只有primary结果形成离线`VoiceDetection`和`Layer4OfflineResult`，不进入实时逐窗DecisionRecord。
 
 L5判断阈值与L2 Gate阈值是两套不同参数。Development Test UI必须使用不同标签和滑动条；拖动L5阈值只重算已缓存概率的标签，不重跑L3或CNN。
 
@@ -18,7 +18,7 @@ L5判断阈值与L2 Gate阈值是两套不同参数。Development Test UI必须�
 
 ## 已实现门禁
 
-- 只接受48 kHz单声道音频并在模型内部降采样；
+- 当前离线入口只接受L4输出的16 kHz单声道、完整20 ms hop音频；兼容实时接口仍保留48 kHz契约但不在1.3.1 Runtime执行；
 - 明确拒绝旧`[17,169]`主输入；
 - 角度、window和sample身份继承；
 - 概率finite且位于`[0,1]`，阈值重判不重跑模型；

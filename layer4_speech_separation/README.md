@@ -2,7 +2,7 @@
 
 Layer 4 是采集结束后的离线层。实时 Runtime 只运行到 L3 和`TrackAudioStreamHub`；L5 CNN 不再消费实时连续片段。停止采集且 L3 队列完全排空后，Hub 把其已经按 ID 去重、交叉淡化、响度补偿并连续拼接的完整长音频封存为不可变`Layer4LongAudioInput`，再由显式离线作业整体提交 L4。RecordingStore WAV 只作为恢复入口，不是主数据链。
 
-Hub 同步记录每个20 ms hop所属 L2 决策窗的方向输出数量。`l2_direction_count_max_v1`读取整条长音频历史的最大值：最大值1判为一人，最大值2判为两人；最大值3拒绝进入当前双人L4。两种输入均由 L4 公共`Layer4Resampler`从48 kHz降到16 kHz。一人直接送入同一个 L5 CNN；两人调用所选分离后端。
+Hub 同步记录每个20 ms hop所属 L2 决策窗的方向输出数量。`l2_direction_count_max_v1`按`min(2, maximum)`路由：整条长音频历史最大值1判为一人，最大值2或3均按当前双人上限处理；原始最大值与实际采用人数同时写入元数据。两种输入均由 L4 公共`Layer4Resampler`从48 kHz降到16 kHz。一人直接旁路形成L4输出并自动进入L5；两人调用所选分离后端。
 
 可选对比后端均为官方开源模型和官方权重：
 
@@ -25,4 +25,4 @@ sealed TrackAudioStreamHub long track (48 kHz, ID + angle + L2 count history)
   -> Layer 5 CNN
 ```
 
-`ApplicationRuntime.offline_l4_sources`在完全停止后公开封存包，`run_offline_l4()`接受实现`process_sealed()`的编排器。`scripts/run_offline_l4.py`提供已落盘session的恢复/批处理入口。UI本次只预留这些接口，不新增页面或控件。
+`ApplicationRuntime.offline_l4_sources`在完全停止后公开封存包，`run_offline_l4()`接受实现`process_sealed()`的编排器。`scripts/run_offline_l4.py`提供已落盘session的恢复/批处理入口。Development Test UI下半区已经提供L3/L4/L5三栏、MossFormer2/TIGER选择和“发送到L4”；整批L4完成后，同一后台任务自动且仅一次运行L5并把逐20 ms结果回写到L4音频条。
