@@ -1283,6 +1283,67 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         app.processEvents()
 
 
+def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    events: list[str] = []
+
+    class FakeStore:
+        def clear(self):
+            events.append("clear")
+
+        def set_processed(self, values):
+            assert values == ()
+            events.append("write")
+
+        @staticmethod
+        def snapshots():
+            return ()
+
+        @staticmethod
+        def close():
+            return None
+
+    class FakePipeline:
+        def process_l4_sealed(self, sources):
+            del sources
+            events.append("process")
+            return ()
+
+    def submit_immediately(name, command, on_success=None):
+        assert name == "L3发送到L4"
+        value = command()
+        if on_success is not None:
+            on_success(value)
+
+    try:
+        window._l4_store = FakeStore()
+        monkeypatch.setattr(
+            window._runtime,
+            "build_offline_l4_pipeline",
+            lambda _backend_id: FakePipeline(),
+        )
+        monkeypatch.setattr(window, "_submit_command", submit_immediately)
+        window.bf_panel.set_send_enabled(True)
+
+        window._send_l3_to_l4()
+        assert events == ["clear", "process", "write"]
+        assert window.bf_panel.send.isEnabled()
+
+        window._send_l3_to_l4()
+        assert events == [
+            "clear", "process", "write",
+            "clear", "process", "write",
+        ]
+        assert window.bf_panel.send.isEnabled()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_stop_command_is_not_reported_complete_while_runtime_remains_active(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")

@@ -1095,6 +1095,14 @@ def build_window(
             self.preview_player.close()
             self._audio_source_key = None
             self.bf_panel.set_send_enabled(False)
+            # A submission is a complete replacement, not an append.  Clear
+            # both the visible rows and their backing preview files before the
+            # selected offline L4 backend starts another pass over sealed L3.
+            self.l4_panel.clear_tracks()
+            self._l4_store.clear()
+            self._offline_l4_pipeline = None
+            self._l4_processed = ()
+            self.cnn_panel.set_unavailable("等待从L4发送")
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
             self.l4_panel.set_processing(
@@ -1113,6 +1121,7 @@ def build_window(
                 self._l4_store.set_processed(self._l4_processed)
                 self.l4_panel.set_tracks(self._l4_store.snapshots())
                 self.cnn_panel.set_unavailable("等待从L4发送")
+                self.bf_panel.set_send_enabled(True)
 
             self._submit_command("L3发送到L4", process_l4, completed)
 
