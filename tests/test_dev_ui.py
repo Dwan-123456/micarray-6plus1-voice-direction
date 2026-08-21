@@ -1101,9 +1101,11 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
         assert not window.stop_button.isVisible()
         window._frame = object()
         window._last_l5_frame = object()
+        window._eof_stop_submitted = True
         window._restart_replay()
         assert window._frame is None
         assert window._last_l5_frame is None
+        assert window._eof_stop_submitted is False
         assert "replay restarted" in window.srp_header.text()
     finally:
         window.close()

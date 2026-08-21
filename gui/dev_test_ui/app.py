@@ -730,7 +730,7 @@ def build_window(
                     on_success(result)
                 if name == "启动采集":
                     self._enter_starting_state()
-                elif name == "停止采集":
+                elif name in {"停止采集", "模拟输入已播放完成"}:
                     if runtime.active:
                         raise RuntimeError(
                             runtime.last_error or "Runtime仍有线程或录音会话未停止"
@@ -899,6 +899,11 @@ def build_window(
             if replay_source is None:
                 return
             self._clear_replay_results()
+            # Every replay pass must submit its own EOF drain/stop.  Keeping
+            # the previous pass' marker leaves Runtime active after the next
+            # EOF, so TrackAudioStreamHub never seals and Send to L4 remains
+            # disabled indefinitely.
+            self._eof_stop_submitted = False
             runtime.reset_pipeline_total_durations()
             replay_source.replay()
             runtime.set_pipeline_timing_paused("simulation_input_paused", False)
