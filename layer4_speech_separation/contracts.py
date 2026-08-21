@@ -152,8 +152,10 @@ class Layer4PrimarySelection:
     selected_source_index: Literal[0, 1]
     candidate_scores: tuple[float, float]
     score_margin: float
-    matching_algorithm: Literal["l3_bf_2_4khz_magnitude_cosine_v1"]
+    matching_algorithm: Literal["l3_bf_2_4khz_complex_coherence_v2"]
     waveform: NDArray[np.float32]
+    used_reference_fallback: bool = False
+    fallback_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not self.request_id or not self.parent_asset_id or not self.session_id:
@@ -170,6 +172,10 @@ class Layer4PrimarySelection:
         expected_margin = abs(scores[0] - scores[1])
         if not np.isclose(self.score_margin, expected_margin, atol=1e-7, rtol=0.0):
             raise ValueError("Layer 4 score margin must equal the candidate score difference")
+        if type(self.used_reference_fallback) is not bool:
+            raise ValueError("Layer 4 reference fallback flag must be bool")
+        if self.used_reference_fallback != (self.fallback_reason is not None):
+            raise ValueError("Layer 4 reference fallback requires exactly one reason")
         object.__setattr__(self, "candidate_scores", scores)
         object.__setattr__(self, "waveform", _readonly_float32_1d(self.waveform, "Layer 4 selection"))
 

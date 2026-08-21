@@ -190,6 +190,8 @@ class OfflineLayer4Pipeline:
                 "model_revision": candidates.model_revision,
                 "candidate_scores": selected.candidate_scores,
                 "selected_source_index": selected.selected_source_index,
+                "used_reference_fallback": selected.used_reference_fallback,
+                "fallback_reason": selected.fallback_reason,
             }
         output_48k = self.resampler.to_48k(output_16k)
         expected = len(source.waveform)

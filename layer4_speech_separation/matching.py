@@ -14,9 +14,12 @@ from .contracts import (
 
 
 class BandMagnitudeMatcher:
-    """Select a track's dominant separated source using its L3 BF 2--4 kHz signature."""
+    """Select the source phase-coherent with its L3 BF 2--4 kHz reference."""
 
-    algorithm_version = "l3_bf_2_4khz_magnitude_cosine_v1"
+    algorithm_version = "l3_bf_2_4khz_complex_coherence_v2"
+    minimum_reliable_samples = 2 * L4_MODEL_SAMPLE_RATE
+    minimum_reliable_score = 0.50
+    minimum_score_margin = 0.025
 
     def __init__(self, *, n_fft: int = 512, hop_length: int = 160) -> None:
         if n_fft != 512 or hop_length != 160:
@@ -54,19 +57,24 @@ class BandMagnitudeMatcher:
         # exact complete-audio statistic.
         for start in range(0, len(left_frames), 4096):
             stop = min(len(left_frames), start + 4096)
-            left = np.abs(np.fft.rfft(
+            left = np.fft.rfft(
                 left_frames[start:stop] * self._window, axis=1,
-            )[:, self._bins])
-            right = np.abs(np.fft.rfft(
+            )[:, self._bins]
+            right = np.fft.rfft(
                 right_frames[start:stop] * self._window, axis=1,
-            )[:, self._bins])
-            numerator = np.sum(left * right, axis=1)
+            )[:, self._bins]
+            # Magnitude-only cosine similarity cannot distinguish two speakers
+            # with similar speech spectra. Complex coherence retains the
+            # phase/time signature of the directional L3 reference while the
+            # absolute inner product remains invariant to a harmless global
+            # polarity flip in a separated source.
+            numerator = np.abs(np.sum(np.conjugate(left) * right, axis=1))
             denominator = np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1)
             valid = denominator > np.finfo(np.float64).eps
             if not np.any(valid):
                 continue
             scores = np.clip(numerator[valid] / denominator[valid], 0.0, 1.0)
-            weights = np.sum(left[valid] ** 2, axis=1)
+            weights = np.sum(np.abs(left[valid]) ** 2, axis=1)
             weighted_score += float(np.sum(scores * weights))
             total_weight += float(np.sum(weights))
             unweighted_score += float(np.sum(scores))
@@ -91,6 +99,13 @@ class BandMagnitudeMatcher:
             raise ValueError("resampled L3 reference and separated candidates must have equal duration")
         scores = tuple(self._score(reference, source) for source in candidates.sources)
         selected = 0 if scores[0] >= scores[1] else 1
+        fallback_reason = None
+        if len(reference) < self.minimum_reliable_samples:
+            fallback_reason = "shorter_than_2_seconds"
+        elif scores[selected] < self.minimum_reliable_score:
+            fallback_reason = "low_complex_coherence"
+        elif abs(scores[0] - scores[1]) < self.minimum_score_margin:
+            fallback_reason = "ambiguous_candidate_scores"
         return Layer4PrimarySelection(
             request_id=candidates.request_id,
             parent_asset_id=parent.asset_id,
@@ -103,5 +118,7 @@ class BandMagnitudeMatcher:
             candidate_scores=(scores[0], scores[1]),
             score_margin=abs(scores[0] - scores[1]),
             matching_algorithm=self.algorithm_version,
-            waveform=candidates.sources[selected],
+            waveform=reference if fallback_reason is not None else candidates.sources[selected],
+            used_reference_fallback=fallback_reason is not None,
+            fallback_reason=fallback_reason,
         )

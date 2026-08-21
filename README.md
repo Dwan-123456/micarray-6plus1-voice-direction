@@ -169,7 +169,7 @@ WindowWorkItem
 
 ### 采集后离线L4/L5路径
 
-离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量。Test UI下半区按L3/L4/L5三等分：先由“发送到L4”运行人数路由、分离和匹配，保存带原ID/角度的L4 WAV供试听；全部完成后再由“发送到L5”运行NVIDIA长音频Frame-VAD。L5为L4音频的每个20 ms hop输出独立概率和Voice判断，黄色逐帧绘制在L4音频条，L3音频不再着色。
+离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量。Test UI下半区按L3/L4/L5三等分：先由“发送到L4”运行人数路由、分离和2～4 kHz复频谱相干匹配；短于2秒或匹配低可信时安全回退原L3人声，并保存带原ID/角度的L4 WAV供试听。全部完成后再由“发送到L5”运行NVIDIA长音频Frame-VAD。L5为L4音频的每个20 ms hop输出独立概率和Voice判断，黄色逐帧绘制在L4音频条，L3音频不再着色。
 
 ## 算法流程说明
 

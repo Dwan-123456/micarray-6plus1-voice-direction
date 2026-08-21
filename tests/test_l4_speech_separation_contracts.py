@@ -65,7 +65,7 @@ def test_two_candidates_are_required_and_selection_preserves_parent_id_and_angle
     assert selected.selected_source_index == 1
     assert selected.track_id == 7 and selected.theta_deg == 359.0
     assert selected.candidate_scores[1] > selected.candidate_scores[0]
-    assert selected.matching_algorithm == "l3_bf_2_4khz_magnitude_cosine_v1"
+    assert selected.matching_algorithm == "l3_bf_2_4khz_complex_coherence_v2"
     assert not selected.waveform.flags.writeable
 
 
@@ -109,3 +109,54 @@ def test_matcher_includes_zero_padded_final_partial_frame() -> None:
     )
     assert result.selected_source_index == 1
     assert result.candidate_scores[1] > result.candidate_scores[0]
+
+
+def test_matcher_rejects_same_magnitude_spectrum_with_wrong_time_signature() -> None:
+    rng = np.random.default_rng(20260821)
+    reference = rng.normal(0.0, 0.1, 16_000).astype(np.float32)
+    spectrum = np.fft.rfft(reference)
+    phases = np.exp(1j * rng.uniform(-np.pi, np.pi, len(spectrum)))
+    wrong = np.fft.irfft(np.abs(spectrum) * phases, n=len(reference)).astype(np.float32)
+    right = np.ascontiguousarray(reference * np.float32(0.4))
+    result = BandMagnitudeMatcher().select(
+        parent=_parent(), reference_16k=np.ascontiguousarray(reference),
+        candidates=Layer4CandidatePair(
+            "request", "model", "rev", 16_000,
+            (np.ascontiguousarray(wrong), right),
+        ),
+    )
+    assert result.selected_source_index == 1
+    assert result.candidate_scores[1] > 0.99
+    assert result.candidate_scores[0] < 0.5
+
+
+def test_matcher_returns_l3_reference_when_track_is_too_short_for_reliable_separation() -> None:
+    sample_rate = 16_000
+    time = np.arange(sample_rate, dtype=np.float64) / sample_rate
+    reference = np.ascontiguousarray(np.sin(2 * np.pi * 2_800 * time), dtype=np.float32)
+    candidates = Layer4CandidatePair(
+        "request", "model", "rev", sample_rate,
+        (np.ascontiguousarray(-reference), np.ascontiguousarray(reference * 0.5)),
+    )
+    result = BandMagnitudeMatcher().select(
+        parent=_parent(), reference_16k=reference, candidates=candidates,
+    )
+    assert result.used_reference_fallback is True
+    assert result.fallback_reason == "shorter_than_2_seconds"
+    np.testing.assert_array_equal(result.waveform, reference)
+
+
+def test_matcher_returns_l3_reference_when_candidate_identity_is_ambiguous() -> None:
+    sample_rate = 16_000
+    time = np.arange(2 * sample_rate, dtype=np.float64) / sample_rate
+    reference = np.ascontiguousarray(np.sin(2 * np.pi * 3_100 * time), dtype=np.float32)
+    candidates = Layer4CandidatePair(
+        "request", "model", "rev", sample_rate,
+        (np.ascontiguousarray(reference * 0.4), np.ascontiguousarray(reference * 0.8)),
+    )
+    result = BandMagnitudeMatcher().select(
+        parent=_parent(), reference_16k=reference, candidates=candidates,
+    )
+    assert result.used_reference_fallback is True
+    assert result.fallback_reason == "ambiguous_candidate_scores"
+    np.testing.assert_array_equal(result.waveform, reference)
