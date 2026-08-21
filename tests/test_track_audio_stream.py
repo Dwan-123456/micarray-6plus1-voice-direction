@@ -94,6 +94,36 @@ def test_hub_seals_discontinuous_runs_as_one_unique_id_with_silent_gap() -> None
     )
 
 
+def test_hub_purges_sub_two_second_track_before_offline_l4() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False),
+        context_ms=60,
+        minimum_output_seconds=2.0,
+    )
+    short_key = ("session", 0, 2)
+    long_key = ("session", 0, 3)
+    hub._archive[short_key] = [
+        _ArchivedHop(
+            index * 960, (index + 1) * 960, 20.0, 1,
+            np.ones(960, np.float32),
+        )
+        for index in range(36)
+    ]
+    hub._archive[long_key] = [
+        _ArchivedHop(
+            index * 960, (index + 1) * 960, 30.0, 1,
+            np.ones(960, np.float32),
+        )
+        for index in range(100)
+    ]
+
+    sealed = hub.seal()
+
+    assert tuple(item.track_id for item in sealed) == (3,)
+    assert short_key not in hub._archive
+    assert long_key in hub._archive
+
+
 def test_adjacent_windows_crossfade_the_future_overlap_without_a_20ms_seam():
     def offset_window(decision: int, offset: float) -> TrackAudioWindow:
         absolute = np.arange(decision - 3_840, decision, dtype=np.float64)

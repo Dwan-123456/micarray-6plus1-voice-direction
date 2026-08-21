@@ -197,6 +197,51 @@ def test_ended_track_above_thirty_percent_sound_is_retained(tmp_path):
     assert tracker.snapshots()[0].track_id == 13
 
 
+def test_short_track_is_kept_while_live_then_deleted_at_capture_finalize(tmp_path):
+    tracker = AudioIdTracker(
+        "cache",
+        project_root=tmp_path,
+        minimum_listening_track_seconds=2.0,
+    )
+    for index in range(36):
+        decision = 7_680 + index * 960
+        direction = _direction(21, decision, 90.0)
+        tracker.update(
+            _window(decision),
+            (direction,),
+            (_preview(21, decision, 90.0),),
+            active_tracks=(direction,),
+        )
+
+    assert tracker.snapshots()[0].audio_sample_count < 2 * 48_000
+    assert tuple((tmp_path / "cache").rglob("track_021/segment_*.f32"))
+
+    assert tracker.finalize_capture() == ()
+    assert not tuple((tmp_path / "cache").rglob("track_021/segment_*.f32"))
+
+
+def test_exactly_two_second_track_survives_capture_finalize(tmp_path):
+    tracker = AudioIdTracker(
+        "cache",
+        project_root=tmp_path,
+        minimum_listening_track_seconds=2.0,
+    )
+    for index in range(100):
+        decision = 7_680 + index * 960
+        direction = _direction(22, decision, 90.0)
+        tracker.update(
+            _window(decision),
+            (direction,),
+            (_preview(22, decision, 90.0),),
+            active_tracks=(direction,),
+        )
+
+    rows = tracker.finalize_capture()
+    assert len(rows) == 1
+    assert rows[0].track_id == 22
+    assert rows[0].audio_sample_count == 100 * 960
+
+
 def test_minus_fifty_five_dbfs_l3_audio_counts_as_sound(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     for index in range(10):

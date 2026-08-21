@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+import wave
 
 import numpy as np
 import sounddevice as sd
@@ -151,6 +152,30 @@ class PreviewPlayer:
             self._loaded_path = path
             self._delete_on_release = bool(delete_on_release)
             self._last_error = None
+
+    def load_wav_file(self, path: str | Path) -> None:
+        """Decode a 48 kHz mono PCM16 WAV before sending float32 to PortAudio."""
+
+        path = Path(path)
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError("invalid L4 WAV preview file")
+        try:
+            with wave.open(str(path), "rb") as source:
+                channels = source.getnchannels()
+                sample_width = source.getsampwidth()
+                sample_rate = source.getframerate()
+                frame_count = source.getnframes()
+                payload = source.readframes(frame_count)
+        except (EOFError, wave.Error) as exc:
+            raise ValueError("invalid L4 WAV preview file") from exc
+        if channels != 1 or sample_width != 2 or sample_rate != self.sample_rate:
+            raise ValueError(
+                f"L4 WAV preview must be {self.sample_rate} Hz mono PCM16"
+            )
+        if frame_count <= 0 or len(payload) != frame_count * sample_width:
+            raise ValueError("invalid L4 WAV preview payload")
+        audio = np.frombuffer(payload, dtype="<i2").astype(np.float32) / 32768.0
+        self.load(audio)
 
     def _release_audio_locked(self) -> None:
         if isinstance(self._audio, np.memmap):

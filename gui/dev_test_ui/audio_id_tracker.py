@@ -62,6 +62,7 @@ class AudioIdTracker:
         retained_segments: int = 3,
         max_ended_tracks: int = 8,
         downstream_window_samples: int = 7_680,
+        minimum_listening_track_seconds: float = 0.0,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         root = Path(cache_root)
@@ -72,6 +73,10 @@ class AudioIdTracker:
         self.retained_segments = int(retained_segments)
         self.max_ended_tracks = int(max_ended_tracks)
         self.downstream_window_samples = int(downstream_window_samples)
+        minimum_seconds = float(minimum_listening_track_seconds)
+        if not np.isfinite(minimum_seconds) or minimum_seconds < 0.0:
+            raise ValueError("minimum listening track duration must be finite and non-negative")
+        self.minimum_listening_track_samples = round(minimum_seconds * 48_000)
         if min(
             self.segment_samples,
             self.retained_segments,
@@ -142,7 +147,7 @@ class AudioIdTracker:
             if track.state != "ended":
                 self._flush_pending(track, fade_out=True)
                 track.state = "ended"
-        self._remove_quiet_ended_tracks()
+        self._remove_filtered_ended_tracks()
         self._stream = stream
         self._processing_mode = None
         if self._reference_track is not None:
@@ -480,6 +485,12 @@ class AudioIdTracker:
         # requested 30 percent sound-ratio gate.
         return track.sound_hops / track.total_hops <= _MIN_SOUND_RATIO
 
+    def _should_discard_short_track(self, track: _Track) -> bool:
+        return (
+            track.track_id != 0
+            and self._cached_samples(track) < self.minimum_listening_track_samples
+        )
+
     def _delete_track_segments(self, track: _Track) -> None:
         directories = {path.parent.resolve() for path in track.segments}
         for directory in directories:
@@ -492,9 +503,12 @@ class AudioIdTracker:
         track.envelope_peaks.clear()
         track.voice_annotations.clear()
 
-    def _remove_quiet_ended_tracks(self) -> None:
+    def _remove_filtered_ended_tracks(self) -> None:
         for track_id, track in tuple(self._tracks.items()):
-            if track.state == "ended" and self._should_discard_quiet_track(track):
+            if track.state == "ended" and (
+                self._should_discard_short_track(track)
+                or self._should_discard_quiet_track(track)
+            ):
                 self._delete_track_segments(track)
                 del self._tracks[track_id]
 
@@ -605,7 +619,7 @@ class AudioIdTracker:
                 if track_id not in active_by_id and track.state != "ended":
                     self._flush_pending(track, fade_out=True)
                     track.state = "ended"
-            self._remove_quiet_ended_tracks()
+            self._remove_filtered_ended_tracks()
 
             # A visible row must remain playable for the complete capture
             # session.  Do not prune ENDED tracks behind the UI; reset()/close()
@@ -687,7 +701,7 @@ class AudioIdTracker:
             for track_id, track in self._tracks.items():
                 if track_id not in active_by_id and track.state != "ended":
                     track.state = "ended"
-            self._remove_quiet_ended_tracks()
+            self._remove_filtered_ended_tracks()
             return self.snapshots()
 
     def apply_l5_annotations(
@@ -741,13 +755,25 @@ class AudioIdTracker:
             for track in self._tracks.values():
                 self._flush_pending(track, fade_out=True)
                 track.state = "ended"
-            self._remove_quiet_ended_tracks()
+            self._remove_filtered_ended_tracks()
             if self._tracks:
                 self._sealed_tracks.append(self._tracks)
                 self._tracks = {}
             self._mode_generation += 1
             self._processing_mode = next_mode
             self._processing_partition = f"{next_mode or 'unknown'}_{self._mode_generation:03d}"
+
+    def finalize_capture(self) -> tuple[TrackedAudioSnapshot, ...]:
+        """End live rows and physically remove completed non-playable tracks."""
+
+        with self._lock:
+            self._close_reference_stream()
+            for track in self._tracks.values():
+                if track.state != "ended":
+                    self._flush_pending(track, fade_out=True)
+                    track.state = "ended"
+            self._remove_filtered_ended_tracks()
+            return self.snapshots()
 
     def snapshots(self) -> tuple[TrackedAudioSnapshot, ...]:
         with self._lock:

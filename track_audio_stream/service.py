@@ -70,11 +70,16 @@ class TrackAudioStreamHub:
         settings: InputGainCompensationSettings,
         *,
         context_ms: int = 3_200,
+        minimum_output_seconds: float = 0.0,
     ) -> None:
         if context_ms < 60 or context_ms % 20:
             raise ValueError("continuous track context must be >=60 ms on the 20 ms grid")
         self.settings = settings
         self.max_hops = context_ms // 20
+        minimum_seconds = float(minimum_output_seconds)
+        if not np.isfinite(minimum_seconds) or minimum_seconds < 0.0:
+            raise ValueError("minimum output duration must be finite and non-negative")
+        self.minimum_output_samples = round(minimum_seconds * 48_000)
         self._tracks: dict[tuple[str, int, int], _TrackState] = {}
         self._archive: dict[tuple[str, int, int], list[_ArchivedHop]] = {}
         self._sealed: tuple[Layer4LongAudioInput, ...] = ()
@@ -302,8 +307,12 @@ class TrackAudioStreamHub:
 
         outputs: list[Layer4LongAudioInput] = []
         with self._lock:
+            discarded: list[tuple[str, int, int]] = []
             for (session_id, epoch, track_id), hops in sorted(self._archive.items()):
                 if not hops:
+                    continue
+                if hops[-1].end_sample - hops[0].start_sample < self.minimum_output_samples:
+                    discarded.append((session_id, epoch, track_id))
                     continue
                 audio: list[np.ndarray] = []
                 direction_counts: list[tuple[int, int]] = []
@@ -344,6 +353,9 @@ class TrackAudioStreamHub:
                     waveform=waveform,
                     l2_direction_counts=tuple(direction_counts),
                 ))
+            for key in discarded:
+                self._archive.pop(key, None)
+                self._tracks.pop(key, None)
             self._sealed = tuple(outputs)
             return self._sealed
 

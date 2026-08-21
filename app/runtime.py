@@ -289,6 +289,11 @@ class ApplicationRuntime:
                 **config.layer5.input_gain_compensation.model_dump()
             ),
             context_ms=config.layer5.continuous_context_ms,
+            minimum_output_seconds=(
+                config.dev_test_ui.minimum_listening_track_seconds
+                if dev_audio_tracker is not None
+                else 0.0
+            ),
         )
         self.last_error: str | None = None
         self.processing_error: str | None = None
@@ -3122,6 +3127,11 @@ class ApplicationRuntime:
         # append to it.  A later stop/close call can finalize after the worker
         # exits, and the explicit error remains visible to the UI.
         if not alive and not input_alive:
+            if self.dev_audio_tracker is not None:
+                try:
+                    self.dev_audio_tracker.finalize_capture()
+                except Exception as exc:
+                    self.dev_audio_tracking_error = f"Test UI audio finalize failed: {exc}"
             self.track_audio_stream.seal()
         if self._recording_session_started and not alive and not input_alive:
             try:

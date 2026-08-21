@@ -182,6 +182,49 @@ def test_l3_preview_player_releases_synthesized_audio_on_close(tmp_path):
     assert player._playing is False
 
 
+def test_l4_preview_player_decodes_pcm16_wav_instead_of_memmapping_it_as_float32(tmp_path):
+    player = PreviewPlayer(
+        sample_rate=48_000, volume=1.0, loop_gap_ms=0, autoplay=False,
+        fade_ms=0,
+    )
+    time_axis = np.arange(48_000, dtype=np.float64) / 48_000
+    audio = np.ascontiguousarray(
+        0.1 * np.sin(2 * np.pi * 1_000 * time_axis), dtype=np.float32,
+    )
+    pcm = np.clip(np.rint(audio * 32768.0), -32768, 32767).astype("<i2")
+    path = tmp_path / "l4.wav"
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(48_000)
+        output.writeframes(pcm.tobytes())
+
+    player.load_wav_file(path)
+
+    expected = pcm.astype(np.float32) / 32768.0
+    assert len(player._audio) == len(expected)
+    assert not isinstance(player._audio, np.memmap)
+    assert np.isfinite(player._audio).all()
+    np.testing.assert_allclose(player._audio, expected, atol=1e-7)
+    player.close()
+
+
+def test_l4_preview_player_rejects_wrong_wav_format(tmp_path):
+    player = PreviewPlayer(
+        sample_rate=48_000, volume=1.0, loop_gap_ms=0, autoplay=False,
+    )
+    path = tmp_path / "wrong-rate.wav"
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(16_000)
+        output.writeframes(np.zeros(160, dtype="<i2").tobytes())
+
+    with pytest.raises(ValueError, match="48000 Hz mono PCM16"):
+        player.load_wav_file(path)
+    player.close()
+
+
 def test_preview_player_reports_sample_accurate_progress_and_resets_on_stop():
     player = PreviewPlayer(sample_rate=48_000, volume=1.0, loop_gap_ms=0, autoplay=False)
     player.load(np.arange(100, dtype=np.float32))

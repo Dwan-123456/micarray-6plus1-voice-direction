@@ -190,6 +190,7 @@ def build_window(
         f"data/dev_test_ui/l3_audio_cache/current/run_{uuid4().hex}",
         project_root=project_root,
         downstream_window_samples=config.downstream_audio_window.samples,
+        minimum_listening_track_seconds=config.dev_test_ui.minimum_listening_track_seconds,
     )
     runtime = ApplicationRuntime(
         config, project_root=project_root, pipeline=pipeline,
@@ -1084,7 +1085,7 @@ def build_window(
                 return
             self.preview_player.stop()
             self.preview_player.set_volume(1.0)
-            self.preview_player.load_file(cache_path, delete_on_release=False)
+            self.preview_player.load_wav_file(cache_path)
             self._audio_source_key = ("l4_track", int(track_id), str(cache_path))
             if not self.preview_player.play():
                 error = self.preview_player.take_error() or "unknown audio output error"
