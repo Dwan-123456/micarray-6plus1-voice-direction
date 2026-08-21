@@ -1035,6 +1035,7 @@ def test_test_ui_accepts_backend_injected_wav_and_keeps_default_ui_input_hidden(
             time.sleep(0.01)
         assert window._runtime.input_exhausted
         assert not window._runtime.active
+        assert window._eof_stop_submitted
         assert window._frame is not None
         window._refresh_total_duration_text()
         assert "总处理时长 | L2 " in window.performance_bar.text()

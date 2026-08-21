@@ -1162,11 +1162,14 @@ def build_window(
                 self.statusBar().showMessage(f"试听输出：{playback_error}", 5000)
             if (
                 runtime.input_exhausted
-                and not runtime.processing_running
                 and runtime.active
                 and self._pending_command is None
                 and not self._eof_stop_submitted
             ):
+                # Stage workers intentionally stay alive while Runtime is
+                # active and only drain/exit after stop() sends EOS. Waiting
+                # for processing_running to become false here deadlocks a
+                # completed replay in RUNNING and prevents Hub sealing.
                 self._eof_stop_submitted = True
                 self._submit_command("模拟输入已播放完成", runtime.stop)
             latest = None
