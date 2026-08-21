@@ -320,7 +320,6 @@ def build_window(
             self.l4_panel = Layer4AudioPanel(persisted_l4_backend)
             self.l4_panel.track_play_requested.connect(self._toggle_l4_audio)
             self.l4_panel.track_stop_requested.connect(self._pause_track_audio)
-            self.l4_panel.send_requested.connect(self._send_l4_to_l5)
             self.l4_panel.backend_changed.connect(ui_settings.save_layer4_backend)
             self.l4_panel.set_voice_threshold(config.layer5.voice_probability_limit)
             self.cnn_panel.threshold_changed.connect(
@@ -748,8 +747,6 @@ def build_window(
                 elif name == "L3发送到L4":
                     self.bf_panel.set_send_enabled(True)
                     self.l4_panel.set_processing(f"L4失败：{exc}")
-                elif name == "L4发送到L5":
-                    self.l4_panel.set_tracks(self._l4_store.snapshots())
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -1103,55 +1100,52 @@ def build_window(
             self._l4_store.clear()
             self._offline_l4_pipeline = None
             self._l4_processed = ()
-            self.cnn_panel.set_unavailable("等待从L4发送")
+            self.cnn_panel.set_unavailable("等待L4完成后自动处理")
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
             self.l4_panel.set_processing(
                 f"正在加载{backend_label}并处理全部L3长音频…"
             )
 
-            def process_l4():
+            def process_l4_and_l5():
                 pipeline = runtime.build_offline_l4_pipeline(backend_id)
-                processed = pipeline.process_l4_sealed(runtime.offline_l4_sources)
-                return pipeline, processed
+                processed = tuple(
+                    pipeline.process_l4_sealed(runtime.offline_l4_sources)
+                )
+                try:
+                    l5_results = tuple(pipeline.process_l5_sealed(processed))
+                except Exception as exc:
+                    return pipeline, processed, (), exc
+                return pipeline, processed, l5_results, None
 
             def completed(value):
-                pipeline, processed = value
+                pipeline, processed, l5_results, l5_error = value
                 self._offline_l4_pipeline = pipeline
-                self._l4_processed = tuple(processed)
+                self._l4_processed = processed
                 self._l4_store.set_processed(self._l4_processed)
-                self.l4_panel.set_tracks(self._l4_store.snapshots())
-                self.cnn_panel.set_unavailable("等待从L4发送")
-                self.bf_panel.set_send_enabled(True)
-
-            self._submit_command("L3发送到L4", process_l4, completed)
-
-        def _send_l4_to_l5(self):
-            if self._offline_l4_pipeline is None or not self._l4_processed:
-                self.statusBar().showMessage("没有已完成的L4音频", 3000)
-                return
-            self.l4_panel.set_processing("L5正在处理全部L4音频…")
-
-            def completed(results):
-                results = tuple(results)
-                self._l4_store.apply_l5(results)
+                if l5_error is not None:
+                    self.l4_panel.set_tracks(self._l4_store.snapshots())
+                    self.l4_panel.set_l5_error(str(l5_error))
+                    self.cnn_panel.set_unavailable(f"L5失败：{l5_error}")
+                    self.bf_panel.set_send_enabled(True)
+                    return
+                self._l4_store.apply_l5(l5_results)
                 self.l4_panel.set_tracks(self._l4_store.snapshots(), l5_complete=True)
                 detections = tuple(SimpleNamespace(
                     theta_deg=item.source.theta_deg,
                     probability=item.l5_probability,
                     window_id=item.source.end_sample // 960,
-                ) for item in results)
+                ) for item in l5_results)
                 self.cnn_panel.set_result(SimpleNamespace(
                     detections=detections,
-                    primary_model_id=(results[0].l5_model_id if results else "L5"),
-                    threshold=self._offline_l4_pipeline.layer5.threshold,
+                    primary_model_id=(
+                        l5_results[0].l5_model_id if l5_results else "L5"
+                    ),
+                    threshold=pipeline.layer5.threshold,
                 ))
+                self.bf_panel.set_send_enabled(True)
 
-            self._submit_command(
-                "L4发送到L5",
-                lambda: self._offline_l4_pipeline.process_l5_sealed(self._l4_processed),
-                completed,
-            )
+            self._submit_command("L3发送到L4", process_l4_and_l5, completed)
 
         def _refresh(self):
             self._poll_command()

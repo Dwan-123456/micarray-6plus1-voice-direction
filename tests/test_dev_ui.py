@@ -1175,7 +1175,7 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         assert "L4" in window.l4_panel.title()
         assert "L5" in window.cnn_panel.title()
         assert window.bf_panel.send.text() == "发送到L4"
-        assert window.l4_panel.send.text() == "发送到L5"
+        assert not hasattr(window.l4_panel, "send")
         assert set(window.l4_panel.backend_buttons) == {
             "mossformer2_ss_16k", "tiger_speech_16k",
         }
@@ -1183,10 +1183,9 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
             window.bf_panel.track_scroll.horizontalScrollBarPolicy()
             == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        l5_send_size = window.l4_panel.send.size()
-        assert l5_send_size == window.runtime_record.sizeHint()
+        action_size = window.runtime_record.sizeHint()
         assert all(
-            control.size() == l5_send_size
+            control.size() == action_size
             for control in (
                 window.bf_panel.mode_switch,
                 window.bf_panel.downstream_switch,
@@ -1299,6 +1298,10 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
             assert values == ()
             events.append("write")
 
+        def apply_l5(self, values):
+            assert values == ()
+            events.append("l5-write")
+
         @staticmethod
         def snapshots():
             return ()
@@ -1308,9 +1311,16 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
             return None
 
     class FakePipeline:
+        layer5 = SimpleNamespace(threshold=0.7)
+
         def process_l4_sealed(self, sources):
             del sources
             events.append("process")
+            return ()
+
+        def process_l5_sealed(self, processed):
+            assert processed == ()
+            events.append("l5-process")
             return ()
 
     def submit_immediately(name, command, on_success=None):
@@ -1330,13 +1340,14 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
         window.bf_panel.set_send_enabled(True)
 
         window._send_l3_to_l4()
-        assert events == ["clear", "process", "write"]
+        assert events == ["clear", "process", "l5-process", "write", "l5-write"]
         assert window.bf_panel.send.isEnabled()
+        assert "L5完成" in window.l4_panel.summary.text()
 
         window._send_l3_to_l4()
         assert events == [
-            "clear", "process", "write",
-            "clear", "process", "write",
+            "clear", "process", "l5-process", "write", "l5-write",
+            "clear", "process", "l5-process", "write", "l5-write",
         ]
         assert window.bf_panel.send.isEnabled()
     finally:

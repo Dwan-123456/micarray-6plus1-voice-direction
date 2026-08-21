@@ -593,7 +593,6 @@ class BeamformPanel(QGroupBox):
 class Layer4AudioPanel(QGroupBox):
     track_play_requested = Signal(int)
     track_stop_requested = Signal()
-    send_requested = Signal()
     backend_changed = Signal(str)
 
     BACKEND_LABELS = {
@@ -623,15 +622,9 @@ class Layer4AudioPanel(QGroupBox):
             )
             self.backend_group.addButton(button)
             self.backend_buttons[backend] = button
-        self.send = QPushButton("发送到L5")
-        self.send.setFixedSize(_l1_action_button_size(self))
-        self.send.setEnabled(False)
-        self.send.setToolTip("全部L4音频处理完成后，将这些音频发送到L5 CNN。")
-        self.send.clicked.connect(self.send_requested.emit)
         header.addWidget(self.summary, 1)
         for button in self.backend_buttons.values():
             header.addWidget(button)
-        header.addWidget(self.send)
         layout.addLayout(header)
         self.help = QLabel("L4输出保留原ID和角度；L5判为人声后仅本栏对应波形变黄。")
         layout.addWidget(self.help)
@@ -683,12 +676,10 @@ class Layer4AudioPanel(QGroupBox):
         self._rows.clear()
         self._snapshots.clear()
         self._playing_track_id = None
-        self.send.setEnabled(False)
         self.summary.setText("等待L3长音频")
 
     def set_processing(self, text: str) -> None:
         self.summary.setText(text)
-        self.send.setEnabled(False)
 
     def set_tracks(self, tracks, *, l5_complete: bool = False) -> None:
         tracks = tuple(tracks)
@@ -707,11 +698,13 @@ class Layer4AudioPanel(QGroupBox):
                 self._rows[track.track_id] = row
                 self.track_layout.insertWidget(self.track_layout.count() - 1, row)
             row.set_snapshot(track, playing=track.track_id == self._playing_track_id)
-        self.send.setEnabled(bool(tracks) and not l5_complete)
         self.summary.setText(
             f"L4完成：{len(tracks)}条；L5完成" if l5_complete
-            else f"L4完成：{len(tracks)}条；可试听并发送到L5"
+            else f"L4完成：{len(tracks)}条；L5自动处理中…"
         )
+
+    def set_l5_error(self, text: str) -> None:
+        self.summary.setText(f"L4完成；L5失败：{text}")
 
     def _toggle_track(self, track_id: int) -> None:
         if self._playing_track_id == track_id:

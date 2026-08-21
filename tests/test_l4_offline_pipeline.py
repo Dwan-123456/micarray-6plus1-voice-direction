@@ -116,7 +116,7 @@ def test_two_speakers_are_separated_matched_and_keep_parent_identity() -> None:
     assert backend.calls == 1
 
 
-def test_l4_and_l5_can_only_run_as_two_explicit_ui_send_steps() -> None:
+def test_l4_and_l5_pipeline_stages_share_the_same_16khz_waveform() -> None:
     backend = _Backend()
     layer5 = _L5()
     pipeline = OfflineLayer4Pipeline(
