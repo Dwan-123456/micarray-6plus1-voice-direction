@@ -11,6 +11,40 @@
 
 ## 报告索引
 
+### DOA短时消失与ID连续性工程方案
+
+文件：[`doa_tracking_hungarian_kalman_short_dropout.pdf`](doa_tracking_hungarian_kalman_short_dropout.pdf)
+
+原题：《基于匈牙利数据关联与卡尔曼滤波的 DOA 声源追踪：解决两秒以内短时消失导致 ID 不连续的工程方案》。
+
+重点覆盖：
+
+- 使用匈牙利算法完成多声源观测与既有轨迹的数据关联；
+- 使用卡尔曼预测跨越两秒以内的短时观测缺失；
+- 通过轨迹生命周期、门控和恢复规则维持方向ID连续性；
+- 面向当前L2内部跟踪与L3按ID连续收音的工程实现建议。
+
+### DOA与说话人识别联合的短时失联追踪
+
+文件：[`doa_speaker_id_hungarian_kalman_tracking.pdf`](doa_speaker_id_hungarian_kalman_tracking.pdf)
+
+原题：《基于 DOA 与说话人识别的短时失联鲁棒目标追踪：匈牙利数据关联、卡尔曼预测与 ID 连续性方案》。
+
+重点覆盖：
+
+- 将DOA运动信息与说话人身份信息共同用于目标关联；
+- 在遮挡、漏检和短时失联期间维持目标ID；
+- 讨论匈牙利关联代价、卡尔曼预测和轨迹恢复策略；
+- 为后续引入说话人嵌入提供研究依据，不代表当前项目已经实现说话人识别。
+
+### 6+1阵列空间可分离度图
+
+文件：[`rho_map_6plus1_100hz_100_6000hz_1deg.png`](rho_map_6plus1_100hz_100_6000hz_1deg.png)
+
+原文件：`rho_map_100Hz_100_6000Hz_angle1deg.png`。
+
+该图按100 Hz频率分辨率和1°角度分辨率展示6+1阵列在100～6000 Hz、0～180°夹角下的空间相关度`rho`。绿色低`rho`区域表示较易分离，黄色为一般，红色高`rho`区域表示较难分离。它用于候选角距、频带选择和L3波束形成研究，不直接替代真实房间与实机测试。
+
 ### Python双声源波束形成与实时优化
 
 文件：[`python_two_source_beamforming_realtime_optimization.pdf`](python_two_source_beamforming_realtime_optimization.pdf)
