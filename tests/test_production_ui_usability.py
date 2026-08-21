@@ -375,7 +375,7 @@ def test_selected_recording_moves_to_recoverable_trash_and_disappears(tmp_path, 
     window.close()
 
 
-def test_selected_database_sample_launches_complete_virtual_array_input(tmp_path, monkeypatch):
+def test_selected_database_sample_launches_audio_only_virtual_array_input(tmp_path, monkeypatch):
     app_instance()
     window = AudioDataManager(tmp_path)
     root = tmp_path / "test_corpus" / "test-recordings" / "recordings" / "sample-1"
@@ -386,13 +386,10 @@ def test_selected_database_sample_launches_complete_virtual_array_input(tmp_path
         output.setsampwidth(2)
         output.setframerate(48_000)
         output.writeframes(bytes(960 * 8 * 2))
-    hotmaps = root / "hotmaps.jsonl"
-    hotmaps.write_text("{}\n", encoding="utf-8")
     manifest_path = root / "recording_manifest.json"
     manifest_path.write_text(
         json.dumps({"assets": [
             {"kind": "native_8ch", "path": audio.name},
-            {"kind": "cdc_hotmaps", "path": hotmaps.name},
         ]}), encoding="utf-8"
     )
     row = {"id": "sample-1", "path": str(root)}

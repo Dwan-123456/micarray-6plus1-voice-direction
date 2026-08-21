@@ -789,7 +789,7 @@ class AudioDataManager(QMainWindow):
         stop_listen_button.clicked.connect(self.channel_player.stop)
         simulate_button = QPushButton("用所选样本进行模拟测试")
         simulate_button.clicked.connect(self._simulate_selected_recording)
-        simulate_button.setToolTip("自动打开Test UI，并完整模拟录制时的8通道音频和热力图输入")
+        simulate_button.setToolTip("自动打开Test UI并模拟原始8通道音频输入；模拟时不读取热力图")
         rename_button = QPushButton("修改所选名称")
         rename_button.clicked.connect(self._rename_selected_recording)
         rename_button.setToolTip("只修改列表名称和标签记录，不改变录音文件或内部编号")
@@ -1753,8 +1753,8 @@ class AudioDataManager(QMainWindow):
             manifest_path = (root / "recording_manifest.json").resolve(strict=True)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             kinds = {item.get("kind") for item in manifest.get("assets", [])}
-            if not {"native_8ch", "cdc_hotmaps"}.issubset(kinds):
-                raise ValueError("该录音没有同时保存原始8通道音频和热力图")
+            if "native_8ch" not in kinds:
+                raise ValueError("该录音没有保存原始8通道音频")
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             return QMessageBox.warning(self, "无法启动模拟测试", f"所选录音不是完整麦克风输入：{exc}")
         project_root = Path(__file__).resolve().parents[2]

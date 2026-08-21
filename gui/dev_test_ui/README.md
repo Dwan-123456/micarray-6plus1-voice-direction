@@ -8,7 +8,7 @@
 
 每次麦克风采集成功连接后，Test UI会尽力发送一次官方关灯命令`e`。麦克风未连接时不会访问CDC或发送灯控命令；启动默认关灯失败也不弹出灯控错误，手动“灯光开/灯光关”仍保留完整错误提示。
 
-本UI只消费同一个ApplicationRuntime快照，不得重开设备、重建时间轴或在界面线程运行算法。普通启动使用真实麦克风；数据管理系统发起完整模拟时，`RecordingReplaySource`把已登记的原始8ch音频和CDC热力图作为同一个虚拟阵列输入，两种方式共用完整L1→L4链路。
+本UI只消费同一个ApplicationRuntime快照，不得重开设备、重建时间轴或在界面线程运行算法。普通启动使用真实麦克风并保留实时CDC热力图；数据管理系统发起模拟测试时，`RecordingReplaySource`只读取已登记的原始8ch音频，不打开、不校验也不注入录制的CDC热力图，以减少回放解析和界面更新开销。两种方式仍共用完整L1→L4音频算法链路。
 
 L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但按ID长轨不再由UI自行拼接。Runtime中的`TrackAudioStreamHub`每20 ms生成一份已经去重、按IMCRA概率响度补偿的连续轨hop；Test UI试听缓存和L4 CNN逐样本读取同一份波形，播放端不再额外提高响度。L4面板提供默认ON的实时补偿开关，切换不清空ID或连续轨。
 

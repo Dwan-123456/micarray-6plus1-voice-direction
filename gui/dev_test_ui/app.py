@@ -163,9 +163,6 @@ def build_window(
         pipeline = InputPipeline(
             replay_source,
             ChannelCalibrator(CalibrationConfig.from_project(config)),
-            replay_source,
-            owns_hotmap_source=False,
-            hotmap_required=True,
             timestamp_tolerance_ms=config.timing.timestamp_tolerance_ms,
         )
     elif replay_path is not None:

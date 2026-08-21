@@ -72,14 +72,11 @@ def source(path: Path, *, autoplay: bool = False) -> RecordingReplaySource:
     )
 
 
-def test_complete_recording_replays_audio_and_hotmap_through_l1_pipeline(tmp_path: Path):
+def test_complete_recording_replays_audio_without_loading_hotmap(tmp_path: Path):
     replay = source(recording(tmp_path))
     pipeline = InputPipeline(
         replay,
         ChannelCalibrator(CalibrationConfig((1.0,) * 7, (1,) * 7, (0,) * 7)),
-        replay,
-        owns_hotmap_source=False,
-        hotmap_required=True,
     )
     pipeline.start()
     assert replay.display_name == "我命名的测试音频"
@@ -88,8 +85,7 @@ def test_complete_recording_replays_audio_and_hotmap_through_l1_pipeline(tmp_pat
     first = pipeline.read(timeout=0.1)
     assert first is not None
     assert first.native_samples is not None and first.native_samples.shape == (960, 8)
-    assert first.hotmap is not None and first.hotmap.sequence_id == 0
-    assert np.all(first.hotmap.matrix == 0)
+    assert first.hotmap is None
 
     replay.pause()
     before = replay.status().current_sample
@@ -98,7 +94,7 @@ def test_complete_recording_replays_audio_and_hotmap_through_l1_pipeline(tmp_pat
     replay.resume()
     second = pipeline.read(timeout=0.1)
     assert second is not None and second.sequence_id == 1
-    assert second.hotmap is not None and second.hotmap.sequence_id == 1
+    assert second.hotmap is None
     pipeline.stop()
 
 
@@ -117,13 +113,32 @@ def test_replay_rewinds_all_inputs_and_waits_at_eof(tmp_path: Path):
     assert restarted is not None
     assert restarted.sequence_id == 0 and restarted.timestamp == 0.0
     assert replay.status().generation == 1
-    assert replay.latest_hotmap_frame() is not None
-    assert replay.latest_hotmap_frame().sequence_id == 0
     replay.stop()
 
 
-def test_replay_rejects_modified_recording_asset(tmp_path: Path):
+def test_replay_does_not_open_or_validate_recorded_hotmap_asset(tmp_path: Path):
     manifest = recording(tmp_path)
     (manifest.parent / "hotmaps.jsonl").write_text("tampered\n", encoding="utf-8")
+    replay = source(manifest, autoplay=True)
+    replay.start()
+    frame = replay.read(timeout=0.1)
+    assert frame is not None
+    replay.stop()
+
+
+def test_replay_rejects_modified_audio_asset(tmp_path: Path):
+    manifest = recording(tmp_path)
+    (manifest.parent / "native_8ch.wav").write_bytes(b"tampered")
     with pytest.raises(ValueError, match="校验失败"):
         source(manifest)
+
+
+def test_replay_accepts_manifest_without_hotmap_asset(tmp_path: Path):
+    manifest = recording(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["assets"] = [item for item in payload["assets"] if item["kind"] == "native_8ch"]
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    replay = source(manifest, autoplay=True)
+    replay.start()
+    assert replay.read(timeout=0.1) is not None
+    replay.stop()

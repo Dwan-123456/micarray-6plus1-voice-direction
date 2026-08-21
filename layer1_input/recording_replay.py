@@ -9,9 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
-from .interface import CdcHotmapFrame, DecodedAudio
+from .interface import DecodedAudio
 from .sources import AudioSource, map_logical_channels, pcm16_to_float32
 
 
@@ -40,7 +38,7 @@ def _sha256(path: Path) -> str:
 
 
 class RecordingReplaySource(AudioSource):
-    """Replay native USB audio and recorded CDC frames as one virtual array."""
+    """Replay recorded native USB audio without loading recorded CDC hotmaps."""
 
     VALID_STATES = {"ready", "playing", "paused", "ended", "stopped", "error"}
 
@@ -57,15 +55,13 @@ class RecordingReplaySource(AudioSource):
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         self.display_name = str(manifest.get("display_name") or self.root.name)
         assets = {str(item.get("kind")): item for item in manifest.get("assets", ())}
-        if "native_8ch" not in assets or "cdc_hotmaps" not in assets:
-            raise ValueError("完整模拟输入要求原始8通道音频和热力图")
+        if "native_8ch" not in assets:
+            raise ValueError("模拟输入要求原始8通道音频")
         self.audio_path = self._validated_asset(assets["native_8ch"])
-        self.hotmap_path = self._validated_asset(assets["cdc_hotmaps"])
         self.logical_channel_map = tuple(int(value) for value in logical_channel_map)
         self.block_size = int(block_size)
         if self.block_size <= 0:
             raise ValueError("模拟输入块长度必须为正数")
-        self._hotmap_rows = self._load_hotmaps()
         self._condition = threading.Condition(threading.RLock())
         self._wav: wave.Wave_read | None = None
         self._state = "ready"
@@ -75,8 +71,6 @@ class RecordingReplaySource(AudioSource):
         self._sequence = 0
         self._generation = 0
         self._anchor = 0.0
-        self._hotmap_index = 0
-        self._current_hotmap: CdcHotmapFrame | None = None
 
     def _validated_asset(self, asset: dict[str, Any]) -> Path:
         path = (self.root / str(asset["path"])).resolve(strict=True)
@@ -86,23 +80,6 @@ class RecordingReplaySource(AudioSource):
         if not expected or _sha256(path) != expected:
             raise ValueError(f"录音资产校验失败：{path.name}")
         return path
-
-    def _load_hotmaps(self) -> tuple[dict[str, Any], ...]:
-        rows: list[dict[str, Any]] = []
-        with self.hotmap_path.open("r", encoding="utf-8") as source:
-            for line_number, line in enumerate(source, 1):
-                if not line.strip():
-                    continue
-                item = json.loads(line)
-                matrix = np.asarray(item.get("matrix"), dtype=np.uint8)
-                sample = int(item.get("playback_sample", -1))
-                if matrix.shape != (16, 16) or sample < 0:
-                    raise ValueError(f"热力图记录无效：第{line_number}行")
-                rows.append({**item, "playback_sample": sample, "matrix": matrix})
-        if not rows:
-            raise ValueError("完整模拟输入要求至少一帧热力图")
-        rows.sort(key=lambda item: int(item["playback_sample"]))
-        return tuple(rows)
 
     @property
     def exhausted(self) -> bool:
@@ -141,20 +118,6 @@ class RecordingReplaySource(AudioSource):
             self._anchor = time.monotonic()
             self._condition.notify_all()
 
-    def _advance_hotmap(self, sample: int) -> None:
-        while (
-            self._hotmap_index < len(self._hotmap_rows)
-            and int(self._hotmap_rows[self._hotmap_index]["playback_sample"]) <= sample
-        ):
-            item = self._hotmap_rows[self._hotmap_index]
-            self._current_hotmap = CdcHotmapFrame(
-                item["matrix"],
-                int(item["sequence_id"]),
-                float(item.get("timestamp", sample / 48_000)),
-                None if item.get("received_at") is None else float(item["received_at"]),
-            )
-            self._hotmap_index += 1
-
     def read(self, timeout: float | None = None) -> DecodedAudio | None:
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._condition:
@@ -185,7 +148,6 @@ class RecordingReplaySource(AudioSource):
                 self._condition.notify_all()
                 return None
             native = pcm16_to_float32(payload, 8)
-            self._advance_hotmap(start_sample)
             frame = DecodedAudio(
                 map_logical_channels(native, self.logical_channel_map),
                 48_000,
@@ -196,10 +158,6 @@ class RecordingReplaySource(AudioSource):
             self._sample_position += len(native)
             self._sequence += 1
             return frame
-
-    def latest_hotmap_frame(self) -> CdcHotmapFrame | None:
-        with self._condition:
-            return self._current_hotmap
 
     def pause(self) -> None:
         with self._condition:
@@ -229,8 +187,6 @@ class RecordingReplaySource(AudioSource):
             self._sample_position = 0
             self._sequence = 0
             self._generation += 1
-            self._hotmap_index = 0
-            self._current_hotmap = None
             self._anchor = time.monotonic()
             self._state = "playing"
             self._condition.notify_all()

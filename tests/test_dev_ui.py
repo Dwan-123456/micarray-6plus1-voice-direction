@@ -998,6 +998,8 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
     app, window = build_window(CONFIG, replay_recording=manifest, auto_start=False)
     try:
         assert isinstance(window._runtime.pipeline.source, RecordingReplaySource)
+        assert window._runtime.pipeline.hotmap_source is None
+        assert window._runtime.pipeline.hotmap_required is False
         assert "模拟输入模式" in window.windowTitle()
         assert "我命名的阵列录音" in window.windowTitle()
         assert window.replay_name.text().endswith("我命名的阵列录音")
