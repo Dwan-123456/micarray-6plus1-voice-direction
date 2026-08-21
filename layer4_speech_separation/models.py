@@ -34,14 +34,14 @@ class DirectionCountSpeakerClassifier:
 
     def classify(self, source) -> SpeakerCountDecision:
         maximum = max(count for _, count in source.l2_direction_counts)
-        if maximum > 2:
-            raise ValueError("offline L4 accepts at most two recorded L2 directions")
+        speaker_count = min(2, maximum)
         return SpeakerCountDecision(
-            source.asset_id, maximum, 1.0, self.classifier_id,
+            source.asset_id, speaker_count, 1.0, self.classifier_id,
             {
-                "aggregation": "maximum",
+                "aggregation": "min(2, maximum)",
                 "observation_count": len(source.l2_direction_counts),
                 "maximum_l2_direction_count": maximum,
+                "effective_speaker_count": speaker_count,
             },
         )
 

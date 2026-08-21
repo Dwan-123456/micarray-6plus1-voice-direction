@@ -66,6 +66,14 @@ def test_direction_count_classifier_uses_maximum_recorded_l2_output_count() -> N
     assert decision.metadata["maximum_l2_direction_count"] == 2
 
 
+def test_direction_count_classifier_caps_transient_extra_directions_at_two() -> None:
+    decision = DirectionCountSpeakerClassifier().classify(_source((1, 3, 2, 3)))
+    assert decision.speaker_count == 2
+    assert decision.metadata["maximum_l2_direction_count"] == 3
+    assert decision.metadata["effective_speaker_count"] == 2
+    assert decision.metadata["aggregation"] == "min(2, maximum)"
+
+
 def test_one_speaker_is_resampled_and_bypasses_separator_before_l5() -> None:
     backend = _Backend()
     pipeline = OfflineLayer4Pipeline(
