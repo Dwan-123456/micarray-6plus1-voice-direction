@@ -16,6 +16,7 @@ class DevUiSettings:
     OBSOLETE_KEYS = {
         "layer2_iterative_peak_search_enabled",
     }
+    LAYER4_BACKENDS = {"mossformer2_ss_16k", "tiger_speech_16k"}
 
     def __init__(self, project_root: str | Path):
         self.path = Path(project_root).resolve() / "data" / "dev_test_ui" / "settings.json"
@@ -209,6 +210,20 @@ class DevUiSettings:
         self._save_update(layer5_input_gain_compensation_enabled=enabled)
         return enabled
 
+    def load_layer4_backend(self, default: str = "mossformer2_ss_16k") -> str:
+        fallback = self._validate_layer4_backend(default)
+        try:
+            return self._validate_layer4_backend(
+                self._load_payload()["layer4_offline_backend"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_layer4_backend(self, value: str) -> str:
+        backend = self._validate_layer4_backend(value)
+        self._save_update(layer4_offline_backend=backend)
+        return backend
+
     @staticmethod
     def _validate_threshold(value: float) -> float:
         threshold = round(float(value), 2)
@@ -246,3 +261,10 @@ class DevUiSettings:
                 "(or the 0.02 minimum)"
             )
         return scale
+
+    @classmethod
+    def _validate_layer4_backend(cls, value: str) -> str:
+        backend = str(value)
+        if backend not in cls.LAYER4_BACKENDS:
+            raise ValueError("Layer 4 backend must be MossFormer2 or TIGER")
+        return backend

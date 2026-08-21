@@ -196,6 +196,9 @@ def build_window(
         dev_audio_tracker=audio_id_tracker,
     )
     ui_settings = DevUiSettings(config_path.parent.parent)
+    persisted_l4_backend = ui_settings.load_layer4_backend(
+        config.layer4.default_backend
+    )
     persisted_threshold = ui_settings.load_direction_threshold(config.layer2.direction_threshold)
     runtime.set_direction_threshold(persisted_threshold)
     runtime.set_music_effective_order_limit(ui_settings.load_music_effective_order_limit(
@@ -313,10 +316,11 @@ def build_window(
                 runtime.downstream_processing_enabled
             )
             self.cnn_panel = CnnPanel(config.layer5.voice_probability_limit)
-            self.l4_panel = Layer4AudioPanel()
+            self.l4_panel = Layer4AudioPanel(persisted_l4_backend)
             self.l4_panel.track_play_requested.connect(self._toggle_l4_audio)
             self.l4_panel.track_stop_requested.connect(self._pause_track_audio)
             self.l4_panel.send_requested.connect(self._send_l4_to_l5)
+            self.l4_panel.backend_changed.connect(ui_settings.save_layer4_backend)
             self.l4_panel.set_voice_threshold(config.layer5.voice_probability_limit)
             self.cnn_panel.threshold_changed.connect(
                 self.l4_panel.set_voice_threshold
@@ -1091,10 +1095,14 @@ def build_window(
             self.preview_player.close()
             self._audio_source_key = None
             self.bf_panel.set_send_enabled(False)
-            self.l4_panel.set_processing("正在加载模型并处理全部L3长音频…")
+            backend_id = self.l4_panel.backend_id
+            backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
+            self.l4_panel.set_processing(
+                f"正在加载{backend_label}并处理全部L3长音频…"
+            )
 
             def process_l4():
-                pipeline = runtime.build_offline_l4_pipeline()
+                pipeline = runtime.build_offline_l4_pipeline(backend_id)
                 processed = pipeline.process_l4_sealed(runtime.offline_l4_sources)
                 return pipeline, processed
 

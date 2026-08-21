@@ -5,6 +5,7 @@ import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -593,19 +594,43 @@ class Layer4AudioPanel(QGroupBox):
     track_play_requested = Signal(int)
     track_stop_requested = Signal()
     send_requested = Signal()
+    backend_changed = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):
+    BACKEND_LABELS = {
+        "mossformer2_ss_16k": "MossFormer2",
+        "tiger_speech_16k": "TIGER",
+    }
+
+    def __init__(
+        self,
+        backend_id: str = "mossformer2_ss_16k",
+        parent: QWidget | None = None,
+    ):
         super().__init__("L4 · Separated Audio Preview", parent)
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         self.summary = QLabel("等待L3长音频")
         self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.backend_group = QButtonGroup(self)
+        self.backend_group.setExclusive(True)
+        self.backend_buttons: dict[str, QPushButton] = {}
+        for backend, label in self.BACKEND_LABELS.items():
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setToolTip(f"下一次发送到L4时使用{label}模型")
+            button.clicked.connect(
+                lambda checked=False, value=backend: self._select_backend(value)
+            )
+            self.backend_group.addButton(button)
+            self.backend_buttons[backend] = button
         self.send = QPushButton("发送到L5")
         self.send.setFixedSize(_l1_action_button_size(self))
         self.send.setEnabled(False)
         self.send.setToolTip("全部L4音频处理完成后，将这些音频发送到L5 CNN。")
         self.send.clicked.connect(self.send_requested.emit)
         header.addWidget(self.summary, 1)
+        for button in self.backend_buttons.values():
+            header.addWidget(button)
         header.addWidget(self.send)
         layout.addLayout(header)
         self.help = QLabel("L4输出保留原ID和角度；L5判为人声后仅本栏对应波形变黄。")
@@ -625,6 +650,31 @@ class Layer4AudioPanel(QGroupBox):
         self._snapshots = {}
         self._playing_track_id: int | None = None
         self._voice_threshold = 0.7
+        self.set_backend(backend_id)
+
+    @property
+    def backend_id(self) -> str:
+        for backend, button in self.backend_buttons.items():
+            if button.isChecked():
+                return backend
+        return "mossformer2_ss_16k"
+
+    def set_backend(self, backend_id: str) -> None:
+        if backend_id not in self.backend_buttons:
+            raise ValueError("unsupported Layer 4 backend")
+        self.backend_buttons[backend_id].setChecked(True)
+        self._refresh_backend_styles()
+
+    def _select_backend(self, backend_id: str) -> None:
+        self.set_backend(backend_id)
+        self.backend_changed.emit(backend_id)
+
+    def _refresh_backend_styles(self) -> None:
+        for button in self.backend_buttons.values():
+            color = "#16794b" if button.isChecked() else "#5b6570"
+            button.setStyleSheet(
+                f"QPushButton {{ background:{color}; color:white; font-weight:600; }}"
+            )
 
     def clear_tracks(self) -> None:
         for row in self._rows.values():

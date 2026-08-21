@@ -193,6 +193,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.load_gate_probability_threshold(0.60) == 0.60
     assert settings.load_l1_pre_denoise_enabled(False) is False
     assert settings.load_l5_input_gain_compensation_enabled(True) is True
+    assert settings.load_layer4_backend("mossformer2_ss_16k") == "mossformer2_ss_16k"
 
     settings.save_direction_threshold(.67)
     settings.save_music_effective_order_limit(1)
@@ -208,6 +209,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.save_gate_probability_threshold(0.73) == 0.73
     assert settings.save_l1_pre_denoise_enabled(True) is True
     assert settings.save_l5_input_gain_compensation_enabled(False) is False
+    assert settings.save_layer4_backend("tiger_speech_16k") == "tiger_speech_16k"
 
     loaded = DevUiSettings(tmp_path)
     assert loaded.load_direction_threshold(.35) == .42
@@ -221,6 +223,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert loaded.load_gate_probability_threshold(0.60) == 0.73
     assert loaded.load_l1_pre_denoise_enabled(False) is True
     assert loaded.load_l5_input_gain_compensation_enabled(True) is False
+    assert loaded.load_layer4_backend("mossformer2_ss_16k") == "tiger_speech_16k"
 
     payload = loaded.path.read_text(encoding="utf-8")
     assert '"layer2_direction_threshold": 0.42' in payload
@@ -229,6 +232,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert '"layer2_music_noise_whitening_enabled": true' in payload
     assert '"layer2_direction_id_tracking_enabled": false' in payload
     assert '"layer5_input_gain_compensation_enabled": false' in payload
+    assert '"layer4_offline_backend": "tiger_speech_16k"' in payload
     assert "layer2_iterative_peak_search_enabled" not in payload
 
 
@@ -240,6 +244,31 @@ def test_operator_settings_reject_invalid_values(tmp_path):
         settings.save_gate_probability_threshold(1.01)
     with pytest.raises(ValueError, match="must be bool"):
         settings.save_l1_pre_denoise_enabled(1)
+    with pytest.raises(ValueError, match="MossFormer2 or TIGER"):
+        settings.save_layer4_backend("unknown")
+
+
+def test_layer4_model_buttons_are_exclusive_and_colour_coded(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from gui.dev_test_ui.panels import Layer4AudioPanel
+
+    app = QApplication.instance() or QApplication([])
+    panel = Layer4AudioPanel("mossformer2_ss_16k")
+    selected = []
+    panel.backend_changed.connect(selected.append)
+    assert panel.backend_id == "mossformer2_ss_16k"
+    assert "#16794b" in panel.backend_buttons["mossformer2_ss_16k"].styleSheet()
+    assert "#5b6570" in panel.backend_buttons["tiger_speech_16k"].styleSheet()
+
+    panel.backend_buttons["tiger_speech_16k"].click()
+    assert panel.backend_id == "tiger_speech_16k"
+    assert selected == ["tiger_speech_16k"]
+    assert "#5b6570" in panel.backend_buttons["mossformer2_ss_16k"].styleSheet()
+    assert "#16794b" in panel.backend_buttons["tiger_speech_16k"].styleSheet()
+    panel.deleteLater()
+    app.processEvents()
 
 
 def test_kalman_q_r_control_stages_with_buttons_and_applies_explicitly(monkeypatch):
@@ -1147,6 +1176,9 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         assert "L5" in window.cnn_panel.title()
         assert window.bf_panel.send.text() == "发送到L4"
         assert window.l4_panel.send.text() == "发送到L5"
+        assert set(window.l4_panel.backend_buttons) == {
+            "mossformer2_ss_16k", "tiger_speech_16k",
+        }
         assert (
             window.bf_panel.track_scroll.horizontalScrollBarPolicy()
             == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
