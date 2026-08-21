@@ -255,11 +255,10 @@ class ProbabilityGateReadout(QLabel):
 
 
 class BeamformPanel(QGroupBox):
-    preview_play_requested = Signal(object)
-    preview_stop_requested = Signal()
     track_play_requested = Signal(int)
     track_stop_requested = Signal()
     mode_change_requested = Signal(str)
+    downstream_processing_changed = Signal(bool)
 
     def __init__(self, config, parent: QWidget | None = None):
         super().__init__("L3 · Directional Audio Preview", parent)
@@ -280,18 +279,17 @@ class BeamformPanel(QGroupBox):
             "依次切换：优化算法 → DS基线 → 恒定波束宽度30°；只影响后续L3窗口"
         )
         self.mode_switch.clicked.connect(self._cycle_mode)
-        self.preview_play = QPushButton(
-            f"播放/暂停 {config.downstream_audio_window.duration_ms} ms"
+        self.downstream_switch = QPushButton()
+        self.downstream_switch.setCheckable(True)
+        self.downstream_switch.setChecked(True)
+        self.downstream_switch.setToolTip(
+            "关闭后L2继续运行；L3不再接收L2窗口，L4同步停止。跳过结果属于正常状态，不报错。"
         )
-        self.preview_stop = QPushButton("停止")
-        self.preview_play.setEnabled(False)
-        self.preview_stop.setEnabled(False)
-        self.preview_play.clicked.connect(self._play_preview)
-        self.preview_stop.clicked.connect(self.preview_stop_requested.emit)
+        self.downstream_switch.toggled.connect(self._toggle_downstream_processing)
+        self.set_downstream_processing_enabled(True)
         preview_controls.addWidget(self.preview_summary, 1)
         preview_controls.addWidget(self.mode_switch)
-        preview_controls.addWidget(self.preview_play)
-        preview_controls.addWidget(self.preview_stop)
+        preview_controls.addWidget(self.downstream_switch)
         layout.addLayout(preview_controls)
         self.help = QLabel("仅按L2权威ID缓存方向音频；Kalman只平滑角度，不控制ID存在。")
         layout.addWidget(self.help)
@@ -344,8 +342,6 @@ class BeamformPanel(QGroupBox):
         self._frozen_preview = None
         self.preview_summary.setText("L3 mode changed; waiting for the next completed window")
         self.preview_summary.setToolTip("")
-        self.preview_play.setEnabled(False)
-        self.preview_stop.setEnabled(False)
         self._playing_track_id = None
         self.clear_tracks()
 
@@ -380,8 +376,6 @@ class BeamformPanel(QGroupBox):
             self._frozen_preview = None
             self.preview_summary.setText(f"L3 formal preview: {missing_reason or 'NO CANDIDATE'}")
             self.preview_summary.setToolTip(missing_reason or "")
-            self.preview_play.setEnabled(False)
-            self.preview_stop.setEnabled(False)
             return
         self._render_preview(chosen, frozen=self._selected_key is not None)
 
@@ -403,12 +397,20 @@ class BeamformPanel(QGroupBox):
             f"{preview.runtime_backend} | fallback: {fallback} | {self._preprocessing_version}"
         )
         self.preview_summary.setToolTip(" | ".join(preview.diagnostics))
-        self.preview_play.setEnabled(True)
-        self.preview_stop.setEnabled(True)
 
-    def _play_preview(self) -> None:
-        if self._frozen_preview is not None:
-            self.preview_play_requested.emit(self._frozen_preview)
+    def _toggle_downstream_processing(self, enabled: bool) -> None:
+        self.set_downstream_processing_enabled(enabled)
+        self.downstream_processing_changed.emit(enabled)
+
+    def set_downstream_processing_enabled(self, enabled: bool) -> None:
+        self.downstream_switch.setChecked(bool(enabled))
+        self.mode_switch.setEnabled(bool(enabled))
+        if enabled:
+            self.downstream_switch.setText("L3/L4：运行中")
+            self.downstream_switch.setStyleSheet("background:#36875f;color:white")
+        else:
+            self.downstream_switch.setText("L3/L4：已停止")
+            self.downstream_switch.setStyleSheet("background:#8a4b3b;color:white")
 
     def set_unavailable(self, reason: str) -> None:
         self.help.setText(reason)

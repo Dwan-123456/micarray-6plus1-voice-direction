@@ -22,6 +22,14 @@
 
 ---
 
+## 2026-08-21 — Development Test UI新增L3/L4下游隔离开关
+
+- **界面**：删除L3顶部仅用于单窗的“播放/暂停”和“停止”按钮，在原位置新增`L3/L4：运行中/已停止`开关；按ID长音频试听按钮和已有缓存保持可用。
+- **Runtime**：关闭开关后L1/L2继续运行，新L2结果不再进入L3队列；已排队但未开始的L3/L4窗口快速收束为`downstream_disabled_by_test_ui`的正常`SKIPPED`终态，正在计算的单窗安全完成。重新开启后从下一条L2结果恢复，不破坏ResultJoiner、DecisionRecord和watermark顺序，也不记录为处理错误。
+- **诊断**：公开处理状态新增`downstream_processing_enabled`，顶部L3/L4状态在隔离期间显示`OFF`；L3和L4画面明确显示由Test UI停止，L2 DOA/MUSIC仍持续刷新。
+- **验证**：Ruff检查通过；新增的UI开关、Runtime旁路和DecisionRecord跳过契约共`6 passed`；完整测试覆盖`456 passed`，其中一项本机L2性能阈值测试首次受调度抖动影响、单独复测`1 passed`，串口退出竞态项单独复测`1 passed`。
+- **保持不变**：L1、L2 MUSIC/Gate/ID/Kalman算法、L3波束形成和L4模型实现、按ID试听缓存格式、正式录音及除上述跳过终态兼容外的数据管理流程均无变化；不创建或移动发布标签，无Git LFS资产变化。
+
 ## 2026-08-21 — 修复coasting方向进入L3时Development Test UI停止
 
 - **根因**：L2已允许有效TTL内的正式`coasting` ID在没有当前MUSIC响应时按预测角继续进入L3 BF，但`DevUiFrame`仍强制要求所有L3预览必须附带MUSIC响应；首个prediction-only预览因此触发契约异常并停止处理线程。

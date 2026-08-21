@@ -24,6 +24,8 @@ L2的`TrackedDirection`是唯一权威方向身份。Runtime把同一`track_id`�
 
 Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`拼接，保留20 ms hop、真实音频补洞、过旧缺口等时静音、交叉淡化、Center Mic参考、有界分段和L3模式隔离。UI不再维护私有ID投影、角度贪心关联或别名合并。已删除angle-only L4反馈邮箱；L4只消费公共ID并返回该ID的人声语义结果，不拥有方向轨迹生命周期。
 
+Development Test UI可实时关闭下游处理。关闭后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L4 `SKIPPED`终态，已经排队但尚未开始的L3/L4工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner、DecisionRecord或watermark顺序；重新开启后从下一条L2结果恢复L3/L4。
+
 Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Output(())`，不执行prepare/STFT/协方差；L4仍调用空batch公共接口并以`COMPLETED`空结果收束。正式记录中的三阶段均为completed，增强音频和Voice方向为空。
 
 启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L4,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L4→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。超时的已注册窗口显式转为`CANCELLED/error`；仍有worker存活时拒绝假关闭。

@@ -142,7 +142,12 @@ class DecisionRecord:
         if statuses and any(value in severe_states for value in statuses.values()):
             if self.status != "error":
                 raise ValueError("阶段失败、超时、丢弃或取消时DecisionRecord必须为error")
-        if self.status in {"ok", "degraded"}:
+        # A deliberately bypassed downstream is still a successful L2 record:
+        # preserve its candidates without inventing L4 detections.  Full
+        # candidate/detection alignment remains mandatory whenever L4 ran (or
+        # for legacy records that do not carry per-stage terminal states).
+        l4_requires_detections = not statuses or statuses.get("l4") == "completed"
+        if self.status in {"ok", "degraded"} and l4_requires_detections:
             if len(self.candidates) != len(self.detections):
                 raise ValueError("正式成功结果必须为每个候选提供一个同序检测")
             for candidate, detection in zip(self.candidates, self.detections, strict=True):

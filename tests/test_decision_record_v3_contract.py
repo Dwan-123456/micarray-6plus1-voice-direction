@@ -50,3 +50,21 @@ def test_voice_count_is_derived_from_formal_detections() -> None:
             voice_direction_count=1,
         )
 
+
+def test_skipped_l4_preserves_l2_candidates_without_fake_detections() -> None:
+    record = DecisionRecord(
+        "session",
+        0,
+        1,
+        15360,
+        (13440, 15360),
+        (0, 15360),
+        "ok",
+        candidates=(_candidate(31.0),),
+        detections=(),
+        stage_statuses={"l2": "completed", "l3": "skipped", "l4": "skipped"},
+        terminal_reason="downstream_disabled_by_test_ui",
+    )
+
+    assert len(record.candidates) == 1
+    assert record.detections == ()

@@ -225,6 +225,8 @@ class ApplicationRuntime:
         self._l3_mode_lock = threading.Lock()
         self._l3_processing_mode = L3_MODE_OPTIMIZED
         self._l3_config_revision = 0
+        self._downstream_processing_enabled = threading.Event()
+        self._downstream_processing_enabled.set()
         self._scan_config = DirectionScanConfig.from_project(config)
         self._scan_config_lock = threading.Lock()
         self._scan_config_revision = 0
@@ -593,6 +595,31 @@ class ApplicationRuntime:
             self._completion_congested.set()
             return True
 
+    def _skip_disabled_downstream(self, key: WindowKey, *, include_l3: bool) -> None:
+        """Terminate disabled Test-UI downstream stages as normal skipped work."""
+
+        reason = "downstream_disabled_by_test_ui"
+        if include_l3:
+            l3 = L3StageResult.terminal(
+                key,
+                StageState.SKIPPED,
+                reason,
+                started_monotonic_ns=monotonic_ns(),
+                finished_monotonic_ns=monotonic_ns(),
+            )
+            self._joiner_submit(lambda: self._result_joiner.submit_l3(l3))
+            self._stage_completed_counts["l3"] += 1
+        l4 = L4StageResult.terminal(
+            key,
+            StageState.SKIPPED,
+            reason,
+            started_monotonic_ns=monotonic_ns(),
+            finished_monotonic_ns=monotonic_ns(),
+        )
+        self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
+        self._stage_completed_counts["l4"] += 1
+        self._record_l4_terminal(StageState.SKIPPED)
+
     def _drop_waiting_l2(self, reason: str) -> bool:
         try:
             displaced = self._l2_windows.get_nowait()
@@ -917,6 +944,7 @@ class ApplicationRuntime:
             "l4_ui_mailbox_depth": self.latest_l4_dev_ui.qsize(),
             "l4_ui_mailbox_capacity": self.latest_l4_dev_ui.maxsize,
             "l4_ui_mailbox_overwrites": l4_diagnostics["ui_mailbox_overwrites"],
+            "downstream_processing_enabled": self.downstream_processing_enabled,
         }
 
     @property
@@ -1090,6 +1118,23 @@ class ApplicationRuntime:
                 self._l3_processing_mode = mode
                 self._l3_config_revision = getattr(self, "_l3_config_revision", 0) + 1
         return mode
+
+    @property
+    def downstream_processing_enabled(self) -> bool:
+        """Whether L2 results are allowed to enter the L3/L4 stages."""
+
+        return self._downstream_processing_enabled.is_set()
+
+    def set_downstream_processing_enabled(self, value: bool) -> bool:
+        """Enable or bypass L3/L4 without stopping L1/L2 or breaking joins."""
+
+        if type(value) is not bool:
+            raise ValueError("downstream processing setting must be bool")
+        if value:
+            self._downstream_processing_enabled.set()
+        else:
+            self._downstream_processing_enabled.clear()
+        return value
 
     @staticmethod
     def _imcra_probabilities(window: DecisionWindow) -> tuple[SourceProbability20ms, ...]:
@@ -1793,6 +1838,8 @@ class ApplicationRuntime:
                             item.key, f"gate_{stage.output.gate_decision.state.value}"
                         )
                     )
+                elif not self.downstream_processing_enabled:
+                    self._skip_disabled_downstream(item.key, include_l3=True)
                 else:
                     if not self._enqueue_l3_latest(_L3Work(item, stage)):
                         break
@@ -1826,6 +1873,11 @@ class ApplicationRuntime:
                 if self._processing_abort.is_set():
                     break
                 if not isinstance(item, _L3Work):
+                    continue
+                if not self.downstream_processing_enabled:
+                    self._skip_disabled_downstream(
+                        item.work_item.key, include_l3=True
+                    )
                     continue
                 started_ns = monotonic_ns()
                 try:
@@ -1987,6 +2039,11 @@ class ApplicationRuntime:
                 if self._processing_abort.is_set():
                     break
                 if not isinstance(item, _L4Work):
+                    continue
+                if not self.downstream_processing_enabled:
+                    self._skip_disabled_downstream(
+                        item.work_item.key, include_l3=False
+                    )
                     continue
                 started_ns = monotonic_ns()
                 try:

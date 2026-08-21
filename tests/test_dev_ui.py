@@ -209,19 +209,24 @@ def test_kalman_q_r_control_stages_with_buttons_and_applies_explicitly(monkeypat
     app.processEvents()
 
 
-@pytest.mark.parametrize("duration_ms", (40, 80, 160))
-def test_beamform_preview_button_uses_downstream_window_config(monkeypatch, duration_ms):
+def test_beamform_panel_replaces_single_window_playback_with_downstream_switch(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     from gui.dev_test_ui.panels import BeamformPanel
 
-    base = load_config(CONFIG, environ={})
-    timing = base.timing.model_copy(update={"downstream_audio_window_ms": duration_ms})
-    config = base.model_copy(update={"timing": timing})
+    config = load_config(CONFIG, environ={})
     app = QApplication.instance() or QApplication([])
     panel = BeamformPanel(config)
-    assert panel.preview_play.text() == f"播放/暂停 {duration_ms} ms"
+    assert not hasattr(panel, "preview_play")
+    assert not hasattr(panel, "preview_stop")
+    assert panel.downstream_switch.text() == "L3/L4：运行中"
+    states = []
+    panel.downstream_processing_changed.connect(states.append)
+    panel.downstream_switch.click()
+    assert states == [False]
+    assert panel.downstream_switch.text() == "L3/L4：已停止"
+    assert not panel.mode_switch.isEnabled()
     panel.deleteLater()
     app.processEvents()
 

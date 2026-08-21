@@ -752,6 +752,42 @@ def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l4(
         runtime.stop()
 
 
+def test_test_ui_can_bypass_l3_and_l4_while_l2_keeps_running(tmp_path: Path) -> None:
+    runtime, store, probe = _start_with_stubs(tmp_path)
+    try:
+        assert runtime.set_downstream_processing_enabled(False) is False
+        assert runtime.processing_status["downstream_processing_enabled"] is False
+        runtime._admit_window(_window(0))
+        _wait_until(lambda: len(store.record_snapshot()) == 1)
+
+        first = store.record_snapshot()[0]
+        assert probe.count("l2") == 1
+        assert probe.count("l3") == 0
+        assert probe.count("l4") == 0
+        assert first.stage_statuses == {
+            "l2": "completed",
+            "l3": "skipped",
+            "l4": "skipped",
+        }
+        assert first.status == "ok"
+        assert first.terminal_reason == "downstream_disabled_by_test_ui"
+        assert runtime.processing_error is None
+
+        assert runtime.set_downstream_processing_enabled(True) is True
+        runtime._admit_window(_window(1))
+        _wait_until(lambda: len(store.record_snapshot()) == 2)
+        assert probe.count("l2") == 2
+        assert probe.count("l3") == 1
+        assert probe.count("l4") == 1
+        assert store.record_snapshot()[1].stage_statuses == {
+            "l2": "completed",
+            "l3": "completed",
+            "l4": "completed",
+        }
+    finally:
+        runtime.stop()
+
+
 @pytest.mark.parametrize("failed_stage", ["l2", "l3", "l4"])
 def test_stage_failure_has_explicit_terminal_state_and_later_window_continues(
     tmp_path: Path,

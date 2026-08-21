@@ -56,7 +56,12 @@ def _format_processing_pipeline_status(runtime: object) -> str:
         running = bool(alive.get(worker_name, False)) if isinstance(alive, Mapping) else False
         done = int(completed.get(worker_name, 0)) if isinstance(completed, Mapping) else 0
         failed = int(errors.get(worker_name, 0)) if isinstance(errors, Mapping) else 0
-        state = "RUN" if running else "STOP"
+        downstream_enabled = bool(status.get("downstream_processing_enabled", True))
+        state = (
+            "OFF"
+            if worker_name in {"l3", "l4"} and not downstream_enabled
+            else "RUN" if running else "STOP"
+        )
         suffix = f" !{failed}" if failed else ""
         if worker_name == "l4":
             actual = max(0, int(status.get("l4_actual_completed", 0)))
@@ -284,12 +289,16 @@ def build_window(
                 peak_dbfs=config.dev_test_ui.preview_peak_dbfs,
                 fade_ms=config.dev_test_ui.preview_fade_ms,
             )
-            self.bf_panel.preview_play_requested.connect(self._toggle_formal_preview)
-            self.bf_panel.preview_stop_requested.connect(self.preview_player.stop)
             self.bf_panel.track_play_requested.connect(self._toggle_track_audio)
             self.bf_panel.track_stop_requested.connect(self._pause_track_audio)
             self.bf_panel.mode_change_requested.connect(self._change_l3_processing_mode)
+            self.bf_panel.downstream_processing_changed.connect(
+                self._set_downstream_processing
+            )
             self.bf_panel.set_processing_mode(runtime.l3_processing_mode)
+            self.bf_panel.set_downstream_processing_enabled(
+                runtime.downstream_processing_enabled
+            )
             self.cnn_panel = CnnPanel(
                 config.layer4.voice_probability_limit,
                 runtime.l4_input_gain_compensation_enabled,
@@ -895,18 +904,22 @@ def build_window(
             }[applied]
             self.statusBar().showMessage(f"L3已切换为{label}；从下一个处理窗口生效", 5000)
 
-        def _toggle_formal_preview(self, preview):
-            self.preview_player.set_volume(config.dev_test_ui.preview_volume)
-            identity = (preview.session_id, preview.stream_epoch, preview.window_id, preview.theta_deg)
-            source_key = ("formal", identity)
-            if self._audio_source_key != source_key:
-                self.preview_player.stop()
-                self.preview_player.load(preview.waveform)
-                self._audio_source_key = source_key
-            if not self.preview_player.toggle():
-                error = self.preview_player.take_error()
-                if error:
-                    self.statusBar().showMessage(f"试听失败：{error}", 5000)
+        def _set_downstream_processing(self, enabled: bool):
+            applied = runtime.set_downstream_processing_enabled(bool(enabled))
+            self.bf_panel.set_downstream_processing_enabled(applied)
+            if applied:
+                self.bf_panel.set_unavailable(
+                    "L3/L4已恢复；等待下一条L2结果。"
+                )
+                self.cnn_panel.set_unavailable("WARMING: waiting for completed L4 window")
+                message = "L3/L4已恢复运行；L2后续窗口将重新进入下游"
+            else:
+                self.bf_panel.set_unavailable(
+                    "L3/L4已由Test UI停止；L2继续独立运行。下方已有试听缓存仍可播放。"
+                )
+                self.cnn_panel.set_unavailable("STOPPED BY TEST UI; L2 remains active")
+                message = "已切断L2→L3输入；L3与L4停止计算，L2继续运行"
+            self.statusBar().showMessage(message, 5000)
 
         def _pause_track_audio(self):
             self.preview_player.pause()
@@ -1069,6 +1082,12 @@ def build_window(
             but they are not allowed to clear that valid result immediately.
             """
 
+            if not runtime.downstream_processing_enabled:
+                self._last_l4_frame = None
+                self._last_l4_seen = 0.0
+                self._l4_is_stale = False
+                self.cnn_panel.set_unavailable("STOPPED BY TEST UI; L2 remains active")
+                return
             current = monotonic() if now is None else float(now)
             ordered_status = getattr(ordered_frame, "pipeline_status", None)
             ordered_stream = None if ordered_status is None else (
@@ -1132,8 +1151,12 @@ def build_window(
         def _render_frame(self, frame, *, render_l4=True):
             self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
             self.bf_panel.set_previews(
-                frame.previews,
-                missing_reason=frame.missing_reasons.get("beamforming"),
+                frame.previews if runtime.downstream_processing_enabled else (),
+                missing_reason=(
+                    frame.missing_reasons.get("beamforming")
+                    if runtime.downstream_processing_enabled
+                    else "STOPPED BY TEST UI; L2 remains active"
+                ),
             )
             if render_l4:
                 self._update_l4_panel(frame)
