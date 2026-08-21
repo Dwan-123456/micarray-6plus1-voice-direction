@@ -1,6 +1,6 @@
 # Pipeline Log UI
 
-该目录实现项目1.2.4的独立只读 Pipeline Log UI。它是观察平面，不是Layer 5，也不是Development Test UI的面板。
+该目录实现项目1.3.1的独立只读 Pipeline Log UI。它是观察平面，不是Layer 5，也不是Development Test UI的面板。
 
 正式宿主入口为 `launch_log_ui(provider)` 或 `PipelineLogWindow(provider)`。`provider` 必须由正式宿主显式注入，并提供已经存在的项目公开查询方法；Log UI 不接受 data root，不构造 `DataManagerService`，不打开 Catalog/SQLite/WAL，不消费 Runtime latest-only 邮箱，也没有启动、停止、参数修改、标注、导出、删除、恢复或重建控件。
 

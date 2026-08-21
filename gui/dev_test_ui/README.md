@@ -1,4 +1,4 @@
-# Development Test UI：项目1.2.4
+# Development Test UI：项目1.3.1
 
 > 当前版本按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)显示MUSIC伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；ID追踪默认启用并可进入MUSIC-only诊断模式，Kalman保持可选。
 
