@@ -4,6 +4,8 @@ import hashlib
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
+import torch
 
 from layer4_speech_separation import (
     DirectionCountSpeakerClassifier,
@@ -154,3 +156,38 @@ def test_long_audio_adapter_repairs_swapped_chunk_outputs_before_crossfade() -> 
     assert calls > 1
     assert np.allclose(left, audio, atol=1e-6)
     assert np.allclose(right, -audio, atol=1e-6)
+
+
+def test_mossformer_adapter_restores_quiet_input_rms_and_pads_short_audio() -> None:
+    backend = _OfficialModelBackend.__new__(_OfficialModelBackend)
+    backend.device = torch.device("cpu")
+    backend.minimum_input_samples = 16_000
+    backend.restore_input_rms = True
+
+    class FixedAmplitudeModel:
+        def __call__(self, value):
+            assert value.shape == (1, 16_000)
+            return torch.stack((torch.ones_like(value), -torch.ones_like(value)))
+
+    backend.model = FixedAmplitudeModel()
+    audio = np.ascontiguousarray(
+        0.003 * np.sin(2 * np.pi * 300 * np.arange(8_000) / 16_000),
+        dtype=np.float32,
+    )
+    left, right = backend._forward(audio)
+    expected_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+    assert len(left) == len(right) == len(audio)
+    assert np.sqrt(np.mean(left.astype(np.float64) ** 2)) == pytest.approx(expected_rms)
+    assert np.sqrt(np.mean(right.astype(np.float64) ** 2)) == pytest.approx(expected_rms)
+
+
+def test_l4_output_is_attenuated_before_pcm16_clipping() -> None:
+    pipeline = OfflineLayer4Pipeline(
+        speaker_counter=DirectionCountSpeakerClassifier(),
+        backends={"mossformer2_ss_16k": _Backend()},
+        layer5=_L5(),
+        default_backend="mossformer2_ss_16k",
+    )
+    processed = pipeline.process_l4(_source((1, 1)), request_id="peak-safe")
+    assert np.max(np.abs(processed.waveform_48k)) <= 32767.0 / 32768.0
+    assert float(processed.metadata["pcm16_peak_safety_gain"]) < 1.0

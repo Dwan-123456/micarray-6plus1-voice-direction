@@ -122,9 +122,36 @@ class _OfficialModelBackend(TorchScriptSeparationBackend):
             raise ValueError("Layer 4 model chunk/overlap settings are invalid")
 
     def _forward(self, audio: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        expected = len(audio)
+        minimum = int(getattr(self, "minimum_input_samples", 0))
+        model_input = audio
+        if expected < minimum:
+            model_input = np.pad(audio, (0, minimum - expected))
         with torch.inference_mode():
-            output = self.model(torch.from_numpy(np.ascontiguousarray(audio))[None].to(self.device))
-        return self._normalize(output, len(audio))
+            output = self.model(
+                torch.from_numpy(np.ascontiguousarray(model_input))[None].to(self.device)
+            )
+        sources = self._normalize(output, len(model_input))
+        if bool(getattr(self, "restore_input_rms", False)):
+            # The official MossFormer2 decoder restores each anonymous source
+            # to the mixture RMS. Without this, quiet beamformed input can be
+            # amplified by tens of dB and hard-clipped during PCM export.
+            input_rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+            restored = []
+            for source in sources:
+                trimmed = source[:expected]
+                output_rms = float(np.sqrt(np.mean(np.square(trimmed, dtype=np.float64))))
+                if input_rms == 0.0 or output_rms <= np.finfo(np.float32).eps:
+                    restored.append(np.zeros(expected, dtype=np.float32))
+                else:
+                    restored.append(np.ascontiguousarray(
+                        trimmed * np.float32(input_rms / output_rms),
+                        dtype=np.float32,
+                    ))
+            return restored[0], restored[1]
+        return tuple(
+            np.ascontiguousarray(source[:expected], dtype=np.float32) for source in sources
+        )  # type: ignore[return-value]
 
     @staticmethod
     def _similarity(left: np.ndarray, right: np.ndarray) -> float:
@@ -199,6 +226,8 @@ class MossFormer2Backend(_OfficialModelBackend):
         super().__init__(
             backend="mossformer2_ss_16k", manifest=manifest, artifact=root, device=device,
         )
+        self.minimum_input_samples = 16_000
+        self.restore_input_rms = True
         self.model = model.to(self.device).eval()
 
 

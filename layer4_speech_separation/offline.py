@@ -196,6 +196,14 @@ class OfflineLayer4Pipeline:
         if len(output_48k) < expected:
             output_48k = np.pad(output_48k, (0, expected - len(output_48k)))
         output_48k = np.ascontiguousarray(output_48k[:expected], dtype=np.float32)
+        peak = float(np.max(np.abs(output_48k)))
+        pcm16_ceiling = 32767.0 / 32768.0
+        peak_safety_gain = 1.0
+        if peak > pcm16_ceiling:
+            peak_safety_gain = pcm16_ceiling / peak
+            output_48k = np.ascontiguousarray(
+                output_48k * np.float32(peak_safety_gain), dtype=np.float32,
+            )
         output_hash = _sha256_bytes(output_48k.tobytes())
         return Layer4ProcessedAudio(
             request_id=request_id,
@@ -210,6 +218,7 @@ class OfflineLayer4Pipeline:
                 **model_metadata,
                 "resampler": self.resampler.algorithm_version,
                 "matching_algorithm": None if selected is None else selected.matching_algorithm,
+                "pcm16_peak_safety_gain": peak_safety_gain,
                 "l4_elapsed_ms": (perf_counter() - started) * 1_000.0,
             },
         )
