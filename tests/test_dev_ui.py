@@ -138,6 +138,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.load_music_dpd_rank1_enabled() is False
     assert settings.load_music_noise_whitening_enabled() is False
     assert settings.load_direction_kalman_enabled() is False
+    assert settings.load_direction_id_tracking_enabled() is True
     assert settings.load_gate_probability_threshold(0.60) == 0.60
     assert settings.load_l1_pre_denoise_enabled(False) is False
     assert settings.load_l4_input_gain_compensation_enabled(True) is True
@@ -150,6 +151,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.load_music_effective_order_limit(3) == 1
     settings.save_direction_threshold(.42)
     settings.save_direction_kalman_enabled(True)
+    settings.save_direction_id_tracking_enabled(False)
     assert settings.save_direction_kalman_q_scale(1.2) == 1.2
     assert settings.save_direction_kalman_r_scale(0.8) == 0.8
     assert settings.save_gate_probability_threshold(0.73) == 0.73
@@ -162,6 +164,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert loaded.load_music_dpd_rank1_enabled() is True
     assert loaded.load_music_noise_whitening_enabled() is True
     assert loaded.load_direction_kalman_enabled() is True
+    assert loaded.load_direction_id_tracking_enabled() is False
     assert loaded.load_direction_kalman_q_scale(1.0) == 1.2
     assert loaded.load_direction_kalman_r_scale(1.0) == 0.8
     assert loaded.load_gate_probability_threshold(0.60) == 0.73
@@ -173,9 +176,9 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert '"layer2_music_effective_order_limit": 1' in payload
     assert '"layer2_music_dpd_rank1_enabled": true' in payload
     assert '"layer2_music_noise_whitening_enabled": true' in payload
+    assert '"layer2_direction_id_tracking_enabled": false' in payload
     assert '"layer4_input_gain_compensation_enabled": false' in payload
     assert "layer2_iterative_peak_search_enabled" not in payload
-    assert "layer2_direction_id_tracking_enabled" not in payload
 
 
 def test_operator_settings_reject_invalid_values(tmp_path):
@@ -1046,7 +1049,9 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         right_layout = window.srp_threshold.parentWidget().layout()
         assert right_layout.indexOf(window.gate_threshold) == 0
         assert not hasattr(window, "srp_iterative")
-        assert not hasattr(window, "srp_id_tracking")
+        assert window.srp_id_tracking.text() == "ID Tracking"
+        expected_id_colour = "#16794b" if window.srp_id_tracking.isChecked() else "#5b6570"
+        assert expected_id_colour in window.srp_id_tracking.styleSheet()
         assert not hasattr(window, "direction_table")
         processing_switches = right_layout.itemAt(1).layout()
         assert processing_switches is not None
@@ -1059,14 +1064,23 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert window.srp_kalman.text() == "Kalman"
         assert window.music_dpd_rank1.text() == "DPD"
         assert window.music_noise_whitening.text() == "Whitening"
-        assert "#5b6570" in window.srp_kalman.styleSheet()
-        assert "#5b6570" in window.music_dpd_rank1.styleSheet()
-        assert "#5b6570" in window.music_noise_whitening.styleSheet()
+        for switch in (
+            window.srp_kalman,
+            window.music_dpd_rank1,
+            window.music_noise_whitening,
+        ):
+            expected_colour = "#16794b" if switch.isChecked() else "#5b6570"
+            assert expected_colour in switch.styleSheet()
         assert right_layout.indexOf(window.srp_kalman_q) == 2
         assert right_layout.indexOf(window.srp_kalman_r) == 3
         assert right_layout.indexOf(window.gate_readout) == 4
         assert right_layout.indexOf(window.music_status) == 5
-        assert right_layout.indexOf(window.music_order_limit) == 6
+        order_tracking_row = right_layout.itemAt(6).layout()
+        assert order_tracking_row is not None
+        assert order_tracking_row.indexOf(window.music_order_limit) == 0
+        assert order_tracking_row.indexOf(window.srp_id_tracking) == 1
+        assert window.music_order_limit.maximumWidth() == 185
+        assert window.music_order_limit.combo.width() == 64
         assert right_layout.indexOf(window.srp_threshold) == 7
         decision = ProbabilityGateDecision(
             "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
@@ -1249,6 +1263,24 @@ def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     assert not table.alternatingRowColors()
     assert table.item(0, 0) is first_item
     assert table.item(1, 0).text() == table.item(2, 0).text() == ""
+
+    raw_peak = CandidateDirection(
+        response.session_id, response.stream_epoch, response.window_id,
+        response.decision_sample, response.doa_start_sample, response.doa_end_sample,
+        125.0, 0.4, 0.7,
+    )
+    raw_snapshot = MusicPanelSnapshot(
+        response, (), (), time.monotonic(), {}, None, (raw_peak,), False,
+    )
+    panel.set_snapshot(raw_snapshot)
+    table.set_snapshot(raw_snapshot)
+    assert panel._snapshot.raw_peaks == (raw_peak,)
+    assert panel._snapshot.direction_id_tracking_enabled is False
+    assert all(
+        table.item(row, column).text() == ""
+        for row in range(3)
+        for column in range(table.columnCount())
+    )
 
     now[0] = 100.5
     response2 = replace(response, window_id=1, decision_sample=16_320,

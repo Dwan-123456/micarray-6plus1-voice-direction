@@ -132,6 +132,7 @@ def build_window(
     from .audio_id_tracker import AudioIdTracker
     from .panels import (
         GateProbabilityThresholdControl,
+        DirectionIdTrackingControl,
         DirectionKalmanControl,
         KalmanNoiseScaleControl,
         MusicDpdRank1Control,
@@ -210,6 +211,9 @@ def build_window(
         config.layer2.direction_kalman.enabled
     )
     runtime.set_direction_kalman_enabled(persisted_kalman)
+    runtime.set_direction_id_tracking_enabled(
+        ui_settings.load_direction_id_tracking_enabled(True)
+    )
     runtime.set_direction_kalman_q_scale(ui_settings.load_direction_kalman_q_scale(
         config.layer2.direction_kalman.process_noise_scale
     ))
@@ -467,6 +471,12 @@ def build_window(
                 "用IMCRA每麦noise_psd构造对角噪声协方差，同时白化协方差和steering；默认关闭。"
             )
             self.srp_kalman = DirectionKalmanControl(runtime.direction_kalman_enabled)
+            self.srp_id_tracking = DirectionIdTrackingControl(
+                runtime.direction_id_tracking_enabled
+            )
+            self.srp_id_tracking.setToolTip(
+                "开启时显示L2权威ID；关闭时仅显示MUSIC伪谱和原始峰值，L3/L4正常跳过。"
+            )
             self.srp_kalman_q = KalmanNoiseScaleControl("Q倍率", runtime.direction_kalman_q_scale)
             self.srp_kalman_r = KalmanNoiseScaleControl("R倍率", runtime.direction_kalman_r_scale)
             self.srp_kalman.setToolTip(
@@ -497,7 +507,12 @@ def build_window(
             right_layout.addWidget(self.srp_kalman_r)
             right_layout.addWidget(self.gate_readout)
             right_layout.addWidget(self.music_status)
-            right_layout.addWidget(self.music_order_limit)
+            order_tracking_row = QHBoxLayout()
+            order_tracking_row.setContentsMargins(0, 0, 0, 0)
+            order_tracking_row.setSpacing(4)
+            order_tracking_row.addWidget(self.music_order_limit, 0)
+            order_tracking_row.addWidget(self.srp_id_tracking, 1)
+            right_layout.addLayout(order_tracking_row)
             right_layout.addWidget(self.srp_threshold)
             right_layout.addStretch(1)
             splitter.addWidget(self.srp_polar)
@@ -511,6 +526,7 @@ def build_window(
             self.music_noise_whitening.enabled_changed.connect(self._set_music_noise_whitening)
             self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
             self.srp_kalman.enabled_changed.connect(self._set_direction_kalman)
+            self.srp_id_tracking.enabled_changed.connect(self._set_direction_id_tracking)
             self.srp_kalman_q.apply_requested.connect(self._apply_kalman_q_scale)
             self.srp_kalman_r.apply_requested.connect(self._apply_kalman_r_scale)
             return box
@@ -632,6 +648,24 @@ def build_window(
                 with QSignalBlocker(self.srp_kalman):
                     self.srp_kalman.set_enabled(previous)
                 self.statusBar().showMessage(f"Failed to save L2 Kalman switch: {exc}", 8000)
+
+        def _set_direction_id_tracking(self, enabled: bool):
+            previous = runtime.direction_id_tracking_enabled
+            try:
+                enabled = ui_settings.save_direction_id_tracking_enabled(bool(enabled))
+                runtime.set_direction_id_tracking_enabled(enabled)
+                self.srp_id_tracking.set_enabled(enabled, pending=True)
+                self.statusBar().showMessage(
+                    "ID Tracking已开启；下一窗口开始建立权威ID"
+                    if enabled else
+                    "ID Tracking已关闭；仅显示MUSIC原始峰值，L3/L4将跳过",
+                    3500,
+                )
+            except Exception as exc:
+                runtime.set_direction_id_tracking_enabled(previous)
+                with QSignalBlocker(self.srp_id_tracking):
+                    self.srp_id_tracking.set_enabled(previous)
+                self.statusBar().showMessage(f"ID Tracking切换失败: {exc}", 8000)
 
         def _apply_kalman_q_scale(self, value: float):
             previous = runtime.direction_kalman_q_scale
@@ -1234,6 +1268,18 @@ def build_window(
                         and applied_kalman != runtime.direction_kalman_enabled
                     ),
                 )
+            applied_id_tracking = getattr(
+                frame, "direction_id_tracking_enabled", None
+            )
+            with QSignalBlocker(self.srp_id_tracking):
+                self.srp_id_tracking.set_enabled(
+                    runtime.direction_id_tracking_enabled,
+                    pending=revision_pending or (
+                        applied_id_tracking is not None
+                        and applied_id_tracking
+                        != runtime.direction_id_tracking_enabled
+                    ),
+                )
             self.srp_kalman.setToolTip(
                 "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
             )
@@ -1306,6 +1352,11 @@ def build_window(
                     effective_order=(
                         None if frame.search_diagnostics is None
                         else frame.search_diagnostics.effective_model_order
+                    ),
+                    raw_peaks=frame.candidates,
+                    direction_id_tracking_enabled=(
+                        True if frame.direction_id_tracking_enabled is None
+                        else frame.direction_id_tracking_enabled
                     ),
                 )
                 window_key = (

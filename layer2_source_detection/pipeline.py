@@ -79,8 +79,11 @@ class Layer2PipelineResult:
     active_tracks: tuple[TrackedDirection, ...] = ()
     model_order: ModelOrderEstimate | None = None
     music_state: MusicStateDiagnostic | None = None
+    direction_id_tracking_enabled: bool = True
 
     def __post_init__(self) -> None:
+        if type(self.direction_id_tracking_enabled) is not bool:
+            raise TypeError("L2 direction ID tracking flag must be bool")
         identity = (self.gate_decision.session_id, self.gate_decision.stream_epoch,
                     self.gate_decision.window_id, self.gate_decision.decision_sample)
         candidates, directions, active = tuple(self.candidates), tuple(self.directions), tuple(self.active_tracks)
@@ -164,6 +167,7 @@ class Layer2Pipeline:
         self.id_tracker = tracker or GlobalDirectionTracker()
         self.last_kalman_error: str | None = None
         self.last_id_tracking_error: str | None = None
+        self._direction_id_tracking_enabled = True
         self._voice_feedback: deque[tuple[str, int, int, int, float, bool]] = deque(maxlen=4096)
         self._voice_feedback_lock = Lock()
 
@@ -200,6 +204,7 @@ class Layer2Pipeline:
         with self._voice_feedback_lock:
             self._voice_feedback.clear()
         self.last_kalman_error = self.last_id_tracking_error = None
+        self._direction_id_tracking_enabled = True
 
     def submit_voice_feedback(
         self,
@@ -235,13 +240,27 @@ class Layer2Pipeline:
                 gate_config_revision: int, scan_config_revision: int = 0,
                 direction_kalman_enabled: bool = False,
                 direction_kalman_q_scale: float = 1.0,
-                direction_kalman_r_scale: float = 1.0) -> Layer2PipelineResult:
+                direction_kalman_r_scale: float = 1.0,
+                direction_id_tracking_enabled: bool = True) -> Layer2PipelineResult:
         if type(direction_kalman_enabled) is not bool:
             raise TypeError("L2 Kalman switch must be bool")
-        self._drain_voice_feedback()
-        voice_confirmed_ids = self.id_tracker.voice_confirmed_track_ids(
-            window.session_id, window.stream_epoch, window.decision_sample
-        )
+        if type(direction_id_tracking_enabled) is not bool:
+            raise TypeError("L2 direction ID tracking switch must be bool")
+        if direction_id_tracking_enabled != self._direction_id_tracking_enabled:
+            # This transition runs on the single L2 worker, so tracker state is
+            # never reset concurrently with an update. Re-enabling starts a
+            # fresh authoritative identity epoch for the same audio stream.
+            self.id_tracker.reset()
+            with self._voice_feedback_lock:
+                self._voice_feedback.clear()
+            self._direction_id_tracking_enabled = direction_id_tracking_enabled
+        if direction_id_tracking_enabled:
+            self._drain_voice_feedback()
+            voice_confirmed_ids = self.id_tracker.voice_confirmed_track_ids(
+                window.session_id, window.stream_epoch, window.decision_sample
+            )
+        else:
+            voice_confirmed_ids = ()
         decision = self.gate.evaluate(window, probabilities, threshold=gate_threshold,
                                       config_revision=gate_config_revision)
         if voice_confirmed_ids and decision.state is ProbabilityGateState.CLOSED:
@@ -261,6 +280,18 @@ class Layer2Pipeline:
         if decision.allow_srp:
             response, observations, diagnostics = self.scanner.scan_detailed(
                 window, geometry, scan_config, scan_config_revision)
+        if not direction_id_tracking_enabled:
+            self.last_id_tracking_error = self.last_kalman_error = None
+            return Layer2PipelineResult(
+                Layer2ExecutionState.PROCESSED if decision.allow_srp else Layer2ExecutionState.BLOCKED,
+                decision,
+                response,
+                observations,
+                diagnostics,
+                model_order=getattr(self.scanner, "model_order", None),
+                music_state=getattr(self.scanner, "last_state_diagnostic", None),
+                direction_id_tracking_enabled=False,
+            )
         observed_directions, active = self.id_tracker.update(
             window.session_id, window.stream_epoch, window.decision_sample, observations,
             window_id=window.window_id, doa_start_sample=window.doa_start_sample,
@@ -286,4 +317,5 @@ class Layer2Pipeline:
             tuple(item.is_new_track for item in directions),
             tuple(item.kalman_applied for item in directions), directions, active,
             getattr(self.scanner, "model_order", None),
-            getattr(self.scanner, "last_state_diagnostic", None))
+            getattr(self.scanner, "last_state_diagnostic", None),
+            True)

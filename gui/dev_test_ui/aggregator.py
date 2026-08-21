@@ -195,6 +195,7 @@ class DevUiAggregator:
         self._gate_config_revision: int | None = None
         self._direction_threshold: float | None = None
         self._direction_kalman_enabled: bool | None = None
+        self._direction_id_tracking_enabled: bool | None = None
         self._direction_kalman_q_scale: float | None = None
         self._direction_kalman_r_scale: float | None = None
         self._scan_config_revision: int | None = None
@@ -262,6 +263,7 @@ class DevUiAggregator:
         self._gate_threshold = self._gate_config_revision = None
         self._direction_threshold = None
         self._direction_kalman_enabled = None
+        self._direction_id_tracking_enabled = None
         self._direction_kalman_q_scale = self._direction_kalman_r_scale = None
         self._scan_config_revision = None
         self._search_diagnostics = None
@@ -278,6 +280,7 @@ class DevUiAggregator:
         gate_config_revision: int | None = None,
         direction_threshold: float | None = None,
         direction_kalman_enabled: bool | None = None,
+        direction_id_tracking_enabled: bool | None = None,
         direction_kalman_q_scale: float | None = None,
         direction_kalman_r_scale: float | None = None,
         scan_config_revision: int | None = None,
@@ -311,6 +314,7 @@ class DevUiAggregator:
             self._gate_config_revision,
             self._direction_threshold,
             self._direction_kalman_enabled,
+            self._direction_id_tracking_enabled,
             self._direction_kalman_q_scale,
             self._direction_kalman_r_scale,
             self._scan_config_revision,
@@ -329,6 +333,7 @@ class DevUiAggregator:
         self._gate_config_revision = gate_config_revision
         self._direction_threshold = direction_threshold
         self._direction_kalman_enabled = direction_kalman_enabled
+        self._direction_id_tracking_enabled = direction_id_tracking_enabled
         self._direction_kalman_q_scale = direction_kalman_q_scale
         self._direction_kalman_r_scale = direction_kalman_r_scale
         self._scan_config_revision = scan_config_revision
@@ -353,6 +358,7 @@ class DevUiAggregator:
                 self._gate_config_revision,
                 self._direction_threshold,
                 self._direction_kalman_enabled,
+                self._direction_id_tracking_enabled,
                 self._direction_kalman_q_scale,
                 self._direction_kalman_r_scale,
                 self._scan_config_revision,
@@ -479,4 +485,5 @@ class DevUiAggregator:
             l4_result=self._l4_result,
             directions=self._directions,
             active_tracks=self._active_tracks,
+            direction_id_tracking_enabled=self._direction_id_tracking_enabled,
         )

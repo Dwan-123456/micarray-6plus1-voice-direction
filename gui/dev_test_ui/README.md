@@ -1,6 +1,6 @@
 # Development Test UI：项目1.2.4
 
-> 当前版本按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)显示MUSIC伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；ID追踪永久启用，Kalman保持可选。
+> 当前版本按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)显示MUSIC伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；ID追踪默认启用并可进入MUSIC-only诊断模式，Kalman保持可选。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**本README描述当前已迁移界面。**
 
@@ -23,13 +23,13 @@ L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但�
 ## 四象限
 
 - 左上L1：MIC0～MIC5、Center、HardwareMix共8路电平；显示IMCRA预热状态与7个物理麦的0～10000 Hz噪声dB摘要，并提供持久化“IMCRA预降噪”开关和当前采集流的历史平均频率增益；不在L1显示20/40 ms概率；保留灯控与scratch录音。
-- 右上L2：显示500～4000 Hz Gate概率、状态和原始MUSIC 360°伪谱；候选点严格使用L2最终输出角度。首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点；正式ID使用稳定颜色，观测为大点、预测为小点。
+- 右上L2：显示500～4000 Hz Gate概率、状态和原始MUSIC 360°伪谱；紧凑的`MUSIC阶数`下拉框右侧提供`ID Tracking`按钮。追踪开启时，候选点严格使用L2最终输出角度：首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点，正式ID使用稳定颜色且观测为大点、预测为小点。追踪关闭时只显示原始MUSIC峰值对应的灰色小点，不显示彩色ID，L3/L4按正常跳过终态停止运行而不报错。
 - 左下L3：连续试听首行固定为预降噪前LogicalAudio第7路Center Mic原音参考。方向轨直接显示L2权威ID序号，并复用右上DOA/MUSIC的稳定ID颜色。方向轨从L2声明临时ID已建立卡尔曼状态、能够持续预测时开始缓存，转为正式ID后沿用同一缓存；首次出现但尚未Kalman-ready的临时ID和无ID候选不写入。累计至少2秒后显示，候选消失等待3秒。模式切换清空旧模式试听缓存；跳窗按48 kHz绝对sample补真实音频或等时静音。顶部不再提供单个窗口的播放/停止按钮，改为`L3/L4`运行开关；关闭时L2继续运行，新结果不进入L3，L3/L4以`downstream_disabled_by_test_ui`正常跳过，已有按ID试听缓存仍可播放。
 - 右下L4：显示逐方向CNN概率与Voice结果；优先使用`latest_l4_dev_ui`的真正完成帧，保留独立的L4分类阈值滑动条。有序DROPPED/SKIPPED/缺失帧不立即清掉上一个有效CNN结果；超过`dev_test_ui.stale_after_ms`仍没有新完成帧才显示`STALE`。
 
 L2 Gate滑条范围`0.00～1.00`、建议步长`0.01`。拖动后在下一完整DecisionWindow生效并显示新的`config_revision`，默认不写回`config.yaml`。L4阈值滑条只重判缓存的CNN概率。两个滑条必须用“L2声源Gate”和“L4人声判断”清晰区分。
 
-L2面板的“MUSIC阶数上限”只能选择1、2、3。实际阶数始终为`min(MDL实际诊断阶数, 手动上限)`；极图底部同时显示`MDL`和`MUSIC`，便于直接比较。该设置写入Test UI本地设置；L2每次真正开始计算前读取最新值，因此即使处理队列已有积压也会在下一次L2计算实时应用。它不修改MDL 0～6诊断结果，也不启用逐频支持或可靠性加权门禁。
+L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3。实际阶数始终为`min(MDL实际诊断阶数, 手动上限)`；右侧状态条同时显示`MDL`和`MUSIC`，便于直接比较。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不修改MDL 0～6诊断结果，也不启用逐频支持或可靠性加权门禁。
 
 所有算法信息按session、epoch、window和sample endpoint对齐。缺少任一20 ms IMCRA概率、跨epoch或尚未预热时，右上明确显示`WARMING_UP/UNAVAILABLE`，不能拼接旧数据或显示假SRP结果。
 

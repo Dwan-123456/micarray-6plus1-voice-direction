@@ -705,6 +705,42 @@ def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observati
     assert result.spatial_response is None and result.directions == ()
 
 
+def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_resets_ids() -> None:
+    config = load_config(CONFIG, environ={})
+    pipeline = Layer2Pipeline.from_project(config)
+    audio = _audio((30.0,), seed=31, samples=7_680 + 2 * 960)
+
+    def probabilities(window: DecisionWindow) -> tuple[SourceProbability20ms, ...]:
+        return tuple(SourceProbability20ms(
+            window.session_id, window.stream_epoch, start, start + 960, 1.0,
+            SourceProbabilityState.READY, "ready",
+        ) for start in (window.doa_start_sample, window.doa_start_sample + 960))
+
+    raw_window = _window(audio, 0)
+    raw = pipeline.process(
+        raw_window, probabilities(raw_window), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0, direction_id_tracking_enabled=False,
+    )
+    assert raw.direction_id_tracking_enabled is False
+    assert raw.spatial_response is not None
+    assert raw.candidates
+    assert raw.directions == raw.active_tracks == ()
+    assert raw.candidate_track_ids == (None,) * len(raw.candidates)
+    assert raw.candidate_track_is_formal == (False,) * len(raw.candidates)
+
+    tracked_window = _window(audio, 1)
+    tracked = pipeline.process(
+        tracked_window, probabilities(tracked_window), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0, direction_id_tracking_enabled=True,
+    )
+    assert tracked.direction_id_tracking_enabled is True
+    assert tracked.active_tracks
+    assert tracked.active_tracks[0].track_id == 1
+    assert tracked.active_tracks[0].track_state == "tentative"
+
+
 def test_only_twice_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)

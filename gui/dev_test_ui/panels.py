@@ -87,12 +87,15 @@ class MusicOrderLimitControl(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
-        self.label = QLabel("MUSIC阶数上限")
+        self.label = QLabel("MUSIC阶数")
+        self.label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         self.combo = QComboBox()
         self.combo.addItems(("1", "2", "3"))
+        self.combo.setFixedWidth(64)
         self.combo.setToolTip("实际MUSIC阶数 = min(MDL诊断阶数, 手动上限)")
         layout.addWidget(self.label)
-        layout.addWidget(self.combo, 1)
+        layout.addWidget(self.combo)
+        self.setMaximumWidth(185)
         self.set_value(value)
         self.combo.currentIndexChanged.connect(
             lambda _index: self.order_changed.emit(self.value)
@@ -132,6 +135,10 @@ class _RuntimeSwitchControl(QPushButton):
 
 class DirectionKalmanControl(_RuntimeSwitchControl):
     label = "Kalman"
+
+
+class DirectionIdTrackingControl(_RuntimeSwitchControl):
+    label = "ID Tracking"
 
 
 class MusicDpdRank1Control(_RuntimeSwitchControl):

@@ -232,6 +232,7 @@ class ApplicationRuntime:
         self._scan_config_revision = 0
         self._kalman_config_revision = 0
         self._direction_kalman_enabled = config.layer2.direction_kalman.enabled
+        self._direction_id_tracking_enabled = True
         self._direction_kalman_q_scale = config.layer2.direction_kalman.process_noise_scale
         self._direction_kalman_r_scale = config.layer2.direction_kalman.measurement_noise_scale
         self._geometry = physical_6plus1_geometry(
@@ -604,10 +605,15 @@ class ApplicationRuntime:
             self._completion_congested.set()
             return True
 
-    def _skip_disabled_downstream(self, key: WindowKey, *, include_l3: bool) -> None:
+    def _skip_disabled_downstream(
+        self,
+        key: WindowKey,
+        *,
+        include_l3: bool,
+        reason: str = "downstream_disabled_by_test_ui",
+    ) -> None:
         """Terminate disabled Test-UI downstream stages as normal skipped work."""
 
-        reason = "downstream_disabled_by_test_ui"
         if include_l3:
             l3 = L3StageResult.terminal(
                 key,
@@ -1206,6 +1212,20 @@ class ApplicationRuntime:
             self._downstream_processing_enabled.clear()
         return value
 
+    @property
+    def direction_id_tracking_enabled(self) -> bool:
+        with self._scan_config_lock:
+            return self._direction_id_tracking_enabled
+
+    def set_direction_id_tracking_enabled(self, value: bool) -> bool:
+        if type(value) is not bool:
+            raise ValueError("L2 direction ID tracking setting must be bool")
+        with self._scan_config_lock:
+            if value != self._direction_id_tracking_enabled:
+                self._direction_id_tracking_enabled = value
+                self._scan_config_revision += 1
+        return value
+
     @staticmethod
     def _imcra_probabilities(window: DecisionWindow) -> tuple[SourceProbability20ms, ...]:
         hops = {item.end_sample: item for item in window.imcra_hops}
@@ -1326,6 +1346,9 @@ class ApplicationRuntime:
             gate_config_revision=int(values["gate_config_revision"]),
             direction_threshold=scan.direction_threshold,
             direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
+            direction_id_tracking_enabled=bool(
+                values["direction_id_tracking_enabled"]
+            ),
             direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
             direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
             scan_config_revision=int(values["scan_config_revision"]),
@@ -1360,6 +1383,7 @@ class ApplicationRuntime:
             scan_config = self._scan_config
             scan_revision = self._scan_config_revision
             kalman_enabled = self._direction_kalman_enabled
+            id_tracking_enabled = self._direction_id_tracking_enabled
             kalman_revision = self._kalman_config_revision
             q_scale = self._direction_kalman_q_scale
             r_scale = self._direction_kalman_r_scale
@@ -1399,6 +1423,7 @@ class ApplicationRuntime:
                 "association_lifecycle": self.config.layer2.direction_id_tracking.model_dump(),
                 "association_config_revision": 0,
                 "direction_kalman_enabled": kalman_enabled,
+                "direction_id_tracking_enabled": id_tracking_enabled,
                 "kalman_config_revision": kalman_revision,
                 "direction_kalman_q_scale": q_scale,
                 "direction_kalman_r_scale": r_scale,
@@ -1857,10 +1882,12 @@ class ApplicationRuntime:
                 with self._scan_config_lock:
                     live_scan_config = self._scan_config
                     live_scan_revision = self._scan_config_revision
+                    live_id_tracking_enabled = self._direction_id_tracking_enabled
                 values = dict(item.config.values)
                 values["scan_config"] = asdict(live_scan_config)
                 values["scan_config_revision"] = live_scan_revision
                 values["music_config_revision"] = live_scan_revision
+                values["direction_id_tracking_enabled"] = live_id_tracking_enabled
                 gate_revision = int(values["gate_config_revision"])
                 l3_revision = int(values["l3_config_revision"])
                 item = replace(item, config=replace(
@@ -1885,6 +1912,9 @@ class ApplicationRuntime:
                         direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
                         direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                         direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
+                        direction_id_tracking_enabled=bool(
+                            values["direction_id_tracking_enabled"]
+                        ),
                     )
                     if len(output.candidates) > 3:
                         raise RuntimeError("Layer 2 contract violation: more than 3 candidates")
@@ -1923,6 +1953,12 @@ class ApplicationRuntime:
                     )
                 elif not self.downstream_processing_enabled:
                     self._skip_disabled_downstream(item.key, include_l3=True)
+                elif not bool(values["direction_id_tracking_enabled"]):
+                    self._skip_disabled_downstream(
+                        item.key,
+                        include_l3=True,
+                        reason="direction_id_tracking_disabled_by_test_ui",
+                    )
                 else:
                     if not self._enqueue_l3_latest(_L3Work(item, stage)):
                         break
@@ -2326,7 +2362,8 @@ class ApplicationRuntime:
             f"l2_direction_kalman_r_scale={values['direction_kalman_r_scale']}",
             f"l2_direction_kalman_error={self._layer2.last_kalman_error}",
             f"l2_direction_id_tracking_backend={self.config.layer2.direction_id_tracking.backend}",
-            "l2_direction_identity=authoritative_always_on",
+            f"l2_direction_id_tracking_enabled={values['direction_id_tracking_enabled']}",
+            f"l2_direction_identity={'authoritative' if values['direction_id_tracking_enabled'] else 'raw_music_peaks'}",
             f"l2_direction_id_active_tracks={self._layer2.id_tracker.active_track_count}",
             f"l2_direction_id_tracking_error={self._layer2.last_id_tracking_error}",
             *(() if not is_music else (
@@ -2745,6 +2782,9 @@ class ApplicationRuntime:
                     gate_config_revision=int(values["gate_config_revision"]),
                     direction_threshold=scan.direction_threshold,
                     direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
+                    direction_id_tracking_enabled=bool(
+                        values["direction_id_tracking_enabled"]
+                    ),
                     direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                     direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     scan_config_revision=int(values["scan_config_revision"]),
@@ -2759,6 +2799,9 @@ class ApplicationRuntime:
                     gate_config_revision=int(values["gate_config_revision"]),
                     direction_threshold=scan.direction_threshold,
                     direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
+                    direction_id_tracking_enabled=bool(
+                        values["direction_id_tracking_enabled"]
+                    ),
                     direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
                     direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
                     scan_config_revision=int(values["scan_config_revision"]),

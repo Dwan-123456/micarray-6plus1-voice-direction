@@ -144,7 +144,7 @@ def test_runtime_processing_snapshot_freezes_music_id_lifecycle_and_kalman_revis
     snapshot = runtime._capture_processing_config()
     values = snapshot.values
     assert "iterative_peak_search_enabled" not in values
-    assert "direction_id_tracking_enabled" not in values
+    assert values["direction_id_tracking_enabled"] is True
     assert values["music_history_ms"] in {160, 240, 320}
     assert values["music_stft"] == {
         "n_fft": 1024, "win_length": 960, "hop_length": 480, "window": "hann_periodic",
@@ -161,14 +161,13 @@ def test_runtime_processing_snapshot_freezes_music_id_lifecycle_and_kalman_revis
     assert updated.values["direction_kalman_enabled"] is True
 
 
-def test_runtime_kalman_switch_is_revisioned_and_id_tracking_is_always_on(tmp_path):
+def test_runtime_kalman_and_id_tracking_switches_are_revisioned(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
     )
     assert runtime.direction_kalman_enabled is False
-    assert not hasattr(runtime, "direction_id_tracking_enabled")
-    assert not hasattr(runtime, "set_direction_id_tracking_enabled")
+    assert runtime.direction_id_tracking_enabled is True
     revision = runtime.direction_scan_config_revision
     runtime.set_direction_kalman_enabled(True)
     assert runtime.direction_kalman_enabled is True
@@ -180,6 +179,18 @@ def test_runtime_kalman_switch_is_revisioned_and_id_tracking_is_always_on(tmp_pa
     assert runtime.direction_scan_config_revision == revision + 2
     with pytest.raises(ValueError):
         runtime.set_direction_kalman_enabled(1)
+
+    revision = runtime.direction_scan_config_revision
+    assert runtime.set_direction_id_tracking_enabled(False) is False
+    assert runtime.direction_id_tracking_enabled is False
+    assert runtime.direction_scan_config_revision == revision + 1
+    assert runtime.set_direction_id_tracking_enabled(False) is False
+    assert runtime.direction_scan_config_revision == revision + 1
+    assert runtime.set_direction_id_tracking_enabled(True) is True
+    assert runtime.direction_id_tracking_enabled is True
+    assert runtime.direction_scan_config_revision == revision + 2
+    with pytest.raises(ValueError):
+        runtime.set_direction_id_tracking_enabled(1)
 
 
 def test_runtime_kalman_q_r_scales_are_live_validated_and_revisioned(tmp_path):

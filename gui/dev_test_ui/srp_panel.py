@@ -7,7 +7,7 @@ from typing import Mapping
 
 import numpy as np
 
-from common.data_types import SpatialResponse, TrackedDirection
+from common.data_types import CandidateDirection, SpatialResponse, TrackedDirection
 
 
 _TRACK_COLOURS = ("#ff3b30", "#2ecc71", "#ffb000", "#af7ac5", "#00bcd4", "#ff7f50")
@@ -28,10 +28,13 @@ class MusicPanelSnapshot:
     published_monotonic: float
     l4_probability_by_track: Mapping[int, float] = MappingProxyType({})
     effective_order: int | None = None
+    raw_peaks: tuple[CandidateDirection, ...] = ()
+    direction_id_tracking_enabled: bool = True
 
     def __post_init__(self) -> None:
         directions = tuple(self.directions)
         active = tuple(self.active_tracks)
+        raw_peaks = tuple(self.raw_peaks)
         identity = (
             self.response.session_id,
             self.response.stream_epoch,
@@ -44,6 +47,15 @@ class MusicPanelSnapshot:
             raise ValueError("MUSIC directions are limited to three")
         if self.effective_order is not None and self.effective_order not in {0, 1, 2, 3}:
             raise ValueError("effective MUSIC order must be 0..3 or None")
+        if type(self.direction_id_tracking_enabled) is not bool:
+            raise TypeError("MUSIC panel ID tracking flag must be bool")
+        if len(raw_peaks) > 3:
+            raise ValueError("MUSIC raw peaks are limited to three")
+        if any(
+            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample)
+            != identity for item in raw_peaks
+        ):
+            raise ValueError("MUSIC response and raw peaks must belong to one window")
         if any((item.session_id, item.stream_epoch, item.window_id, item.decision_sample) != identity for item in directions):
             raise ValueError("MUSIC response and directions must belong to one window")
         if any((item.session_id, item.stream_epoch) != identity[:2] for item in active):
@@ -55,6 +67,7 @@ class MusicPanelSnapshot:
             raise ValueError("L4 probabilities must be keyed by positive L2 track IDs")
         object.__setattr__(self, "directions", directions)
         object.__setattr__(self, "active_tracks", active)
+        object.__setattr__(self, "raw_peaks", raw_peaks)
         object.__setattr__(self, "l4_probability_by_track", MappingProxyType(probabilities))
 
     @property
@@ -142,16 +155,27 @@ if QWidget is not None:
             painter.setPen(QPen(QColor("#42b8ff"), 2.2))
             painter.drawPolyline(polygon)
 
-            for track in snapshot.active_tracks:
-                point = self._point(center, radius, track.theta_deg)
-                diameter = 24.0 if track.is_observed and track.track_state != "coasting" else 10.0
-                painter.setBrush(self._track_colour(track.track_id))
-                painter.setPen(QPen(QColor("white") if track.track_id == self._selected_track_id else QColor("#11161d"), 2.5))
-                painter.drawEllipse(point, diameter / 2.0, diameter / 2.0)
+            if snapshot.direction_id_tracking_enabled:
+                for track in snapshot.active_tracks:
+                    point = self._point(center, radius, track.theta_deg)
+                    diameter = 24.0 if track.is_observed and track.track_state != "coasting" else 10.0
+                    painter.setBrush(self._track_colour(track.track_id))
+                    painter.setPen(QPen(QColor("white") if track.track_id == self._selected_track_id else QColor("#11161d"), 2.5))
+                    painter.drawEllipse(point, diameter / 2.0, diameter / 2.0)
+            else:
+                painter.setBrush(QColor("#aab2bb"))
+                painter.setPen(QPen(QColor("#11161d"), 1.5))
+                for peak in snapshot.raw_peaks:
+                    point = self._point(center, radius, peak.theta_deg)
+                    painter.drawEllipse(point, 5.0, 5.0)
 
         def mousePressEvent(self, event) -> None:  # noqa: N802
             snapshot = self._snapshot
-            if snapshot is None or not snapshot.active_tracks:
+            if (
+                snapshot is None
+                or not snapshot.direction_id_tracking_enabled
+                or not snapshot.active_tracks
+            ):
                 return
             center = QPointF(self.width() / 2.0, self.height() / 2.0)
             dx, dy = event.position().x() - center.x(), center.y() - event.position().y()

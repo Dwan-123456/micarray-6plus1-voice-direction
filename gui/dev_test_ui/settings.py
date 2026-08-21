@@ -9,13 +9,12 @@ import tempfile
 class DevUiSettings:
     """Atomic persistent store for operator-tuned Development Test UI values."""
 
-    SCHEMA_VERSION = "dev_test_ui_settings_v11"
-    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v10"
+    SCHEMA_VERSION = "dev_test_ui_settings_v12"
+    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v11"
     OLDER_SCHEMA_VERSION = "dev_test_ui_settings_v2"
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
     OBSOLETE_KEYS = {
         "layer2_iterative_peak_search_enabled",
-        "layer2_direction_id_tracking_enabled",
     }
 
     def __init__(self, project_root: str | Path):
@@ -27,6 +26,7 @@ class DevUiSettings:
             if payload.get("schema_version") not in {
                 self.SCHEMA_VERSION,
                 self.PREVIOUS_SCHEMA_VERSION,
+                "dev_test_ui_settings_v10",
                 "dev_test_ui_settings_v9",
                 "dev_test_ui_settings_v8",
                 "dev_test_ui_settings_v7",
@@ -125,6 +125,20 @@ class DevUiSettings:
     def save_direction_kalman_enabled(self, value: bool) -> bool:
         enabled = self._validate_bool(value)
         self._save_update(layer2_direction_kalman_enabled=enabled)
+        return enabled
+
+    def load_direction_id_tracking_enabled(self, default: bool = True) -> bool:
+        fallback = self._validate_bool(default)
+        try:
+            return self._validate_bool(
+                self._load_payload()["layer2_direction_id_tracking_enabled"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_direction_id_tracking_enabled(self, value: bool) -> bool:
+        enabled = self._validate_bool(value)
+        self._save_update(layer2_direction_id_tracking_enabled=enabled)
         return enabled
 
     def load_direction_kalman_q_scale(self, initial: float) -> float:

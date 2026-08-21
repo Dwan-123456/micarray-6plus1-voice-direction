@@ -111,7 +111,9 @@ layer2:
     max_velocity_dps: 60.0
     # +inf keeps uncertainty freezing disabled until it is calibrated.
     prediction_freeze_std_deg: .inf
-  # Direction-track IDs are always enabled. This section has no enable switch.
+  # Production/default runtime keeps direction-track IDs enabled. There is no
+  # project-config enable field; Development Test UI owns a persisted MUSIC-only
+  # diagnostic switch that can bypass/reset tracking and skip L3/L4.
   direction_id_tracking:
     backend: global_assignment_v1
     association_gate_deg: 45.0

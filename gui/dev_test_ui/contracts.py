@@ -231,8 +231,14 @@ class DevUiFrame:
     l4_result: Layer4Result | None = None
     directions: tuple[TrackedDirection, ...] = ()
     active_tracks: tuple[TrackedDirection, ...] = ()
+    direction_id_tracking_enabled: bool | None = None
 
     def __post_init__(self) -> None:
+        if (
+            self.direction_id_tracking_enabled is not None
+            and type(self.direction_id_tracking_enabled) is not bool
+        ):
+            raise ValueError("DevUiFrame ID tracking setting must be bool")
         directions = tuple(self.directions)
         active_tracks = tuple(self.active_tracks) or directions
         if any((item.session_id, item.stream_epoch) != (

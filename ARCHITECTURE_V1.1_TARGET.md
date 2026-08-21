@@ -12,7 +12,7 @@
 
 1. 用宽带 MUSIC/NormMUSIC 替换 L2 的 SRP-PHAT 定位主链，并直接支持 0～3 个同时存在的方向峰。
 2. 删除 iterative multiple peak 开关、配置、UI 和算法路径；多声源能力由 MUSIC 空间谱、声源数估计和圆周峰值筛选统一提供。
-3. 将方向 ID 追踪设为 L2 永久在线能力，不再提供关闭按键；采用全局一对一线性分配，正确处理 `359° ↔ 0°`、候选排序变化、新 ID、短时漏检和超时后重新编号。
+3. 将方向 ID 追踪设为正式主链默认启用的L2权威能力；采用全局一对一线性分配，正确处理 `359° ↔ 0°`、候选排序变化、新 ID、短时漏检和超时后重新编号。Development Test UI可为单独调试MUSIC临时关闭追踪；该诊断模式不得向L3/L4发布无权威ID的方向。
 4. Kalman 只作为可选的方向平滑器；关闭 Kalman 不得关闭、重置或绕过 ID 追踪。
 5. ID 从 L2 的私有 UI sidecar 元数据升级为 L2、L3、L4、Runtime、时间线、正式记录和逐 ID 试听共同使用的公共字段。
 6. Test UI 根据 L2 的权威 ID 拼接 L3 音频；删除 UI 自己的二次角度关联、别名合并和贪心补救。
@@ -48,7 +48,7 @@ L2：Probability Gate
     → effective_order=min(MDL诊断阶数, Test UI手动上限1/2/3)
     → 候选仍限制为0～3个方向
     → 圆周峰值与50° NMS
-    → 永久在线全局分配方向ID
+    → 默认启用的全局分配方向ID（Test UI诊断模式可旁路）
     → 可选按ID圆周Kalman
     → TrackedDirection + active_tracks
     ↓
@@ -246,7 +246,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - Test UI不拥有独立的音频窗口配置；面板文字、单窗试听波形和按ID恢复范围全部使用Runtime注入的同一40/80/160 ms派生规格。当前按钮显示40 ms。
 - Test UI不再从L3重叠窗自行形成正式试听轨。它只缓存并播放`TrackAudioStreamHub`已经拼好和补偿的连续hop；同一hop也是L4的CNN输入，播放端不得再增加独立响度归一化。L4面板提供默认ON的实时响度补偿开关，开关不切轨、不重置ID或CNN上下文。
 
-- 删除 “Iterative Multiple Peak” 开关、ID 追踪开关、相关持久化设置和运行时 setter。
+- 删除 “Iterative Multiple Peak” 开关。Development Test UI保留一个默认开启、持久化的`ID Tracking`诊断开关：开启时显示并发布L2权威ID；关闭时只显示360点MUSIC伪谱和原始峰值灰色小点，清空追踪状态，并将该窗L3/L4正常标记为`SKIPPED`，不得把原始峰值当作下游ID。重新开启后从新的权威ID状态开始。
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。
 - 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始360点MUSIC伪谱，分别显示MDL诊断阶数与实际MUSIC阶数，并提供1/2/3手动阶数上限、默认关闭的`DPD + rank-1 MUSIC`和`IMCRA噪声白化`按钮；三项设置均持久化到Test UI本地设置，L2在每次实际计算前读取最新revision。
 - L2接纳队列丢窗属于Runtime过载状态，不得显示成Gate或L1 IMCRA不可用。Test UI保留同一epoch最近一次成功的MUSIC/Gate快照及原始发布时间，以`STALE | L2 DROPPED`明确标记，下一次成功结果到达后恢复`LIVE`。

@@ -22,6 +22,18 @@
 
 ---
 
+## 2026-08-21 — Development Test UI新增MUSIC-only与ID追踪切换
+
+- **版本/标签**：当前`1.2.4`开发线界面与L2诊断能力；不创建或移动发布标签。
+- **Development Test UI**：将“MUSIC阶数上限”收紧为仅容纳标签和1/2/3数值的紧凑控件，并在右侧新增持久化`ID Tracking`按钮；绿色表示开启，灰色表示关闭。
+- **L2与显示契约**：追踪开启时保持原有全局权威ID、稳定颜色和观测/预测角显示。追踪关闭时仍计算Gate、360点MUSIC伪谱及原始峰值，只在圆环对应角度绘制灰色小点，不生成或显示权威ID；切换边界在单一L2 worker内重置轨迹及旧L4反馈，重新开启后从新的ID状态开始。
+- **下游隔离**：MUSIC-only模式不把无ID峰值送入L3/L4，每个窗口以`direction_id_tracking_disabled_by_test_ui`正常`SKIPPED`收束，不记录为处理错误；已有试听缓存仍可使用。
+- **设置与兼容性**：Test UI设置schema升级并保存ID追踪开关，缺少该字段的旧设置默认迁移为开启；正式/默认Runtime仍开启ID追踪，项目配置没有新增enable字段。
+- **验证**：增加MUSIC-only原始峰值、重启追踪ID、Runtime revision、设置持久化及紧凑布局测试；L2 MUSIC/ID、Runtime和Development Test UI聚焦回归`103 passed`，完整测试`463 passed`，Ruff与`git diff --check`通过。自动测试不替代真实阵列界面验收。
+- **保持不变**：L1输入/IMCRA/录音、MUSIC伪谱算法和峰值门限、ID追踪开启时的关联/Kalman规则、L3波束形成、L4模型、试听缓存格式、正式录音、模型与音频资产均无变化；无Git LFS资产变化。
+
+---
+
 ## 2026-08-21 — 存储音频模拟测试停用热力图回放
 
 - **版本/标签**：当前`1.2.4`开发线性能优化；不创建或移动发布标签。
