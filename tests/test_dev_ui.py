@@ -71,6 +71,10 @@ def test_l5_voice_colour_is_disabled_for_l3_rows_and_enabled_for_l4_rows():
     l4_row = AudioTrackRow(7, show_voice_highlights=True)
     l3_row.set_snapshot(snapshot, playing=False)
     l4_row.set_snapshot(snapshot, playing=False)
+    assert l3_row.label.text() == "7 · 20.0°"
+    assert l3_row.label.width() == 128
+    assert l3_row.duration.width() == 62
+    assert l3_row.waveform.minimumWidth() == 80
     assert l3_row.waveform._voice_columns(1) == ()
     assert l4_row.waveform._voice_columns(1) == (True,)
     l3_row.close()
@@ -1124,6 +1128,10 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         assert "L5" in window.cnn_panel.title()
         assert window.bf_panel.send.text() == "发送到L4"
         assert window.l4_panel.send.text() == "发送到L5"
+        assert (
+            window.bf_panel.track_scroll.horizontalScrollBarPolicy()
+            == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         l5_send_size = window.l4_panel.send.size()
         assert all(
             control.size() == l5_send_size
@@ -1266,9 +1274,9 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         ]
         assert ordered == [0, 3, 2]
         assert "Center Mic" in window.bf_panel._track_rows[0].label.text()
-        assert window.bf_panel._track_rows[3].label.text() == "3  30.0°"
+        assert window.bf_panel._track_rows[3].label.text() == "3 · 30.0°"
         assert "#ffb000" in window.bf_panel._track_rows[3].label.styleSheet().lower()
-        assert window.bf_panel._track_rows[2].label.text() == "2  20.0°"
+        assert window.bf_panel._track_rows[2].label.text() == "2 · 20.0°"
         assert "#2ecc71" in window.bf_panel._track_rows[2].label.styleSheet().lower()
         assert "≥2.0s" in window.bf_panel.help.text()
 

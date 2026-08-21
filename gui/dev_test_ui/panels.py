@@ -328,6 +328,9 @@ class BeamformPanel(QGroupBox):
         layout.addWidget(self.help)
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
+        self.track_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.track_container = QWidget()
         self.track_layout = QVBoxLayout(self.track_container)
         self.track_layout.setContentsMargins(4, 4, 4, 4)
@@ -601,6 +604,9 @@ class Layer4AudioPanel(QGroupBox):
         layout.addWidget(self.help)
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
+        self.track_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.track_container = QWidget()
         self.track_layout = QVBoxLayout(self.track_container)
         self.track_layout.setContentsMargins(4, 4, 4, 4)
@@ -771,17 +777,21 @@ class AudioTrackRow(QWidget):
         self._rendered_playing: bool | None = None
         self.setFixedHeight(58)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(6)
         self.play = QPushButton("▶")
-        self.play.setFixedWidth(44)
+        self.play.setFixedWidth(40)
         self.play.clicked.connect(lambda: self.toggle_requested.emit(self.track_id))
         self.label = QLabel()
         self.label.setStyleSheet("font-family:Consolas")
-        self.label.setFixedWidth(190)
+        self.label.setFixedWidth(128)
         self.duration = QLabel()
         self.duration.setStyleSheet("font-family:Consolas")
-        self.duration.setFixedWidth(90)
+        self.duration.setFixedWidth(62)
+        self.duration.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.waveform = AudioWaveformThumbnail()
+        self.waveform.setMinimumWidth(80)
+        self.waveform.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._show_voice_highlights = bool(show_voice_highlights)
         layout.addWidget(self.play)
         layout.addWidget(self.label)
@@ -793,7 +803,7 @@ class AudioTrackRow(QWidget):
             text = "Center Mic 对照"
             label_style = "font-family:Consolas"
         else:
-            text = f"{snapshot.track_id}  {snapshot.theta_deg:.1f}°"
+            text = f"{snapshot.track_id} · {snapshot.theta_deg:.1f}°"
             label_style = f"font-family:Consolas;color:{track_colour_hex(snapshot.track_id)}"
         if text != self._rendered_text:
             self.label.setText(text)
