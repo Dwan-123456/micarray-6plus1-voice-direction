@@ -16,7 +16,7 @@ from layer5_voice_classifier import (
     VoiceDetection,
 )
 from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoiceAnnotation
-from track_audio_stream.service import _CROSSFADE_SAMPLES
+from track_audio_stream.service import _ArchivedHop, _CROSSFADE_SAMPLES
 
 
 def _window(decision: int, track_id: int = 7, *, level: float = 1.0e-3):
@@ -71,6 +71,27 @@ def test_hub_seals_complete_long_audio_with_aligned_l2_direction_counts() -> Non
         (6_720, 1), (7_680, 1), (8_640, 2), (9_600, 2),
     )
     assert not sealed[0].waveform.flags.writeable
+
+
+def test_hub_seals_discontinuous_runs_as_one_unique_id_with_silent_gap() -> None:
+    hub = TrackAudioStreamHub(InputGainCompensationSettings(enabled=False), context_ms=60)
+    hub._archive[("session", 0, 7)] = [
+        _ArchivedHop(0, 960, 30.0, 1, np.ones(960, np.float32)),
+        _ArchivedHop(2_880, 3_840, 32.0, 2, np.full(960, 2.0, np.float32)),
+    ]
+
+    sealed = hub.seal()
+
+    assert len(sealed) == 1
+    assert sealed[0].track_id == 7
+    assert sealed[0].start_sample == 0
+    assert sealed[0].end_sample == 3_840
+    np.testing.assert_array_equal(sealed[0].waveform[:960], 1.0)
+    np.testing.assert_array_equal(sealed[0].waveform[960:2_880], 0.0)
+    np.testing.assert_array_equal(sealed[0].waveform[2_880:], 2.0)
+    assert sealed[0].l2_direction_counts == (
+        (960, 1), (1_920, 0), (2_880, 0), (3_840, 2),
+    )
 
 
 def test_adjacent_windows_crossfade_the_future_overlap_without_a_20ms_seam():

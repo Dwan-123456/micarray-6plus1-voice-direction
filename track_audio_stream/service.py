@@ -298,44 +298,52 @@ class TrackAudioStreamHub:
         )
 
     def seal(self) -> tuple[Layer4LongAudioInput, ...]:
-        """Freeze all complete continuous ID runs after Runtime workers drain."""
+        """Freeze one timeline-preserving long input per authoritative L2 ID."""
 
         outputs: list[Layer4LongAudioInput] = []
         with self._lock:
             for (session_id, epoch, track_id), hops in sorted(self._archive.items()):
-                run: list[_ArchivedHop] = []
-
-                def flush() -> None:
-                    if not run:
-                        return
-                    waveform = np.ascontiguousarray(
-                        np.concatenate(tuple(item.waveform for item in run)), dtype=np.float32,
-                    )
-                    digest = hashlib.sha256(waveform.tobytes()).hexdigest()
-                    outputs.append(Layer4LongAudioInput(
-                        asset_id=(
-                            f"{session_id}:epoch{epoch}:track{track_id}:"
-                            f"start{run[0].start_sample}"
-                        ),
-                        sha256=digest,
-                        session_id=session_id,
-                        stream_epoch=epoch,
-                        track_id=track_id,
-                        theta_deg=run[-1].theta_deg,
-                        start_sample=run[0].start_sample,
-                        sample_rate=48_000,
-                        waveform=waveform,
-                        l2_direction_counts=tuple(
-                            (item.end_sample, item.l2_direction_count) for item in run
-                        ),
-                    ))
-                    run.clear()
-
+                if not hops:
+                    continue
+                audio: list[np.ndarray] = []
+                direction_counts: list[tuple[int, int]] = []
+                cursor = hops[0].start_sample
                 for hop in hops:
-                    if run and hop.start_sample != run[-1].end_sample:
-                        flush()
-                    run.append(hop)
-                flush()
+                    if hop.start_sample < cursor:
+                        raise ValueError("archived L3 track hops must not overlap")
+                    gap = hop.start_sample - cursor
+                    if gap % _HOP_SAMPLES:
+                        raise ValueError("archived L3 track gaps must align to 20 ms hops")
+                    if gap:
+                        audio.append(np.zeros(gap, dtype=np.float32))
+                        direction_counts.extend(
+                            (end_sample, 0)
+                            for end_sample in range(
+                                cursor + _HOP_SAMPLES,
+                                hop.start_sample + _HOP_SAMPLES,
+                                _HOP_SAMPLES,
+                            )
+                        )
+                    audio.append(hop.waveform)
+                    direction_counts.append((hop.end_sample, hop.l2_direction_count))
+                    cursor = hop.end_sample
+                waveform = np.ascontiguousarray(np.concatenate(audio), dtype=np.float32)
+                digest = hashlib.sha256(waveform.tobytes()).hexdigest()
+                outputs.append(Layer4LongAudioInput(
+                    asset_id=(
+                        f"{session_id}:epoch{epoch}:track{track_id}:"
+                        f"start{hops[0].start_sample}"
+                    ),
+                    sha256=digest,
+                    session_id=session_id,
+                    stream_epoch=epoch,
+                    track_id=track_id,
+                    theta_deg=hops[-1].theta_deg,
+                    start_sample=hops[0].start_sample,
+                    sample_rate=48_000,
+                    waveform=waveform,
+                    l2_direction_counts=tuple(direction_counts),
+                ))
             self._sealed = tuple(outputs)
             return self._sealed
 
