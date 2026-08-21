@@ -274,12 +274,14 @@ def test_beamform_panel_replaces_single_window_playback_with_downstream_switch(m
     panel = BeamformPanel(config)
     assert not hasattr(panel, "preview_play")
     assert not hasattr(panel, "preview_stop")
-    assert panel.downstream_switch.text() == "L3/L5：运行中"
+    assert panel.downstream_switch.text() == "L3/4/5"
+    assert "#36875f" in panel.downstream_switch.styleSheet().lower()
     states = []
     panel.downstream_processing_changed.connect(states.append)
     panel.downstream_switch.click()
     assert states == [False]
-    assert panel.downstream_switch.text() == "L3/L5：已停止"
+    assert panel.downstream_switch.text() == "L3/4/5"
+    assert "#8a4b3b" in panel.downstream_switch.styleSheet().lower()
     assert not panel.mode_switch.isEnabled()
     panel.deleteLater()
     app.processEvents()
@@ -856,20 +858,20 @@ def test_l3_mode_button_switches_runtime_before_capture(monkeypatch, tmp_path):
     app, window = build_window(config_path)
     try:
         assert window._runtime.l3_processing_mode == "optimized"
-        assert window.bf_panel.mode_switch.text() == "BF：优化算法"
+        assert window.bf_panel.mode_switch.text() == "优化算法"
         window.bf_panel.mode_switch.click()
         app.processEvents()
         assert window._runtime.l3_processing_mode == "ds_baseline"
-        assert window.bf_panel.mode_switch.text() == "BF：DS基线"
+        assert window.bf_panel.mode_switch.text() == "DS基线"
         assert window.bf_panel.mode_switch.isEnabled()
         window.bf_panel.mode_switch.click()
         app.processEvents()
         assert window._runtime.l3_processing_mode == "loaded_mvdr_baseline"
-        assert window.bf_panel.mode_switch.text() == "BF：Loaded MVDR基线"
+        assert window.bf_panel.mode_switch.text() == "Loaded MVDR基线"
         window.bf_panel.mode_switch.click()
         app.processEvents()
         assert window._runtime.l3_processing_mode == "subband_robust_baseline"
-        assert window.bf_panel.mode_switch.text() == "BF：五频段鲁棒对照"
+        assert window.bf_panel.mode_switch.text() == "五频段鲁棒对照"
         window.bf_panel.mode_switch.click()
         app.processEvents()
         assert window._runtime.l3_processing_mode == "optimized"
@@ -895,7 +897,7 @@ def test_gain_compensation_control_is_in_l3_header_and_uses_state_colors(
         control = window.bf_panel.gain_compensation
         assert control.size() == window.bf_panel.mode_switch.size()
         assert control.size() == window.bf_panel.downstream_switch.size()
-        assert control.text() == "连续轨响度补偿"
+        assert control.text() == "响度补偿"
         assert control.parent() is window.bf_panel
         assert not hasattr(window.cnn_panel, "gain_compensation")
         assert not control.isChecked()

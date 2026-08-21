@@ -154,7 +154,7 @@ class MusicNoiseWhiteningControl(_RuntimeSwitchControl):
 
 
 class ContinuousTrackGainControl(_RuntimeSwitchControl):
-    label = "连续轨响度补偿"
+    label = "响度补偿"
 
 
 class KalmanNoiseScaleControl(QWidget):
@@ -292,7 +292,7 @@ class BeamformPanel(QGroupBox):
         preview_controls = QHBoxLayout()
         self.preview_summary = QLabel("L3 formal preview: waiting for an open Gate and candidate")
         self.preview_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.mode_switch = QPushButton("BF：优化算法")
+        self.mode_switch = QPushButton("优化算法")
         self._processing_mode = "optimized"
         self.mode_switch.setToolTip(
             "依次切换：优化算法 → DS基线 → 恒定波束宽度30°；只影响后续L3窗口"
@@ -368,10 +368,10 @@ class BeamformPanel(QGroupBox):
             raise ValueError(f"unknown L3 processing mode: {mode}")
         self._processing_mode = mode
         labels = {
-            "optimized": "BF：优化算法",
-            "ds_baseline": "BF：DS基线",
-            "loaded_mvdr_baseline": "BF：Loaded MVDR基线",
-            "subband_robust_baseline": "BF：五频段鲁棒对照",
+            "optimized": "优化算法",
+            "ds_baseline": "DS基线",
+            "loaded_mvdr_baseline": "Loaded MVDR基线",
+            "subband_robust_baseline": "五频段鲁棒对照",
         }
         colors = {
             "optimized": "",
@@ -453,10 +453,12 @@ class BeamformPanel(QGroupBox):
         self.downstream_switch.setChecked(bool(enabled))
         self.mode_switch.setEnabled(bool(enabled))
         if enabled:
-            self.downstream_switch.setText("L3/L5：运行中")
+            self.downstream_switch.setText("L3/4/5")
+            self.downstream_switch.setToolTip("绿色：L3/L4/L5运行中；点击停止下游处理。")
             self.downstream_switch.setStyleSheet("background:#36875f;color:white")
         else:
-            self.downstream_switch.setText("L3/L5：已停止")
+            self.downstream_switch.setText("L3/4/5")
+            self.downstream_switch.setToolTip("棕红色：L3/L4/L5已停止；点击恢复下游处理。")
             self.downstream_switch.setStyleSheet("background:#8a4b3b;color:white")
 
     def set_gain_compensation_enabled(self, enabled: bool) -> None:
