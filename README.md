@@ -1,8 +1,8 @@
 # 6+1 麦克风阵列二维人声方向识别系统
 
-> 当前开发版本：`1.3.1`；Layer 2公开版本：`1.1`。最终发布基线为`v1.2.4`。
+> 当前发布版本：`1.3.1`；Layer 2公开版本：`1.1`。最终发布基线为`v1.3.1`。
 
-> **开发状态：项目 `1.3.1`。** 实时链运行到L3与`TrackAudioStreamHub`；采集停止并排空后，Hub封存按ID拼接的完整长音频。Test UI手动发送到L4后统一降为16 kHz，完成1/2人路由、MossFormer2/TIGER分离和2～4 kHz匹配；L4输出以原生16 kHz试听，再由第二个按钮把同一音频直接发送到唯一的离线L5。自动化验收不替代真实双人录音和GPU质量门禁。
+> **发布状态：项目 `1.3.1`。** 实时链运行到L3与`TrackAudioStreamHub`；采集停止并排空后，Hub封存按ID拼接的完整长音频。Test UI手动发送到L4后统一降为16 kHz，完成1/2人路由、MossFormer2/TIGER分离和2～4 kHz匹配；L4整批完成后自动把同一原生16 kHz音频送入唯一的离线L5。自动化验收不替代真实双人录音和GPU质量门禁。
 
 > 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L5、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
@@ -168,7 +168,7 @@ WindowWorkItem
 
 ### 采集后离线L4/L5路径
 
-离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量。Test UI下半区按L3/L4/L5三等分：先由“发送到L4”运行人数路由、分离和2～4 kHz复频谱相干匹配；短于2秒或匹配低可信时安全回退原L3人声，并保存带原ID/角度的L4 WAV供试听。全部完成后再由“发送到L5”运行NVIDIA长音频Frame-VAD。L5为L4音频的每个20 ms hop输出独立概率和Voice判断，黄色逐帧绘制在L4音频条，L3音频不再着色。
+离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量。Test UI下半区按L3/L4/L5三等分：由“发送到L4”运行人数路由、分离和2～4 kHz复频谱相干匹配；短于2秒或匹配低可信时安全回退原L3人声，并保存带原ID/角度的L4 WAV供试听。整批L4完成后自动运行NVIDIA长音频Frame-VAD。L5为L4音频的每个20 ms hop输出独立概率和Voice判断，黄色逐帧绘制在L4音频条，L3音频不再着色。
 
 ## 算法流程说明
 

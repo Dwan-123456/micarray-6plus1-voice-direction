@@ -97,10 +97,13 @@ class SerialDevice:
             stop_event.set()
             self._thread = None
             self._serial = None
-            if port is not None and port.is_open:
-                port.close()
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
             thread.join(timeout=1.0)
+        # The reader owns the port until it exits.  Closing it before joining
+        # races pyserial's Windows OVERLAPPED cleanup and can double-close the
+        # same event handle.  A reader that never started is closed here.
+        if (thread is None or not thread.is_alive()) and port is not None and port.is_open:
+            port.close()
         return self.status()
 
     def _read_loop(self, port: Any, stop_event: threading.Event) -> None:

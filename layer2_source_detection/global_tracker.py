@@ -696,10 +696,9 @@ class GlobalDirectionTracker:
                 track = self._tracks[track_id]
                 missed_before = max(0, decision_sample - track.last_observed)
                 if not kalman_enabled and track.stationary_locked:
-                    elapsed = max(1, decision_sample - track.last_observed)
                     self._update_locked_stationary(track, candidate, decision_sample)
                 else:
-                    elapsed = self._update_observation(
+                    self._update_observation(
                         track, candidate, decision_sample, self.config.max_velocity_dps
                     )
                     if not kalman_enabled:
