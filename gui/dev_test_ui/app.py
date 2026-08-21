@@ -1485,7 +1485,7 @@ def build_window(
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MainWindow()
-    window.showFullScreen() if config.dev_test_ui.start_fullscreen else window.show()
+    window.showFullScreen() if config.dev_test_ui.start_fullscreen else window.showMaximized()
     if auto_start:
         QTimer.singleShot(0, window._start_capture)
     return app, window

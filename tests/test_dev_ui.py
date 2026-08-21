@@ -1025,11 +1025,13 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
 def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
     from gui.dev_test_ui.app import build_window
 
     app, window = build_window(CONFIG)
     try:
         assert not window.isFullScreen()
+        assert window.windowState() & Qt.WindowState.WindowMaximized
         quadrants = window.findChild(object, "quadrants")
         layout = quadrants.layout()
         assert layout.count() == 4

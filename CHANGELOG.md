@@ -22,6 +22,14 @@
 
 ---
 
+## 2026-08-21 — Development Test UI默认最大化启动
+
+- **Development Test UI**：默认启动由普通窗口改为系统最大化窗口，保留标题栏、最小化、还原及关闭操作，不使用无边框全屏；显式`start_fullscreen`配置和F11全屏切换仍保持有效。
+- **验证**：增加窗口最大化状态契约检查，并运行Development Test UI定向测试与Ruff检查。
+- **保持不变**：L1～L4算法、Runtime调度、队列、ID追踪、试听缓存、录音、配置schema、模型和音频资产均无变化；不创建或移动发布标签，无Git LFS资产变化。
+
+---
+
 ## 2026-08-21 — Development Test UI新增MUSIC-only与ID追踪切换
 
 - **版本/标签**：当前`1.2.4`开发线界面与L2诊断能力；不创建或移动发布标签。
