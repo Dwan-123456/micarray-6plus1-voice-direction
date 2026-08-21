@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "micarray-6plus1-voice-direction"
-version = "1.2.2"
+version = "1.2.4"
 description = "6+1 microphone-array MUSIC, directional beamforming and voice-direction pipeline"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -1,8 +1,8 @@
 # 6+1 麦克风阵列二维人声方向识别系统
 
-> 当前项目版本：`1.2.2`；Layer 2公开版本：`1.1`。
+> 当前开发版本：`1.2.4`；Layer 2公开版本：`1.1`。最终发布基线为`v1.2.3`。
 
-> **发布状态：项目 `1.2.2`。** L1～L4、Rolling NormMUSIC、永久公共方向ID、并行Runtime、Development Test UI、Pipeline Log UI、RecordingStore、Audio Data Manager与Production UI均已整合。自动化验收通过不替代真实阵列、诊室声场和长时间运行门禁，未完成的实机项目继续明确标注。
+> **开发状态：项目 `1.2.4`。** L1～L4、Rolling NormMUSIC、永久公共方向ID、并行Runtime、Development Test UI、Pipeline Log UI、RecordingStore、Audio Data Manager与Production UI均已整合。自动化验收通过不替代真实阵列、诊室声场和长时间运行门禁，未完成的实机项目继续明确标注。
 
 > 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L4、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
@@ -163,7 +163,7 @@ WindowWorkItem
     既有optimized隔离L3基准已低于20 ms节拍；五频段模式与真实阵列全链并发仍待复测
 ```
 
-上图描述当前1.2.2代码实现；`【已完成】`表示模块和自动化契约已经接通，不代表真实阵列、诊室声场、中文目标域或长时间负载已经验收。独立Pipeline Log UI的详细只读边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
+上图描述当前1.2.4代码实现；`【已完成】`表示模块和自动化契约已经接通，不代表真实阵列、诊室声场、中文目标域或长时间负载已经验收。独立Pipeline Log UI的详细只读边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
 
 ## 算法流程说明
 
@@ -369,7 +369,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 
 配置中的`privacy.local_only=true`、`automatic_upload=false`表示项目默认只在本机保存且不自动上传。但这只是软件默认行为，不等同于完成医疗数据合规。诊室采集前仍需要取得授权、限制访问权限、制定保留和删除策略，并根据所在地区要求进行去标识化和审计。
 
-## Pipeline Log UI（1.2.2已实现）
+## Pipeline Log UI（1.2.4已实现）
 
 项目已提供独立只读的 Pipeline Log UI，用于查看单次运行记录中的阶段性能、终态、MUSIC/方向 ID、L3增强资产、L4结果、丢窗和时间线。其项目地位与 L1～L4、Development Test UI、RecordingStore/Audio Data Manager 平行，不属于算法流水线的下一层。
 
@@ -391,7 +391,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 
 “代码已接通”不代表已经完成诊室部署验收。下列实机与目标域门禁仍需完成。
 
-历史v3实测曾出现较高的处理丢窗率和偏低的有效输出帧率。这里指算法处理队列中的window/frame drop，不是已经确认的USB输入数据包丢失。当前1.2.2已经优化Layer 3滚动缓存和矩阵求解，但尚无新的v4真实阵列全链session可以证明持续输入下的最终丢窗率。
+历史v3实测曾出现较高的处理丢窗率和偏低的有效输出帧率。这里指算法处理队列中的window/frame drop，不是已经确认的USB输入数据包丢失。当前1.2.4已经优化Layer 3滚动缓存和矩阵求解，但尚无新的v4真实阵列全链session可以证明持续输入下的最终丢窗率。
 
 最近一份可计算的正式缓存来自2026-08-18 14:30，session为`ea30a66d-9d4b-44c5-bb52-e106c85e05ed`，记录了15.36秒、768个20 ms窗口。统计结果如下：
 
@@ -467,7 +467,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 
 - [总执行规格](CODEX_PROJECT_SPEC_6plus1_2D_voice_direction_v0.2.md)
 - [v0.3目标架构与迁移契约](ARCHITECTURE_V0.3_TARGET.md)
-- [1.2.2 MUSIC、公共方向ID与平行子系统架构](ARCHITECTURE_V1.1_TARGET.md)
+- [1.2.4 MUSIC、公共方向ID与平行子系统架构](ARCHITECTURE_V1.1_TARGET.md)
 - [Pipeline Log UI 1.1架构](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)
 - [Windows与RTX 5060环境说明](ENVIRONMENT.md)
 - [Layer 1说明](layer1_input/README.md)
