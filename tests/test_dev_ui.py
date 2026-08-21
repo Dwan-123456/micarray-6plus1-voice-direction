@@ -54,6 +54,30 @@ def test_waveform_voice_background_uses_stored_probability_and_live_ui_threshold
     app.processEvents()
 
 
+def test_l5_voice_colour_is_disabled_for_l3_rows_and_enabled_for_l4_rows():
+    from PySide6.QtWidgets import QApplication
+
+    from gui.dev_test_ui.panels import AudioTrackRow
+
+    app = QApplication.instance() or QApplication([])
+    annotation = TrackVoiceAnnotation(
+        "s", 0, 1, 960, 7, 0, 960, 0.8, True, "nv", 0.7,
+    )
+    snapshot = TrackedAudioSnapshot(
+        "s", 0, 7, "ended", 20.0, 1.0, 960,
+        waveform_envelope=(0.2,), voice_annotations_20ms=(annotation,),
+    )
+    l3_row = AudioTrackRow(7, show_voice_highlights=False)
+    l4_row = AudioTrackRow(7, show_voice_highlights=True)
+    l3_row.set_snapshot(snapshot, playing=False)
+    l4_row.set_snapshot(snapshot, playing=False)
+    assert l3_row.waveform._voice_columns(1) == ()
+    assert l4_row.waveform._voice_columns(1) == (True,)
+    l3_row.close()
+    l4_row.close()
+    app.processEvents()
+
+
 def _write_test_wav(path: Path, samples: np.ndarray) -> None:
     with wave.open(str(path), "wb") as output:
         output.setnchannels(samples.shape[1])
@@ -1079,7 +1103,7 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
         app.processEvents()
 
 
-def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch):
+def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import Qt
@@ -1091,9 +1115,14 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert window.windowState() & Qt.WindowState.WindowMaximized
         quadrants = window.findChild(object, "quadrants")
         layout = quadrants.layout()
-        assert layout.count() == 4
+        assert layout.count() == 5
         assert layout.rowStretch(0) == layout.rowStretch(1) == 1
-        assert layout.columnStretch(0) == layout.columnStretch(1) == 1
+        assert all(layout.columnStretch(index) == 1 for index in range(6))
+        assert "L3" in window.bf_panel.title()
+        assert "L4" in window.l4_panel.title()
+        assert "L5" in window.cnn_panel.title()
+        assert window.bf_panel.send.text() == "发送到L4"
+        assert window.l4_panel.send.text() == "发送到L5"
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
             "上一秒性能 | L2 N/A | L3 N/A | L5 N/A / 0.0 Hz | "

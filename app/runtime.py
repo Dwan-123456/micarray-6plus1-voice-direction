@@ -43,6 +43,12 @@ from layer3_direction_signal import (
     Layer3Output,
     Layer3Processor,
 )
+from layer4_speech_separation import (
+    DirectionCountSpeakerClassifier,
+    MossFormer2Backend,
+    TigerBackend,
+)
+from layer4_speech_separation.offline import OfflineLayer4Pipeline
 from layer5_voice_classifier import (
     InputGainCompensationSettings,
     Layer5AudioSegment,
@@ -3143,6 +3149,33 @@ class ApplicationRuntime:
         if not callable(process_sealed):
             raise TypeError("offline Layer4 pipeline must provide process_sealed")
         return process_sealed(sources)
+
+    def build_offline_l4_pipeline(self, backend_id: str | None = None) -> OfflineLayer4Pipeline:
+        """Create the configured two-step L3→L4→L5 pipeline for UI/batch callers."""
+
+        if not self.config.layer4.enabled:
+            raise RuntimeError("Layer4 is disabled in project config")
+        selected = backend_id or self.config.layer4.default_backend
+        artifacts = {
+            "mossformer2_ss_16k": self.config.layer4.mossformer2_artifact,
+            "tiger_speech_16k": self.config.layer4.tiger_artifact,
+        }
+        if selected not in artifacts:
+            raise ValueError(f"unsupported offline Layer4 backend: {selected}")
+        artifact = Path(artifacts[selected])
+        if not artifact.is_absolute():
+            artifact = self.project_root / artifact
+        backend = (
+            MossFormer2Backend(artifact, device=self.processing_device)
+            if selected == "mossformer2_ss_16k"
+            else TigerBackend(artifact, device=self.processing_device)
+        )
+        return OfflineLayer4Pipeline(
+            speaker_counter=DirectionCountSpeakerClassifier(),
+            backends={selected: backend},
+            layer5=self._layer5,
+            default_backend=selected,
+        )
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:
         self.stop()

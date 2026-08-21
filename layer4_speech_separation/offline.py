@@ -21,6 +21,7 @@ from layer5_voice_classifier.gain_compensation import (
 from .contracts import (
     Layer4LongAudioInput,
     Layer4OfflineResult,
+    Layer4ProcessedAudio,
     Layer4PrimarySelection,
     Layer4SeparationRequest,
 )
@@ -158,7 +159,11 @@ class OfflineLayer4Pipeline:
         self.resampler = resampler or Layer4Resampler()
         self.matcher = matcher or BandMagnitudeMatcher()
 
-    def process(self, source: Layer4LongAudioInput, *, request_id: str | None = None) -> Layer4OfflineResult:
+    def process_l4(
+        self, source: Layer4LongAudioInput, *, request_id: str | None = None,
+    ) -> Layer4ProcessedAudio:
+        """Run resampling, speaker routing, separation and matching, but not L5."""
+
         request_id = request_id or str(uuid4())
         started = perf_counter()
         reference_16k = self.resampler.to_16k(source.waveform)
@@ -191,7 +196,31 @@ class OfflineLayer4Pipeline:
         if len(output_48k) < expected:
             output_48k = np.pad(output_48k, (0, expected - len(output_48k)))
         output_48k = np.ascontiguousarray(output_48k[:expected], dtype=np.float32)
-        # Hub archives are already gain-compensated.  Produce the normal L5
+        output_hash = _sha256_bytes(output_48k.tobytes())
+        return Layer4ProcessedAudio(
+            request_id=request_id,
+            source=source,
+            speaker_count=count,
+            path=path,  # type: ignore[arg-type]
+            selected=selected,
+            output_asset_id=f"{source.asset_id}:l4:{request_id}",
+            output_sha256=output_hash,
+            waveform_48k=output_48k,
+            metadata={
+                **model_metadata,
+                "resampler": self.resampler.algorithm_version,
+                "matching_algorithm": None if selected is None else selected.matching_algorithm,
+                "l4_elapsed_ms": (perf_counter() - started) * 1_000.0,
+            },
+        )
+
+    def process_l5(self, processed: Layer4ProcessedAudio) -> Layer4OfflineResult:
+        """Run L5 only after the caller explicitly sends completed L4 audio."""
+
+        started = perf_counter()
+        output_48k = np.ascontiguousarray(processed.waveform_48k, dtype=np.float32)
+        source = processed.source
+        # Hub archives are already gain-compensated. Produce the normal L5
         # diagnostic with compensation disabled so L5 never applies gain twice.
         segment_count = len(output_48k) // 960
         if segment_count * 960 != len(output_48k):
@@ -221,35 +250,60 @@ class OfflineLayer4Pipeline:
         detection = l5.detections[0]
         output_hash = _sha256_bytes(output_48k.tobytes())
         return Layer4OfflineResult(
-            request_id=request_id,
+            request_id=processed.request_id,
             source=source,
-            speaker_count=count,
-            path=path,  # type: ignore[arg-type]
-            selected=selected,
+            speaker_count=processed.speaker_count,
+            path=processed.path,
+            selected=processed.selected,
             l5_probability=detection.probability,
             l5_is_voice=detection.is_voice,
             l5_model_id=detection.model_id,
-            output_asset_id=f"{source.asset_id}:l4:{request_id}",
+            output_asset_id=processed.output_asset_id,
             output_sha256=output_hash,
             metadata={
-                **model_metadata,
-                "resampler": self.resampler.algorithm_version,
-                "matching_algorithm": None if selected is None else selected.matching_algorithm,
-                "elapsed_ms": (perf_counter() - started) * 1_000.0,
+                **processed.metadata,
+                "l5_elapsed_ms": (perf_counter() - started) * 1_000.0,
+                "l5_threshold": float(getattr(self.layer5, "threshold", 0.7)),
                 "output_waveform_48k": output_48k,
             },
         )
 
-    def process_sealed(
+    def process(self, source: Layer4LongAudioInput, *, request_id: str | None = None) -> Layer4OfflineResult:
+        return self.process_l5(self.process_l4(source, request_id=request_id))
+
+    def process_l4_sealed(
         self, sources: tuple[Layer4LongAudioInput, ...],
+    ) -> tuple[Layer4ProcessedAudio, ...]:
+        sources = self._validate_sources(sources)
+        return tuple(self.process_l4(source) for source in sources)
+
+    def process_l5_sealed(
+        self, processed: tuple[Layer4ProcessedAudio, ...],
     ) -> tuple[Layer4OfflineResult, ...]:
+        processed = tuple(processed)
+        if not processed:
+            raise ValueError("offline L5 requires at least one completed L4 track")
+        sessions = {item.source.session_id for item in processed}
+        if len(sessions) != 1:
+            raise ValueError("one offline L5 job cannot mix capture sessions")
+        return tuple(self.process_l5(item) for item in processed)
+
+    @staticmethod
+    def _validate_sources(
+        sources: tuple[Layer4LongAudioInput, ...],
+    ) -> tuple[Layer4LongAudioInput, ...]:
         sources = tuple(sources)
         if not sources:
             raise ValueError("offline L4 requires at least one sealed Hub track")
         sessions = {item.session_id for item in sources}
         if len(sessions) != 1:
             raise ValueError("one offline L4 job cannot mix capture sessions")
-        return tuple(self.process(source) for source in sources)
+        return sources
+
+    def process_sealed(
+        self, sources: tuple[Layer4LongAudioInput, ...],
+    ) -> tuple[Layer4OfflineResult, ...]:
+        return self.process_l5_sealed(self.process_l4_sealed(sources))
 
 
 def persist_offline_results(

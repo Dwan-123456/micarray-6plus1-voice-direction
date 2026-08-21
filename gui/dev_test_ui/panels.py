@@ -270,6 +270,7 @@ class BeamformPanel(QGroupBox):
     mode_change_requested = Signal(str)
     downstream_processing_changed = Signal(bool)
     gain_compensation_changed = Signal(bool)
+    send_requested = Signal()
 
     def __init__(
         self, config, gain_compensation_enabled: bool = True,
@@ -308,10 +309,15 @@ class BeamformPanel(QGroupBox):
         self.gain_compensation.enabled_changed.connect(
             self.gain_compensation_changed.emit
         )
+        self.send = QPushButton("发送到L4")
+        self.send.setEnabled(False)
+        self.send.setToolTip("停止采集并等待L3完全排空后，将Hub封存的长音频发送到L4。")
+        self.send.clicked.connect(self.send_requested.emit)
         preview_controls.addWidget(self.preview_summary, 1)
         preview_controls.addWidget(self.mode_switch)
         preview_controls.addWidget(self.downstream_switch)
         preview_controls.addWidget(self.gain_compensation)
+        preview_controls.addWidget(self.send)
         self._equalize_header_control_sizes()
         layout.addLayout(preview_controls)
         self.help = QLabel("仅按L2权威ID缓存方向音频；Kalman只平滑角度，不控制ID存在。")
@@ -343,6 +349,7 @@ class BeamformPanel(QGroupBox):
             self.mode_switch,
             self.downstream_switch,
             self.gain_compensation,
+            self.send,
         )
         mode_labels = (
             "BF：优化算法",
@@ -506,7 +513,7 @@ class BeamformPanel(QGroupBox):
             self._track_snapshots[track.track_id] = track
             row = self._track_rows.get(track.track_id)
             if row is None:
-                row = AudioTrackRow(track.track_id)
+                row = AudioTrackRow(track.track_id, show_voice_highlights=False)
                 row.set_voice_threshold(self._voice_threshold)
                 row.toggle_requested.connect(self._toggle_track)
                 self._track_rows[track.track_id] = row
@@ -574,6 +581,108 @@ class BeamformPanel(QGroupBox):
         self._voice_threshold = value
         for row in self._track_rows.values():
             row.set_voice_threshold(value)
+
+    def set_send_enabled(self, enabled: bool) -> None:
+        self.send.setEnabled(bool(enabled))
+
+
+class Layer4AudioPanel(QGroupBox):
+    track_play_requested = Signal(int)
+    track_stop_requested = Signal()
+    send_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__("L4 · Separated Audio Preview", parent)
+        layout = QVBoxLayout(self)
+        header = QHBoxLayout()
+        self.summary = QLabel("等待L3长音频")
+        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.send = QPushButton("发送到L5")
+        self.send.setEnabled(False)
+        self.send.setToolTip("全部L4音频处理完成后，将这些音频发送到L5 CNN。")
+        self.send.clicked.connect(self.send_requested.emit)
+        header.addWidget(self.summary, 1)
+        header.addWidget(self.send)
+        layout.addLayout(header)
+        self.help = QLabel("L4输出保留原ID和角度；L5判为人声后仅本栏对应波形变黄。")
+        layout.addWidget(self.help)
+        self.track_scroll = QScrollArea()
+        self.track_scroll.setWidgetResizable(True)
+        self.track_container = QWidget()
+        self.track_layout = QVBoxLayout(self.track_container)
+        self.track_layout.setContentsMargins(4, 4, 4, 4)
+        self.track_layout.addStretch(1)
+        self.track_scroll.setWidget(self.track_container)
+        layout.addWidget(self.track_scroll, 1)
+        self._rows: dict[int, AudioTrackRow] = {}
+        self._snapshots = {}
+        self._playing_track_id: int | None = None
+        self._voice_threshold = 0.7
+
+    def clear_tracks(self) -> None:
+        for row in self._rows.values():
+            self.track_layout.removeWidget(row)
+            row.deleteLater()
+        self._rows.clear()
+        self._snapshots.clear()
+        self._playing_track_id = None
+        self.send.setEnabled(False)
+        self.summary.setText("等待L3长音频")
+
+    def set_processing(self, text: str) -> None:
+        self.summary.setText(text)
+        self.send.setEnabled(False)
+
+    def set_tracks(self, tracks, *, l5_complete: bool = False) -> None:
+        tracks = tuple(tracks)
+        incoming = {item.track_id for item in tracks}
+        for track_id in set(self._rows) - incoming:
+            row = self._rows.pop(track_id)
+            self.track_layout.removeWidget(row)
+            row.deleteLater()
+        for track in tracks:
+            self._snapshots[track.track_id] = track
+            row = self._rows.get(track.track_id)
+            if row is None:
+                row = AudioTrackRow(track.track_id, show_voice_highlights=True)
+                row.toggle_requested.connect(self._toggle_track)
+                row.set_voice_threshold(self._voice_threshold)
+                self._rows[track.track_id] = row
+                self.track_layout.insertWidget(self.track_layout.count() - 1, row)
+            row.set_snapshot(track, playing=track.track_id == self._playing_track_id)
+        self.send.setEnabled(bool(tracks) and not l5_complete)
+        self.summary.setText(
+            f"L4完成：{len(tracks)}条；L5完成" if l5_complete
+            else f"L4完成：{len(tracks)}条；可试听并发送到L5"
+        )
+
+    def _toggle_track(self, track_id: int) -> None:
+        if self._playing_track_id == track_id:
+            self._playing_track_id = None
+            self.track_stop_requested.emit()
+        else:
+            self._playing_track_id = track_id
+            self.track_play_requested.emit(track_id)
+        for item_id, row in self._rows.items():
+            row.set_playing(item_id == self._playing_track_id)
+
+    def sync_track_playback_stopped(self) -> None:
+        self._playing_track_id = None
+        for row in self._rows.values():
+            row.set_playing(False)
+
+    def set_track_playback_progress(self, track_id: int, progress: float) -> None:
+        for item_id, row in self._rows.items():
+            row.set_playback_progress(progress if item_id == int(track_id) else None)
+
+    def clear_track_playback_progress(self) -> None:
+        for row in self._rows.values():
+            row.set_playback_progress(None)
+
+    def set_voice_threshold(self, threshold: float) -> None:
+        self._voice_threshold = float(threshold)
+        for row in self._rows.values():
+            row.set_voice_threshold(self._voice_threshold)
 
 
 class AudioWaveformThumbnail(QWidget):
@@ -658,7 +767,10 @@ class AudioWaveformThumbnail(QWidget):
 class AudioTrackRow(QWidget):
     toggle_requested = Signal(int)
 
-    def __init__(self, track_id: int, parent: QWidget | None = None):
+    def __init__(
+        self, track_id: int, parent: QWidget | None = None, *,
+        show_voice_highlights: bool = True,
+    ):
         super().__init__(parent)
         self.track_id = int(track_id)
         self._rendered_text = ""
@@ -677,6 +789,7 @@ class AudioTrackRow(QWidget):
         self.duration.setStyleSheet("font-family:Consolas")
         self.duration.setFixedWidth(90)
         self.waveform = AudioWaveformThumbnail()
+        self._show_voice_highlights = bool(show_voice_highlights)
         layout.addWidget(self.play)
         layout.addWidget(self.label)
         layout.addWidget(self.duration)
@@ -696,7 +809,9 @@ class AudioTrackRow(QWidget):
             self.label.setStyleSheet(label_style)
         self.duration.setText(f"{snapshot.duration_seconds:5.1f} s")
         self.waveform.set_envelope(snapshot.waveform_envelope)
-        self.waveform.set_voice_annotations(snapshot.voice_annotations_20ms)
+        self.waveform.set_voice_annotations(
+            snapshot.voice_annotations_20ms if self._show_voice_highlights else ()
+        )
         self.set_playing(playing)
 
     def set_playing(self, playing: bool) -> None:

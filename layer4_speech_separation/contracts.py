@@ -175,6 +175,38 @@ class Layer4PrimarySelection:
 
 
 @dataclass(frozen=True, slots=True)
+class Layer4ProcessedAudio:
+    """L4 terminal audio held for listening until the user sends it to L5."""
+
+    request_id: str
+    source: Layer4LongAudioInput
+    speaker_count: SpeakerCountDecision
+    path: Literal["single_speaker_bypass", "two_speaker_separation"]
+    selected: Layer4PrimarySelection | None
+    output_asset_id: str
+    output_sha256: str
+    waveform_48k: NDArray[np.float32]
+    metadata: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if not self.request_id or not self.output_asset_id:
+            raise ValueError("processed L4 audio requires request and asset identities")
+        if self.speaker_count.asset_id != self.source.asset_id:
+            raise ValueError("processed L4 speaker count must describe its source")
+        if (self.path == "single_speaker_bypass") != (self.selected is None):
+            raise ValueError("only single-speaker L4 audio may omit a selection")
+        if len(self.output_sha256) != 64 or any(
+            char not in "0123456789abcdef" for char in self.output_sha256
+        ):
+            raise ValueError("processed L4 output sha256 must be lowercase hexadecimal")
+        waveform = _readonly_float32_1d(self.waveform_48k, "processed L4 waveform")
+        if len(waveform) != len(self.source.waveform) or len(waveform) % 960:
+            raise ValueError("processed L4 audio must preserve complete 48 kHz Hub hops")
+        object.__setattr__(self, "waveform_48k", waveform)
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True, slots=True)
 class Layer4OfflineResult:
     """Auditable terminal result for one sealed L3 asset."""
 

@@ -169,7 +169,7 @@ WindowWorkItem
 
 ### 采集后离线L4/L5路径
 
-离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量；最大方向数1时统一降采样后直接进入L5，最大值2时先运行配置选择的MossFormer2或TIGER，再以原Hub长音频的2～4 kHz幅度谱从两个匿名候选中选择一条，继承原`session_id/stream_epoch/track_id/theta_deg`后进入L5。`ApplicationRuntime.offline_l4_sources`和`run_offline_l4()`已预留调用接口；本次不实现UI。
+离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量。Test UI下半区按L3/L4/L5三等分：先由“发送到L4”运行人数路由、分离和匹配，保存带原ID/角度的L4 WAV供试听；全部完成后再由“发送到L5”运行CNN。L5判定的Voice黄色只绘制在L4音频条，L3音频不再着色。
 
 ## 算法流程说明
 

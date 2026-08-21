@@ -243,7 +243,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `Layer4LongAudioInput`固定接收带SHA-256、`session_id/stream_epoch/track_id/theta_deg/start_sample`的48 kHz单声道完整20 ms hop音频；后端输入固定16 kHz并必须返回恰好两条匿名、等长、finite `float32`候选。
 - 每条L3输入的两候选只发布一个。原L3 BF参考经相同重采样后，以512点Hann STFT、160点hop在2～4 kHz计算逐帧幅度谱余弦相似度并按参考频带能量加权；高分候选继承原ID和角度，低分候选不发布。平分固定选择索引0；记录两分数和差值，首版不设拒绝阈值。
 - 官方MossFormer2/TIGER源码和权重作为可选对比模型，以manifest固定revision、SHA-256与许可证。模型适配器用重叠分块稳定匿名输出排列；匹配器只对两条完整候选做一次整段选择。
-- Runtime通过`offline_l4_sources`和`run_offline_l4()`预留非UI调用；本期不实现UI。
+- Runtime同时提供一键离线接口和分离的`process_l4_sealed/process_l5_sealed`接口。Test UI必须以两个独立“发送”动作调用：L3全部封存后才能进入L4，L4全部完成后才能进入L5。
 
 ## 11. Runtime、时间线与并行管理
 
@@ -258,8 +258,8 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ## 12. Development Test UI 与逐 ID 试听
 
 - Test UI不拥有独立的音频窗口配置；面板文字、单窗试听波形和按ID恢复范围全部使用Runtime注入的同一40/80/160 ms派生规格。当前按钮显示40 ms。
-- Test UI继续只缓存并播放`TrackAudioStreamHub`已经拼好和补偿的连续hop；本期不新增离线L4/L5 UI。Hub另存完整长音频，停机排空后由后端接口封存并离线处理。
-- 方向轨波形按同一20 ms时间线接收L5概率。使用当前Test UI L5阈值重新判断并将Voice区间底色显示为黄色；Non-Voice、无结果及失败区间保留既有默认底色。滑块只读取已有概率，不重跑CNN。
+- 下半区按L3、L4、L5三等分。L3栏播放Hub长音频并提供“发送到L4”；L4栏保存输出WAV，以原ID/角度提供同样的波形和试听，并在全部完成后提供“发送到L5”；L5栏显示第二次发送产生的CNN结果。
+- L3方向轨不得再绘制L5语义颜色。使用当前Test UI阈值重判后，Voice黄色背景只绘制在对应L4音频条；Non-Voice和未发送L5的L4音频保持默认底色。滑块只读取已有概率，不重跑CNN。
 
 - 删除 “Iterative Multiple Peak” 开关。Development Test UI保留一个默认开启、持久化的`ID Tracking`诊断开关：开启时显示并发布L2权威ID；关闭时只显示360点MUSIC伪谱和原始峰值灰色小点，清空追踪状态，并将该窗L3/L5正常标记为`SKIPPED`，不得把原始峰值当作下游ID。重新开启后从新的权威ID状态开始。
 - 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。

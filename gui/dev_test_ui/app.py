@@ -8,6 +8,7 @@ import wave
 from collections.abc import Mapping
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -127,9 +128,10 @@ def build_window(
     except ImportError as exc:
         raise RuntimeError("Development Test UI需要安装项目ui依赖") from exc
 
-    from .panels import BeamformPanel, CnnPanel
+    from .panels import BeamformPanel, CnnPanel, Layer4AudioPanel
     from .preview_player import PreviewPlayer
     from .audio_id_tracker import AudioIdTracker
+    from .offline_l4_store import OfflineLayer4UiStore
     from .panels import (
         GateProbabilityThresholdControl,
         DirectionIdTrackingControl,
@@ -260,6 +262,9 @@ def build_window(
             self._last_runtime_state = "stopped"
             self._eof_stop_submitted = False
             self._audio_source_key = None
+            self._offline_l4_pipeline = None
+            self._l4_processed = ()
+            self._l4_store = OfflineLayer4UiStore()
             self._replay_previous_stream = None
             self._replay_reset_pending = False
             root = QWidget()
@@ -280,9 +285,10 @@ def build_window(
             grid.setSpacing(1)
             for index in (0, 1):
                 grid.setRowStretch(index, 1)
+            for index in range(6):
                 grid.setColumnStretch(index, 1)
-            grid.addWidget(self._l1_panel(), 0, 0)
-            grid.addWidget(self._doa_panel(), 0, 1)
+            grid.addWidget(self._l1_panel(), 0, 0, 1, 3)
+            grid.addWidget(self._doa_panel(), 0, 3, 1, 3)
             self.bf_panel = BeamformPanel(
                 config, runtime.l5_input_gain_compensation_enabled
             )
@@ -301,17 +307,23 @@ def build_window(
             self.bf_panel.gain_compensation_changed.connect(
                 self._set_l5_input_gain_compensation
             )
+            self.bf_panel.send_requested.connect(self._send_l3_to_l4)
             self.bf_panel.set_processing_mode(runtime.l3_processing_mode)
             self.bf_panel.set_downstream_processing_enabled(
                 runtime.downstream_processing_enabled
             )
             self.cnn_panel = CnnPanel(config.layer5.voice_probability_limit)
-            self.bf_panel.set_voice_threshold(config.layer5.voice_probability_limit)
+            self.l4_panel = Layer4AudioPanel()
+            self.l4_panel.track_play_requested.connect(self._toggle_l4_audio)
+            self.l4_panel.track_stop_requested.connect(self._pause_track_audio)
+            self.l4_panel.send_requested.connect(self._send_l4_to_l5)
+            self.l4_panel.set_voice_threshold(config.layer5.voice_probability_limit)
             self.cnn_panel.threshold_changed.connect(
-                self.bf_panel.set_voice_threshold
+                self.l4_panel.set_voice_threshold
             )
-            grid.addWidget(self.bf_panel, 1, 0)
-            grid.addWidget(self.cnn_panel, 1, 1)
+            grid.addWidget(self.bf_panel, 1, 0, 1, 2)
+            grid.addWidget(self.l4_panel, 1, 2, 1, 2)
+            grid.addWidget(self.cnn_panel, 1, 4, 1, 2)
             for item_index in range(grid.count()):
                 quadrant = grid.itemAt(item_index).widget()
                 quadrant.setMinimumSize(0, 0)
@@ -728,6 +740,11 @@ def build_window(
             except Exception as exc:
                 if name in {"灯光开", "灯光关"}:
                     self.light_label.setText("状态: Error")
+                elif name == "L3发送到L4":
+                    self.bf_panel.set_send_enabled(True)
+                    self.l4_panel.set_processing(f"L4失败：{exc}")
+                elif name == "L4发送到L5":
+                    self.l4_panel.set_tracks(self._l4_store.snapshots())
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -747,6 +764,11 @@ def build_window(
             self.gate_readout.set_unavailable("WARMING")
             self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=WARMING")
             self.cnn_panel.set_unavailable("WARMING: waiting for completed L5 window")
+            self.bf_panel.set_send_enabled(False)
+            self.l4_panel.clear_tracks()
+            self._l4_store.clear()
+            self._offline_l4_pipeline = None
+            self._l4_processed = ()
             self.srp_header.setText("WARMING | session — | epoch 0 | window — | sample — | age —")
             self.l1_header.setText("WARMING | waiting for the first audio block")
 
@@ -768,6 +790,10 @@ def build_window(
                     status = status[:-6]
                 self.music_status.setText(f"{status} STOPPED")
             self.cnn_panel.set_unavailable("STOPPED")
+            try:
+                self.bf_panel.set_send_enabled(bool(runtime.offline_l4_sources))
+            except RuntimeError:
+                self.bf_panel.set_send_enabled(False)
             self.l1_header.setText("STOPPED | capture closed | age —")
             if self._frame is not None and self._frame.spatial_response is not None:
                 response = self._frame.spatial_response
@@ -1031,6 +1057,79 @@ def build_window(
                 self.bf_panel.sync_track_playback_stopped()
                 self.statusBar().showMessage(f"试听失败：{error}", 5000)
 
+        def _toggle_l4_audio(self, track_id: int):
+            if (
+                self._audio_source_key is not None
+                and self._audio_source_key[0] == "l4_track"
+                and int(self._audio_source_key[1]) == int(track_id)
+            ):
+                if not self.preview_player.play():
+                    error = self.preview_player.take_error() or "unknown audio output error"
+                    self.l4_panel.sync_track_playback_stopped()
+                    self.statusBar().showMessage(f"L4试听失败：{error}", 5000)
+                return
+            cache_path = self._l4_store.audio_path(track_id)
+            if cache_path is None:
+                self.l4_panel.sync_track_playback_stopped()
+                self.statusBar().showMessage(f"L4 ID-{track_id:03d}暂无可播放音频", 3000)
+                return
+            self.preview_player.stop()
+            self.preview_player.set_volume(1.0)
+            self.preview_player.load_file(cache_path, delete_on_release=False)
+            self._audio_source_key = ("l4_track", int(track_id), str(cache_path))
+            if not self.preview_player.play():
+                error = self.preview_player.take_error() or "unknown audio output error"
+                self.l4_panel.sync_track_playback_stopped()
+                self.statusBar().showMessage(f"L4试听失败：{error}", 5000)
+
+        def _send_l3_to_l4(self):
+            self.preview_player.close()
+            self._audio_source_key = None
+            self.bf_panel.set_send_enabled(False)
+            self.l4_panel.set_processing("正在加载模型并处理全部L3长音频…")
+
+            def process_l4():
+                pipeline = runtime.build_offline_l4_pipeline()
+                processed = pipeline.process_l4_sealed(runtime.offline_l4_sources)
+                return pipeline, processed
+
+            def completed(value):
+                pipeline, processed = value
+                self._offline_l4_pipeline = pipeline
+                self._l4_processed = tuple(processed)
+                self._l4_store.set_processed(self._l4_processed)
+                self.l4_panel.set_tracks(self._l4_store.snapshots())
+                self.cnn_panel.set_unavailable("等待从L4发送")
+
+            self._submit_command("L3发送到L4", process_l4, completed)
+
+        def _send_l4_to_l5(self):
+            if self._offline_l4_pipeline is None or not self._l4_processed:
+                self.statusBar().showMessage("没有已完成的L4音频", 3000)
+                return
+            self.l4_panel.set_processing("L5正在处理全部L4音频…")
+
+            def completed(results):
+                results = tuple(results)
+                self._l4_store.apply_l5(results)
+                self.l4_panel.set_tracks(self._l4_store.snapshots(), l5_complete=True)
+                detections = tuple(SimpleNamespace(
+                    theta_deg=item.source.theta_deg,
+                    probability=item.l5_probability,
+                    window_id=item.source.end_sample // 960,
+                ) for item in results)
+                self.cnn_panel.set_result(SimpleNamespace(
+                    detections=detections,
+                    primary_model_id=(results[0].l5_model_id if results else "L5"),
+                    threshold=self._offline_l4_pipeline.layer5.threshold,
+                ))
+
+            self._submit_command(
+                "L4发送到L5",
+                lambda: self._offline_l4_pipeline.process_l5_sealed(self._l4_processed),
+                completed,
+            )
+
         def _refresh(self):
             self._poll_command()
             self._refresh_replay_controls()
@@ -1048,6 +1147,16 @@ def build_window(
                     self.bf_panel.clear_track_playback_progress()
             else:
                 self.bf_panel.clear_track_playback_progress()
+            if self._audio_source_key is not None and self._audio_source_key[0] == "l4_track":
+                progress = self.preview_player.playback_progress
+                if self.preview_player.playing or progress > 0.0:
+                    self.l4_panel.set_track_playback_progress(
+                        int(self._audio_source_key[1]), progress
+                    )
+                else:
+                    self.l4_panel.clear_track_playback_progress()
+            else:
+                self.l4_panel.clear_track_playback_progress()
             playback_error = self.preview_player.take_error()
             if playback_error:
                 self.statusBar().showMessage(f"试听输出：{playback_error}", 5000)
@@ -1473,9 +1582,12 @@ def build_window(
                     self.preview_player.close()
                 finally:
                     try:
-                        runtime.close(delete_dev_test_ui_audio=True)
+                        self._l4_store.close()
                     finally:
-                        super().closeEvent(event)
+                        try:
+                            runtime.close(delete_dev_test_ui_audio=True)
+                        finally:
+                            super().closeEvent(event)
 
         def keyPressEvent(self, event):
             if event.key() == Qt.Key.Key_F11:

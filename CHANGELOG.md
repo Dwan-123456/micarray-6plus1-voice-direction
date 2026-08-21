@@ -23,6 +23,16 @@
 
 ---
 
+## 2026-08-21 — Test UI增加L3→L4→L5两步人工发送与三栏试听
+
+- **界面布局**：Development Test UI下半区由L3/L5两栏改为等宽L3、L4、L5三栏；L3新增“发送到L4”，L4新增“发送到L5”。只有停止采集、L3排空且Hub封存完成后才允许第一次发送；只有全部L4轨完成后才允许第二次发送。耗时模型加载和推理继续在UI工作线程外执行。
+- **L4试听与身份**：新增L4输出WAV试听缓存和波形栏，逐轨保留原`session/epoch/track_id/theta`，显示处理状态、时长并支持独立播放。L4后端拆出`process_l4_*`与`process_l5_*`公开接口，原一键离线/批处理接口继续兼容。
+- **L5显示与颜色规则**：L4发送后L5才运行CNN并立即更新方向概率面板；Voice区间只在对应L4音频预览条显示黄色。取消旧的L5结果染黄L3试听条规则，L3始终只显示自身音频波形。
+- **保持不变**：L1、L2 MUSIC/Gate/ID/Kalman、L3波束形成、L4人数判断/重采样/分离/2～4 kHz匹配、L5模型与阈值、RecordingStore格式、Production UI、Pipeline Log UI、模型和Git LFS资产均无变化；不创建或移动发布标签。
+- **验证**：全量pytest `487 passed`；L4/Test UI/Runtime聚焦复测`64 passed`，本次变更路径Ruff与`git diff --check`通过。全仓Ruff仍报告上一提交`3324287`中L2 tracker的一个未使用局部变量，本次未越界修改该L2实现。自动测试不替代真实长音频GPU处理、播放设备和人工交互验收。
+
+---
+
 ## 2026-08-21 — L2方向ID快速确认、动态重关联与阻尼Kalman预测
 
 - **ID确认与寿命**：tentative轨迹改为滚动200 ms内累计3次一对一MUSIC匹配后进入`confirmed`；正式/临时轨迹的几何coasting TTL统一为最后真实观测后2秒，时间继续严格按48 kHz绝对sample计算。

@@ -12,6 +12,7 @@ from layer4_speech_separation import (
 )
 from layer4_speech_separation.offline import OfflineLayer4Pipeline
 from layer4_speech_separation.models import _OfficialModelBackend
+from gui.dev_test_ui.offline_l4_store import OfflineLayer4UiStore
 
 
 def _source(counts: tuple[int, ...]) -> Layer4LongAudioInput:
@@ -47,7 +48,11 @@ class _Backend:
 
 
 class _L5:
+    def __init__(self):
+        self.calls = 0
+
     def process(self, inputs):
+        self.calls += 1
         item = inputs[0]
         return SimpleNamespace(detections=(SimpleNamespace(
             probability=0.8, is_voice=True, model_id="l5", track_id=item.track_id,
@@ -90,6 +95,35 @@ def test_two_speakers_are_separated_matched_and_keep_parent_identity() -> None:
     assert result.selected.selected_source_index == 1
     assert result.selected.track_id == 9 and result.selected.theta_deg == 120.0
     assert backend.calls == 1
+
+
+def test_l4_and_l5_can_only_run_as_two_explicit_ui_send_steps() -> None:
+    backend = _Backend()
+    layer5 = _L5()
+    pipeline = OfflineLayer4Pipeline(
+        speaker_counter=DirectionCountSpeakerClassifier(),
+        backends={"mossformer2_ss_16k": backend},
+        layer5=layer5,
+        default_backend="mossformer2_ss_16k",
+    )
+    processed = pipeline.process_l4_sealed((_source((1, 2)),))
+    assert len(processed) == 1
+    assert processed[0].source.track_id == 9
+    assert layer5.calls == 0
+    results = pipeline.process_l5_sealed(processed)
+    assert layer5.calls == 1
+    assert results[0].l5_is_voice is True
+
+    store = OfflineLayer4UiStore()
+    try:
+        store.set_processed(processed)
+        assert store.audio_path(9).is_file()
+        assert all(item is None for item in store.snapshots()[0].voice_annotations_20ms)
+        store.apply_l5(results)
+        annotations = store.snapshots()[0].voice_annotations_20ms
+        assert annotations and all(item is not None and item.is_voice for item in annotations)
+    finally:
+        store.close()
 
 
 def test_long_audio_adapter_repairs_swapped_chunk_outputs_before_crossfade() -> None:
