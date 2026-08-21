@@ -842,6 +842,8 @@ def test_gain_compensation_control_is_in_l3_header_and_uses_state_colors(
     app, window = build_window(config_path)
     try:
         control = window.bf_panel.gain_compensation
+        assert control.size() == window.bf_panel.mode_switch.size()
+        assert control.size() == window.bf_panel.downstream_switch.size()
         assert control.text() == "连续轨响度补偿"
         assert control.parent() is window.bf_panel
         assert not hasattr(window.cnn_panel, "gain_compensation")

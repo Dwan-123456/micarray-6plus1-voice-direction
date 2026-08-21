@@ -312,6 +312,7 @@ class BeamformPanel(QGroupBox):
         preview_controls.addWidget(self.mode_switch)
         preview_controls.addWidget(self.downstream_switch)
         preview_controls.addWidget(self.gain_compensation)
+        self._equalize_header_control_sizes()
         layout.addLayout(preview_controls)
         self.help = QLabel("仅按L2权威ID缓存方向音频；Kalman只平滑角度，不控制ID存在。")
         layout.addWidget(self.help)
@@ -335,6 +336,27 @@ class BeamformPanel(QGroupBox):
         mode = modes[(modes.index(self._processing_mode) + 1) % len(modes)]
         self.set_processing_mode(mode)
         self.mode_change_requested.emit(mode)
+
+    def _equalize_header_control_sizes(self) -> None:
+        controls = (
+            self.mode_switch,
+            self.downstream_switch,
+            self.gain_compensation,
+        )
+        mode_labels = (
+            "BF：优化算法",
+            "BF：DS基线",
+            "BF：Loaded MVDR基线",
+            "BF：五频段鲁棒对照",
+        )
+        mode_width = max(
+            self.mode_switch.fontMetrics().horizontalAdvance(label)
+            for label in mode_labels
+        ) + 32
+        common_width = max(mode_width, *(control.sizeHint().width() for control in controls))
+        common_height = max(34, *(control.sizeHint().height() for control in controls))
+        for control in controls:
+            control.setFixedSize(common_width, common_height)
 
     def set_processing_mode(self, mode: str) -> None:
         if mode not in {
