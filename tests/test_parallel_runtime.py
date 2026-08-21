@@ -923,6 +923,45 @@ def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_run
         runtime.stop()
 
 
+def test_pipeline_total_durations_exclude_replay_pause_and_disabled_downstream(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    runtime, _, _ = _runtime(tmp_path)
+    now_ns = [2_000_000_000]
+    monkeypatch.setattr("app.runtime.monotonic_ns", lambda: now_ns[0])
+    runtime._pipeline_first_queued_ns = 1_000_000_000
+    runtime._processing_threads = {
+        stage: SimpleNamespace(is_alive=lambda: True)
+        for stage in ("l2", "l3", "l4")
+    }
+
+    runtime.set_pipeline_timing_paused(
+        "downstream_disabled_by_test_ui", True, stages=("l3", "l4")
+    )
+    now_ns[0] = 5_000_000_000
+    durations = runtime.pipeline_total_durations_seconds
+    assert durations == {"l2": 4.0, "l3": 1.0, "l4": 1.0}
+
+    runtime.set_pipeline_timing_paused("simulation_input_paused", True)
+    now_ns[0] = 8_000_000_000
+    assert runtime.pipeline_total_durations_seconds == durations
+
+    runtime.set_pipeline_timing_paused("simulation_input_paused", False)
+    now_ns[0] = 10_000_000_000
+    durations = runtime.pipeline_total_durations_seconds
+    assert durations == {"l2": 6.0, "l3": 1.0, "l4": 1.0}
+
+    runtime.set_pipeline_timing_paused(
+        "downstream_disabled_by_test_ui", False, stages=("l3", "l4")
+    )
+    now_ns[0] = 12_000_000_000
+    assert runtime.pipeline_total_durations_seconds == {
+        "l2": 8.0,
+        "l3": 3.0,
+        "l4": 3.0,
+    }
+
+
 def test_processing_status_exposes_bounded_queues_and_cache_never_exceeds_hard_limit(
     tmp_path: Path,
 ) -> None:

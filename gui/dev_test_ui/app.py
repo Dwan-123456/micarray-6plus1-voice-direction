@@ -343,7 +343,7 @@ def build_window(
                 self.replay_restart = QPushButton("从头重播")
                 self.replay_status = QLabel("准备中")
                 self.replay_start.clicked.connect(self._start_or_resume_replay)
-                self.replay_pause.clicked.connect(replay_source.pause)
+                self.replay_pause.clicked.connect(self._pause_replay)
                 self.replay_restart.clicked.connect(self._restart_replay)
                 for widget in (
                     self.replay_name,
@@ -760,8 +760,15 @@ def build_window(
             if replay_source is None:
                 return
             replay_source.resume()
+            runtime.set_pipeline_timing_paused("simulation_input_paused", False)
             if not runtime.active:
                 self._start_capture()
+
+        def _pause_replay(self):
+            if replay_source is None:
+                return
+            replay_source.pause()
+            runtime.set_pipeline_timing_paused("simulation_input_paused", True)
 
         def _clear_replay_results(self):
             current_l1 = None if self._frame is None else getattr(self._frame, "l1", None)
@@ -803,6 +810,7 @@ def build_window(
             self._clear_replay_results()
             runtime.reset_pipeline_total_durations()
             replay_source.replay()
+            runtime.set_pipeline_timing_paused("simulation_input_paused", False)
             if not runtime.active:
                 self._start_capture()
 
@@ -903,6 +911,11 @@ def build_window(
 
         def _set_downstream_processing(self, enabled: bool):
             applied = runtime.set_downstream_processing_enabled(bool(enabled))
+            runtime.set_pipeline_timing_paused(
+                "downstream_disabled_by_test_ui",
+                not applied,
+                stages=("l3", "l4"),
+            )
             self.bf_panel.set_downstream_processing_enabled(applied)
             if applied:
                 self.bf_panel.set_unavailable(
@@ -1347,7 +1360,8 @@ def build_window(
                 )
                 self.performance_bar.setToolTip(
                     "左侧每1秒刷新上一秒性能；总处理时长从首个20 ms窗口开始入队计时，"
-                    "各层在处理完最后一个输入并排空后分别停止。"
+                    "各层在处理完最后一个输入并排空后分别停止；模拟输入手动暂停期间不计时，"
+                    "手动关闭L3/L4期间只累计L2。"
                 )
             self.performance_bar.setText(text)
 

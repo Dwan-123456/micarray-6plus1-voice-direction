@@ -312,6 +312,15 @@ class ApplicationRuntime:
         self._pipeline_stage_finished_ns: dict[str, int | None] = {
             "l2": None, "l3": None, "l4": None,
         }
+        self._pipeline_stage_pause_reasons: dict[str, set[str]] = {
+            "l2": set(), "l3": set(), "l4": set(),
+        }
+        self._pipeline_stage_pause_started_ns: dict[str, int | None] = {
+            "l2": None, "l3": None, "l4": None,
+        }
+        self._pipeline_stage_excluded_ns: dict[str, int] = {
+            "l2": 0, "l3": 0, "l4": 0,
+        }
         self._project_config_hash = config_hash(config=config)
         self._calibration_hash = calibration_config_hash(config.calibration)
         self._compute_cache: ComputeCache
@@ -797,7 +806,14 @@ class ApplicationRuntime:
                 and stage in self._pipeline_stage_finished_ns
                 and self._pipeline_stage_finished_ns[stage] is None
             ):
-                self._pipeline_stage_finished_ns[stage] = monotonic_ns()
+                finished_ns = monotonic_ns()
+                pause_started_ns = self._pipeline_stage_pause_started_ns[stage]
+                if pause_started_ns is not None:
+                    self._pipeline_stage_excluded_ns[stage] += max(
+                        0, finished_ns - pause_started_ns
+                    )
+                    self._pipeline_stage_pause_started_ns[stage] = None
+                self._pipeline_stage_finished_ns[stage] = finished_ns
 
     def reset_pipeline_total_durations(self) -> None:
         """Start a fresh interactive replay timing generation."""
@@ -809,6 +825,52 @@ class ApplicationRuntime:
             self._pipeline_stage_finished_ns = {
                 "l2": None, "l3": None, "l4": None,
             }
+            self._pipeline_stage_pause_started_ns = {
+                "l2": None, "l3": None, "l4": None,
+            }
+            self._pipeline_stage_excluded_ns = {
+                "l2": 0, "l3": 0, "l4": 0,
+            }
+
+    def set_pipeline_timing_paused(
+        self,
+        reason: str,
+        paused: bool,
+        *,
+        stages: tuple[str, ...] = ("l2", "l3", "l4"),
+    ) -> None:
+        """Exclude an operator-controlled pause from selected stage timers."""
+
+        if not reason:
+            raise ValueError("pipeline timing pause reason cannot be empty")
+        if type(paused) is not bool:
+            raise ValueError("pipeline timing paused setting must be bool")
+        if not stages or any(stage not in self._pipeline_stage_finished_ns for stage in stages):
+            raise ValueError("pipeline timing stages must be a non-empty L2/L3/L4 subset")
+        now_ns = monotonic_ns()
+        with self._pipeline_duration_lock:
+            for stage in stages:
+                reasons = self._pipeline_stage_pause_reasons[stage]
+                if paused:
+                    if reason in reasons:
+                        continue
+                    if (
+                        not reasons
+                        and self._pipeline_first_queued_ns is not None
+                        and self._pipeline_stage_finished_ns[stage] is None
+                    ):
+                        self._pipeline_stage_pause_started_ns[stage] = now_ns
+                    reasons.add(reason)
+                else:
+                    if reason not in reasons:
+                        continue
+                    reasons.remove(reason)
+                    pause_started_ns = self._pipeline_stage_pause_started_ns[stage]
+                    if not reasons and pause_started_ns is not None:
+                        self._pipeline_stage_excluded_ns[stage] += max(
+                            0, now_ns - pause_started_ns
+                        )
+                        self._pipeline_stage_pause_started_ns[stage] = None
 
     def seal_pipeline_total_durations(self) -> bool:
         """Queue an ordered barrier so interactive replay timers stop after drain."""
@@ -833,6 +895,8 @@ class ApplicationRuntime:
         with self._pipeline_duration_lock:
             started_ns = self._pipeline_first_queued_ns
             finished_ns = dict(self._pipeline_stage_finished_ns)
+            excluded_ns = dict(self._pipeline_stage_excluded_ns)
+            pause_started_ns = dict(self._pipeline_stage_pause_started_ns)
         if started_ns is None:
             return {"l2": None, "l3": None, "l4": None}
         now_ns = monotonic_ns()
@@ -843,7 +907,13 @@ class ApplicationRuntime:
             if end_ns is None and (worker is None or not worker.is_alive()):
                 durations[stage] = None
             else:
-                durations[stage] = max(0.0, ((end_ns or now_ns) - started_ns) / 1e9)
+                effective_end_ns = end_ns or now_ns
+                excluded = excluded_ns[stage]
+                if pause_started_ns[stage] is not None:
+                    excluded += max(0, effective_end_ns - pause_started_ns[stage])
+                durations[stage] = max(
+                    0.0, (effective_end_ns - started_ns - excluded) / 1e9
+                )
         return durations
 
     @property
@@ -1400,6 +1470,12 @@ class ApplicationRuntime:
                 self._pipeline_stage_finished_ns = {
                     "l2": None, "l3": None, "l4": None,
                 }
+                self._pipeline_stage_pause_started_ns = {
+                    "l2": None, "l3": None, "l4": None,
+                }
+                self._pipeline_stage_excluded_ns = {
+                    "l2": 0, "l3": 0, "l4": 0,
+                }
             with self._pre_denoise_lock:
                 self._pre_denoise_latency_active = self._pre_denoise_enabled
             if self.dev_audio_tracker is not None:
@@ -1682,7 +1758,11 @@ class ApplicationRuntime:
         started_timing = False
         with self._pipeline_duration_lock:
             if self._pipeline_first_queued_ns is None:
-                self._pipeline_first_queued_ns = monotonic_ns()
+                started_ns = monotonic_ns()
+                self._pipeline_first_queued_ns = started_ns
+                for stage, reasons in self._pipeline_stage_pause_reasons.items():
+                    if reasons:
+                        self._pipeline_stage_pause_started_ns[stage] = started_ns
                 started_timing = True
         try:
             self._l2_windows.put_nowait(work_item)
@@ -1691,6 +1771,9 @@ class ApplicationRuntime:
             if started_timing:
                 with self._pipeline_duration_lock:
                     self._pipeline_first_queued_ns = None
+                    self._pipeline_stage_pause_started_ns = {
+                        "l2": None, "l3": None, "l4": None,
+                    }
             # A producer race should be impossible with the single L1 owner,
             # but keep it terminal and observable rather than raising.
             self._joiner_submit(
