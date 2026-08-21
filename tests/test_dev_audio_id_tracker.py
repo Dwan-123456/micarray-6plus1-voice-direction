@@ -303,7 +303,7 @@ def test_coasting_timeline_silence_does_not_delete_playable_observed_audio(tmp_p
     assert cache.stat().st_size == 201 * 960 * np.dtype(np.float32).itemsize
 
 
-def test_mode_change_seals_and_isolates_cache_partitions(tmp_path):
+def test_mode_change_deletes_the_hidden_cache_partition(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     first = _direction(1, 7_680, 30.0)
     tracker.update(_window(7_680), (first,), (_preview(1, 7_680, 30.0),), active_tracks=(first,))
@@ -316,8 +316,7 @@ def test_mode_change_seals_and_isolates_cache_partitions(tmp_path):
     )
     tracker.update(_window(9_600), (), (), active_tracks=())
     paths = tuple((tmp_path / "cache").rglob("track_001/segment_*.f32"))
-    assert len(paths) == 2
-    assert len({path.parent.parent.name for path in paths}) == 2
+    assert len(paths) == 1
 
 
 def test_center_reference_is_full_capture_and_deleted_only_on_close(tmp_path):

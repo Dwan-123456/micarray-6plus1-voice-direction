@@ -235,6 +235,11 @@ class TrackAudioStreamHub:
                     self._reset_track_audio(state)
                     state.processing_mode = window.processing_mode
                     state.last_source_decision = None
+                    # L3 modes are isolated listening experiments. Once the
+                    # UI switches mode, the old-mode waveform is no longer
+                    # displayed and must not remain in the offline L4 archive
+                    # under the same authoritative ID.
+                    self._archive.pop(key, None)
                 previous = state.last_source_decision
                 if previous is not None and window.decision_sample <= previous:
                     raise ValueError("track-audio windows must be strictly ordered per ID")
@@ -302,17 +307,32 @@ class TrackAudioStreamHub:
             tuple(emitted), tuple(contexts), active,
         )
 
-    def seal(self) -> tuple[Layer4LongAudioInput, ...]:
-        """Freeze one timeline-preserving long input per authoritative L2 ID."""
+    def seal(
+        self,
+        *,
+        allowed_track_keys: set[tuple[str, int, int]] | None = None,
+    ) -> tuple[Layer4LongAudioInput, ...]:
+        """Freeze only the authoritative L2 IDs retained by the Test UI.
+
+        ``allowed_track_keys`` is intentionally an exact identity allow-list.
+        When the Development Test UI has hidden and deleted a short or mostly
+        silent listening track, the Hub archive for that same identity is
+        deleted as well so it cannot reappear in an offline L4 submission.
+        ``None`` preserves the generic/headless Hub behaviour.
+        """
 
         outputs: list[Layer4LongAudioInput] = []
         with self._lock:
             discarded: list[tuple[str, int, int]] = []
             for (session_id, epoch, track_id), hops in sorted(self._archive.items()):
+                key = (session_id, epoch, track_id)
+                if allowed_track_keys is not None and key not in allowed_track_keys:
+                    discarded.append(key)
+                    continue
                 if not hops:
                     continue
                 if hops[-1].end_sample - hops[0].start_sample < self.minimum_output_samples:
-                    discarded.append((session_id, epoch, track_id))
+                    discarded.append(key)
                     continue
                 audio: list[np.ndarray] = []
                 direction_counts: list[tuple[int, int]] = []

@@ -3075,12 +3075,23 @@ class ApplicationRuntime:
         # append to it.  A later stop/close call can finalize after the worker
         # exits, and the explicit error remains visible to the UI.
         if not alive and not input_alive:
+            allowed_l4_track_keys: set[tuple[str, int, int]] | None = None
             if self.dev_audio_tracker is not None:
+                # Fail closed: if final UI filtering cannot complete, do not
+                # let an invisible Hub-only track leak into offline L4.
+                allowed_l4_track_keys = set()
                 try:
-                    self.dev_audio_tracker.finalize_capture()
+                    retained = self.dev_audio_tracker.finalize_capture()
+                    allowed_l4_track_keys = {
+                        (item.session_id, item.stream_epoch, item.track_id)
+                        for item in retained
+                        if item.track_id > 0
+                    }
                 except Exception as exc:
                     self.dev_audio_tracking_error = f"Test UI audio finalize failed: {exc}"
-            self.track_audio_stream.seal()
+            self.track_audio_stream.seal(
+                allowed_track_keys=allowed_l4_track_keys,
+            )
         if self._recording_session_started and not alive and not input_alive:
             try:
                 self.recording_store.stop_session("normal" if self.last_error is None else "runtime_error")

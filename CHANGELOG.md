@@ -23,6 +23,32 @@
 
 ---
 
+## 2026-08-21 — 删除L3隐藏音轨并阻止其进入离线L4
+
+- **版本/标签**：项目仍为`1.3.1`；不创建或移动发布标签。
+- **类型**：Development Test UI试听缓存、TrackAudioStreamHub封存边界与Runtime离线L4输入修复。
+- **涉及文件**：`gui/dev_test_ui/audio_id_tracker.py`、`track_audio_stream/service.py`、
+  `app/runtime.py`、相关定向测试和本`CHANGELOG.md`。
+
+### L3试听与L4提交
+
+- 确认并修复两套数据源不一致：L3面板隐藏/过滤音轨后，Hub长音频归档此前仍可能保留同一ID并发送到L4。
+- 采集与队列完全结束后，以L3最终保留的`(session_id, stream_epoch, track_id)`作为离线L4唯一白名单；
+  不足2秒、声音占比不超过30%或因其他最终过滤而未显示的方向音轨，同时从Hub归档中物理移除。
+- 白名单为空时清空全部方向归档；L3缓存最终过滤失败时采用失败关闭，不向L4泄漏不可见音轨。
+- Center Mic仍仅作为试听对照，不进入方向音轨白名单，也不发送到L4。
+- 切换L3处理模式时，立即删除已从界面消失的旧模式文件及对应Hub归档，避免相同正式ID混入隐藏模式音频。
+
+### 未改变
+
+- L1、L2的MUSIC/ID追踪、L3波束形成算法、L4分离模型、L5分类模型、正式录音、配置和模型资产均无变化。
+- 未修改2秒显示门槛、30%声音占比门槛及其现有声音判定方式；没有Git LFS资产变化。
+
+### 验证
+
+- `pytest -q tests/test_track_audio_stream.py tests/test_dev_audio_id_tracker.py tests/test_runtime.py -k "track_audio or dev_audio or offline_l4 or stop"`：`35 passed, 20 deselected`。
+- 覆盖最终白名单、空白名单、旧L3模式归档删除及相关停止/离线L4路径；`git diff --check`通过。
+
 ## 2026-08-21 — 新增完整架构图与首次使用手册
 
 - **版本/标签**：项目仍为`1.3.1`，不创建或移动`v1.3.1`及任何发布标签。

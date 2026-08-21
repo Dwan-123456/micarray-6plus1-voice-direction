@@ -19,14 +19,20 @@ from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoice
 from track_audio_stream.service import _ArchivedHop, _CROSSFADE_SAMPLES
 
 
-def _window(decision: int, track_id: int = 7, *, level: float = 1.0e-3):
+def _window(
+    decision: int,
+    track_id: int = 7,
+    *,
+    level: float = 1.0e-3,
+    processing_mode: str = "optimized",
+):
     absolute = np.arange(decision - 3_840, decision, dtype=np.float64)
     waveform = np.ascontiguousarray(
         level * np.sin(2.0 * np.pi * 500.0 * absolute / 48_000.0), np.float32
     )
     return TrackAudioWindow(
         "session", 0, decision // 960, decision, track_id, 30.0,
-        waveform, (0.9,) * 4, "optimized",
+        waveform, (0.9,) * 4, processing_mode,
     )
 
 
@@ -122,6 +128,60 @@ def test_hub_purges_sub_two_second_track_before_offline_l4() -> None:
     assert tuple(item.track_id for item in sealed) == (3,)
     assert short_key not in hub._archive
     assert long_key in hub._archive
+
+
+def test_hub_purges_every_track_not_retained_by_the_test_ui() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=60,
+    )
+    visible_key = ("session", 0, 3)
+    hidden_key = ("session", 0, 4)
+    for key in (visible_key, hidden_key):
+        hub._archive[key] = [
+            _ArchivedHop(
+                index * 960, (index + 1) * 960, 30.0, 1,
+                np.ones(960, np.float32),
+            )
+            for index in range(100)
+        ]
+
+    sealed = hub.seal(allowed_track_keys={visible_key})
+
+    assert tuple(item.track_id for item in sealed) == (3,)
+    assert visible_key in hub._archive
+    assert hidden_key not in hub._archive
+
+
+def test_empty_test_ui_allowlist_purges_all_offline_l4_audio() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=60,
+    )
+    key = ("session", 0, 3)
+    hub._archive[key] = [
+        _ArchivedHop(0, 960, 30.0, 1, np.ones(960, np.float32)),
+    ]
+
+    assert hub.seal(allowed_track_keys=set()) == ()
+    assert hub._archive == {}
+
+
+def test_hub_mode_change_removes_the_hidden_old_mode_audio() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=60,
+    )
+    hub.process(
+        (_window(7_680, level=0.01),),
+        active_track_ids=(7,), identity=_identity(7_680),
+    )
+    hub.process(
+        (_window(8_640, level=0.02, processing_mode="ds_baseline"),),
+        active_track_ids=(7,), identity=_identity(8_640),
+    )
+
+    sealed = hub.seal(allowed_track_keys={("session", 0, 7)})
+
+    assert len(sealed) == 1
+    assert len(sealed[0].waveform) == 960
 
 
 def test_adjacent_windows_crossfade_the_future_overlap_without_a_20ms_seam():

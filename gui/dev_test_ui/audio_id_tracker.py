@@ -90,7 +90,6 @@ class AudioIdTracker:
         self._mode_generation = 0
         self._processing_partition = "optimized_000"
         self._tracks: dict[int, _Track] = {}
-        self._sealed_tracks: list[dict[int, _Track]] = []
         self._reference_track: _Track | None = None
         self._reference_stream = None
         self._reference_stream_path: Path | None = None
@@ -115,7 +114,6 @@ class AudioIdTracker:
             self._mode_generation = 0
             self._processing_partition = "optimized_000"
             self._tracks.clear()
-            self._sealed_tracks.clear()
             self._reference_track = None
             self._next_track_id = 1
             self._snapshot_counter = 0
@@ -750,15 +748,18 @@ class AudioIdTracker:
             return self.snapshots()
 
     def seal_mode(self, next_mode: str | None = None) -> None:
-        """Seal current exact-ID files and start an isolated L3 mode partition."""
+        """Delete the now-hidden mode and start an isolated L3 partition."""
         with self._lock:
             for track in self._tracks.values():
                 self._flush_pending(track, fade_out=True)
                 track.state = "ended"
             self._remove_filtered_ended_tracks()
-            if self._tracks:
-                self._sealed_tracks.append(self._tracks)
-                self._tracks = {}
+            # The panel displays only the active processing mode. Retaining
+            # older partitions produced hidden audio that could later be sent
+            # to L4, so remove every file as it leaves the visible list.
+            for track in self._tracks.values():
+                self._delete_track_segments(track)
+            self._tracks = {}
             self._mode_generation += 1
             self._processing_mode = next_mode
             self._processing_partition = f"{next_mode or 'unknown'}_{self._mode_generation:03d}"
@@ -817,7 +818,6 @@ class AudioIdTracker:
         with self._lock:
             self._close_reference_stream()
             self._tracks.clear()
-            self._sealed_tracks.clear()
             self._reference_track = None
             self._stream = None
             if delete_files and self.cache_root.exists():
