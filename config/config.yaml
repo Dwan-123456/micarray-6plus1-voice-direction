@@ -163,14 +163,14 @@ layer2:
   dpd_rank1_enabled: false
   dpd_min_eigenvalue_ratio: 1.50
   dpd_min_plane_wave_fit: 0.40
-  dpd_min_frequency_support_ratio: 0.25
-  dpd_angle_tolerance_deg: 10
+  dpd_min_frequency_support_ratio: 0.20
+  dpd_angle_tolerance_deg: 15
   # Per-frequency rank-1 votes must form a real circular cluster rather than
   # only a relative peak in the fused map.
-  dpd_min_cluster_frequency_bins: 5
+  dpd_min_cluster_frequency_bins: 4
   dpd_frequency_subbands: 4
   dpd_min_cluster_subbands: 2
-  dpd_min_circular_concentration: 0.95
+  dpd_min_circular_concentration: 0.85
   # Merge individually strong DPD peaks before the final 50-degree NMS.
   dpd_peak_fusion_distance_deg: 40.0
   dpd_peak_fusion_min_normalized_score: 0.70
