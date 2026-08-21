@@ -9,13 +9,13 @@ import torch
 
 from common.config import DownstreamAudioWindowSpec
 
-from layer4_voice_classifier import (
-    Layer4AudioSegment,
-    Layer4Engine,
+from layer5_voice_classifier import (
+    Layer5AudioSegment,
+    Layer5Engine,
     ModelPrediction,
     NvidiaMarbleNetPlugin,
     InputGainCompensationSettings,
-    compensate_l4_input,
+    compensate_l5_input,
     max_contiguous_frame_mean,
 )
 
@@ -34,7 +34,7 @@ def _constant_level(dbfs: float) -> np.ndarray:
 )
 def test_input_gain_probability_breakpoints(probability, expected_weight):
     source = _constant_level(-45.0)
-    output, diagnostic = compensate_l4_input(
+    output, diagnostic = compensate_l5_input(
         source, (probability,) * 8, InputGainCompensationSettings()
     )
     segment = diagnostic.segments[0]
@@ -47,7 +47,7 @@ def test_input_gain_probability_breakpoints(probability, expected_weight):
 def test_input_above_target_is_not_amplified_and_source_is_unchanged():
     source = _constant_level(-20.0)
     original = source.copy()
-    output, diagnostic = compensate_l4_input(
+    output, diagnostic = compensate_l5_input(
         source, (1.0,) * 8, InputGainCompensationSettings()
     )
     np.testing.assert_array_equal(source, original)
@@ -58,7 +58,7 @@ def test_input_above_target_is_not_amplified_and_source_is_unchanged():
 def test_peak_protection_caps_added_gain_without_attenuating_hot_input():
     source = np.full(7_680, 1.0e-4, np.float32)
     source[::960] = 10.0 ** (-4.0 / 20.0)
-    output, diagnostic = compensate_l4_input(
+    output, diagnostic = compensate_l5_input(
         source, (1.0,) * 8, InputGainCompensationSettings()
     )
     assert 20.0 * np.log10(np.max(np.abs(output))) <= -3.0 + 1.0e-5
@@ -66,7 +66,7 @@ def test_peak_protection_caps_added_gain_without_attenuating_hot_input():
 
     hot = source.copy()
     hot[::960] = 10.0 ** (-2.0 / 20.0)
-    hot_output, _ = compensate_l4_input(
+    hot_output, _ = compensate_l5_input(
         hot, (1.0,) * 8, InputGainCompensationSettings()
     )
     assert np.max(np.abs(hot_output)) == pytest.approx(np.max(np.abs(hot)))
@@ -74,19 +74,19 @@ def test_peak_protection_caps_added_gain_without_attenuating_hot_input():
 
 def test_missing_probability_silence_and_nonfinite_probability_handling():
     source = _constant_level(-60.0)
-    output, diagnostic = compensate_l4_input(
+    output, diagnostic = compensate_l5_input(
         source, (None,) * 8, InputGainCompensationSettings()
     )
     np.testing.assert_array_equal(output, source)
     assert diagnostic.compensated_segment_count == 0
 
-    silence_output, silence_diagnostic = compensate_l4_input(
+    silence_output, silence_diagnostic = compensate_l5_input(
         np.zeros(7_680, np.float32), (1.0,) * 8, InputGainCompensationSettings()
     )
     assert not np.any(silence_output)
     assert all(item.silent for item in silence_diagnostic.segments)
     with pytest.raises(ValueError, match="IMCRA probabilities"):
-        compensate_l4_input(
+        compensate_l5_input(
             source, (float("nan"),) * 8, InputGainCompensationSettings()
         )
 
@@ -94,7 +94,7 @@ def test_missing_probability_silence_and_nonfinite_probability_handling():
 def test_linear_transition_remains_peak_safe_when_next_segment_is_hotter():
     source = _constant_level(-60.0)
     source[960:1920] = 10.0 ** (-4.0 / 20.0)
-    output, diagnostic = compensate_l4_input(
+    output, diagnostic = compensate_l5_input(
         source, (1.0,) * 8, InputGainCompensationSettings()
     )
     assert 20.0 * np.log10(np.max(np.abs(output[960:1920]))) <= -3.0 + 1.0e-5
@@ -114,10 +114,10 @@ def test_engine_sends_one_compensated_immutable_copy_to_primary_and_shadow():
             observations.append((self.model_id, id(waveforms), waveforms.copy(), waveforms.flags.writeable))
             return ModelPrediction(self.model_id, np.asarray((0.5,), np.float32), 0.0, {})
 
-    segment = Layer4AudioSegment(
+    segment = Layer5AudioSegment(
         "session", 0, 1, 7_680, 10.0, 48_000, source, (0.8,) * 8
     )
-    result = Layer4Engine(
+    result = Layer5Engine(
         _GainObservingPlugin("primary"), (_GainObservingPlugin("shadow"),)
     ).process((segment,))
 
@@ -141,7 +141,7 @@ def test_compensated_distant_official_speech_remains_voice_and_low_probability_n
         speech * (10.0 ** (-45.0 / 20.0) / np.sqrt(np.mean(speech.astype(np.float64) ** 2))),
         dtype=np.float32,
     )
-    compensated, _ = compensate_l4_input(
+    compensated, _ = compensate_l5_input(
         speech, (0.9,) * 32, InputGainCompensationSettings(), segment_count=32
     )
     probability = plugin.predict(compensated[None, :]).probabilities[0]
@@ -149,7 +149,7 @@ def test_compensated_distant_official_speech_remains_voice_and_low_probability_n
 
     rng = np.random.default_rng(4)
     noise = np.ascontiguousarray(rng.normal(0.0, 1.0e-3, 7_680), dtype=np.float32)
-    noise_output, _ = compensate_l4_input(
+    noise_output, _ = compensate_l5_input(
         noise, (0.3,) * 8, InputGainCompensationSettings()
     )
     np.testing.assert_array_equal(noise_output, noise)
@@ -252,18 +252,18 @@ def test_marblenet_adapter_accepts_both_configured_window_lengths(spec, model_sa
         DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560),
     ),
 )
-def test_l4_engine_enforces_configured_window_and_probability_count(spec):
+def test_l5_engine_enforces_configured_window_and_probability_count(spec):
     class _Plugin:
         model_id = "fixed"
 
         def predict(self, waveforms):
             return ModelPrediction("fixed", np.full(len(waveforms), 0.5, np.float32), 0.0, {})
 
-    segment = Layer4AudioSegment(
+    segment = Layer5AudioSegment(
         "session", 0, 1, 7_680, 10.0, 48_000,
         np.zeros(spec.samples, np.float32), (0.5,) * spec.decision_hops,
     )
-    result = Layer4Engine(_Plugin(), window_spec=spec).process((segment,))
+    result = Layer5Engine(_Plugin(), window_spec=spec).process((segment,))
     assert len(result.detections) == 1
     assert len(result.input_gain_compensation[0].segments) == spec.decision_hops
 
@@ -291,14 +291,14 @@ class _FixedPlugin:
         return ModelPrediction(self.model_id, np.array((0.69, 0.71), np.float32), 0.0, {})
 
 
-def test_layer4_public_contract_and_rethreshold_do_not_rerun_model():
+def test_layer5_public_contract_and_rethreshold_do_not_rerun_model():
     inputs = tuple(
-        Layer4AudioSegment(
+        Layer5AudioSegment(
             "session", 0, 1, 7_680, theta, 48_000, np.zeros(7_680, np.float32)
         )
         for theta in (10.0, 20.0)
     )
-    engine = Layer4Engine(_FixedPlugin(), threshold=0.70)
+    engine = Layer5Engine(_FixedPlugin(), threshold=0.70)
     result = engine.process(inputs)
     assert tuple(item.is_voice for item in result.detections) == (False, True)
     adjusted = engine.rethreshold(result, 0.68)
@@ -306,13 +306,13 @@ def test_layer4_public_contract_and_rethreshold_do_not_rerun_model():
     assert tuple(item.is_voice for item in adjusted.detections) == (True, True)
 
 
-def test_layer4_contract_rejects_old_spectrogram_shape_and_wrong_sample_rate():
+def test_layer5_contract_rejects_old_spectrogram_shape_and_wrong_sample_rate():
     with pytest.raises(ValueError, match="20 ms"):
-        Layer4AudioSegment(
+        Layer5AudioSegment(
             "session", 0, 1, 7_680, 10.0, 48_000, np.zeros((17, 169), np.float32)
         )
     with pytest.raises(ValueError, match="48 kHz"):
-        Layer4AudioSegment(
+        Layer5AudioSegment(
             "session", 0, 1, 7_680, 10.0, 16_000, np.zeros(7_680, np.float32)
         )
 
@@ -331,18 +331,18 @@ def test_primary_and_shadow_receive_the_same_immutable_waveform_batch():
             )
 
     inputs = (
-        Layer4AudioSegment(
+        Layer5AudioSegment(
             "session", 0, 1, 7_680, 10.0, 48_000, np.zeros(7_680, np.float32)
         ),
     )
-    Layer4Engine(_ObservingPlugin("primary"), (_ObservingPlugin("shadow"),)).process(inputs)
+    Layer5Engine(_ObservingPlugin("primary"), (_ObservingPlugin("shadow"),)).process(inputs)
     assert observations == [
         ("primary", observations[0][1], False),
         ("shadow", observations[0][1], False),
     ]
 
 
-def test_layer4_rejects_incomplete_model_output():
+def test_layer5_rejects_incomplete_model_output():
     class _IncompletePlugin:
         model_id = "incomplete"
 
@@ -350,12 +350,12 @@ def test_layer4_rejects_incomplete_model_output():
             return ModelPrediction(self.model_id, np.empty((0,), np.float32), 0.0, {})
 
     inputs = (
-        Layer4AudioSegment(
+        Layer5AudioSegment(
             "session", 0, 1, 7_680, 10.0, 48_000, np.zeros(7_680, np.float32)
         ),
     )
     with pytest.raises(RuntimeError, match="one probability per audio input"):
-        Layer4Engine(_IncompletePlugin()).process(inputs)
+        Layer5Engine(_IncompletePlugin()).process(inputs)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")

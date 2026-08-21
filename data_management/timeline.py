@@ -8,7 +8,9 @@ from typing import Any
 from .manifests import sha256_file
 
 
-SUPPORTED_DECISION_SCHEMAS = {"decision_record_v3", "decision_record_v4"}
+SUPPORTED_DECISION_SCHEMAS = {
+    "decision_record_v3", "decision_record_v4", "decision_record_v5",
+}
 
 
 def _session_asset_path(root: Path, asset: Mapping[str, Any]) -> Path:
@@ -39,7 +41,12 @@ def iter_session_decisions(
     *,
     include_v3: bool = True,
 ) -> Iterator[dict[str, Any]]:
-    """Read v4 decisions and legacy v3 rows without rewriting either file."""
+    """Read current v5 decisions and legacy v3/v4 rows without rewriting them.
+
+    Existing v3/v4 rows may call the current Layer 5 CNN stage ``l4``.  The
+    read API deliberately preserves that raw field; presentation adapters are
+    responsible for capability-based normalization.
+    """
 
     session_root = Path(root).resolve()
     manifest = load_session_manifest(session_root)

@@ -130,18 +130,18 @@ def main() -> None:
         if not bool(torch.isfinite(solved).all()):
             fail("CUDA complex64线性求解产生NaN/Inf")
 
-        from layer4_voice_classifier import NvidiaMarbleNetPlugin
-        l4 = NvidiaMarbleNetPlugin(
+        from layer5_voice_classifier import NvidiaMarbleNetPlugin
+        l5 = NvidiaMarbleNetPlugin(
             "nv_marblenet_baseline_v1",
             project_root / "models" / "nv_marblenet_baseline_v1",
             device="cuda",
             window_spec=project_config.downstream_audio_window,
         )
-        l4_output = l4.predict(np.zeros(
+        l5_output = l5.predict(np.zeros(
             (5, project_config.downstream_audio_window.samples), dtype=np.float32,
         ))
-        if l4_output.probabilities.shape != (5,) or not np.isfinite(l4_output.probabilities).all():
-            fail(f"CUDA MarbleNet波形前向契约错误: {l4_output.probabilities.shape}")
+        if l5_output.probabilities.shape != (5,) or not np.isfinite(l5_output.probabilities).all():
+            fail(f"CUDA MarbleNet波形前向契约错误: {l5_output.probabilities.shape}")
         torch.cuda.synchronize(device)
         report["cuda_marblenet_waveform_smoke"] = "PASS"
 

@@ -20,8 +20,10 @@ from .models import (
 )
 
 
-_STAGES = ("l1", "gate", "l2", "l3", "l4", "commit")
-_SUPPORTED_SCHEMAS = {"decision_record_v3", "decision_record_v4"}
+_STAGES = ("l1", "gate", "l2", "l3", "l5", "commit")
+_SUPPORTED_SCHEMAS = {
+    "decision_record_v3", "decision_record_v4", "decision_record_v5",
+}
 
 
 @runtime_checkable
@@ -235,6 +237,12 @@ class PublicApiAdapter:
         timings = _mapping(row.get("stage_timings_ms"))
         waits = _mapping(row.get("stage_queue_wait_ms"))
         ages = _mapping(row.get("stage_end_to_end_ms"))
+        # Published v3/v4 rows used the old name ``l4`` for the CNN that is
+        # now Layer 5.  Normalize only at this read boundary; never rewrite a
+        # sealed historical session.
+        for values in (statuses, timings, waits, ages):
+            if "l5" not in values and "l4" in values:
+                values["l5"] = values["l4"]
         reason = _text(row.get("terminal_reason"))
         stages = {
             name: StageObservation(
@@ -298,7 +306,7 @@ class PublicApiAdapter:
             candidate_ids = tuple(item.get("track_id") for item in window.candidates if type(item.get("track_id")) is int)
             detection_ids = tuple(item.get("track_id") for item in window.detections if type(item.get("track_id")) is int)
             if candidate_ids and detection_ids and candidate_ids != detection_ids:
-                anomalies.append(Anomaly("id_alignment", "L2与L4 track_id集合或顺序不一致", window.key))
+                anomalies.append(Anomaly("id_alignment", "L2与L5 track_id集合或顺序不一致", window.key))
             for item in candidates:
                 track_id = item.get("track_id")
                 if type(track_id) is not int or track_id <= 0:

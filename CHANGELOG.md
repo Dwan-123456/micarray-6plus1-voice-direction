@@ -5,7 +5,8 @@
 - Layer 1：采集、通道映射、校准、IMCRA与预降噪；
 - Layer 2：Gate、SRP-PHAT、候选方向、内部ID与卡尔曼；
 - Layer 3：方向波束形成、缓存及增强音频；
-- Layer 4：响度补偿、重采样、CNN与人声概率；
+- Layer 4：采集结束后的可选双人语音分离与主讲话人选择；
+- Layer 5：响度补偿、重采样、CNN与人声概率；
 - Development Test UI；
 - 独立 Pipeline Log UI；
 - 正式音频录制、数据管理与Production UI；
@@ -19,6 +20,17 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前1.3.1开发架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，已发布1.0.1历史以`ARCHITECTURE_V0.3_TARGET.md`为基线，实际参数以`config/config.yaml`和代码为准。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
+
+---
+
+## 2026-08-21 — 现有CNN迁移为L5并冻结离线L4双人分离契约
+
+- **命名与实时主链**：将原`layer4_voice_classifier`及其`Layer4*`公共类型、配置、Runtime阶段、队列、状态、Development Test UI、Log UI、脚本和测试统一迁移为`layer5_voice_classifier`及L5命名；当前实时链明确为`L2→L3→TrackAudioStreamHub→L5`。原MarbleNet权重、算法、阈值、响度补偿和推理行为不变。
+- **离线L4框架**：新增`layer4_speech_separation`，规定L4只能在采集停止、L3处理排空、按ID长音频完成拼接并封存后由外部编排器调用。输入固定为携带原`session/epoch/track_id/theta`和SHA-256的48 kHz单声道完整20 ms hop长音频；一人决策必须绕过L4，两人决策才允许创建MossFormer2或TIGER请求。模型后端固定接收16 kHz音频并返回恰好两条匿名、等长、finite float32候选。
+- **2～4 kHz选择标准**：新增`l3_bf_2_4khz_magnitude_cosine_v1`，对同一重采样后的原L3 BF参考和两个分离候选使用512点Hann STFT、160点hop、2～4 kHz逐帧幅度谱余弦相似度并按参考频带能量加权；整段得分较高者继承原ID和角度，另一候选不作为正式输出。分数相同固定选择候选0；首版记录两分数和差值但不设拒绝阈值，禁止每20 ms切换讲话人。
+- **实现边界**：本次只搭框架、设标准并规定输入输出；未下载MossFormer2/TIGER，未实现讲话人数分类器、48→16 kHz公共重采样器、长音频分段/排列稳定、离线任务队列、结果存储或L4/L5离线编排，也未改变现有实时CNN运行方式。
+- **文档、打包与测试**：更新根架构、环境、模块说明、脚本及打包发现范围；新增L4输入封存/两人准入、双候选严格性、2～4 kHz选择和ID/角度继承测试。L1、L2 MUSIC/Gate/ID/Kalman、L3 BF数值算法、麦克风采集、录音音频格式、模型/Git LFS资产及各UI交互行为无变化。
+- **验证**：L4/L5/配置/数据管理/Log UI/Runtime/打包聚焦回归`143 passed`；全量pytest最终为`473 passed, 2 failed`，失败分别是未改动的L2 DPD 15 ms性能门限瞬时波动，以及Runtime并发屏障时序波动，两项随后同批隔离复跑均通过；Ruff与`git diff --check`通过。自动测试不替代真实双人录音、GPU分离质量和长音频验收。
 
 ---
 

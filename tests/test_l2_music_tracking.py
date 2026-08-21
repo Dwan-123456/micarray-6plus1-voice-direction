@@ -582,7 +582,7 @@ def test_birth_coast_reacquire_ttl_and_session_scoped_monotonic_ids() -> None:
     assert epoch_track.track_id > replacement[0].track_id
 
 
-def test_two_distinct_l4_voice_windows_are_required_and_coasting_feedback_renews_ttl() -> None:
+def test_two_distinct_l5_voice_windows_are_required_and_coasting_feedback_renews_ttl() -> None:
     tracker = GlobalDirectionTracker(GlobalTrackerConfig(
         association_gate_deg=45.0, max_velocity_dps=60.0,
         confirmation_observations=2, confirmation_window_samples=9_600,
@@ -844,7 +844,7 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
     assert tracked.active_tracks[0].track_state == "tentative"
 
 
-def test_only_twice_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
+def test_only_twice_l5_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
     audio = _audio((30.0,), seed=29, samples=7_680 + 7 * 960)
@@ -876,7 +876,7 @@ def test_only_twice_l4_voice_confirmed_id_forces_gate_and_publishes_coasting() -
     assert confirmed.directions[0].track_state == "confirmed"
     track_id = confirmed.directions[0].track_id
 
-    # Tracking confirmation without L4 voice evidence cannot sustain MUSIC
+    # Tracking confirmation without L5 voice evidence cannot sustain MUSIC
     # scanning, but the still-live formal ID continues to L3 as coasting BF.
     third_window = _window(audio, 6)
     closed = pipeline.process(

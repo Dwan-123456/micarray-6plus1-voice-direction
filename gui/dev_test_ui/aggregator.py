@@ -13,7 +13,7 @@ from .contracts import (
 )
 from layer2_source_detection.music import MusicDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
-from layer4_voice_classifier.contracts import Layer4Result
+from layer5_voice_classifier.contracts import Layer5Result
 
 
 class PerformanceTracker:
@@ -64,7 +64,7 @@ class PerformanceTracker:
         *,
         l2_ms: float | None = None,
         l3_ms: float | None = None,
-        l4_ms: float | None = None,
+        l5_ms: float | None = None,
         completed_monotonic: float | None = None,
         processed: bool = True,
     ) -> None:
@@ -75,7 +75,7 @@ class PerformanceTracker:
         self._latency.append(float(latency_ms))
         stage_values = tuple(
             None if value is None else float(value)
-            for value in (l2_ms, l3_ms, l4_ms)
+            for value in (l2_ms, l3_ms, l5_ms)
         )
         if any(value is not None and (not np.isfinite(value) or value < 0.0) for value in stage_values):
             raise ValueError("layer timing must be non-negative finite or None")
@@ -140,7 +140,7 @@ class PerformanceTracker:
     def snapshot(self, status: PipelineStatus) -> AlgorithmPerformanceSnapshot:
         self._ensure_epoch(status.session_id, status.stream_epoch)
         now = monotonic()
-        (l2_avg, l2_hz), (l3_avg, l3_hz), (l4_avg, l4_hz) = (
+        (l2_avg, l2_hz), (l3_avg, l3_hz), (l5_avg, l5_hz) = (
             self._last_second_stage_statistics(now)
         )
         processed, dropped, drop_rate = self._last_second_window_statistics(now)
@@ -167,10 +167,10 @@ class PerformanceTracker:
             None if not len(latency) else float(np.percentile(latency, 95)),
             l2_time_ms_last_second_avg=l2_avg,
             l3_time_ms_last_second_avg=l3_avg,
-            l4_time_ms_last_second_avg=l4_avg,
+            l5_time_ms_last_second_avg=l5_avg,
             l2_refresh_hz_last_second=l2_hz,
             l3_refresh_hz_last_second=l3_hz,
-            l4_refresh_hz_last_second=l4_hz,
+            l5_refresh_hz_last_second=l5_hz,
             processed_windows_last_second=processed,
             dropped_windows_last_second=dropped,
             drop_rate_last_second=drop_rate,
@@ -204,7 +204,7 @@ class DevUiAggregator:
         self._l3_error: str | None = None
         self._spatial_published: float | None = None
         self._search_diagnostics: MusicDiagnostics | None = None
-        self._l4_result: Layer4Result | None = None
+        self._l5_result: Layer5Result | None = None
 
     @property
     def current_stream(self) -> tuple[str, int] | None:
@@ -267,7 +267,7 @@ class DevUiAggregator:
         self._direction_kalman_q_scale = self._direction_kalman_r_scale = None
         self._scan_config_revision = None
         self._search_diagnostics = None
-        self._l4_result = None
+        self._l5_result = None
         self._spatial_published = None
         self._srp_error = None
         self._l3_error = None
@@ -322,7 +322,7 @@ class DevUiAggregator:
             self._previews,
             self._tracked_audio,
             self._l3_error,
-            self._l4_result,
+            self._l5_result,
             self._spatial_published,
         )
         self._response, self._candidates, self._srp_error = response, tuple(candidates), error
@@ -342,7 +342,7 @@ class DevUiAggregator:
         # listening recordings live for the complete capture session and are
         # updated independently by update_l3().
         self._previews, self._l3_error = (), None
-        self._l4_result = None
+        self._l5_result = None
         self._spatial_published = monotonic()
         try:
             return self.frame()
@@ -366,7 +366,7 @@ class DevUiAggregator:
                 self._previews,
                 self._tracked_audio,
                 self._l3_error,
-                self._l4_result,
+                self._l5_result,
                 self._spatial_published,
             ) = previous
             raise
@@ -404,13 +404,13 @@ class DevUiAggregator:
         self._l3_error = error
         return self.frame()
 
-    def update_l4(self, result: Layer4Result | None) -> DevUiFrame:
+    def update_l5(self, result: Layer5Result | None) -> DevUiFrame:
         if result is not None:
             detection_streams = {
                 (item.session_id, item.stream_epoch) for item in result.detections
             }
             if len(detection_streams) > 1:
-                raise ValueError("Layer 4 detections must belong to one stream")
+                raise ValueError("Layer 5 detections must belong to one stream")
             # L1 owns the current stream.  The current MUSIC response owns an
             # observed window; a prediction-only coasting window is instead
             # owned by its authoritative L2 directions.
@@ -449,15 +449,15 @@ class DevUiAggregator:
                 for item in result.detections
             ):
                 return self.frame()
-        self._l4_result = result
+        self._l5_result = result
         return self.frame()
 
     def frame(self) -> DevUiFrame:
         if self._status is None:
             raise RuntimeError("聚合器尚未收到PipelineStatus")
         missing = {}
-        if self._l4_result is None:
-            missing["cnn"] = "NO CANDIDATE" if not self._previews else "Layer 4 result unavailable"
+        if self._l5_result is None:
+            missing["cnn"] = "NO CANDIDATE" if not self._previews else "Layer 5 result unavailable"
         if not self._previews:
             missing["beamforming"] = self._l3_error or "NO CANDIDATE"
         if self._srp_error:
@@ -482,7 +482,7 @@ class DevUiAggregator:
             spatial_published_monotonic=self._spatial_published,
             search_diagnostics=self._search_diagnostics,
             missing_reasons=missing,
-            l4_result=self._l4_result,
+            l5_result=self._l5_result,
             directions=self._directions,
             active_tracks=self._active_tracks,
             direction_id_tracking_enabled=self._direction_id_tracking_enabled,

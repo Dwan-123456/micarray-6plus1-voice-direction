@@ -3,7 +3,7 @@ from __future__ import annotations
 from common.config import load_config
 import pytest
 
-from scripts.benchmark_l3_l4 import PROJECT_ROOT, _candidates, _l3_windows, _resolve_device
+from scripts.benchmark_l3_l5 import PROJECT_ROOT, _candidates, _l3_windows, _resolve_device
 
 
 def test_benchmark_auto_device_follows_the_single_runtime_config() -> None:

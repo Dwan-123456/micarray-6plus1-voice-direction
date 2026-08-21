@@ -43,7 +43,7 @@ class _PublishedTrackPoint:
 
 
 class DirectionIdTracker:
-    """Assign private IDs and own their L4-confirmed three-second voice lease."""
+    """Assign private IDs and own their L5-confirmed three-second voice lease."""
 
     backend = "circular_id_tracker_v4"
 
@@ -87,7 +87,7 @@ class DirectionIdTracker:
     def confirmed_track_ids_at(
         self, decision_sample: int, *, require_advance: bool = True
     ) -> tuple[int, ...]:
-        """Formal IDs whose L4-controlled voice lease includes this sample."""
+        """Formal IDs whose L5-controlled voice lease includes this sample."""
         if self._last_decision_sample is None:
             return ()
         if require_advance and decision_sample <= self._last_decision_sample:
@@ -194,7 +194,7 @@ class DirectionIdTracker:
         candidates: tuple[CandidateDirection, ...],
         track_ids: tuple[int, ...],
     ) -> None:
-        """Remember the private ID behind each public angle for delayed L4 feedback."""
+        """Remember the private ID behind each public angle for delayed L5 feedback."""
         if len(candidates) != len(track_ids):
             raise ValueError("published L2 candidates and private IDs must align")
         points = tuple(
@@ -211,7 +211,7 @@ class DirectionIdTracker:
         decision_sample: int,
         theta_deg: float,
     ) -> int | None:
-        """Extend one uniquely matching live formal ID from an L4 voice point."""
+        """Extend one uniquely matching live formal ID from an L5 voice point."""
         if (session_id, stream_epoch) != self._stream_key:
             return None
         history = next(

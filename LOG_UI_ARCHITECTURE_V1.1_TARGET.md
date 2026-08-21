@@ -14,11 +14,11 @@ Pipeline Log UI 是项目级的**独立只读观察与回放子系统**，与下
 - Development Test UI；
 - RecordingStore、Audio Data Manager 与 Production UI。
 
-Log UI **不是 Layer 5**，不插入 `L1 → L2 → L3 → L4` 实时处理链，也不是 Test UI 的一个面板。它只通过项目公开的只读接口读取已经公开或持久化的数据，统一展示一次运行记录中的性能、阶段终态、算法输出、方向 ID 时间线和可校验音频资产。
+Log UI **不是 Layer 5**，不插入 `L1 → L2 → L3 → L5` 实时处理链，也不是 Test UI 的一个面板。它只通过项目公开的只读接口读取已经公开或持久化的数据，统一展示一次运行记录中的性能、阶段终态、算法输出、方向 ID 时间线和可校验音频资产。
 
 ```text
 实时处理平面
-L1 → Windowing → L2 → L3 → L4 → ResultJoiner
+L1 → Windowing → L2 → L3 → L5 → ResultJoiner
                                       ├── Development Test UI
                                       ├── RecordingStore / 数据管理 / Production UI
                                       └── 公开记录与只读查询边界
@@ -34,9 +34,9 @@ L1 → Windowing → L2 → L3 → L4 → ResultJoiner
 ### 2.1 目标
 
 1. 按 session 查看当前公开接口能够提供的全部记录覆盖，并明确显示未记录或接口未提供的内容。
-2. 以权威 `WindowKey = (session_id, stream_epoch, window_id, decision_sample)` 对齐 L1/Gate/L2/L3/L4/commit 结果。
+2. 以权威 `WindowKey = (session_id, stream_epoch, window_id, decision_sample)` 对齐 L1/Gate/L2/L3/L5/commit 结果。
 3. 统计每层完成、跳过、丢弃、超时、失败、取消、计算耗时、排队耗时、端到端延迟、实际完成频率和缺口。
-4. 按 `(session_id, stream_epoch, track_id)` 回看 MUSIC 方向、ID 生命周期、L3 增强资产和 L4 判断。
+4. 按 `(session_id, stream_epoch, track_id)` 回看 MUSIC 方向、ID 生命周期、L3 增强资产和 L5 判断。
 5. 支持从会话总览逐级下钻到异常窗口和只读原始公开字段，便于定位丢窗、延迟、ID 和跨层对齐问题。
 6. 对 v3/v4 等记录版本进行能力探测与兼容展示，不把缺失字段推断为零或正常。
 7. 对封存静态记录证明读取前后项目文件、Catalog和录音资产不变；对运行中系统通过调用审计与对照测试证明不消费邮箱、不调用写接口，也不引入额外状态变化。
@@ -44,7 +44,7 @@ L1 → Windowing → L2 → L3 → L4 → ResultJoiner
 ### 2.2 非目标
 
 - 不启动、暂停、停止或重启 `ApplicationRuntime`；
-- 不修改 Gate、MUSIC、ID、Kalman、L3、L4、录音或 UI 参数；
+- 不修改 Gate、MUSIC、ID、Kalman、L3、L5、录音或 UI 参数；
 - 不进行标注、QA 修复、Catalog 重建、导出、Trash、恢复或数据迁移；
 - 不直接读取各层私有对象、内部张量、以下划线开头的字段或实现细节；
 - 不读取会与正式消费者竞争的单消费者队列；
@@ -61,7 +61,7 @@ UI 所需字段尚未公开时，页面显示“接口未提供”，并在能�
 
 ### 3.2 禁止消费实时邮箱
 
-当前 Runtime 的 `latest_dev_ui`、`latest_l4_dev_ui`、`latest_l1` 和 `latest_windows` 属于容量有限、读取即移除的 latest-only 邮箱。Log UI 禁止调用这些队列的 `get()`；否则会抢走 Development Test UI 或正式消费者的数据，并改变被观察系统本身。
+当前 Runtime 的 `latest_dev_ui`、`latest_l5_dev_ui`、`latest_l1` 和 `latest_windows` 属于容量有限、读取即移除的 latest-only 邮箱。Log UI 禁止调用这些队列的 `get()`；否则会抢走 Development Test UI 或正式消费者的数据，并改变被观察系统本身。
 
 ### 3.3 禁止隐式写 Catalog
 
@@ -81,7 +81,7 @@ Log UI 不得在项目 `data/` 中创建数据库、WAL、SHM、索引、缓存�
 
 ### 4.2 可选同进程实时概览
 
-如果正式应用的外部宿主已经能够显式注入现有 `ApplicationRuntime` 的只读引用，Log UI 适配器可以轮询公开 `processing_status`，显示队列深度、容量、worker 状态、缓存、累计完成/错误/丢窗和 L4 实际频率等**聚合状态**。
+如果正式应用的外部宿主已经能够显式注入现有 `ApplicationRuntime` 的只读引用，Log UI 适配器可以轮询公开 `processing_status`，显示队列深度、容量、worker 状态、缓存、累计完成/错误/丢窗和 L5 实际频率等**聚合状态**。
 
 该模式不得控制 Runtime，也不能代替离线权威记录。聚合快照不包含完整逐窗历史，不能在事后恢复为逐窗时间线。在“不修改主项目”的独立进程范围内无法注入该引用，因此此模式为可选延期能力，不是首版承诺。
 
@@ -105,7 +105,7 @@ Log UI 不得在项目 `data/` 中创建数据库、WAL、SHM、索引、缓存�
 | L1/Ingest/Windowing | 公开的输入身份、sample/epoch 连续性、校准状态、Gate 输入摘要、记录缺口 | 未记录的单窗解码/IMCRA/装窗耗时、内部频谱和中间张量 |
 | Gate/L2 MUSIC | Gate 状态、MUSIC/模型阶数、候选、空间谱引用、质量诊断、方向 ID、active tracks | 未公开的逐频协方差、特征向量和临时工作区 |
 | L3 | 每个 `track_id` 的方向、阶段状态、增强资产元数据、公开后端/回退诊断 | 私有 BF 权重、未持久化的 GPU 张量 |
-| L4 | 每个 `track_id` 的概率、阈值判断、阶段状态与公开模型诊断 | 模型内部激活与未公开特征 |
+| L5 | 每个 `track_id` 的概率、阈值判断、阶段状态与公开模型诊断 | 模型内部激活与未公开特征 |
 | Runtime/Joiner | 各阶段终态、compute/wait/端到端耗时、terminal reason、drop/gap；可选实时聚合状态 | 历史队列逐窗深度、CPU/GPU/内存曲线，除非未来正式记录 |
 | 音频与资产 | 公开查询返回且通过 hash、范围和schema校验的 Center/L3 等资产 | 任意绝对路径、越界文件、校验失败内容 |
 
@@ -163,28 +163,28 @@ RecordingLogSource       RuntimeStatusSource（可选）
 显示：
 
 - 总窗口数、适用窗口数、完成/跳过/丢弃/超时/失败/取消数量与比例；
-- L1/Gate/L2/L3/L4/commit 的实际完成频率；
+- L1/Gate/L2/L3/L5/commit 的实际完成频率；
 - 各层 compute、queue wait 和端到端 age 的 p50/p95/p99；
 - sample gap、timeline gap、terminal reason 和资产校验异常；
-- MUSIC 声源数、方向轨数量及 L4 Voice/Non-Voice 摘要。
+- MUSIC 声源数、方向轨数量及 L5 Voice/Non-Voice 摘要。
 
 每项指标旁同时显示样本数 `n` 和缺失率；缺少公开数据时显示 `N/A`。
 
 ### 7.3 Pipeline 时间线
 
-横轴使用 authoritative sample/20 ms window，纵轴显示 L1/Gate/L2/L3/L4/commit。颜色只表示明确阶段终态：`COMPLETED / SKIPPED / DROPPED / TIMED_OUT / FAILED / CANCELLED`；`UNKNOWN`只表示终态字段缺失或schema不识别，不是正式终态。点击任意格进入单窗详情。
+横轴使用 authoritative sample/20 ms window，纵轴显示 L1/Gate/L2/L3/L5/commit。颜色只表示明确阶段终态：`COMPLETED / SKIPPED / DROPPED / TIMED_OUT / FAILED / CANCELLED`；`UNKNOWN`只表示终态字段缺失或schema不识别，不是正式终态。点击任意格进入单窗详情。
 
 跨 epoch 处必须断开显示；不得把前后两段不连续音频拼成连续时间线。
 
 ### 7.4 单窗详情
 
-显示完整 WindowKey、sample 范围、各阶段状态、计算/等待耗时、终态原因、公开 diagnostics、Gate、MUSIC 360点谱（若接口提供）、model order、候选与 active tracks、L3资产元数据、L4概率/判断，以及该窗的只读公开 JSON。
+显示完整 WindowKey、sample 范围、各阶段状态、计算/等待耗时、终态原因、公开 diagnostics、Gate、MUSIC 360点谱（若接口提供）、model order、候选与 active tracks、L3资产元数据、L5概率/判断，以及该窗的只读公开 JSON。
 
 单窗详情用于回答“这个时刻在哪一层停止、为什么停止、ID和输出如何对应”，不提供任何参数编辑控件。
 
 ### 7.5 ID 与异常
 
-- 按 `(session_id, stream_epoch, track_id)` 展示首末 sample、寿命、状态、观测/预测角、`359° ↔ 0°` 连续轨迹、L4概率和增强资产；
+- 按 `(session_id, stream_epoch, track_id)` 展示首末 sample、寿命、状态、观测/预测角、`359° ↔ 0°` 连续轨迹、L5概率和增强资产；
 - 异常列表按 sample gap、drop、timeout、failed、ID新建/终止、跨层集合不一致、schema/hash/path校验失败分类；
 - 筛选结果和时间线、单窗详情、资产详情双向跳转；
 - `track_id` 明确标注为方向轨 ID，不表示人物身份。
@@ -224,8 +224,8 @@ actual_completed_hz = 所选范围内COMPLETED窗口数 / observed_duration_s
 
 ## 9. 兼容、完整性与隐私
 
-- v4：在公开字段可用时完整展示 MUSIC、公共 ID、逐 ID L3/L4 和时间线；
-- v3：展示已有阶段、候选、L4、耗时与资产；缺少公共 ID/MUSIC 字段时显示 `N/A`；
+- v4：在公开字段可用时完整展示 MUSIC、公共 ID、逐 ID L3/L5 和时间线；
+- v3：展示已有阶段、候选、L5、耗时与资产；缺少公共 ID/MUSIC 字段时显示 `N/A`；
 - 未知 schema：会话可列出，但默认 fail-closed，不参与聚合统计；
 - 坏 JSON、截断记录、hash 不匹配、路径越界和资产缺失分别形成只读异常，不自动修复；
 - 音频只能经现有公开资产校验接口读取，不显示任意绝对文件路径，不跟随数据根之外的路径；

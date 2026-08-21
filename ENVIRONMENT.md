@@ -45,11 +45,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - `.vscode/launch.json` 提供相同入口的断点调试配置。
 - `.vscode/extensions.json` 推荐 Python、Pylance、Python Environments、Debugpy 与 Ruff；本机均已安装。
 
-当前 Development Test UI 已复用根规格定义的同一个`ApplicationRuntime`接入L1、Ingest/Window、L2定位、Layer 3方向增强音频及Layer 4 MarbleNet基准。Runtime以唯一WindowKey和冻结配置驱动有界L2/L3/L4跨窗口流水：同窗严格L2→L3→L4，稳态跨窗L2(n)/L3(n-1)/L4(n-2)并行；三层队列均latest-wins且只替换未开始旧任务。ResultJoiner和completion/backlog/commit路径均有硬容量限制，丢弃或pre-joiner拒绝仍以有序`error` DecisionRecord+watermark审计；UI只读公开`processing_status`。目标域模型校准和正式`app.main`入口尚未完成，后续仍必须复用同一个`ApplicationRuntime`。
+当前 Development Test UI 已复用根规格定义的同一个`ApplicationRuntime`接入L1、Ingest/Window、L2定位、Layer 3方向增强音频及Layer 5 MarbleNet基准。Runtime以唯一WindowKey和冻结配置驱动有界L2/L3/L5跨窗口流水：同窗严格L2→L3→L5，稳态跨窗L2(n)/L3(n-1)/L5(n-2)并行；三层队列均latest-wins且只替换未开始旧任务。ResultJoiner和completion/backlog/commit路径均有硬容量限制，丢弃或pre-joiner拒绝仍以有序`error` DecisionRecord+watermark审计；UI只读公开`processing_status`。目标域模型校准和正式`app.main`入口尚未完成，后续仍必须复用同一个`ApplicationRuntime`。
 
-Test UI的L4画面另消费Runtime公开的容量1 `latest_l4_dev_ui`：它只包含真正完成且L2/L3/L4同窗的帧，不影响正式Join/commit顺序。`processing_status`公开L4实际完成/丢弃/跳过、最近1秒完成Hz和显示邮箱深度/容量/覆盖数；有序丢弃/跳过帧不擦除最近有效CNN画面，超过配置的`stale_after_ms`才显示过期。
+Test UI的L5画面另消费Runtime公开的容量1 `latest_l5_dev_ui`：它只包含真正完成且L2/L3/L5同窗的帧，不影响正式Join/commit顺序。`processing_status`公开L5实际完成/丢弃/跳过、最近1秒完成Hz和显示邮箱深度/容量/覆盖数；有序丢弃/跳过帧不擦除最近有效CNN画面，超过配置的`stale_after_ms`才显示过期。
 
-Runtime启动时先建RecordingStore session，再按`commit→L4→L3→L2`启动worker，最后启动设备pipeline和L1读取。停机时先停设备/L1，再按L2→L3→L4→commit传EOS并drain；超时窗口记录为`CANCELLED/error`，所有worker退出前不得关闭RecordingStore。这些是运行时生命周期门禁，与CUDA环境自检同等必须。
+Runtime启动时先建RecordingStore session，再按`commit→L5→L3→L2`启动worker，最后启动设备pipeline和L1读取。停机时先停设备/L1，再按L2→L3→L5→commit传EOS并drain；超时窗口记录为`CANCELLED/error`，所有worker退出前不得关闭RecordingStore。这些是运行时生命周期门禁，与CUDA环境自检同等必须。
 
 ## 启动门禁
 
@@ -66,11 +66,11 @@ Runtime启动时先建RecordingStore session，再按`commit→L4→L3→L2`启�
 
 正式运行时如果 CUDA 突然不可用或 OOM，按根规格第10、13节降级并记录；环境自检任务使用 `--require-cuda`，不允许用 CPU fallback 把安装错误掩盖为成功。
 
-当前`scripts/check_runtime_env.py`已验证CUDA设备、17帧STFT、complex64线性求解和实际MarbleNet 160 ms波形前向；L4 CPU/CUDA概率一致性由自动测试单独门禁。
+当前`scripts/check_runtime_env.py`已验证CUDA设备、17帧STFT、complex64线性求解和实际MarbleNet 160 ms波形前向；L5 CPU/CUDA概率一致性由自动测试单独门禁。
 
 ## 历史320 ms CUDA逐窗性能基线
 
-2026-08-18在NVIDIA GeForce RTX 5060 Laptop GPU、PyTorch `2.12.1+cu132`上测得的以下结果使用旧320 ms契约，仅作历史参考，不代表当前160 ms性能：L3单候选avg/P95 `7.49/11.13 ms`，双候选`13.38/17.39 ms`；L4单候选`2.84/3.85 ms`，双候选`3.57/4.61 ms`。160 ms配置必须重新运行`scripts/benchmark_l3_l4.py`后建立新基线。
+2026-08-18在NVIDIA GeForce RTX 5060 Laptop GPU、PyTorch `2.12.1+cu132`上测得的以下结果使用旧320 ms契约，仅作历史参考，不代表当前160 ms性能：L3单候选avg/P95 `7.49/11.13 ms`，双候选`13.38/17.39 ms`；L5单候选`2.84/3.85 ms`，双候选`3.57/4.61 ms`。160 ms配置必须重新运行`scripts/benchmark_l3_l5.py`后建立新基线。
 
 该基准预生成输入、不计构造开销，并在专用CUDA stream上对每窗显式同步；它衡量的是**warm-cache逐窗stage计算**，不等于端到端延迟、正式有序commit频率或Test UI可见Hz。驱动、PyTorch、模型、算法或配置改变后必须重跑，不得将本次数字当作跨环境承诺。
 

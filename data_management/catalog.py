@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS direction_observations (
  measured_theta_deg REAL, theta_deg REAL NOT NULL, track_state TEXT NOT NULL,
  is_observed INTEGER NOT NULL, is_new_track INTEGER NOT NULL,
  first_seen_sample INTEGER, last_observed_sample INTEGER, missed_samples INTEGER NOT NULL DEFAULT 0,
- kalman_applied INTEGER NOT NULL DEFAULT 0, l4_probability REAL, l4_is_voice INTEGER,
+ kalman_applied INTEGER NOT NULL DEFAULT 0, l5_probability REAL, l5_is_voice INTEGER,
  enhanced_asset_path TEXT,
  PRIMARY KEY(session_id,stream_epoch,track_id,window_id,decision_sample));
 CREATE INDEX IF NOT EXISTS ix_direction_observations_track
@@ -64,6 +64,7 @@ class Catalog:
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.executescript(SCHEMA)
         self._ensure_trash_columns()
+        self._ensure_l5_columns()
 
     def _ensure_trash_columns(self) -> None:
         """Migrate existing local catalogs without rebuilding or losing metadata."""
@@ -78,6 +79,32 @@ class Catalog:
                     self.connection.execute(f"ALTER TABLE {table} ADD COLUMN trashed_at TEXT")
             self.connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(3,datetime('now'))"
+            )
+
+    def _ensure_l5_columns(self) -> None:
+        """Preserve old local catalogs whose CNN projection columns were named l4."""
+
+        with self._lock, self.connection:
+            columns = {
+                str(row["name"])
+                for row in self.connection.execute("PRAGMA table_info(direction_observations)")
+            }
+            if "l5_probability" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE direction_observations ADD COLUMN l5_probability REAL"
+                )
+            if "l5_is_voice" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE direction_observations ADD COLUMN l5_is_voice INTEGER"
+                )
+            if {"l4_probability", "l4_is_voice"}.issubset(columns):
+                self.connection.execute(
+                    """UPDATE direction_observations
+                    SET l5_probability=COALESCE(l5_probability,l4_probability),
+                        l5_is_voice=COALESCE(l5_is_voice,l4_is_voice)"""
+                )
+            self.connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(4,datetime('now'))"
             )
 
     def close(self) -> None:
@@ -181,7 +208,7 @@ class Catalog:
                 session_id,stream_epoch,track_id,window_id,decision_sample,record_schema,
                 measured_theta_deg,theta_deg,track_state,is_observed,is_new_track,
                 first_seen_sample,last_observed_sample,missed_samples,kalman_applied,
-                l4_probability,l4_is_voice,enhanced_asset_path)
+                l5_probability,l5_is_voice,enhanced_asset_path)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 indexed,
             )
@@ -267,7 +294,7 @@ class Catalog:
         summaries: list[dict[str, Any]] = []
         for (epoch, track_id), timeline in grouped.items():
             first, last = timeline[0], timeline[-1]
-            probabilities = [float(row["l4_probability"]) for row in timeline if row["l4_probability"] is not None]
+            probabilities = [float(row["l5_probability"]) for row in timeline if row["l5_probability"] is not None]
             angle_change = ((float(last["theta_deg"]) - float(first["theta_deg"]) + 180.0) % 360.0) - 180.0
             summaries.append({
                 "session_id": session_id,
@@ -281,8 +308,8 @@ class Catalog:
                 "last_theta_deg": float(last["theta_deg"]),
                 "angle_change_deg": angle_change,
                 "state": str(last["track_state"]),
-                "latest_l4_probability": probabilities[-1] if probabilities else None,
-                "mean_l4_probability": sum(probabilities) / len(probabilities) if probabilities else None,
+                "latest_l5_probability": probabilities[-1] if probabilities else None,
+                "mean_l5_probability": sum(probabilities) / len(probabilities) if probabilities else None,
                 "audio_asset_count": sum(bool(row["enhanced_asset_path"]) for row in timeline),
             })
         return summaries

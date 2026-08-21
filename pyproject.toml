@@ -35,7 +35,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "common*", "config*", "data_management*", "ingest*", "windowing*", "gui*", "spatial_separability*", "layer1_input*", "layer2_source_detection*", "layer3_direction_signal*", "layer4_voice_classifier*"]
+include = ["app*", "common*", "config*", "data_management*", "ingest*", "windowing*", "gui*", "spatial_separability*", "layer1_input*", "layer2_source_detection*", "layer3_direction_signal*", "layer4_speech_separation*", "layer5_voice_classifier*"]
 
 [tool.setuptools.package-data]
 config = ["*.yaml"]

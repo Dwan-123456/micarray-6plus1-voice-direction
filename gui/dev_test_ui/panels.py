@@ -297,7 +297,7 @@ class BeamformPanel(QGroupBox):
         self.downstream_switch.setCheckable(True)
         self.downstream_switch.setChecked(True)
         self.downstream_switch.setToolTip(
-            "关闭后L2继续运行；L3不再接收L2窗口，L4同步停止。跳过结果属于正常状态，不报错。"
+            "关闭后L2继续运行；L3不再接收L2窗口，L5同步停止。跳过结果属于正常状态，不报错。"
         )
         self.downstream_switch.toggled.connect(self._toggle_downstream_processing)
         self.set_downstream_processing_enabled(True)
@@ -451,10 +451,10 @@ class BeamformPanel(QGroupBox):
         self.downstream_switch.setChecked(bool(enabled))
         self.mode_switch.setEnabled(bool(enabled))
         if enabled:
-            self.downstream_switch.setText("L3/L4：运行中")
+            self.downstream_switch.setText("L3/L5：运行中")
             self.downstream_switch.setStyleSheet("background:#36875f;color:white")
         else:
-            self.downstream_switch.setText("L3/L4：已停止")
+            self.downstream_switch.setText("L3/L5：已停止")
             self.downstream_switch.setStyleSheet("background:#8a4b3b;color:white")
 
     def set_gain_compensation_enabled(self, enabled: bool) -> None:
@@ -713,7 +713,7 @@ class AudioTrackRow(QWidget):
 
 
 class VoiceProbabilityPolar(QWidget):
-    """L4 candidate probabilities on the same 0°/90°/180°/270° geometry as L2."""
+    """L5 candidate probabilities on the same 0°/90°/180°/270° geometry as L2."""
 
     candidate_selected = Signal(float, int)
 
@@ -790,7 +790,7 @@ class CnnPanel(QGroupBox):
     threshold_changed = Signal(float)
 
     def __init__(self, configured_threshold: float, parent: QWidget | None = None):
-        super().__init__("L4 · CNN Voice Direction", parent)
+        super().__init__("L5 · CNN Voice Direction", parent)
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
         self.summary = QLabel(f"Voice directions: — | Runtime threshold: {configured_threshold:.2f}")
@@ -840,7 +840,7 @@ class CnnPanel(QGroupBox):
         self._result = None
         self.polar.set_unavailable(reason)
         self.summary.setText(
-            "L4 unavailable"
+            "L5 unavailable"
             if (reason or "").strip().upper() == "NO CANDIDATE"
-            else f"L4 unavailable: {reason}"
+            else f"L5 unavailable: {reason}"
         )

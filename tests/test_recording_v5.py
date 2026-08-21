@@ -162,7 +162,7 @@ def test_v4_per_id_assets_catalog_and_service_queries(tmp_path: Path) -> None:
     assert manifest["calibration_revision"] == 3
 
     rows = list(iter_session_decisions(root))
-    assert len(rows) == 1 and rows[0]["schema_version"] == "decision_record_v4"
+    assert len(rows) == 1 and rows[0]["schema_version"] == "decision_record_v5"
     assert rows[0]["music_algorithm_version"] == "normmusic_incremental_v1"
     assert rows[0]["model_order"]["estimated_sources"] == 2
     assert rows[0]["music_diagnostics"]["valid_frequency_count"] == 43
@@ -170,7 +170,7 @@ def test_v4_per_id_assets_catalog_and_service_queries(tmp_path: Path) -> None:
     summaries = store.catalog.session_track_summaries(session_id)
     assert [(item["stream_epoch"], item["track_id"]) for item in summaries] == [(0, 1), (0, 2)]
     assert all(item["audio_asset_count"] == 1 for item in summaries)
-    assert summaries[0]["latest_l4_probability"] == pytest.approx(0.9)
+    assert summaries[0]["latest_l5_probability"] == pytest.approx(0.9)
     timeline = store.catalog.track_timeline(session_id, 0, 2)
     assert len(timeline) == 1 and timeline[0]["enhanced_asset_path"].endswith(".wav")
 

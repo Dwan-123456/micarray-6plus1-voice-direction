@@ -195,18 +195,18 @@ class DevUiSettings:
         self._save_update(layer1_pre_denoise_enabled=enabled)
         return enabled
 
-    def load_l4_input_gain_compensation_enabled(self, default: bool = True) -> bool:
+    def load_l5_input_gain_compensation_enabled(self, default: bool = True) -> bool:
         fallback = self._validate_bool(default)
         try:
             return self._validate_bool(
-                self._load_payload()["layer4_input_gain_compensation_enabled"]
+                self._load_payload()["layer5_input_gain_compensation_enabled"]
             )
         except (KeyError, TypeError, ValueError):
             return fallback
 
-    def save_l4_input_gain_compensation_enabled(self, value: bool) -> bool:
+    def save_l5_input_gain_compensation_enabled(self, value: bool) -> bool:
         enabled = self._validate_bool(value)
-        self._save_update(layer4_input_gain_compensation_enabled=enabled)
+        self._save_update(layer5_input_gain_compensation_enabled=enabled)
         return enabled
 
     @staticmethod

@@ -25,7 +25,7 @@ from layer2_source_detection.probability_gate import (
     SourceProbability20ms,
     SourceProbabilityState,
 )
-from layer4_voice_classifier import Layer4Result, ModelPrediction, VoiceDetection
+from layer5_voice_classifier import Layer5Result, ModelPrediction, VoiceDetection
 from track_audio_stream import TrackVoiceAnnotation
 
 
@@ -136,12 +136,12 @@ def _open_l2_result(
     return response, (candidate,), gate, diagnostics
 
 
-def _l4_result(
+def _l5_result(
     *, session_id: str = "aggregator-test", epoch: int = 0, window_id: int = 0
-) -> Layer4Result:
+) -> Layer5Result:
     decision_sample = 15_360 + window_id * 960
     probability = np.asarray([0.9], dtype=np.float32)
-    return Layer4Result(
+    return Layer5Result(
         (
             VoiceDetection(
                 session_id, epoch, window_id, decision_sample,
@@ -164,7 +164,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.load_direction_id_tracking_enabled() is True
     assert settings.load_gate_probability_threshold(0.60) == 0.60
     assert settings.load_l1_pre_denoise_enabled(False) is False
-    assert settings.load_l4_input_gain_compensation_enabled(True) is True
+    assert settings.load_l5_input_gain_compensation_enabled(True) is True
 
     settings.save_direction_threshold(.67)
     settings.save_music_effective_order_limit(1)
@@ -179,7 +179,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.save_direction_kalman_r_scale(0.8) == 0.8
     assert settings.save_gate_probability_threshold(0.73) == 0.73
     assert settings.save_l1_pre_denoise_enabled(True) is True
-    assert settings.save_l4_input_gain_compensation_enabled(False) is False
+    assert settings.save_l5_input_gain_compensation_enabled(False) is False
 
     loaded = DevUiSettings(tmp_path)
     assert loaded.load_direction_threshold(.35) == .42
@@ -192,7 +192,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert loaded.load_direction_kalman_r_scale(1.0) == 0.8
     assert loaded.load_gate_probability_threshold(0.60) == 0.73
     assert loaded.load_l1_pre_denoise_enabled(False) is True
-    assert loaded.load_l4_input_gain_compensation_enabled(True) is False
+    assert loaded.load_l5_input_gain_compensation_enabled(True) is False
 
     payload = loaded.path.read_text(encoding="utf-8")
     assert '"layer2_direction_threshold": 0.42' in payload
@@ -200,7 +200,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert '"layer2_music_dpd_rank1_enabled": true' in payload
     assert '"layer2_music_noise_whitening_enabled": true' in payload
     assert '"layer2_direction_id_tracking_enabled": false' in payload
-    assert '"layer4_input_gain_compensation_enabled": false' in payload
+    assert '"layer5_input_gain_compensation_enabled": false' in payload
     assert "layer2_iterative_peak_search_enabled" not in payload
 
 
@@ -246,12 +246,12 @@ def test_beamform_panel_replaces_single_window_playback_with_downstream_switch(m
     panel = BeamformPanel(config)
     assert not hasattr(panel, "preview_play")
     assert not hasattr(panel, "preview_stop")
-    assert panel.downstream_switch.text() == "L3/L4：运行中"
+    assert panel.downstream_switch.text() == "L3/L5：运行中"
     states = []
     panel.downstream_processing_changed.connect(states.append)
     panel.downstream_switch.click()
     assert states == [False]
-    assert panel.downstream_switch.text() == "L3/L4：已停止"
+    assert panel.downstream_switch.text() == "L3/L5：已停止"
     assert not panel.mode_switch.isEnabled()
     panel.deleteLater()
     app.processEvents()
@@ -262,16 +262,16 @@ def test_performance_tracker_resets_on_epoch_and_observes_rate():
     samples = np.zeros((960, 8), np.float32)
     tracker.add_block(IngestedAudioBlock("s", 0, 0, 960, 48_000, 0, 0.0, samples), 10.0)
     tracker.add_block(IngestedAudioBlock("s", 0, 960, 1920, 48_000, 1, .02, samples), 11.0)
-    tracker.add_timing("s", 0, 1, 4.0, 6.0, l2_ms=1.0, l3_ms=2.0, l4_ms=3.0)
+    tracker.add_timing("s", 0, 1, 4.0, 6.0, l2_ms=1.0, l3_ms=2.0, l5_ms=3.0)
     snap = tracker.snapshot(PipelineStatus("running", "s", 0, 15_360, 15_360, "Ready"))
     assert snap.observed_sample_rate_hz == 960
     assert snap.compute_time_ms_current == 4.0 and snap.latency_ms_current == 6.0
     assert snap.l2_time_ms_last_second_avg == 1.0
     assert snap.l3_time_ms_last_second_avg == 2.0
-    assert snap.l4_time_ms_last_second_avg == 3.0
+    assert snap.l5_time_ms_last_second_avg == 3.0
     assert snap.l2_refresh_hz_last_second == 1.0
     assert snap.l3_refresh_hz_last_second == 1.0
-    assert snap.l4_refresh_hz_last_second == 1.0
+    assert snap.l5_refresh_hz_last_second == 1.0
     assert snap.processed_windows_last_second == 1
     assert snap.dropped_windows_last_second == 0
     assert snap.drop_rate_last_second == 0.0
@@ -309,30 +309,30 @@ def test_performance_tracker_averages_only_completed_stages_from_last_second(mon
     tracker = PerformanceTracker(sample_rate=48_000, required_samples=15_360, window_count=500, rate_seconds=5)
     tracker.add_timing(
         "s", 0, 1, 10.0, 10.0,
-        l2_ms=1.0, l3_ms=4.0, l4_ms=None, completed_monotonic=10.0,
+        l2_ms=1.0, l3_ms=4.0, l5_ms=None, completed_monotonic=10.0,
     )
     tracker.add_timing(
         "s", 0, 2, 20.0, 20.0,
-        l2_ms=3.0, l3_ms=8.0, l4_ms=5.0, completed_monotonic=10.8,
+        l2_ms=3.0, l3_ms=8.0, l5_ms=5.0, completed_monotonic=10.8,
     )
     monkeypatch.setattr(aggregator_module, "monotonic", lambda: 10.9)
     status = PipelineStatus("running", "s", 0, 15_360, 15_360, "Ready")
     snapshot = tracker.snapshot(status)
     assert snapshot.l2_time_ms_last_second_avg == 2.0
     assert snapshot.l3_time_ms_last_second_avg == 6.0
-    assert snapshot.l4_time_ms_last_second_avg == 5.0
+    assert snapshot.l5_time_ms_last_second_avg == 5.0
     assert snapshot.l2_refresh_hz_last_second == 2.0
     assert snapshot.l3_refresh_hz_last_second == 2.0
-    assert snapshot.l4_refresh_hz_last_second == 1.0
+    assert snapshot.l5_refresh_hz_last_second == 1.0
 
     monkeypatch.setattr(aggregator_module, "monotonic", lambda: 11.1)
     snapshot = tracker.snapshot(status)
     assert snapshot.l2_time_ms_last_second_avg == 3.0
     assert snapshot.l3_time_ms_last_second_avg == 8.0
-    assert snapshot.l4_time_ms_last_second_avg == 5.0
+    assert snapshot.l5_time_ms_last_second_avg == 5.0
     assert snapshot.l2_refresh_hz_last_second == 1.0
     assert snapshot.l3_refresh_hz_last_second == 1.0
-    assert snapshot.l4_refresh_hz_last_second == 1.0
+    assert snapshot.l5_refresh_hz_last_second == 1.0
 
 
 def test_ui_aggregator_clears_old_and_ignores_late_l2_results_on_epoch_change():
@@ -431,7 +431,7 @@ def test_gate_unavailable_preserves_l3_listening_rows_across_epoch_recovery():
     assert warming.tracked_audio == (row1,)
 
 
-def test_prediction_only_coasting_window_can_publish_l3_and_l4_without_music_response():
+def test_prediction_only_coasting_window_can_publish_l3_and_l5_without_music_response():
     performance = PerformanceTracker(
         sample_rate=48_000, required_samples=15_360, window_count=10, rate_seconds=5,
     )
@@ -492,7 +492,7 @@ def test_prediction_only_coasting_window_can_publish_l3_and_l4_without_music_res
     assert frame.previews == (preview,)
 
     probability = np.asarray([0.9], dtype=np.float32)
-    l4 = Layer4Result(
+    l5 = Layer5Result(
         (
             VoiceDetection(
                 "aggregator-test", 0, 1, decision_sample,
@@ -503,7 +503,7 @@ def test_prediction_only_coasting_window_can_publish_l3_and_l4_without_music_res
         "test-model",
         0.7,
     )
-    assert aggregator.update_l4(l4).l4_result is l4
+    assert aggregator.update_l5(l5).l5_result is l5
 
 
 def test_l2_drop_retains_last_music_and_gate_as_stale_snapshot():
@@ -547,7 +547,7 @@ def test_l2_drop_retains_last_music_and_gate_as_stale_snapshot():
     )
 
 
-def test_ui_aggregator_ignores_late_l4_from_old_epoch_and_old_window_without_side_effects():
+def test_ui_aggregator_ignores_late_l5_from_old_epoch_and_old_window_without_side_effects():
     performance = PerformanceTracker(
         sample_rate=48_000, required_samples=15_360, window_count=10, rate_seconds=5
     )
@@ -572,21 +572,21 @@ def test_ui_aggregator_ignores_late_l4_from_old_epoch_and_old_window_without_sid
 
     response0, candidates0, gate0, diagnostics0 = _open_l2_result(window_id=0)
     publish_l2(response0, candidates0, gate0, diagnostics0)
-    accepted = aggregator.update_l4(_l4_result(window_id=0))
-    assert accepted.l4_result is not None
+    accepted = aggregator.update_l5(_l5_result(window_id=0))
+    assert accepted.l5_result is not None
 
     response1, candidates1, gate1, diagnostics1 = _open_l2_result(window_id=1)
     publish_l2(response1, candidates1, gate1, diagnostics1)
-    late_window = aggregator.update_l4(_l4_result(window_id=0))
+    late_window = aggregator.update_l5(_l5_result(window_id=0))
     assert late_window.spatial_response is response1
-    assert late_window.l4_result is None
+    assert late_window.l5_result is None
 
     epoch1 = PipelineStatus("warming_up", "aggregator-test", 1, 960, 15_360, "Warming")
     aggregator.update_l1(_aggregator_meter(epoch=1, end_sample=960), epoch1)
-    late_epoch = aggregator.update_l4(_l4_result(epoch=0, window_id=1))
+    late_epoch = aggregator.update_l5(_l5_result(epoch=0, window_id=1))
     assert late_epoch.pipeline_status.stream_epoch == 1
     assert late_epoch.spatial_response is None
-    assert late_epoch.l4_result is None
+    assert late_epoch.l5_result is None
 
 
 def test_runtime_connects_probability_gate_to_ui_during_upstream_warmup(tmp_path):
@@ -704,7 +704,7 @@ def test_test_ui_does_not_send_light_command_when_microphone_start_fails(monkeyp
         app.processEvents()
 
 
-def test_l4_panel_retains_completed_result_across_dropped_frames_until_stale(monkeypatch):
+def test_l5_panel_retains_completed_result_across_dropped_frames_until_stale(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from gui.dev_test_ui.app import build_window
@@ -721,20 +721,20 @@ def test_l4_panel_retains_completed_result_across_dropped_frames_until_stale(mon
             primary_model_id="test-model",
             threshold=0.7,
         )
-        completed = SimpleNamespace(l4_result=result, missing_reasons={})
+        completed = SimpleNamespace(l5_result=result, missing_reasons={})
         dropped = SimpleNamespace(
-            l4_result=None,
-            missing_reasons={"cnn": "L4 DROPPED: overload"},
+            l5_result=None,
+            missing_reasons={"cnn": "L5 DROPPED: overload"},
         )
 
         # A dropped ordered commit before/after a completed immediate result
         # must not erase the useful result during the configured retention.
-        window._update_l4_panel(dropped, completed, now=10.0)
+        window._update_l5_panel(dropped, completed, now=10.0)
         assert window.cnn_panel._result is result
-        window._update_l4_panel(dropped, None, now=10.1)
+        window._update_l5_panel(dropped, None, now=10.1)
         assert window.cnn_panel._result is result
 
-        window._update_l4_panel(dropped, None, now=10.6)
+        window._update_l5_panel(dropped, None, now=10.6)
         assert window.cnn_panel._result is None
         assert "STALE" in window.cnn_panel.summary.text()
     finally:
@@ -742,7 +742,7 @@ def test_l4_panel_retains_completed_result_across_dropped_frames_until_stale(mon
         app.processEvents()
 
 
-def test_l4_panel_clears_old_epoch_cache_and_ignores_old_immediate_frame(monkeypatch):
+def test_l5_panel_clears_old_epoch_cache_and_ignores_old_immediate_frame(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from gui.dev_test_ui.app import build_window
@@ -755,19 +755,19 @@ def test_l4_panel_clears_old_epoch_cache_and_ignores_old_immediate_frame(monkeyp
         old_status = SimpleNamespace(session_id="stream", stream_epoch=0)
         new_status = SimpleNamespace(session_id="stream", stream_epoch=1)
         completed_old = SimpleNamespace(
-            l4_result=result, missing_reasons={}, pipeline_status=old_status,
+            l5_result=result, missing_reasons={}, pipeline_status=old_status,
         )
         warming_new = SimpleNamespace(
-            l4_result=None,
+            l5_result=None,
             missing_reasons={"cnn": "WARMING_UP"},
             pipeline_status=new_status,
         )
 
-        window._update_l4_panel(None, completed_old, now=10.0)
-        assert window._last_l4_frame is completed_old
-        window._update_l4_panel(warming_new, completed_old, now=10.1)
+        window._update_l5_panel(None, completed_old, now=10.0)
+        assert window._last_l5_frame is completed_old
+        window._update_l5_panel(warming_new, completed_old, now=10.1)
 
-        assert window._last_l4_frame is None
+        assert window._last_l5_frame is None
         assert window.cnn_panel._result is None
         assert "WARMING" in window.cnn_panel.summary.text()
     finally:
@@ -860,7 +860,7 @@ def test_gain_compensation_control_is_in_l3_header_and_uses_state_colors(
     config_path = tmp_path / "config" / "config.yaml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
-    DevUiSettings(tmp_path).save_l4_input_gain_compensation_enabled(False)
+    DevUiSettings(tmp_path).save_l5_input_gain_compensation_enabled(False)
 
     app, window = build_window(config_path)
     try:
@@ -877,8 +877,8 @@ def test_gain_compensation_control_is_in_l3_header_and_uses_state_colors(
         app.processEvents()
         assert control.isChecked()
         assert "#16794b" in control.styleSheet()
-        assert window._runtime.l4_input_gain_compensation_enabled is True
-        assert DevUiSettings(tmp_path).load_l4_input_gain_compensation_enabled(False) is True
+        assert window._runtime.l5_input_gain_compensation_enabled is True
+        assert DevUiSettings(tmp_path).load_l5_input_gain_compensation_enabled(False) is True
     finally:
         window.close()
         app.processEvents()
@@ -1017,7 +1017,7 @@ def test_test_ui_accepts_backend_injected_wav_and_keeps_default_ui_input_hidden(
         total_duration_text = window.performance_bar.text().split("总处理时长", 1)[1]
         assert "L2 N/A" not in total_duration_text
         assert "L3 N/A" not in total_duration_text
-        assert "L4 N/A" not in total_duration_text
+        assert "L5 N/A" not in total_duration_text
     finally:
         window.close()
         app.processEvents()
@@ -1069,10 +1069,10 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
         assert not window.start_button.isVisible()
         assert not window.stop_button.isVisible()
         window._frame = object()
-        window._last_l4_frame = object()
+        window._last_l5_frame = object()
         window._restart_replay()
         assert window._frame is None
-        assert window._last_l4_frame is None
+        assert window._last_l5_frame is None
         assert "replay restarted" in window.srp_header.text()
     finally:
         window.close()
@@ -1096,7 +1096,7 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert layout.columnStretch(0) == layout.columnStretch(1) == 1
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A | L3 N/A | L4 N/A / 0.0 Hz | "
+            "上一秒性能 | L2 N/A | L3 N/A | L5 N/A / 0.0 Hz | "
             "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
         )
         assert window.start_button.text() == "启动采集"

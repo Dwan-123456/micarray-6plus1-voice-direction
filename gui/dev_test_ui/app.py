@@ -59,21 +59,21 @@ def _format_processing_pipeline_status(runtime: object) -> str:
         downstream_enabled = bool(status.get("downstream_processing_enabled", True))
         state = (
             "OFF"
-            if worker_name in {"l3", "l4"} and not downstream_enabled
+            if worker_name in {"l3", "l5"} and not downstream_enabled
             else "RUN" if running else "STOP"
         )
         suffix = f" !{failed}" if failed else ""
-        if worker_name == "l4":
-            actual = max(0, int(status.get("l4_actual_completed", 0)))
-            dropped = max(0, int(status.get("l4_dropped", 0)))
-            actual_hz = max(0.0, float(status.get("l4_actual_hz", 0.0)))
+        if worker_name == "l5":
+            actual = max(0, int(status.get("l5_actual_completed", 0)))
+            dropped = max(0, int(status.get("l5_dropped", 0)))
+            actual_hz = max(0.0, float(status.get("l5_actual_hz", 0.0)))
             suffix += f" ok{actual} d{dropped} @{actual_hz:.0f}Hz"
         return f"{label} {depth}/{capacity} {state} #{done}{suffix}"
 
     segments = (
         stage("L2", ("l2",), "l2"),
         stage("L3", ("l3",), "l3"),
-        stage("L4", ("l4",), "l4"),
+        stage("L5", ("l5",), "l5"),
         stage("JOIN", ("completion", "commit"), "commit"),
     )
     inflight = max(0, int(status.get("inflight_windows", 0)))
@@ -100,13 +100,13 @@ def _format_processing_pipeline_tooltip(runtime: object) -> str:
         f"L3设备缓存：{max(0, int(status.get('l3_device_cache_bytes', 0))) / (1024 * 1024):.1f} MiB，"
         f"Prepared {max(0, int(status.get('l3_prepared_cache_entries', 0)))}/"
         f"{max(0, int(status.get('l3_prepared_cache_limit', 0)))}\n"
-        f"L4实际推理完成：{max(0, int(status.get('l4_actual_completed', 0)))}，"
-        f"丢弃：{max(0, int(status.get('l4_dropped', 0)))}，"
-        f"跳过：{max(0, int(status.get('l4_skipped', 0)))}，"
-        f"最近1秒实际刷新率：{max(0.0, float(status.get('l4_actual_hz', 0.0))):.1f} Hz\n"
-        f"L4显示邮箱：{max(0, int(status.get('l4_ui_mailbox_depth', 0)))}/"
-        f"{max(0, int(status.get('l4_ui_mailbox_capacity', 0)))}，"
-        f"latest-only覆盖：{max(0, int(status.get('l4_ui_mailbox_overwrites', 0)))}\n"
+        f"L5实际推理完成：{max(0, int(status.get('l5_actual_completed', 0)))}，"
+        f"丢弃：{max(0, int(status.get('l5_dropped', 0)))}，"
+        f"跳过：{max(0, int(status.get('l5_skipped', 0)))}，"
+        f"最近1秒实际刷新率：{max(0.0, float(status.get('l5_actual_hz', 0.0))):.1f} Hz\n"
+        f"L5显示邮箱：{max(0, int(status.get('l5_ui_mailbox_depth', 0)))}/"
+        f"{max(0, int(status.get('l5_ui_mailbox_capacity', 0)))}，"
+        f"latest-only覆盖：{max(0, int(status.get('l5_ui_mailbox_overwrites', 0)))}\n"
         f"最近阶段错误：{error_text}"
     )
 
@@ -227,9 +227,9 @@ def build_window(
     runtime.set_l1_pre_denoise_enabled(ui_settings.load_l1_pre_denoise_enabled(
         config.layer1_pre_denoise.enabled
     ))
-    runtime.set_l4_input_gain_compensation_enabled(
-        ui_settings.load_l4_input_gain_compensation_enabled(
-            config.layer4.input_gain_compensation.enabled
+    runtime.set_l5_input_gain_compensation_enabled(
+        ui_settings.load_l5_input_gain_compensation_enabled(
+            config.layer5.input_gain_compensation.enabled
         )
     )
 
@@ -245,9 +245,9 @@ def build_window(
                 self.setWindowTitle("6+1 Microphone Array — Development Test UI")
             self.setMinimumSize(1200, 700)
             self._frame = None
-            self._last_l4_frame = None
-            self._last_l4_seen = 0.0
-            self._l4_is_stale = False
+            self._last_l5_frame = None
+            self._last_l5_seen = 0.0
+            self._l5_is_stale = False
             self._selected = None
             self._last_l1_seen = 0.0
             self._record_started = None
@@ -284,7 +284,7 @@ def build_window(
             grid.addWidget(self._l1_panel(), 0, 0)
             grid.addWidget(self._doa_panel(), 0, 1)
             self.bf_panel = BeamformPanel(
-                config, runtime.l4_input_gain_compensation_enabled
+                config, runtime.l5_input_gain_compensation_enabled
             )
             self.preview_player = PreviewPlayer(
                 sample_rate=config.device.sample_rate, volume=config.dev_test_ui.preview_volume,
@@ -299,14 +299,14 @@ def build_window(
                 self._set_downstream_processing
             )
             self.bf_panel.gain_compensation_changed.connect(
-                self._set_l4_input_gain_compensation
+                self._set_l5_input_gain_compensation
             )
             self.bf_panel.set_processing_mode(runtime.l3_processing_mode)
             self.bf_panel.set_downstream_processing_enabled(
                 runtime.downstream_processing_enabled
             )
-            self.cnn_panel = CnnPanel(config.layer4.voice_probability_limit)
-            self.bf_panel.set_voice_threshold(config.layer4.voice_probability_limit)
+            self.cnn_panel = CnnPanel(config.layer5.voice_probability_limit)
+            self.bf_panel.set_voice_threshold(config.layer5.voice_probability_limit)
             self.cnn_panel.threshold_changed.connect(
                 self.bf_panel.set_voice_threshold
             )
@@ -330,7 +330,7 @@ def build_window(
             self._refresh_timer = QTimer(self)
             self._refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
             self._refresh_timer.timeout.connect(self._refresh)
-            # Poll the latest atomic L1/L2/L3/L4 frame every 10 ms. Formal
+            # Poll the latest atomic L1/L2/L3/L5 frame every 10 ms. Formal
             # algorithm windows remain 20 ms (50 Hz), so the UI never invents
             # intermediate results; it simply presents new frames promptly.
             self._refresh_timer.start(10)
@@ -478,7 +478,7 @@ def build_window(
                 runtime.direction_id_tracking_enabled
             )
             self.srp_id_tracking.setToolTip(
-                "开启时显示L2权威ID；关闭时仅显示MUSIC伪谱和原始峰值，L3/L4正常跳过。"
+                "开启时显示L2权威ID；关闭时仅显示MUSIC伪谱和原始峰值，L3/L5正常跳过。"
             )
             self.srp_kalman_q = KalmanNoiseScaleControl("Q倍率", runtime.direction_kalman_q_scale)
             self.srp_kalman_r = KalmanNoiseScaleControl("R倍率", runtime.direction_kalman_r_scale)
@@ -567,17 +567,17 @@ def build_window(
                     self.pre_denoise_switch.setChecked(previous)
                 self.statusBar().showMessage(f"L1预降噪切换失败: {exc}", 8000)
 
-        def _set_l4_input_gain_compensation(self, enabled: bool):
-            previous = runtime.l4_input_gain_compensation_enabled
+        def _set_l5_input_gain_compensation(self, enabled: bool):
+            previous = runtime.l5_input_gain_compensation_enabled
             try:
-                enabled = ui_settings.save_l4_input_gain_compensation_enabled(bool(enabled))
-                runtime.set_l4_input_gain_compensation_enabled(enabled)
+                enabled = ui_settings.save_l5_input_gain_compensation_enabled(bool(enabled))
+                runtime.set_l5_input_gain_compensation_enabled(enabled)
                 self.bf_panel.set_gain_compensation_enabled(enabled)
                 self.statusBar().showMessage(
                     f"连续轨响度补偿{'开启' if enabled else '关闭'}；下一20 ms生效", 3500
                 )
             except Exception as exc:
-                runtime.set_l4_input_gain_compensation_enabled(previous)
+                runtime.set_l5_input_gain_compensation_enabled(previous)
                 with QSignalBlocker(self.bf_panel.gain_compensation):
                     self.bf_panel.set_gain_compensation_enabled(previous)
                 self.statusBar().showMessage(f"响度补偿切换失败: {exc}", 8000)
@@ -661,7 +661,7 @@ def build_window(
                 self.statusBar().showMessage(
                     "ID Tracking已开启；下一窗口开始建立权威ID"
                     if enabled else
-                    "ID Tracking已关闭；仅显示MUSIC原始峰值，L3/L4将跳过",
+                    "ID Tracking已关闭；仅显示MUSIC原始峰值，L3/L5将跳过",
                     3500,
                 )
             except Exception as exc:
@@ -738,24 +738,24 @@ def build_window(
 
         def _enter_starting_state(self):
             self._frame = None
-            self._last_l4_frame = None
-            self._last_l4_seen = 0.0
-            self._l4_is_stale = False
+            self._last_l5_frame = None
+            self._last_l5_seen = 0.0
+            self._l5_is_stale = False
             self._last_rendered_window = None
             self._last_l1_seen = monotonic()
             self.srp_polar.set_snapshot(None, live=True)
             self.gate_readout.set_unavailable("WARMING")
             self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=WARMING")
-            self.cnn_panel.set_unavailable("WARMING: waiting for completed L4 window")
+            self.cnn_panel.set_unavailable("WARMING: waiting for completed L5 window")
             self.srp_header.setText("WARMING | session — | epoch 0 | window — | sample — | age —")
             self.l1_header.setText("WARMING | waiting for the first audio block")
 
         def _enter_stopped_state(self):
             self._last_runtime_state = "stopped"
             self._last_l1_seen = 0.0
-            self._last_l4_frame = None
-            self._last_l4_seen = 0.0
-            self._l4_is_stale = False
+            self._last_l5_frame = None
+            self._last_l5_seen = 0.0
+            self._l5_is_stale = False
             self.srp_polar.set_live(False)
             self.gate_readout.set_unavailable("STOPPED")
             if self._frame is None or self._frame.spatial_response is None:
@@ -844,7 +844,7 @@ def build_window(
             else:
                 self._replay_previous_stream = None
             self._replay_reset_pending = True
-            for mailbox in (runtime.latest_dev_ui, getattr(runtime, "latest_l4_dev_ui", None)):
+            for mailbox in (runtime.latest_dev_ui, getattr(runtime, "latest_l5_dev_ui", None)):
                 if mailbox is None:
                     continue
                 while True:
@@ -857,9 +857,9 @@ def build_window(
             audio_id_tracker.reset()
             self.bf_panel.clear_tracks()
             self._frame = None
-            self._last_l4_frame = None
-            self._last_l4_seen = 0.0
-            self._l4_is_stale = False
+            self._last_l5_frame = None
+            self._last_l5_seen = 0.0
+            self._l5_is_stale = False
             self._selected = None
             self._last_rendered_window = None
             self.srp_polar.set_snapshot(None, live=True)
@@ -962,9 +962,9 @@ def build_window(
             self._audio_source_key = None
             audio_id_tracker.seal_mode(None)
             self.bf_panel.reset_for_mode_change(applied)
-            self._last_l4_frame = None
-            self._last_l4_seen = 0.0
-            self._l4_is_stale = False
+            self._last_l5_frame = None
+            self._last_l5_seen = 0.0
+            self._l5_is_stale = False
             self.cnn_panel.set_unavailable("L3 MODE CHANGED: waiting for next window")
             label = {
                 "optimized": "优化算法",
@@ -979,21 +979,21 @@ def build_window(
             runtime.set_pipeline_timing_paused(
                 "downstream_disabled_by_test_ui",
                 not applied,
-                stages=("l3", "l4"),
+                stages=("l3", "l5"),
             )
             self.bf_panel.set_downstream_processing_enabled(applied)
             if applied:
                 self.bf_panel.set_unavailable(
-                    "L3/L4已恢复；等待下一条L2结果。"
+                    "L3/L5已恢复；等待下一条L2结果。"
                 )
-                self.cnn_panel.set_unavailable("WARMING: waiting for completed L4 window")
-                message = "L3/L4已恢复运行；L2后续窗口将重新进入下游"
+                self.cnn_panel.set_unavailable("WARMING: waiting for completed L5 window")
+                message = "L3/L5已恢复运行；L2后续窗口将重新进入下游"
             else:
                 self.bf_panel.set_unavailable(
-                    "L3/L4已由Test UI停止；L2继续独立运行。下方已有试听缓存仍可播放。"
+                    "L3/L5已由Test UI停止；L2继续独立运行。下方已有试听缓存仍可播放。"
                 )
                 self.cnn_panel.set_unavailable("STOPPED BY TEST UI; L2 remains active")
-                message = "已切断L2→L3输入；L3与L4停止计算，L2继续运行"
+                message = "已切断L2→L3输入；L3与L5停止计算，L2继续运行"
             self.statusBar().showMessage(message, 5000)
 
         def _pause_track_audio(self):
@@ -1017,7 +1017,7 @@ def build_window(
                 self.bf_panel.sync_track_playback_stopped()
                 return
             self.preview_player.stop()
-            # Play the exact TrackAudioStreamHub waveform used by L4.  The
+            # Play the exact TrackAudioStreamHub waveform used by L5.  The
             # preview backend may still apply attenuation-only output safety,
             # but must never add a second listening-only loudness boost.
             self.preview_player.set_volume(1.0)
@@ -1066,12 +1066,12 @@ def build_window(
                     latest = runtime.latest_dev_ui.get_nowait()
                 except queue.Empty:
                     break
-            latest_l4 = None
-            l4_mailbox = getattr(runtime, "latest_l4_dev_ui", None)
-            if l4_mailbox is not None:
+            latest_l5 = None
+            l5_mailbox = getattr(runtime, "latest_l5_dev_ui", None)
+            if l5_mailbox is not None:
                 while True:
                     try:
-                        latest_l4 = l4_mailbox.get_nowait()
+                        latest_l5 = l5_mailbox.get_nowait()
                     except queue.Empty:
                         break
             if latest is not None:
@@ -1088,25 +1088,25 @@ def build_window(
             # never repaint that residual frame as LIVE after Runtime is idle.
             if not runtime.active:
                 latest = None
-                latest_l4 = None
+                latest_l5 = None
             if latest is not None:
                 self._frame = latest
                 self._last_l1_seen = monotonic()
                 # Render the ordered formal frame without allowing a terminal
                 # DROPPED/SKIPPED frame to erase the independent latest
-                # completed L4 result below.
-                self._render_frame(latest, render_l4=False)
+                # completed L5 result below.
+                self._render_frame(latest, render_l5=False)
             elif runtime.last_error:
                 self._set_text(self.l1_header, f"ERROR | {runtime.last_error}")
-            if latest_l4 is not None and self._frame is not None and self._frame.l1 is not None:
-                immediate_identity = None if latest_l4.l1 is None else (
-                    latest_l4.l1.session_id,
-                    latest_l4.l1.stream_epoch,
+            if latest_l5 is not None and self._frame is not None and self._frame.l1 is not None:
+                immediate_identity = None if latest_l5.l1 is None else (
+                    latest_l5.l1.session_id,
+                    latest_l5.l1.stream_epoch,
                 )
                 current_identity = (self._frame.l1.session_id, self._frame.l1.stream_epoch)
                 if immediate_identity != current_identity:
-                    latest_l4 = None
-            self._update_l4_panel(latest, latest_l4)
+                    latest_l5 = None
+            self._update_l5_panel(latest, latest_l5)
             if runtime.running:
                 if self._frame is not None and monotonic() - self._last_l1_seen > config.dev_test_ui.stale_after_ms / 1000:
                     self._set_text(self.l1_header, "RUNNING | input data STALE (>500 ms)")
@@ -1149,18 +1149,18 @@ def build_window(
             if runtime.scratch_error or runtime.scratch.last_error:
                 self._set_text(self.recording_label, f"状态: error | {runtime.scratch_error or runtime.scratch.last_error}")
 
-        def _update_l4_panel(self, ordered_frame=None, immediate_frame=None, *, now=None):
-            """Keep the newest valid L4 result until its configured stale limit.
+        def _update_l5_panel(self, ordered_frame=None, immediate_frame=None, *, now=None):
+            """Keep the newest valid L5 result until its configured stale limit.
 
             ``immediate_frame`` is a full, window-consistent DevUiFrame from
-            the L4 worker.  Ordered audit frames may report a dropped window,
+            the L5 worker.  Ordered audit frames may report a dropped window,
             but they are not allowed to clear that valid result immediately.
             """
 
             if not runtime.downstream_processing_enabled:
-                self._last_l4_frame = None
-                self._last_l4_seen = 0.0
-                self._l4_is_stale = False
+                self._last_l5_frame = None
+                self._last_l5_seen = 0.0
+                self._l5_is_stale = False
                 self.cnn_panel.set_unavailable("STOPPED BY TEST UI; L2 remains active")
                 return
             current = monotonic() if now is None else float(now)
@@ -1169,7 +1169,7 @@ def build_window(
                 ordered_status.session_id,
                 ordered_status.stream_epoch,
             )
-            cached_status = getattr(self._last_l4_frame, "pipeline_status", None)
+            cached_status = getattr(self._last_l5_frame, "pipeline_status", None)
             cached_stream = None if cached_status is None else (
                 cached_status.session_id,
                 cached_status.stream_epoch,
@@ -1179,11 +1179,11 @@ def build_window(
                 and cached_stream is not None
                 and ordered_stream != cached_stream
             ):
-                self._last_l4_frame = None
-                self._last_l4_seen = 0.0
-                self._l4_is_stale = False
+                self._last_l5_frame = None
+                self._last_l5_seen = 0.0
+                self._l5_is_stale = False
                 self.cnn_panel.set_unavailable(
-                    "WARMING: waiting for completed L4 window in the new stream epoch"
+                    "WARMING: waiting for completed L5 window in the new stream epoch"
                 )
 
             immediate_status = getattr(immediate_frame, "pipeline_status", None)
@@ -1198,18 +1198,18 @@ def build_window(
             ):
                 immediate_frame = None
             selected = None
-            if immediate_frame is not None and getattr(immediate_frame, "l4_result", None) is not None:
+            if immediate_frame is not None and getattr(immediate_frame, "l5_result", None) is not None:
                 selected = immediate_frame
-            elif ordered_frame is not None and getattr(ordered_frame, "l4_result", None) is not None:
+            elif ordered_frame is not None and getattr(ordered_frame, "l5_result", None) is not None:
                 selected = ordered_frame
             if selected is not None:
-                self._last_l4_frame = selected
-                self._last_l4_seen = current
-                self._l4_is_stale = False
-                self.cnn_panel.set_result(selected.l4_result)
+                self._last_l5_frame = selected
+                self._last_l5_seen = current
+                self._l5_is_stale = False
+                self.cnn_panel.set_result(selected.l5_result)
                 return
 
-            if self._last_l4_frame is None:
+            if self._last_l5_frame is None:
                 if ordered_frame is not None:
                     self.cnn_panel.set_unavailable(
                         ordered_frame.missing_reasons.get("cnn", "NO RESULT")
@@ -1217,13 +1217,13 @@ def build_window(
                 return
 
             stale_seconds = config.dev_test_ui.stale_after_ms / 1000.0
-            if current - self._last_l4_seen > stale_seconds and not self._l4_is_stale:
-                self._l4_is_stale = True
+            if current - self._last_l5_seen > stale_seconds and not self._l5_is_stale:
+                self._l5_is_stale = True
                 self.cnn_panel.set_unavailable(
-                    f"STALE: no completed L4 result for {config.dev_test_ui.stale_after_ms} ms"
+                    f"STALE: no completed L5 result for {config.dev_test_ui.stale_after_ms} ms"
                 )
 
-        def _render_frame(self, frame, *, render_l4=True):
+        def _render_frame(self, frame, *, render_l5=True):
             self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
             self.bf_panel.set_previews(
                 frame.previews if runtime.downstream_processing_enabled else (),
@@ -1233,8 +1233,8 @@ def build_window(
                     else "STOPPED BY TEST UI; L2 remains active"
                 ),
             )
-            if render_l4:
-                self._update_l4_panel(frame)
+            if render_l5:
+                self._update_l5_panel(frame)
             if frame.gate_decision is None:
                 self.gate_readout.set_unavailable()
             else:
@@ -1343,7 +1343,7 @@ def build_window(
             if frame.spatial_response is not None and frame.spatial_published_monotonic is not None:
                 probabilities = {
                     detection.track_id: detection.probability
-                    for detection in (() if frame.l4_result is None else frame.l4_result.detections)
+                    for detection in (() if frame.l5_result is None else frame.l5_result.detections)
                     if getattr(detection, "track_id", None) is not None
                 }
                 snapshot = MusicPanelSnapshot(
@@ -1420,7 +1420,7 @@ def build_window(
         def _set_performance(self, perf):
             if perf is None:
                 text = (
-                    "上一秒性能 | L2 N/A | L3 N/A | L4 N/A / 0.0 Hz | "
+                    "上一秒性能 | L2 N/A | L3 N/A | L5 N/A / 0.0 Hz | "
                     "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
                 )
             else:
@@ -1428,14 +1428,14 @@ def build_window(
                     "上一秒性能 | "
                     f"L2 {_time(perf.l2_time_ms_last_second_avg)} | "
                     f"L3 {_time(perf.l3_time_ms_last_second_avg)} | "
-                    f"L4 {_time(perf.l4_time_ms_last_second_avg)} / "
-                    f"{perf.l4_refresh_hz_last_second:.1f} Hz | "
+                    f"L5 {_time(perf.l5_time_ms_last_second_avg)} / "
+                    f"{perf.l5_refresh_hz_last_second:.1f} Hz | "
                     f"20ms窗口 {perf.processed_windows_last_second} | "
                     f"丢窗 {perf.dropped_windows_last_second} | "
                     f"丢窗率 {perf.drop_rate_last_second * 100.0:.1f}%"
                 )
                 self.performance_bar.setToolTip(
-                    "每1秒刷新；显示上一秒内各层平均耗时、L4后的统一输出刷新率、"
+                    "每1秒刷新；显示上一秒内各层平均耗时、L5后的统一输出刷新率、"
                     "完整处理的20 ms窗口数、丢窗数及丢窗率。"
                 )
             self._performance_base_text = text
@@ -1452,12 +1452,12 @@ def build_window(
 
                 text += (
                     "    总处理时长 | "
-                    f"L2 {elapsed('l2')} | L3 {elapsed('l3')} | L4 {elapsed('l4')}"
+                    f"L2 {elapsed('l2')} | L3 {elapsed('l3')} | L5 {elapsed('l5')}"
                 )
                 self.performance_bar.setToolTip(
                     "左侧每1秒刷新上一秒性能；总处理时长从首个20 ms窗口开始入队计时，"
                     "各层在处理完最后一个输入并排空后分别停止；模拟输入手动暂停期间不计时，"
-                    "手动关闭L3/L4期间只累计L2。"
+                    "手动关闭L3/L5期间只累计L2。"
                 )
             self.performance_bar.setText(text)
 

@@ -12,11 +12,11 @@ from common.data_types import DecisionWindow
 if TYPE_CHECKING:
     from layer2_source_detection.pipeline import Layer2PipelineResult
     from layer3_direction_signal.interface import Layer3Output
-    from layer4_voice_classifier.contracts import Layer4Result
+    from layer5_voice_classifier.contracts import Layer5Result
 else:
     Layer2PipelineResult = object
     Layer3Output = object
-    Layer4Result = object
+    Layer5Result = object
 
 
 def _freeze_config_value(value: object) -> object:
@@ -317,11 +317,11 @@ class L3StageResult(StageResult[Layer3Output]):
 
 
 @dataclass(frozen=True, slots=True)
-class L4StageResult(StageResult[Layer4Result]):
-    stage_name: ClassVar[str] = "l4"
+class L5StageResult(StageResult[Layer5Result]):
+    stage_name: ClassVar[str] = "l5"
 
 
-TerminalStageResult = L2StageResult | L3StageResult | L4StageResult
+TerminalStageResult = L2StageResult | L3StageResult | L5StageResult
 
 
 def _joined_state(results: tuple[TerminalStageResult, ...]) -> StageState:
@@ -344,7 +344,7 @@ class JoinedWindowResult:
     work_item: WindowWorkItem
     l2: L2StageResult
     l3: L3StageResult
-    l4: L4StageResult
+    l5: L5StageResult
     terminal_reason: str
     completed_monotonic_ns: int
     state: StageState = field(init=False)
@@ -352,9 +352,9 @@ class JoinedWindowResult:
     def __post_init__(self) -> None:
         if not isinstance(self.work_item, WindowWorkItem):
             raise TypeError("joined result requires a WindowWorkItem")
-        results: tuple[TerminalStageResult, ...] = (self.l2, self.l3, self.l4)
+        results: tuple[TerminalStageResult, ...] = (self.l2, self.l3, self.l5)
         if any(not item.is_terminal for item in results):
-            raise ValueError("joined result requires terminal L2, L3, and L4 results")
+            raise ValueError("joined result requires terminal L2, L3, and L5 results")
         if any(item.key != self.work_item.key for item in results):
             raise ValueError("all joined stages must belong to the same WindowKey")
         completed = tuple(item for item in results if item.state is StageState.COMPLETED)
@@ -362,7 +362,7 @@ class JoinedWindowResult:
         nonempty = tuple(item for item in alignments if item)
         if nonempty and any(item != nonempty[0] for item in nonempty[1:]):
             raise ValueError(
-                "L2 directions, L3 enhanced audio, and L4 detections must have identical "
+                "L2 directions, L3 enhanced audio, and L5 detections must have identical "
                 "ordered track IDs and angles"
             )
         if len(completed) == 3 and any(bool(item) != bool(alignments[0]) for item in alignments[1:]):

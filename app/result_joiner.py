@@ -11,7 +11,7 @@ from .processing_contracts import (
     JoinedWindowResult,
     L2StageResult,
     L3StageResult,
-    L4StageResult,
+    L5StageResult,
     StageState,
     TerminalStageResult,
     WindowKey,
@@ -84,11 +84,11 @@ class _PendingWindow:
     byte_size: int
     l2: L2StageResult | None = None
     l3: L3StageResult | None = None
-    l4: L4StageResult | None = None
+    l5: L5StageResult | None = None
 
     @property
     def ready(self) -> bool:
-        return self.l2 is not None and self.l3 is not None and self.l4 is not None
+        return self.l2 is not None and self.l3 is not None and self.l5 is not None
 
 
 @dataclass(slots=True)
@@ -189,8 +189,8 @@ class ResultJoiner:
                     raise ResultDeliveryError("timeline-gap callback failed") from exc
 
     def submit(self, result: TerminalStageResult) -> None:
-        if not isinstance(result, (L2StageResult, L3StageResult, L4StageResult)):
-            raise TypeError("joiner accepts only L2StageResult, L3StageResult, or L4StageResult")
+        if not isinstance(result, (L2StageResult, L3StageResult, L5StageResult)):
+            raise TypeError("joiner accepts only L2StageResult, L3StageResult, or L5StageResult")
         if not result.is_terminal:
             raise ValueError("joiner accepts terminal stage results only")
         try:
@@ -220,7 +220,7 @@ class ResultJoiner:
     def submit_l3(self, result: L3StageResult) -> None:
         self.submit(result)
 
-    def submit_l4(self, result: L4StageResult) -> None:
+    def submit_l5(self, result: L5StageResult) -> None:
         self.submit(result)
 
     def terminate_window(self, key: WindowKey, state: StageState, reason: str) -> None:
@@ -246,7 +246,7 @@ class ResultJoiner:
             for attribute, result_type in (
                 ("l2", L2StageResult),
                 ("l3", L3StageResult),
-                ("l4", L4StageResult),
+                ("l5", L5StageResult),
             ):
                 if getattr(pending, attribute) is None:
                     now_ns = time.monotonic_ns()
@@ -271,7 +271,7 @@ class ResultJoiner:
         self._publish_joined(joined)
 
     def skip_missing_downstream(self, key: WindowKey, reason: str) -> None:
-        """Mark only missing L3/L4 results skipped after a valid terminal L2 result."""
+        """Mark only missing L3/L5 results skipped after a valid terminal L2 result."""
 
         if not reason:
             raise ValueError("skip reason cannot be empty")
@@ -284,7 +284,7 @@ class ResultJoiner:
             if pending.l2 is None:
                 raise ValueError("L2 must be terminal before downstream stages can be skipped")
             additions: list[tuple[str, TerminalStageResult, int]] = []
-            for attribute, result_type in (("l3", L3StageResult), ("l4", L4StageResult)):
+            for attribute, result_type in (("l3", L3StageResult), ("l5", L5StageResult)):
                 if getattr(pending, attribute) is None:
                     now_ns = time.monotonic_ns()
                     result = result_type.terminal(
@@ -396,12 +396,12 @@ class ResultJoiner:
             pending = stream.windows[key]
             if not pending.ready:
                 break
-            assert pending.l2 is not None and pending.l3 is not None and pending.l4 is not None
+            assert pending.l2 is not None and pending.l3 is not None and pending.l5 is not None
             joined = JoinedWindowResult(
                 work_item=pending.work_item,
                 l2=pending.l2,
                 l3=pending.l3,
-                l4=pending.l4,
+                l5=pending.l5,
                 terminal_reason="",
                 completed_monotonic_ns=time.monotonic_ns(),
             )

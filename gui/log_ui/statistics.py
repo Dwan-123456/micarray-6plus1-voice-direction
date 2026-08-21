@@ -52,7 +52,7 @@ class StatisticsEngine:
     def calculate(self, session: SessionReadModel) -> SessionStatistics:
         windows = session.windows
         duration = self._duration_seconds(session)
-        stage_names = tuple(windows[0].stages) if windows else ("l1", "gate", "l2", "l3", "l4", "commit")
+        stage_names = tuple(windows[0].stages) if windows else ("l1", "gate", "l2", "l3", "l5", "commit")
         stages: dict[str, StageStatistics] = {}
         for name in stage_names:
             observations = [item.stages[name] for item in windows]

@@ -147,7 +147,7 @@ class DataTable(QTableWidget):
             return f"{float(value):.2f} 秒"
         if key in {"first_theta_deg", "last_theta_deg", "angle_change_deg"}:
             return f"{float(value):.1f}°"
-        if key in {"latest_l4_probability", "mean_l4_probability"}:
+        if key in {"latest_l5_probability", "mean_l5_probability"}:
             return "—" if value in {None, ""} else f"{float(value):.3f}"
         return str(value)
 
@@ -705,7 +705,7 @@ class AudioDataManager(QMainWindow):
                 ("last_theta_deg", "结束角"),
                 ("angle_change_deg", "角度变化"),
                 ("state", "状态"),
-                ("latest_l4_probability", "最新L4概率"),
+                ("latest_l5_probability", "最新L5概率"),
             ],
             "该运行录音没有算法方向ID。",
         )

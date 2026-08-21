@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 import uuid
@@ -22,12 +23,43 @@ from data_management import (
     SessionMetadata,
 )
 from data_management.export import export_assets, verify_export
-from data_management.qa import leakage_check
-from data_management.retention import move_to_trash, restore_from_trash
 from data_management.dedicated_recording import DedicatedRecordingController, WizardPhase
 from data_management.experiments import ExperimentStore
-from data_management.wizard import WizardInput
+from data_management.qa import leakage_check
+from data_management.retention import move_to_trash, restore_from_trash
 from data_management.service import DataManagerService
+from data_management.wizard import WizardInput
+
+
+def test_catalog_migrates_legacy_l4_cnn_projection_columns_to_l5(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """CREATE TABLE direction_observations (
+        session_id TEXT NOT NULL, stream_epoch INTEGER NOT NULL, track_id INTEGER NOT NULL,
+        window_id INTEGER NOT NULL, decision_sample INTEGER NOT NULL, record_schema TEXT NOT NULL,
+        measured_theta_deg REAL, theta_deg REAL NOT NULL, track_state TEXT NOT NULL,
+        is_observed INTEGER NOT NULL, is_new_track INTEGER NOT NULL,
+        first_seen_sample INTEGER, last_observed_sample INTEGER, missed_samples INTEGER NOT NULL DEFAULT 0,
+        kalman_applied INTEGER NOT NULL DEFAULT 0, l4_probability REAL, l4_is_voice INTEGER,
+        enhanced_asset_path TEXT,
+        PRIMARY KEY(session_id,stream_epoch,track_id,window_id,decision_sample))"""
+    )
+    connection.execute(
+        """INSERT INTO direction_observations(
+        session_id,stream_epoch,track_id,window_id,decision_sample,record_schema,
+        theta_deg,track_state,is_observed,is_new_track,l4_probability,l4_is_voice)
+        VALUES('s',0,1,1,960,'decision_record_v4',20.0,'confirmed',1,0,0.8,1)"""
+    )
+    connection.commit()
+    connection.close()
+
+    catalog = Catalog(path)
+    row = catalog.connection.execute(
+        "SELECT l5_probability,l5_is_voice FROM direction_observations"
+    ).fetchone()
+    assert tuple(row) == (0.8, 1)
+    catalog.close()
 
 
 def block(session: str, start: int, *, epoch: int = 0, frames: int = 960) -> IngestedAudioBlock:
@@ -130,7 +162,7 @@ def test_terminal_drop_watermark_is_audited_without_duplicate_result_row(tmp_pat
     store.append_result(DecisionRecord(
         session, 0, 0, 48_000, (46_080, 48_000), (32_640, 48_000), "error",
         diagnostics=("l2_stage=dropped:l2_admission_queue_overflow",),
-        stage_statuses={"l2": "dropped", "l3": "dropped", "l4": "dropped"},
+        stage_statuses={"l2": "dropped", "l3": "dropped", "l5": "dropped"},
         terminal_reason="l2_admission_queue_overflow",
     ))
     store.advance_result_watermark(ResultWatermark(
@@ -149,9 +181,9 @@ def test_terminal_drop_watermark_is_audited_without_duplicate_result_row(tmp_pat
     rows = [json.loads(line) for line in result_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 2
     assert rows[1]["stage_statuses"] == {
-        "l2": "dropped", "l3": "dropped", "l4": "dropped",
+        "l2": "dropped", "l3": "dropped", "l5": "dropped",
     }
-    assert rows[1]["schema_version"] == "decision_record_v4"
+    assert rows[1]["schema_version"] == "decision_record_v5"
     store.close()
 
 
@@ -191,7 +223,7 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
             "diagnostics": [], "sample_rate": 48000, "start_sample": 40320, "end_sample": 48000,
         },),
         enhanced_waveforms=(waveform,),
-        l4_result={
+        l5_result={
             "primary_model_id": "primary", "threshold": 0.5,
             "predictions": [{"model_id": "primary", "probabilities": [0.9], "latency_ms": 1.2, "metadata": {}}],
             },
@@ -214,7 +246,7 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
     root = next(tmp_path.glob(f"runtime_sessions/*/*/{session}"))
     assets = chunk["assets"]
     kinds = {item["kind"] for item in assets}
-    assert {"gate", "spatial_response", "enhanced_audio", "l4"} <= kinds
+    assert {"gate", "spatial_response", "enhanced_audio", "l5"} <= kinds
     gate_path = root / next(item["path"] for item in assets if item["kind"] == "gate")
     gate = json.loads(gate_path.read_text(encoding="utf-8").splitlines()[1])
     assert gate["decision_sample"] == 48000 and gate["sound_present"] is True
@@ -1296,7 +1328,7 @@ def test_compensated_track_hops_are_saved_as_one_continuous_wav_per_id(tmp_path:
             "end_sample": hop_start + 960,
             "stream_kind": "id_continuous_gain_compensated",
             "gain_compensation_enabled": True,
-            "l4_voice_20ms": {
+            "l5_voice_20ms": {
                 "session_id": session,
                 "stream_epoch": 0,
                 "window_id": window_id,

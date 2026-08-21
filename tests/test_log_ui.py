@@ -27,7 +27,7 @@ def _decision(
     sample: int,
     *,
     epoch: int = 0,
-    schema: str = "decision_record_v4",
+    schema: str = "decision_record_v5",
     state: str = "completed",
 ) -> dict[str, object]:
     direction = _direction(7, 359.0 if window_id == 1 else 1.0, new=window_id == 1)
@@ -38,8 +38,8 @@ def _decision(
         "window_id": window_id,
         "decision_sample": sample,
         "doa_range": [sample - 960, sample],
-        "stage_statuses": {"l2": state, "l3": state, "l4": state},
-        "stage_timings_ms": {"l2": 2.0 + window_id, "l3": 4.0, "l4": 5.0},
+        "stage_statuses": {"l2": state, "l3": state, "l5": state},
+        "stage_timings_ms": {"l2": 2.0 + window_id, "l3": 4.0, "l5": 5.0},
         "stage_queue_wait_ms": {"l2": 1.0, "l3": 2.0},
         "candidates": [direction],
         "active_tracks": [direction],
@@ -114,7 +114,7 @@ def test_loading_uses_no_track_asset_or_runtime_mailbox_and_preserves_public_ids
     assert [item.theta_deg for item in session.tracks] == [359.0, 1.0]
     assert session.windows[0].raw_public["enhanced_audio"][0]["path"] == "[redacted]"
     assert not any(call[0] in {"track_audio_assets", "track_timeline"} for call in provider.calls)
-    assert not any(call[0] in {"latest_dev_ui", "latest_l4_dev_ui", "latest_l1", "latest_windows"} for call in provider.calls)
+    assert not any(call[0] in {"latest_dev_ui", "latest_l5_dev_ui", "latest_l1", "latest_windows"} for call in provider.calls)
 
 
 def test_track_audio_is_requested_only_on_demand() -> None:
@@ -168,6 +168,19 @@ def test_v3_remains_visible_without_inventing_public_track_ids() -> None:
     assert len(session.windows) == 1
     assert session.tracks == ()
     assert StatisticsEngine().calculate(session).track_count == 0
+
+
+def test_legacy_l4_cnn_stage_is_presented_as_current_l5_without_rewriting_raw_record() -> None:
+    row = _decision(1, 960, schema="decision_record_v4")
+    row["stage_statuses"] = {"l2": "completed", "l3": "completed", "l4": "completed"}
+    row["stage_timings_ms"] = {"l2": 2.0, "l3": 4.0, "l4": 5.0}
+    session = PublicApiAdapter(AuditedProvider([row])).load_session("session-a")
+
+    window = session.windows[0]
+    assert window.stages["l5"].state == StageState.COMPLETED
+    assert window.stages["l5"].compute_ms == 5.0
+    assert "l4" in window.raw_public["stage_statuses"]
+    assert "l5" not in window.raw_public["stage_statuses"]
 
 
 def test_completed_hz_uses_full_authoritative_epoch_ranges_and_completed_only() -> None:

@@ -1029,9 +1029,9 @@ class RecordingStore:
         item = public_mapping(result)
         if item.get("session_id") != self._session_id:
             raise ValueError("算法结果不属于当前录音session")
-        schema = item.setdefault("schema_version", "decision_record_v4")
-        if schema != "decision_record_v4":
-            raise ValueError("旧DecisionRecord v3仅支持读取，不能写入新录音")
+        schema = item.setdefault("schema_version", "decision_record_v5")
+        if schema != "decision_record_v5":
+            raise ValueError("旧DecisionRecord v3/v4仅支持读取，不能写入新录音")
         for key in ("raw_scores", "normalized_scores"):
             if item.get(key) is not None:
                 item[key] = np.asarray(item[key], np.float32).copy()
@@ -1043,7 +1043,7 @@ class RecordingStore:
             raise ValueError("增强音频元数据与波形数量不一致")
         track_ids = tuple(value.get("track_id") for value in metadata)
         if track_ids and any(type(value) is not int or value <= 0 for value in track_ids):
-            raise ValueError("DecisionRecord v4增强音频必须包含正整数track_id")
+            raise ValueError("DecisionRecord v5增强音频必须包含正整数track_id")
         if len(set(track_ids)) != len(track_ids):
             raise ValueError("同一窗口的增强音频track_id不能重复")
         return item
@@ -1416,7 +1416,7 @@ class RecordingStore:
                 self._all_results.append(
                     {
                         "record_type": "dropped_window",
-                        "schema_version": "decision_record_v4",
+                        "schema_version": "decision_record_v5",
                         "session_id": value["session_id"],
                         "stream_epoch": value["stream_epoch"],
                         **dropped_item,
@@ -1675,7 +1675,7 @@ class RecordingStore:
                         ):
                             item.pop(key, None)
                         item.setdefault("record_type", "decision")
-                        item.setdefault("schema_version", "decision_record_v4")
+                        item.setdefault("schema_version", "decision_record_v5")
                         out.write(json.dumps(_json_ready(item), ensure_ascii=False) + "\n")
                     out.flush()
                     os.fsync(out.fileno())
@@ -1784,11 +1784,11 @@ class RecordingStore:
                 for item in chosen if item.get("gate_decision") is not None
             ]
             write_jsonl("gate", gate_records, "gate_chunk_v1")
-            l4_records = [
-                {**aligned(item), "record_type": "l4", "detections": item.get("detections", ()), **dict(item["l4_result"])}
-                for item in chosen if item.get("l4_result") is not None
+            l5_records = [
+                {**aligned(item), "record_type": "l5", "detections": item.get("detections", ()), **dict(item["l5_result"])}
+                for item in chosen if item.get("l5_result") is not None
             ]
-            write_jsonl("l4", l4_records, "l4_chunk_v1")
+            write_jsonl("l5", l5_records, "l5_chunk_v1")
 
             continuous_by_track: dict[int, list[tuple[dict[str, Any], dict[str, Any], np.ndarray]]] = {}
             for item in chosen:
@@ -1864,7 +1864,7 @@ class RecordingStore:
                             cursor += 960
                     pieces.append(np.ascontiguousarray(waveform, dtype=np.float32))
                     cursor = hop_end
-                    voice_result = audio_meta.get("l4_voice_20ms")
+                    voice_result = audio_meta.get("l5_voice_20ms")
                     if voice_result is not None:
                         result = dict(voice_result)
                         if (
@@ -1872,7 +1872,7 @@ class RecordingStore:
                             or int(result["start_sample"]) != hop_start
                             or int(result["end_sample"]) != hop_end
                         ):
-                            raise ValueError("L4人声结果与连续轨20 ms音频不一致")
+                            raise ValueError("L5人声结果与连续轨20 ms音频不一致")
                         result["status"] = "completed"
                         voice_results_20ms.append(result)
                     else:

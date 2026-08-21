@@ -15,7 +15,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROOT = PROJECT_ROOT / "data" / "external_sources"
 DOWNLOAD_DATE = datetime.now(timezone.utc).date().isoformat()
-USER_AGENT = "micarray-l4-data-acquisition/1.0"
+USER_AGENT = "micarray-l5-data-acquisition/1.0"
 
 
 REGISTRY = [
@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         {
             "schema_version": "external_audio_batch_v1",
             "created_utc": datetime.now(timezone.utc).isoformat(),
-            "purpose": "L4 bootstrap acquisition only; no model training and no dataset split",
+            "purpose": "L5 bootstrap acquisition only; no model training and no dataset split",
             "file_count": len(rows),
             "total_bytes": sum(int(row["size"]) for row in rows),
             "files_csv_sha256": sha256(ROOT / "files.csv"),

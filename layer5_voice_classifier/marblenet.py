@@ -143,7 +143,7 @@ class NvidiaFrameVadMarbleNet(nn.Module):
     def forward(self, audio_16k: Tensor) -> tuple[Tensor, Tensor]:
         x, lengths = self.preprocess(audio_16k)
         for block in self.blocks:
-            # NeMo conv_mask zeros samples outside each valid sequence. All L4
+            # NeMo conv_mask zeros samples outside each valid sequence. All L5
             # windows have equal length, so only the preprocessor efficiency pad
             # needs masking and it cannot reach a complete output frame here.
             x = block(x)

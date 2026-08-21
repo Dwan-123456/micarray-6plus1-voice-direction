@@ -19,7 +19,7 @@ git switch -c fix/short-description
 
 # edit and test
 .venv\Scripts\python.exe -m pytest -q
-.venv\Scripts\python.exe -m ruff check app common config data_management gui ingest layer2_source_detection layer3_direction_signal layer4_voice_classifier windowing scripts tests
+.venv\Scripts\python.exe -m ruff check app common config data_management gui ingest layer2_source_detection layer3_direction_signal layer5_voice_classifier windowing scripts tests
 
 git status
 git add <reviewed paths>

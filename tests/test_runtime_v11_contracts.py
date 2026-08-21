@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from app.processing_contracts import (
-    JoinedWindowResult, L2StageResult, L3StageResult, L4StageResult,
+    JoinedWindowResult, L2StageResult, L3StageResult, L5StageResult,
     ProcessingConfigSnapshot, WindowKey, WindowWorkItem,
 )
 from common.config import load_config
@@ -130,7 +130,7 @@ def test_joined_result_rejects_cross_layer_id_order_and_angle_mismatch() -> None
             "session_id", "stream_epoch", "window_id", "decision_sample", "track_id", "theta_deg"
         )}),
     )), finished_monotonic_ns=3)
-    l4 = L4StageResult.completed(key, SimpleNamespace(detections=(
+    l5 = L5StageResult.completed(key, SimpleNamespace(detections=(
         SimpleNamespace(
             session_id=second.session_id, stream_epoch=second.stream_epoch,
             window_id=second.window_id, decision_sample=second.decision_sample,
@@ -143,4 +143,4 @@ def test_joined_result_rejects_cross_layer_id_order_and_angle_mismatch() -> None
         ),
     )), finished_monotonic_ns=4)
     with pytest.raises(ValueError, match="identical ordered track IDs and angles"):
-        JoinedWindowResult(work, l2, l3, l4, "", 5)
+        JoinedWindowResult(work, l2, l3, l5, "", 5)

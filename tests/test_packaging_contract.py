@@ -26,7 +26,8 @@ def test_distribution_includes_runtime_and_its_first_party_dependencies():
         "layer1_input",
         "layer2_source_detection",
         "layer3_direction_signal",
-        "layer4_voice_classifier",
+        "layer4_speech_separation",
+        "layer5_voice_classifier",
         "windowing",
     } <= packages
     assert project["tool"]["setuptools"]["package-data"]["config"] == ["*.yaml"]

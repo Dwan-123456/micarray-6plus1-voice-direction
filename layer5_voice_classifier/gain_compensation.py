@@ -29,7 +29,7 @@ class InputGainCompensationSettings:
             self.silence_floor_dbfs,
         )
         if type(self.enabled) is not bool or not self.algorithm_version or not all(map(np.isfinite, values)):
-            raise ValueError("invalid L4 input gain-compensation settings")
+            raise ValueError("invalid L5 input gain-compensation settings")
         if not 0.0 <= self.no_compensation_probability < self.full_compensation_probability <= 1.0:
             raise ValueError("gain-compensation probability breakpoints must increase within [0,1]")
         if self.peak_ceiling_dbfs > 0.0 or self.silence_floor_dbfs >= self.target_rms_dbfs:
@@ -80,7 +80,7 @@ def _probability_weight(probability: float | None, settings: InputGainCompensati
     )
 
 
-def compensate_l4_input(
+def compensate_l5_input(
     waveform: NDArray[np.float32],
     probabilities_20ms: tuple[float | None, ...],
     settings: InputGainCompensationSettings,
@@ -88,7 +88,7 @@ def compensate_l4_input(
     segment_count: int = 8,
     initial_gain_db: float | None = None,
 ) -> tuple[NDArray[np.float32], InputGainCompensationDiagnostic]:
-    """Create a compensated L4-only copy without modifying the L3 waveform."""
+    """Create a compensated L5-only copy without modifying the L3 waveform."""
     source = np.asarray(waveform)
     if (
         source.shape != (segment_count * _SEGMENT_SAMPLES,)

@@ -26,7 +26,7 @@ class MusicPanelSnapshot:
     directions: tuple[TrackedDirection, ...]
     active_tracks: tuple[TrackedDirection, ...]
     published_monotonic: float
-    l4_probability_by_track: Mapping[int, float] = MappingProxyType({})
+    l5_probability_by_track: Mapping[int, float] = MappingProxyType({})
     effective_order: int | None = None
     raw_peaks: tuple[CandidateDirection, ...] = ()
     direction_id_tracking_enabled: bool = True
@@ -62,13 +62,13 @@ class MusicPanelSnapshot:
             raise ValueError("active L2 tracks must belong to the MUSIC stream")
         if len({item.track_id for item in active}) != len(active):
             raise ValueError("active L2 track IDs must be unique")
-        probabilities = {int(key): float(value) for key, value in self.l4_probability_by_track.items()}
+        probabilities = {int(key): float(value) for key, value in self.l5_probability_by_track.items()}
         if any(key <= 0 or not 0.0 <= value <= 1.0 for key, value in probabilities.items()):
-            raise ValueError("L4 probabilities must be keyed by positive L2 track IDs")
+            raise ValueError("L5 probabilities must be keyed by positive L2 track IDs")
         object.__setattr__(self, "directions", directions)
         object.__setattr__(self, "active_tracks", active)
         object.__setattr__(self, "raw_peaks", raw_peaks)
-        object.__setattr__(self, "l4_probability_by_track", MappingProxyType(probabilities))
+        object.__setattr__(self, "l5_probability_by_track", MappingProxyType(probabilities))
 
     @property
     def age_ms(self) -> float:
@@ -190,7 +190,7 @@ if QWidget is not None:
 
     class DirectionTrackTable(QTableWidget):
         ROW_COUNT = 3
-        HEADERS = ("track_id", "观测角", "输出角", "score", "状态", "新建", "观测", "L4概率")
+        HEADERS = ("track_id", "观测角", "输出角", "score", "状态", "新建", "观测", "L5概率")
 
         def __init__(self, parent: QWidget | None = None):
             super().__init__(self.ROW_COUNT, len(self.HEADERS), parent)
@@ -225,7 +225,7 @@ if QWidget is not None:
                     self._probability_display = self._probability_pending
                     self._probability_pending = {}
                     self._probability_window_started = now
-                for track_id, probability in snapshot.l4_probability_by_track.items():
+                for track_id, probability in snapshot.l5_probability_by_track.items():
                     track_id = int(track_id)
                     self._probability_pending[track_id] = max(
                         float(probability),

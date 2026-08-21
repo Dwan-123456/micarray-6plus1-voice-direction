@@ -3,7 +3,7 @@
 
 版本：v0.2 历史正文；当前主链采用v0.3迁移契约  
 目标设备：U9 级 CPU + NVIDIA RTX 5060 GPU  
-状态：本文件正文保留v0.2历史细节；当前v0.3主链迁移已经落地，权威跨层契约见[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)。自动化测试数量与结果以当前仓库完整`pytest`报告为准；方向平滑实机参数标定、硬件校准、目标域L4校准和最终production入口仍未完成。
+状态：本文件正文保留v0.2历史细节；当前v0.3主链迁移已经落地，权威跨层契约见[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)。自动化测试数量与结果以当前仓库完整`pytest`报告为准；方向平滑实机参数标定、硬件校准、目标域L5校准和最终production入口仍未完成。
 
 当前执行优先级固定为：`ARCHITECTURE_V0.3_TARGET.md` > 本文件未被覆盖的正文 > `config/config.yaml` > 根目录`ENVIRONMENT.md` > 各层README > 当前新项目代码。`legacy_reference_only/`和已从主链删除但仍保留的旧模块文件不得作为完成度证据。
 
@@ -42,11 +42,11 @@ Layer 2 1.1：
     【L2 1.1】可选damped_circular_kalman_v2阻尼圆周滤波（默认关，依赖ID追踪；V1后端可回退）
         ├──Q/R倍率初始1.00，可在Test UI运行时调整并持久化
         ├──真实候选保留rank/时间/分数，仅theta_deg替换为后验平滑角
-        ├──首个2秒累计自然Gate匹配≥5次且L4同窗人声≥1次后正式化；默认租约3秒，仅后续唯一匹配的L4人声可续命
+        ├──首个2秒累计自然Gate匹配≥5次且L5同窗人声≥1次后正式化；默认租约3秒，仅后续唯一匹配的L5人声可续命
         ├──正式ID存活时可在有效低概率窗口保持Gate开启；预热/缺失/无效概率仍安全阻断
-        ├──L4只反馈流身份、时间、角度与人声结论，经容量256有界队列送回L2；不传公开ID
+        ├──L5只反馈流身份、时间、角度与人声结论，经容量256有界队列送回L2；不传公开ID
         └──真实候选优先，预测仅补足Top-3并继续满足任意两点45°圆周间距
-    ID不进入公共CandidateDirection、L3/L4、录音或数据集；仅投影到本机Test UI诊断界面，不参与正式算法
+    ID不进入公共CandidateDirection、L3/L5、录音或数据集；仅投影到本机Test UI诊断界面，不参与正式算法
     Raw SpatialResponse保持未平滑360°响应
     Gate关闭或当前没有Raw SpatialResponse时不预测
     静止/移动/交叉/混响双声源实机参数标定仍未完成
@@ -64,18 +64,18 @@ Layer 3：8ch音频 + 平滑候选角度 + 16个IMCRA hop
         └──公共STFT、SpectrogramFeature与[33,169] FeatureExtractor已从主链删除
     CUDA/OOM、实机音质和实时性能门禁仍未完成
                     ↓
-Layer 4：48 kHz EnhancedAudio独立副本 + 16个对齐IMCRA概率 → 响度补偿 → 内部降采样16 kHz → NVIDIA MarbleNet → 每方向人声概率
+Layer 5：48 kHz EnhancedAudio独立副本 + 16个对齐IMCRA概率 → 响度补偿 → 内部降采样16 kHz → NVIDIA MarbleNet → 每方向人声概率
     【已完成】基准artifact/hash、primary/shadow、CPU/CUDA一致性测试与Runtime/Test UI接线
     【已完成】imcra_probability_rms_v1：16×20 ms概率加权、目标-23 dBFS、-3 dBFS新增增益峰值保护
     目标R6+1数据、微调、窗口概率校准和锁定test指标仍未完成
                     ↓
     【已完成】ResultJoiner：同键合并各阶段终态，commit按全局window_id有序原子提交DecisionRecord+watermark
-    【已完成】有界分阶段流水：稳态L2(n) || L3(n-1) || L4(n-2)，同窗仍严格L2→L3→L4
-    【已完成】L2/L3/L4逐层latest-wins：只替换本层未开始旧任务，丢弃与pre-joiner拒绝均有序审计
-    【已完成】L4完成帧显示邮箱：容量1、latest-only、完整同窗，仅降低Test UI显示等待，不改变正式提交顺序
+    【已完成】有界分阶段流水：稳态L2(n) || L3(n-1) || L5(n-2)，同窗仍严格L2→L3→L5
+    【已完成】L2/L3/L5逐层latest-wins：只替换本层未开始旧任务，丢弃与pre-joiner拒绝均有序审计
+    【已完成】L5完成帧显示邮箱：容量1、latest-only、完整同窗，仅降低Test UI显示等待，不改变正式提交顺序
 
 配套：
-    【已完成】ApplicationRuntime：唯一WindowKey与冻结配置；有界L2/L3/L4 latest-wins、completion/backlog/commit硬限和ResultJoiner有序提交
+    【已完成】ApplicationRuntime：唯一WindowKey与冻结配置；有界L2/L3/L5 latest-wins、completion/backlog/commit硬限和ResultJoiner有序提交
     Development Test UI：8路电平、IMCRA/Gate、Raw SRP与平滑候选；L3三档实时切换；显示各阶段队列/worker/缓存
         ├──【已完成】SRP候选身份显示：首次出现灰色小点；临时ID灰色；正式ID三色；观测大、预测小
         └──【已完成】试听sidecar：Center Mic原音参考 + L2私有ID优先关联 + 20 ms绝对时间轴缓存
@@ -93,7 +93,7 @@ Layer 4：48 kHz EnhancedAudio独立副本 + 16个对齐IMCRA概率 → 响度�
 
 图中“已完成”只表示其文字限定的软件实现、接线和自动化测试范围，不代表所属整层已经通过实机门禁。紧贴左侧的整层标题只有满足完整完成定义时才标记，其下分支不重复标记；因此Layer 1～4仍保留未标记标题。本文件后续正文仍包含v0.2历史细节，仅用于迁移比对；凡与v0.3目标文档冲突之处均由v0.3覆盖。麦克风坐标从麦克风面观察：MIC0为+x，MIC1～MIC5逆时针排列，背面灯面装配图必须镜像后验证。
 
-全局空间可分度`p`表的公共访问接口、索引语义、适配校验和重新生成规则，以[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)第6.1节为准。该资源位于根级`spatial_separability`包，不属于L1～L4；各层统一导入`lookup_p`或`load_p_table`，不得直接读取表文件或维护私有副本。
+全局空间可分度`p`表的公共访问接口、索引语义、适配校验和重新生成规则，以[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)第6.1节为准。该资源位于根级`spatial_separability`包，不属于L1～L5；各层统一导入`lookup_p`或`load_p_table`，不得直接读取表文件或维护私有副本。
 
 ---
 
@@ -406,7 +406,7 @@ class ResultWatermark:
 
 `ResultWatermark`调用按同一epoch的`through_decision_sample`严格递增；`dropped_window_ids`是自上一次watermark（本epoch第一次则从epoch起点）到本次through范围内新确认丢弃的精确增量，必须排序、无重复，且每个ID对应的窗口endpoint不大于through。每个窗口只能处于“发布一个DecisionResult”或“进入一个dropped增量”二者之一。epoch切换时，旧epoch所有已入队窗口必须完成、报错或记为dropped并发送最终watermark，随后才发送新epoch的第一个watermark；迟到的旧epoch结果不得进入新epoch。
 
-上述NumPy数组均必须C-contiguous、只读且dtype/shape精确匹配注释；核心契约对象构造后不得原地修改。正式跨层DTO和持久化边界统一使用CPU NumPy，GPU worker内部允许使用PyTorch张量，但同一`DecisionWindow`只上传GPU一次，`DirectionalSignal`与`SpectrogramFeature`只在本窗口整批CNN推理完成后各下载一次供DTO、UI或持久化使用，禁止在Layer 3与Layer 4之间逐候选GPU→CPU→GPU往返。训练数据离线生成也必须经同一GPU/CPU适配边界。
+上述NumPy数组均必须C-contiguous、只读且dtype/shape精确匹配注释；核心契约对象构造后不得原地修改。正式跨层DTO和持久化边界统一使用CPU NumPy，GPU worker内部允许使用PyTorch张量，但同一`DecisionWindow`只上传GPU一次，`DirectionalSignal`与`SpectrogramFeature`只在本窗口整批CNN推理完成后各下载一次供DTO、UI或持久化使用，禁止在Layer 3与Layer 5之间逐候选GPU→CPU→GPU往返。训练数据离线生成也必须经同一GPU/CPU适配边界。
 
 同一个结果链的 `session_id`、`stream_epoch`、`window_id`、`decision_sample`和对应sample边界必须完全相等，否则立即抛出接口错误。候选、方向信号、特征和检测tuple均按Layer 2 rank顺序一一对应，且同一tuple内`theta_deg`不得重复。`DecisionResult`构造时强制 `voice_direction_count == sum(d.is_voice for d in detections)`；`status="ok"`或`"degraded"`时每个candidate必须恰有一个同角度、同顺序detection，`degraded`只表示结果通过记录过的回退仍可正式消费。`status="error"`时`detections=()`且`voice_direction_count=0`；可以保留`spatial_response/candidates`作诊断，但GUI不得将其计入正式方向数。`processing_latency_ms`是从窗口在Ingest时间轴闭合并进入processing queue，到`DecisionResult`构造完成的有限非负单调时钟差，包含queue等待与算法compute time，不含320 ms历史上下文本身、首次预热、UI绘制、试听和异步写盘；它就是11.3节定义的`Latency`。WindowAssembler尚未形成首个完整`DecisionWindow`的启动预热阶段只发布`PipelineStatus`，不构造`DecisionResult`；形成窗口后若未来L2 Gate处于自身预热状态，则按6.1的`BLOCKED`语义记录该窗口。
 
@@ -442,7 +442,7 @@ class DirectionScanner(Protocol):
 
 扫描器输入为`window.samples[-1920:,:]`并输出0～3个原始候选。L2 Pipeline先进行可选私有ID分配，再进行可选的按ID圆周卡尔曼滤波。两个模块默认关闭；卡尔曼只能在ID追踪开启时运行，关闭ID会同步关闭卡尔曼。卡尔曼状态跟随私有ID而非rank，公共接口不产生或消费`track_id/source_id`。
 
-当两个模块同时开启时，临时ID从首次建立起按48 kHz绝对sample观察2秒，并在这首个2秒内累计归并至少5次自然Gate窗口候选且至少1个同窗角度被L4识别为人声后正式化。临时阶段的人声反馈只满足确认条件，不提前续命；正式化时获得3秒语音租约。角度匹配、卡尔曼校正、预测和ID强制Gate均不续命。L4向L2发送人声与非人声的session/epoch/decision sample/角度/概率；L2按同窗历史和20°圆周门限自动匹配。非人声结果只降低内部语义可信度，绝不隐藏L2角度；任何匹配的人声结果清除该ID此前的负面语义证据。正式化后唯一匹配到仍存活正式ID的人声结果，才把截止sample滑动到该人声点之后3秒。无历史、歧义、错流、非人声或已过期均不续命，迟到反馈不得复活。低P强制窗口可更新已有正式ID位置且预测后首次重匹配使用2倍测量可信度，但不能创建或晋升新ID。租约到期后在Gate判断和关联前删除ID及其卡尔曼状态，最后一个ID删除后恢复按P判断。公共候选DTO保持不变，只输出角度及原有Raw/Norm。
+当两个模块同时开启时，临时ID从首次建立起按48 kHz绝对sample观察2秒，并在这首个2秒内累计归并至少5次自然Gate窗口候选且至少1个同窗角度被L5识别为人声后正式化。临时阶段的人声反馈只满足确认条件，不提前续命；正式化时获得3秒语音租约。角度匹配、卡尔曼校正、预测和ID强制Gate均不续命。L5向L2发送人声与非人声的session/epoch/decision sample/角度/概率；L2按同窗历史和20°圆周门限自动匹配。非人声结果只降低内部语义可信度，绝不隐藏L2角度；任何匹配的人声结果清除该ID此前的负面语义证据。正式化后唯一匹配到仍存活正式ID的人声结果，才把截止sample滑动到该人声点之后3秒。无历史、歧义、错流、非人声或已过期均不续命，迟到反馈不得复活。低P强制窗口可更新已有正式ID位置且预测后首次重匹配使用2倍测量可信度，但不能创建或晋升新ID。租约到期后在Gate判断和关联前删除ID及其卡尔曼状态，最后一个ID删除后恢复按P判断。公共候选DTO保持不变，只输出角度及原有Raw/Norm。
 
 卡尔曼Q、R通过两个无量纲运行时倍率调整：Q倍率缩放基础过程噪声矩阵，R倍率缩放基础测量噪声方差。配置文件必须显式给出初始1.00；允许范围0.02～10.00，调节步长为0.1，0.02作为最小端点。Test UI分别提供当前值、减、加、应用控件；应用后保存并从下一完整窗口生效，不得重建ID或重置卡尔曼状态。
 
@@ -660,7 +660,7 @@ safetensors >=0.8,<0.9
 
 # 8. SpectrogramFeature固定工程旁路契约
 
-`DirectionalSignal.stft_complex`直接用于工程特征，不执行ISTFT后再重复STFT。当前NVIDIA MarbleNet基准不消费该矩阵；L4稳定公共输入仍是第9节定义的48 kHz、320 ms增强波形。
+`DirectionalSignal.stft_complex`直接用于工程特征，不执行ISTFT后再重复STFT。当前NVIDIA MarbleNet基准不消费该矩阵；L5稳定公共输入仍是第9节定义的48 kHz、320 ms增强波形。
 
 ```yaml
 feature:
@@ -704,7 +704,7 @@ models/<model_version>/
 
 ---
 
-# 9. Layer 4：CNN逐点二分类
+# 9. Layer 5：CNN逐点二分类
 
 ## 9.1 固定接口
 
@@ -722,7 +722,7 @@ class VoiceClassifier(Protocol):
 
 第一版基准为NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`。适配器接收可变长度连续48 kHz轨，polyphase重采样为16 kHz后使用官方80维log-mel和预训练网络，一次得到连续20 ms二类概率。基线标量采用`latest_80ms_max_contiguous_3frame_mean_v2`：完整连续轨提供卷积上下文，但只在最新80 ms内寻找连续3帧均值峰值，防止旧语音粘住当前结论。
 
-L4采用插件架构：同一不可变音频batch可同时送入一个primary和零到多个shadow模型。只有primary输出进入正式`VoiceDetection`、方向点数和`DecisionRecord`；所有模型的原始概率、版本、适配器和延迟分别保存在`ModelPrediction`，用于后续对比。新增模型只实现`VoiceModelPlugin`并添加配置，不得改动L2/L3公共接口。
+L5采用插件架构：同一不可变音频batch可同时送入一个primary和零到多个shadow模型。只有primary输出进入正式`VoiceDetection`、方向点数和`DecisionRecord`；所有模型的原始概率、版本、适配器和延迟分别保存在`ModelPrediction`，用于后续对比。新增模型只实现`VoiceModelPlugin`并添加配置，不得改动L2/L3公共接口。
 
 模型manifest必须包含：
 
@@ -744,7 +744,7 @@ manifest、权重哈希或接口不匹配时拒绝加载。运行时只加载`sa
 验证集完成temperature scaling后导出模型；默认阈值：
 
 ```yaml
-layer4:
+layer5:
   voice_probability_limit: 0.70
 ```
 
@@ -764,7 +764,7 @@ GUI改变阈值时只重新计算 `is_voice = probability >= threshold` 和方�
 
 项目只允许根目录`.venv`作为运行解释器。`.vscode/settings.json`固定`${workspaceFolder}\\.venv\\Scripts\\python.exe`，并通过tasks/launch提供环境自检、全部测试、L1服务和Development Test UI入口。`.venv`不得提交、复制或与其他项目共享。环境安装只允许由`scripts/setup_vscode_env.ps1`执行；脚本按hash lock安装、运行`pip check`并强制执行`scripts/check_runtime_env.py --require-cuda`。
 
-GPU环境启动门禁必须真实执行并全部通过：解释器路径与Python版本检查；`torch.cuda.is_available()`；设备名、显存、compute capability与`sm_120`支持；CUDA complex64 STFT `[7,513,33]`；批量complex64线性求解finite；实际MarbleNet批量波形 `[5,15360]` 经16 kHz适配与模型前向；依赖无冲突。只打印GPU名称或只运行通用Conv2D smoke不算L4门禁通过。当前`scripts/check_runtime_env.py --require-cuda`已执行实际MarbleNet `[5,15360]`波形前向并校验finite `[5]`概率；自动测试另比较固定输入的CPU/CUDA输出一致性。
+GPU环境启动门禁必须真实执行并全部通过：解释器路径与Python版本检查；`torch.cuda.is_available()`；设备名、显存、compute capability与`sm_120`支持；CUDA complex64 STFT `[7,513,33]`；批量complex64线性求解finite；实际MarbleNet批量波形 `[5,15360]` 经16 kHz适配与模型前向；依赖无冲突。只打印GPU名称或只运行通用Conv2D smoke不算L5门禁通过。当前`scripts/check_runtime_env.py --require-cuda`已执行实际MarbleNet `[5,15360]`波形前向并校验finite `[5]`概率；自动测试另比较固定输入的CPU/CUDA输出一致性。
 
 笔记本正式性能测试必须连接电源、Windows设为最佳性能，并把VS Code和`.venv` Python指定为高性能NVIDIA GPU。驱动、Python、PyTorch或lock任一变化都触发完整环境门禁、全部自动测试和实机性能复测。
 
@@ -782,10 +782,10 @@ Admission:
 Bounded staged workers:
     L2 queue -> Gate / SRP-PHAT / private smoother -> L2StageResult
     L3 queue -> shared STFT / covariance / BF / ISTFT -> L3StageResult
-    L4 queue -> loudness compensation / resample / batched CNN -> L4StageResult
-             └-> COMPLETED full same-window DevUiFrame -> latest_l4_dev_ui (capacity 1, UI only)
-    steady state: L2(n) || L3(n-1) || L4(n-2)
-    same window:  L2(n) -> L3(n) -> L4(n)
+    L5 queue -> loudness compensation / resample / batched CNN -> L5StageResult
+             └-> COMPLETED full same-window DevUiFrame -> latest_l5_dev_ui (capacity 1, UI only)
+    steady state: L2(n) || L3(n-1) || L5(n-2)
+    same window:  L2(n) -> L3(n) -> L5(n)
 
 Ordered commit:
     ResultJoiner(WindowKey) -> JoinedWindowResult in window order
@@ -793,7 +793,7 @@ Ordered commit:
        └──> immutable Development Test UI snapshot
 
 UI thread:
-    consumes immutable joined audit results, latest_l4_dev_ui, and public processing_status only
+    consumes immutable joined audit results, latest_l5_dev_ui, and public processing_status only
 ```
 
 加速策略：
@@ -802,11 +802,11 @@ UI thread:
 - `torch.cuda.is_available()`、目标device和显存信息必须在启动日志中记录。
 - STFT、steering、协方差、`torch.linalg.solve`和CNN按窗口/候选批处理；禁止为每个候选重复上传同一窗口。
 - 复数DSP使用complex64，不使用FP16解线性方程。CNN可以在验证无精度回退后使用CUDA autocast FP16/BF16。
-- L2、L3、L4分别保持单worker以保护私有追踪、滚动STFT和噪声统计的时序；并行来自不同窗口占据不同stage，不是让同一窗口绕过依赖。每个stage的有界等待队列都使用latest-wins，只替换尚未被本层worker取走的最旧任务；已开始计算不取消。
+- L2、L3、L5分别保持单worker以保护私有追踪、滚动STFT和噪声统计的时序；并行来自不同窗口占据不同stage，不是让同一窗口绕过依赖。每个stage的有界等待队列都使用latest-wins，只替换尚未被本层worker取走的最旧任务；已开始计算不取消。
 - CPU ComputeCache按stage分区并受全局字节硬限制；L3 prepared CUDA context固定小容量且不进入CPU cache。频率轴、窗、mask、steering和p查询只允许有界缓存，GCC、BF solve、ISTFT和CNN batch按窗释放。
-- 各stage队列和最大在途窗口均有硬上限。L2/L3/L4每层都按latest-wins显式终止本层队列中未开始的最旧任务：L2丢弃使三阶段均`DROPPED`，L3丢弃保留L2而使L3/L4 `DROPPED`，L4丢弃保留L2/L3而使L4 `DROPPED`。每个丢弃、跳过、失败、超时或取消窗口都必须进入可审计终态并有序提交DecisionRecord+watermark。
+- 各stage队列和最大在途窗口均有硬上限。L2/L3/L5每层都按latest-wins显式终止本层队列中未开始的最旧任务：L2丢弃使三阶段均`DROPPED`，L3丢弃保留L2而使L3/L5 `DROPPED`，L5丢弃保留L2/L3而使L5 `DROPPED`。每个丢弃、跳过、失败、超时或取消窗口都必须进入可审计终态并有序提交DecisionRecord+watermark。
 - 当Joiner在窗口数/字节容量上无法注册新窗口时，新窗口在pre-joiner边界被拒绝；不保留320 ms波形，仅使用有界范围记录身份/sample/原因，commit再按window ID展开为轻量`error` DecisionRecord和watermark。completion主队列、后备backlog和commit乱序表同样有硬上限，拥塞时拒绝新接纳而不无界堆积。
-- L4 worker只在正式L4结果`COMPLETED`后向容量1的`latest_l4_dev_ui`发布完整同窗L2/L3/L4帧。满时覆盖旧显示帧并计数；失败、丢弃、跳过不进入该邮箱。此side channel不改变ResultJoiner、DecisionRecord、RecordingStore或watermark顺序。
+- L5 worker只在正式L5结果`COMPLETED`后向容量1的`latest_l5_dev_ui`发布完整同窗L2/L3/L5帧。满时覆盖旧显示帧并计数；失败、丢弃、跳过不进入该邮箱。此side channel不改变ResultJoiner、DecisionRecord、RecordingStore或watermark顺序。
 - CUDA不可用时只有按配置成功转CPU并产生完整输出才标记`degraded/cpu_fallback`；CPU路径不承诺实时。回退本身也失败时必须是`error`。
 - CUDA OOM时清空本次临时结果，重试一次较小候选batch；仍失败时只有完整CPU重算成功才返回`degraded`，CPU也失败则整窗`error`。不得崩溃、复用部分GPU结果或把失败标成降级成功。
 
@@ -829,11 +829,11 @@ continuous 30 min:
 
 正式应用入口固定为`python -m app.main --config config/config.yaml`，Development Test UI入口固定为`python -m gui.dev_test_ui.app --config config/config.yaml`。两者都调用同一个`ApplicationRuntime`装配层，禁止UI、Layer 1 API或任一算法层自行创建第二条主链路。`ApplicationRuntime`只负责生命周期与适配，不定义新的DSP参数或DTO。
 
-启动前的应用级顺序仍为：加载/校验配置与hash → 环境/GPU检查 → 加载并验证模型artifact（development允许明确Unavailable，production必须成功）→ 创建Catalog/RecordingStore和ApplicationRuntime。当前Runtime的实际启动顺序固定为：重置IngestCoordinator/WindowAssembler、缓存和有界队列 → 建立RecordingStore session并启用录音模式 → 按`commit→L4→L3→L2`启动stage worker → 打开CDC/UAC pipeline → 启动L1读取线程。UI只在Runtime已创建后订阅公开状态。任一步失败按相反顺序停止pipeline、唤醒并join已启动worker、封闭失败录音session，不得留下串口、音频stream、writer、stage线程或CUDA任务。
+启动前的应用级顺序仍为：加载/校验配置与hash → 环境/GPU检查 → 加载并验证模型artifact（development允许明确Unavailable，production必须成功）→ 创建Catalog/RecordingStore和ApplicationRuntime。当前Runtime的实际启动顺序固定为：重置IngestCoordinator/WindowAssembler、缓存和有界队列 → 建立RecordingStore session并启用录音模式 → 按`commit→L5→L3→L2`启动stage worker → 打开CDC/UAC pipeline → 启动L1读取线程。UI只在Runtime已创建后订阅公开状态。任一步失败按相反顺序停止pipeline、唤醒并join已启动worker、封闭失败录音session，不得留下串口、音频stream、writer、stage线程或CUDA任务。
 
-每个`DecisionWindow`先冻结配置，在有容量时注册唯一`WindowKey`，再进入有界L2队列。默认L2/L3/L4/completion容量分别为10000/10000/10000/8，最大Joiner在途窗口30003，覆盖三层等待队列及每层1个正在执行的窗口；L2、L3、L4各自使用latest-wins，仅终止本层尚未开始的最旧等待任务。Joiner注册前容量不足时新窗口用轻量有界审计拒绝，不保留音频。completion队列和后备backlog均不超过8，commit乱序表软限30003、硬限`2*30003+2*8=60022`；它们拥塞时拒绝新接纳，不延伸为无界队列。按50窗/s计算，单层满队列约对应200秒等待工作，端到端累计等待可能更长；大队列只提供有界过载缓冲，积压会增加CPU内存和排队延迟。三个stage可乱序完成，但ResultJoiner/commit只按window ID发布完整终态。epoch切换前必须封闭旧epoch全部已接纳窗口；迟到旧结果不得污染新epoch的UI、DecisionRecord或watermark。
+每个`DecisionWindow`先冻结配置，在有容量时注册唯一`WindowKey`，再进入有界L2队列。默认L2/L3/L5/completion容量分别为10000/10000/10000/8，最大Joiner在途窗口30003，覆盖三层等待队列及每层1个正在执行的窗口；L2、L3、L5各自使用latest-wins，仅终止本层尚未开始的最旧等待任务。Joiner注册前容量不足时新窗口用轻量有界审计拒绝，不保留音频。completion队列和后备backlog均不超过8，commit乱序表软限30003、硬限`2*30003+2*8=60022`；它们拥塞时拒绝新接纳，不延伸为无界队列。按50窗/s计算，单层满队列约对应200秒等待工作，端到端累计等待可能更长；大队列只提供有界过载缓冲，积压会增加CPU内存和排队延迟。三个stage可乱序完成，但ResultJoiner/commit只按window ID发布完整终态。epoch切换前必须封闭旧epoch全部已接纳窗口；迟到旧结果不得污染新epoch的UI、DecisionRecord或watermark。
 
-正常关闭顺序固定为：停止UAC/CDC pipeline产生新块 → L1刷出已延迟预降噪hop并声明输入结束 → 以EOS依次drain L2、L3、L4和completion/commit → Joiner提交所有完成/跳过/失败/取消终态并通过原子result+watermark推进最终水位 → finalize scratch与RecordingStore → 停止播放/UI订阅 → 清空有界缓存并释放GPU和Catalog。drain受`graceful_shutdown_timeout_seconds`限制；超时时已注册未完成项明确标记`CANCELLED/error`并唤醒worker。只有全部worker真正退出后才关闭RecordingStore；否则保留资源并报错，不能假装停机完成。崩溃恢复只恢复第12节已写资产，不伪造未完成算法结果。
+正常关闭顺序固定为：停止UAC/CDC pipeline产生新块 → L1刷出已延迟预降噪hop并声明输入结束 → 以EOS依次drain L2、L3、L5和completion/commit → Joiner提交所有完成/跳过/失败/取消终态并通过原子result+watermark推进最终水位 → finalize scratch与RecordingStore → 停止播放/UI订阅 → 清空有界缓存并释放GPU和Catalog。drain受`graceful_shutdown_timeout_seconds`限制；超时时已注册未完成项明确标记`CANCELLED/error`并唤醒worker。只有全部worker真正退出后才关闭RecordingStore；否则保留资源并报错，不能假装停机完成。崩溃恢复只恢复第12节已写资产，不伪造未完成算法结果。
 
 `runtime.mode`只允许`development|production`。production禁止Mock、禁止模型Unavailable、要求CUDA环境门禁通过且`hardware_calibration_status=verified`；任一不满足则启动失败。development允许CPU fallback、未校准硬件和显式Mock，但所有GUI/报告必须持续显示对应降级水印，不能产生production-ready报告。
 
@@ -928,9 +928,9 @@ class DevUiFrame:
     performance: AlgorithmPerformanceSnapshot
 ```
 
-`DevUiFrame.spatial_response`提供SRP原始/Norm 360点与候选，`l4_result.detections`提供CNN概率。除L1独立电平外，同一帧内SRP、BF音频和CNN必须具有完全相等的`WindowKey`。正式审计Frame由ResultJoiner有序提交的`JoinedWindowResult`构造；阶段跳过、失败或超时时发布同一window带明确终态的诊断帧。L4 worker还在真实`COMPLETED`后发布一个完整同窗Frame到`latest_l4_dev_ui`，只供右下象限即时显示，不是正式结果。禁止把新SRP与旧BF/CNN拼到同一Frame或让该邮箱改变有序提交。
+`DevUiFrame.spatial_response`提供SRP原始/Norm 360点与候选，`l5_result.detections`提供CNN概率。除L1独立电平外，同一帧内SRP、BF音频和CNN必须具有完全相等的`WindowKey`。正式审计Frame由ResultJoiner有序提交的`JoinedWindowResult`构造；阶段跳过、失败或超时时发布同一window带明确终态的诊断帧。L5 worker还在真实`COMPLETED`后发布一个完整同窗Frame到`latest_l5_dev_ui`，只供右下象限即时显示，不是正式结果。禁止把新SRP与旧BF/CNN拼到同一Frame或让该邮箱改变有序提交。
 
-实时UI使用两个容量1的latest-value mailbox：一个承载有序审计Frame，一个承载最新L4完成Frame。UI慢时只覆盖旧显示帧，不反压采集或算法。有序`DROPPED/SKIPPED`或缺失帧不得立即擦除上一份有效CNN结果；只有超过`dev_test_ui.stale_after_ms`仍没有新L4完成帧才显示`STALE`。`processing_status`必须公开`l4_actual_completed`、`l4_dropped`、`l4_skipped`、最近1秒`l4_actual_hz`以及L4显示邮箱深度、容量和覆盖数。L1电平最多刷新25 Hz，SRP/CNN图最多20 Hz，波形最多10 Hz；UI绘制耗时目标p95 `<8 ms`。复数STFT、整段PCM和360点数组不通过Qt signal逐项复制，使用只读快照引用并在GUI线程一次取走。
+实时UI使用两个容量1的latest-value mailbox：一个承载有序审计Frame，一个承载最新L5完成Frame。UI慢时只覆盖旧显示帧，不反压采集或算法。有序`DROPPED/SKIPPED`或缺失帧不得立即擦除上一份有效CNN结果；只有超过`dev_test_ui.stale_after_ms`仍没有新L5完成帧才显示`STALE`。`processing_status`必须公开`l5_actual_completed`、`l5_dropped`、`l5_skipped`、最近1秒`l5_actual_hz`以及L5显示邮箱深度、容量和覆盖数。L1电平最多刷新25 Hz，SRP/CNN图最多20 Hz，波形最多10 Hz；UI绘制耗时目标p95 `<8 ms`。复数STFT、整段PCM和360点数组不通过Qt signal逐项复制，使用只读快照引用并在GUI线程一次取走。
 
 ## 11.3 最末行：算法性能指标
 
@@ -946,8 +946,8 @@ Precision 0.91 | Recall 0.96 | F1 0.93 | test:<dataset_version> @ threshold 0.70
 
 - `Warmup`显示当前epoch的`buffered_samples/15360`和百分比；不足时显示`Warming`及按`(15360-buffered)/48000`计算的理论剩余毫秒，首个正式窗口产生后显示`Ready`。epoch重置立即清零，不能继续显示旧epoch Ready。
 - `Sample rate`同时显示配置值和实测值，格式为`configured / observed Hz`。实测值用Ingest连续sample增量除以对应单调时钟跨度，在最近5秒滑动窗计算；少于1秒数据、断流或timestamp异常时显示`N/A`，不得用配置值冒充实测值。
-- `Compute time`是同一窗口L2、L3和L4各stage实际运行时长之和，包含SRP、共享STFT、MVDR/DAS、ISTFT、响度补偿和CNN，排除各stage队列等待、Joiner等待、UI绘制、试听与RecordingStore。各CUDA stage必须在结束计时前同步本窗口CUDA event，禁止只测异步kernel提交时间。
-- `Latency`是窗口被Runtime接纳的单调时刻到ResultJoiner完成并进入有序commit的端到端算法延迟，包含L2/L3/L4队列等待、compute time和Joiner等待，排除UI绘制、试听和异步写盘。它与`DecisionRecord.processing_latency_ms`采用同一数值；必须满足`latency >= compute_time >= 0`。每个DecisionRecord另保存stage状态、stage compute时长和stage queue wait，便于区分算力不足与排队抖动。
+- `Compute time`是同一窗口L2、L3和L5各stage实际运行时长之和，包含SRP、共享STFT、MVDR/DAS、ISTFT、响度补偿和CNN，排除各stage队列等待、Joiner等待、UI绘制、试听与RecordingStore。各CUDA stage必须在结束计时前同步本窗口CUDA event，禁止只测异步kernel提交时间。
+- `Latency`是窗口被Runtime接纳的单调时刻到ResultJoiner完成并进入有序commit的端到端算法延迟，包含L2/L3/L5队列等待、compute time和Joiner等待，排除UI绘制、试听和异步写盘。它与`DecisionRecord.processing_latency_ms`采用同一数值；必须满足`latency >= compute_time >= 0`。每个DecisionRecord另保存stage状态、stage compute时长和stage queue wait，便于区分算力不足与排队抖动。
 - Compute与Latency均显示最新有效窗口的current值，以及当前epoch最近最多500个已完成`ok/degraded`窗口的P50/P95；warming、error和dropped窗口不进入分位数，但单独的drop/error计数仍在全局状态栏显示。epoch改变时清空滚动统计。性能栏刷新上限2 Hz，不能为刷新而同步额外GPU工作。
 - `Precision/Recall/F1`是CNN模型artifact中`metrics.json`保存的锁定test split结果，必须与当前`model_version`、`dataset_version`、模型artifact hash和`evaluation_threshold`匹配；这里的`Precision`即用户所说的`pre`。三项均显示0～1三位小数，同时显示`test:<dataset_version> @ threshold`来源。
 - 实时运行没有逐窗口ground truth，因此禁止用在线预测自身计算Precision/Recall/F1。模型不可用、Mock、metrics缺失、hash/threshold不匹配或尚未完成正式test时，三项统一显示`N/A`并注明原因；不得沿用上一个模型的数字。UI临时调整阈值后，artifact效果指标立即显示`N/A (threshold differs)`，除非存在该精确阈值的锁定test报告。
@@ -1044,7 +1044,7 @@ scratch每个segment的native/physical/float文件范围必须完全一致；若
 
 为防突发声，试听先去DC，再只对试听副本做峰值归一化到-6 dBFS并施加5 ms淡入/淡出；不得改写`DirectionalSignal`或训练特征。输出设备、主音量和静音状态必须可见，默认音量25%。播放/ISTFT在独立preview worker完成，不阻塞实时处理或GUI线程。
 
-FeatureExtractor接入显示后，所选候选行下方展示其运行时后端生成的`SpectrogramFeature [33,169]`热力图；未接入显示前明确标记待实现。横轴为320 ms、纵轴80～8000 Hz，色标显示log-magnitude数值范围；标题包含`preprocessing_version`。该矩阵是工程特征旁路，不从试听归一化后的waveform重新计算，当前NVIDIA MarbleNet基准也不消费它；未来以该特征为输入的模型接入时才可称为对应CNN的真实输入。候选切换时必须与L4概率保持同一window。
+FeatureExtractor接入显示后，所选候选行下方展示其运行时后端生成的`SpectrogramFeature [33,169]`热力图；未接入显示前明确标记待实现。横轴为320 ms、纵轴80～8000 Hz，色标显示log-magnitude数值范围；标题包含`preprocessing_version`。该矩阵是工程特征旁路，不从试听归一化后的waveform重新计算，当前NVIDIA MarbleNet基准也不消费它；未来以该特征为输入的模型接入时才可称为对应CNN的真实输入。候选切换时必须与L5概率保持同一window。
 
 ## 11.7 右下象限：CNN逐方向概率与最终识别结果
 
@@ -1213,9 +1213,9 @@ detections: [{theta_deg, beamformer_backend, model_version, voice_probability, i
 voice_direction_count: int
 diagnostics: [string]
 processing_latency_ms: float
-stage_statuses: {l2: string, l3: string, l4: string}
-stage_timings_ms: {l2: float, l3: float, l4: float}
-stage_queue_wait_ms: {l2: float, l3: float, l4: float}
+stage_statuses: {l2: string, l3: string, l5: string}
+stage_timings_ms: {l2: float, l3: float, l5: float}
+stage_queue_wait_ms: {l2: float, l3: float, l5: float}
 terminal_reason: string | null
 ```
 
@@ -1331,11 +1331,11 @@ class Annotation:
 
 所有标注使用对应recording自身的48 kHz、从0开始的局部sample index和半开区间；对于promoted Runtime资产，manifest中的lineage另外保存原`(session_id, stream_epoch, start_sample, end_sample)`，换算固定为`local_sample = source_sample - lineage.start_sample`。方向标签使用算法内部真实物理`theta_deg`，不得使用UI显示角。人工标注必须保留修改历史，不覆盖旧版本。
 
-L4样本构造必须通过锁定版本的WindowAssembler、L2和L3多频段增强离线运行，保存与在线相同的48 kHz、320 ms未做播放器归一化的方向波形；MarbleNet适配器的16 kHz重采样和80维log-mel前处理必须与推理共用同一实现。`SpectrogramFeature [33,169]`可随样本保存用于工程分析，但不是当前MarbleNet输入。每个20 ms endpoint的方向集合为“L2实际候选 + 人工指定评测方向”，并保存候选角、BF后端、预处理版本及全部artifact hash。
+L5样本构造必须通过锁定版本的WindowAssembler、L2和L3多频段增强离线运行，保存与在线相同的48 kHz、320 ms未做播放器归一化的方向波形；MarbleNet适配器的16 kHz重采样和80维log-mel前处理必须与推理共用同一实现。`SpectrogramFeature [33,169]`可随样本保存用于工程分析，但不是当前MarbleNet输入。每个20 ms endpoint的方向集合为“L2实际候选 + 人工指定评测方向”，并保存候选角、BF后端、预处理版本及全部artifact hash。
 
 CNN标签只判断该方向增强后的实际音频是否含人声，与该点离真实声源角多远无关。标注员对盲化后的增强音频做sample级`voice_activity`：320 ms上下文中人声有效sample占比 `>=0.50` 为`voice`，`<=0.10`为`non_voice`，中间为`ambiguous`并默认不进入训练。正式test gold label要求两名标注员独立标注；标签不一致或边界差超过20 ms时由第三人审核。若有时间对齐的独立voice/non-voice component reference，可用相同BF权重生成辅助标签，但正式test仍需人工抽检至少20%。旁瓣、反射和非目标方向泄漏只作为分析tag；只要增强后仍有人声，就不能作为hard negative。
 
-> **待修改（暂不执行）**：L4在线推理已改为“320 ms内出现约60 ms可信连续人声片段即可形成高窗口概率”，而本段训练数据规则仍按人声有效sample占比`>=0.50`标记`voice`，两者语义尚未对齐。现阶段保持既有录音、存储、标注和split不变；在启动下一轮L4训练数据生成前，必须单独评审并版本化修改标签阈值、`ambiguous`边界、历史标注迁移策略及对应dataset version，禁止静默重标已有语料。
+> **待修改（暂不执行）**：L5在线推理已改为“320 ms内出现约60 ms可信连续人声片段即可形成高窗口概率”，而本段训练数据规则仍按人声有效sample占比`>=0.50`标记`voice`，两者语义尚未对齐。现阶段保持既有录音、存储、标注和split不变；在启动下一轮L5训练数据生成前，必须单独评审并版本化修改标签阈值、`ambiguous`边界、历史标注迁移策略及对应dataset version，禁止静默重标已有语料。
 
 DOA测试记录必须具有受控真实`theta_deg`或可靠外部标定。没有角度真值的运行音频不能计入DOA误差统计。
 
@@ -1452,7 +1452,7 @@ UI所有重扫描、hash、统计、波形降采样和导入任务在后台worke
 项目只允许一个运行时配置入口 `config/config.yaml`，由PyYAML `safe_load`读取后交给拒绝未知字段的类型化schema；schema版本不支持、缺字段、未知字段、类型/range错误均启动失败。录音`chunk_seconds/audio_queue_seconds/result_queue_capacity/retention_days/max_storage_gb`必须大于0，`min_free_storage_gb`必须非负且严格小于`max_storage_gb`，其中`result_queue_capacity`默认为256且不得大于256；不得以零容量队列或非法存储预算启动。第14节代码块就是必须创建的完整默认文件，不是示例。代码不得再维护第二套业务默认值；类型化schema只做解析与校验，测试和所有入口都加载该文件。`pyproject.toml`将`config`列入包发现并把`config.yaml`作为package data打入wheel，因此源码树与分发包携带同一配置资产，不复制第二份默认值。现有Layer 1环境变量只允许覆盖部署绑定字段`device.device_name`、`device.host_api`、`device.serial_port`、`device.serial_required`和`device.light_service_url`，覆盖后必须打印来源并写入session manifest；采样率、通道数、shape、几何、时间、算法参数及路径禁止被环境变量覆盖。未知环境变量不影响配置。禁止在模块中散落magic numbers。
 
 ```yaml
-schema_version: project_config_v1
+schema_version: project_config_v2
 
 paths:
   data_root: data
@@ -1569,7 +1569,7 @@ feature:
   normalization: training_set_per_frequency_zscore
   expected_shape: [33, 169]
 
-layer4:
+layer5:
   primary_model_id: nv_marblenet_baseline_v1
   models:
     - model_id: nv_marblenet_baseline_v1
@@ -1589,7 +1589,7 @@ runtime:
   processing_queue_windows: 1  # legacy launch-profile compatibility only
   l2_queue_windows: 10000
   l3_queue_windows: 10000
-  l4_queue_windows: 10000
+  l5_queue_windows: 10000
   completion_queue_windows: 8
   max_inflight_windows: 30003
   compute_cache_max_bytes: 67108864
@@ -1663,7 +1663,7 @@ common/
   angle.py
   config.py
 app/
-  runtime.py                         # Development Test UI共用完整L1→L4链路
+  runtime.py                         # Development Test UI共用完整L1→L5链路
   # main.py尚未实现
 ingest/
   coordinator.py
@@ -1687,7 +1687,7 @@ layer3_direction_signal/
   mvdr.py
   hybrid.py
   feature.py
-layer4_voice_classifier/
+layer5_voice_classifier/
   contracts.py
   engine.py
   marblenet.py
@@ -1704,7 +1704,7 @@ gui/
     preview_player.py
   production_ui/
     app.py                           # Audio Data Manager六页界面
-    capture_host.py                  # 独立UAC录音主机；不运行L2→L4
+    capture_host.py                  # 独立UAC录音主机；不运行L2→L5
 data_management/
   service.py
   recording_store.py
@@ -1719,7 +1719,7 @@ data_management/
   experiments.py
   dedicated_recording.py
 data/
-  external_sources/                 # L4公开bootstrap来源、许可、hash与清单
+  external_sources/                 # L5公开bootstrap来源、许可、hash与清单
 tests/
 config/config.yaml
 requirements.lock
@@ -1730,7 +1730,7 @@ scripts/
   setup_vscode_env.ps1
   check_runtime_env.py
   run_audio_data_manager.py
-  acquire_l4_bootstrap_data.py
+  acquire_l5_bootstrap_data.py
 .vscode/
   settings.json
   project.env
@@ -1751,7 +1751,7 @@ third_party/NOTICE.md
 3. 在已完成的L2几何、40/20 ms、Robust归一化和Top-3之后增加可选私有ID追踪与圆周卡尔曼；公共候选不输出ID，成熟轨迹可按当前`SpatialResponse`合规续报。删除Test UI预测方向L3旁路，保留不改角度、不触发额外波束形成的纯试听ID/cache sidecar，完成新的SRP/平滑UI门禁。
 4. 实现共享STFT、低频DAS、中频WNG约束超指向MVDR、高频自适应MVDR及平滑融合；接入左下融合音频试听。固定`[33,169]`工程FeatureExtractor已经接线，热力图显示仍待完成。
 5. 完成L3 CPU与运行时自动测试；CUDA交叉验证、OOM降级和真实UI门禁仍需补齐。
-6. 固化L4波形公共接口和插件架构，接入带hash的NVIDIA MarbleNet基准artifact、CPU推理、运行时与右下象限。
+6. 固化L5波形公共接口和插件架构，接入带hash的NVIDIA MarbleNet基准artifact、CPU推理、运行时与右下象限。
 7. 完成目标R6+1数据采集、目标域微调、窗口校准、锁定test指标、实际MarbleNet CUDA一致性和production门禁；这些工作当前尚未完成。
 8. 实现RecordingStore、CorpusStore、manifest、catalog、QA和统计；验证崩溃恢复与lineage。
 9. Audio Data Manager、独立UAC录音主机、六页数据管理界面及自动测试已经实现；最终人声方向production GUI和`app.main`入口仍待实现，显示角度映射最后在 `UiAngleMapper` 决定。
@@ -1787,8 +1787,8 @@ third_party/NOTICE.md
 - config schema与代码默认值一致，无未识别字段。
 - 正式DTO为CPU NumPy而GPU worker不发生逐候选往返；候选rank在L2→BF→Feature→CNN→Result保持不变。
 - `DevUiFrame`不混合window；四象限能力缺失、STALE、error与Mock状态不产生假正式结果。
-- `latest_l4_dev_ui`固定容量1且只接收L4 `COMPLETED`的完整同窗Frame；覆盖只影响显示。有序DROPPED/SKIPPED帧保留最近有效CNN结果到`stale_after_ms`，L4实际完成/丢弃/跳过/Hz/邮箱覆盖诊断逐项验证。
-- Gate开启但候选为空时L3不调用prepare，L3/L4均为`COMPLETED`且L4接收空batch；正式增强音频与Voice结果为空。
+- `latest_l5_dev_ui`固定容量1且只接收L5 `COMPLETED`的完整同窗Frame；覆盖只影响显示。有序DROPPED/SKIPPED帧保留最近有效CNN结果到`stale_after_ms`，L5实际完成/丢弃/跳过/Hz/邮箱覆盖诊断逐项验证。
+- Gate开启但候选为空时L3不调用prepare，L3/L5均为`COMPLETED`且L5接收空batch；正式增强音频与Voice结果为空。
 - `AlgorithmPerformanceSnapshot`与当前session/epoch一致；epoch切换清空Warmup和分位数，rolling window只接收最多500个`ok/degraded`窗口，Latency与`processing_latency_ms`逐值相同且不小于Compute。
 
 ## 17.2 几何与DSP tests

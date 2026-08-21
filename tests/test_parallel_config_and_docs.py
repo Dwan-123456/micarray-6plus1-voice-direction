@@ -15,7 +15,7 @@ def test_parallel_runtime_limits_are_loaded_from_the_single_config():
     runtime = load_config(PROJECT_ROOT / "config" / "config.yaml").runtime
 
     assert runtime.stage_queue_windows == 2_000
-    assert (runtime.l2_queue_windows, runtime.l3_queue_windows, runtime.l4_queue_windows) == (
+    assert (runtime.l2_queue_windows, runtime.l3_queue_windows, runtime.l5_queue_windows) == (
         2_000,
         2_000,
         2_000,
@@ -33,12 +33,12 @@ def test_two_thousand_window_defaults_are_covered_by_joiner_capacity():
     assert RuntimeConfig.model_fields["stage_queue_windows"].default == 2_000
     assert RuntimeConfig.model_fields["l2_queue_windows"].default is None
     assert RuntimeConfig.model_fields["l3_queue_windows"].default is None
-    assert RuntimeConfig.model_fields["l4_queue_windows"].default is None
+    assert RuntimeConfig.model_fields["l5_queue_windows"].default is None
     assert RuntimeConfig.model_fields["max_inflight_windows"].default is None
     assert runtime.max_inflight_windows == (
         runtime.l2_queue_windows
         + runtime.l3_queue_windows
-        + runtime.l4_queue_windows
+        + runtime.l5_queue_windows
         + 3
     )
 
@@ -54,12 +54,12 @@ def test_shared_stage_queue_variable_resizes_all_stages_and_joiner_capacity():
         "stage_queue_windows": 250,
         "l2_queue_windows": None,
         "l3_queue_windows": None,
-        "l4_queue_windows": None,
+        "l5_queue_windows": None,
         "max_inflight_windows": None,
     })
     assert (
         runtime.l2_queue_windows,
         runtime.l3_queue_windows,
-        runtime.l4_queue_windows,
+        runtime.l5_queue_windows,
         runtime.max_inflight_windows,
     ) == (250, 250, 250, 753)

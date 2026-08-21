@@ -43,10 +43,10 @@ from layer3_direction_signal import (
     Layer3Output,
     Layer3Processor,
 )
-from layer4_voice_classifier import (
+from layer5_voice_classifier import (
     InputGainCompensationSettings,
-    Layer4AudioSegment,
-    Layer4Engine,
+    Layer5AudioSegment,
+    Layer5Engine,
     NvidiaMarbleNetPlugin,
 )
 from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoiceAnnotation
@@ -57,7 +57,7 @@ from .processing_contracts import (
     JoinedWindowResult,
     L2StageResult,
     L3StageResult,
-    L4StageResult,
+    L5StageResult,
     ProcessingConfigSnapshot,
     StageState,
     WindowKey,
@@ -81,11 +81,11 @@ class _L3Work:
 
 
 @dataclass(frozen=True, slots=True)
-class _L4Work:
+class _L5Work:
     work_item: WindowWorkItem
     l2: L2StageResult
     l3: L3StageResult
-    inputs: tuple[Layer4AudioSegment, ...]
+    inputs: tuple[Layer5AudioSegment, ...]
 
 
 @dataclass(slots=True)
@@ -120,7 +120,7 @@ class ApplicationRuntime:
         pipeline: InputPipeline | None = None,
         serial_device: SerialDevice | None = None,
         recording_store: RecordingStore | None = None,
-        layer4_engine: Layer4Engine | None = None,
+        layer5_engine: Layer5Engine | None = None,
         dev_audio_tracker: object | None = None,
         source_probability_provider: Callable[
             [DecisionWindow], tuple[SourceProbability20ms, ...]
@@ -169,24 +169,24 @@ class ApplicationRuntime:
         self.latest_windows: queue.Queue[object] = queue.Queue(maxsize=1)
         self.latest_dev_ui: queue.Queue[object] = queue.Queue(maxsize=config.dev_test_ui.snapshot_mailbox_capacity)
         # Formal commits are deliberately ordered, so a burst of terminal
-        # DROPPED/SKIPPED frames may follow one expensive completed L4 window.
-        # Keep completed L4 UI frames on an independent latest-only mailbox so
+        # DROPPED/SKIPPED frames may follow one expensive completed L5 window.
+        # Keep completed L5 UI frames on an independent latest-only mailbox so
         # that those audit frames cannot erase the newest useful CNN result.
-        self.latest_l4_dev_ui: queue.Queue[object] = queue.Queue(maxsize=1)
-        self._l4_ui_overwrites = 0
-        self._l4_diagnostics_lock = threading.Lock()
-        self._l4_actual_completed = 0
-        self._l4_dropped = 0
-        self._l4_skipped = 0
-        self._l4_completion_times: deque[float] = deque(maxlen=512)
+        self.latest_l5_dev_ui: queue.Queue[object] = queue.Queue(maxsize=1)
+        self._l5_ui_overwrites = 0
+        self._l5_diagnostics_lock = threading.Lock()
+        self._l5_actual_completed = 0
+        self._l5_dropped = 0
+        self._l5_skipped = 0
+        self._l5_completion_times: deque[float] = deque(maxlen=512)
         # The public compatibility alias is rebound by
         # ``_reset_processing_graph`` to the formal L2 admission queue.  The
-        # staged queues are independent so L2(n), L3(n-1), and L4(n-2) can run
+        # staged queues are independent so L2(n), L3(n-1), and L5(n-2) can run
         # concurrently without allowing two workers to mutate the same
         # stateful layer instance.
         self._l2_windows: queue.Queue[object]
         self._l3_windows: queue.Queue[object]
-        self._l4_windows: queue.Queue[object]
+        self._l5_windows: queue.Queue[object]
         self._completion_results: queue.Queue[object]
         self._completion_backlog: deque[JoinedWindowResult]
         self._completion_backlog_lock = threading.Lock()
@@ -243,14 +243,14 @@ class ApplicationRuntime:
         # The CPU path is the deterministic development integration. The same processor accepts CUDA tensors later.
         self.processing_device = self._resolve_processing_device(config)
         self._l3_cuda_stream = torch.cuda.Stream() if self.processing_device == "cuda" else None
-        self._l4_cuda_stream = torch.cuda.Stream() if self.processing_device == "cuda" else None
+        self._l5_cuda_stream = torch.cuda.Stream() if self.processing_device == "cuda" else None
         self._layer3 = Layer3Processor(config, device=self.processing_device)
         self.downstream_window_spec = config.downstream_audio_window
         self._l3_cache_snapshot: object | None = None
-        if layer4_engine is None:
-            enabled_l4 = tuple(item for item in config.layer4.models if item.enabled)
+        if layer5_engine is None:
+            enabled_l5 = tuple(item for item in config.layer5.models if item.enabled)
             plugins = []
-            for item in enabled_l4:
+            for item in enabled_l5:
                 artifact = Path(item.model_artifact)
                 if not artifact.is_absolute():
                     artifact = self.project_root / artifact
@@ -259,30 +259,30 @@ class ApplicationRuntime:
                 if item.backend not in {
                     "nvidia_marblenet_continuous_v2", "nvidia_marblenet_window_v1",
                 }:
-                    raise ValueError(f"unsupported Layer4 backend: {item.backend}")
+                    raise ValueError(f"unsupported Layer5 backend: {item.backend}")
                 plugins.append(NvidiaMarbleNetPlugin(
                     item.model_id,
                     artifact,
                     device=self.processing_device,
                     window_spec=config.downstream_audio_window,
                 ))
-            primary = next(plugin for plugin in plugins if plugin.model_id == config.layer4.primary_model_id)
-            shadows = tuple(plugin for plugin in plugins if plugin.model_id != config.layer4.primary_model_id)
-            layer4_engine = Layer4Engine(
+            primary = next(plugin for plugin in plugins if plugin.model_id == config.layer5.primary_model_id)
+            shadows = tuple(plugin for plugin in plugins if plugin.model_id != config.layer5.primary_model_id)
+            layer5_engine = Layer5Engine(
                 primary,
                 shadows,
-                threshold=config.layer4.voice_probability_limit,
+                threshold=config.layer5.voice_probability_limit,
                 input_gain_compensation=InputGainCompensationSettings(
-                    **config.layer4.input_gain_compensation.model_dump()
+                    **config.layer5.input_gain_compensation.model_dump()
                 ),
                 window_spec=config.downstream_audio_window,
             )
-        self._layer4 = layer4_engine
+        self._layer5 = layer5_engine
         self.track_audio_stream = TrackAudioStreamHub(
             InputGainCompensationSettings(
-                **config.layer4.input_gain_compensation.model_dump()
+                **config.layer5.input_gain_compensation.model_dump()
             ),
-            context_ms=config.layer4.continuous_context_ms,
+            context_ms=config.layer5.continuous_context_ms,
         )
         self.last_error: str | None = None
         self.processing_error: str | None = None
@@ -300,27 +300,27 @@ class ApplicationRuntime:
         self._processing_thread: threading.Thread | None = None
         self._processing_threads: dict[str, threading.Thread] = {}
         self._stage_errors: dict[str, str | None] = {
-            "l2": None, "l3": None, "l4": None, "commit": None,
+            "l2": None, "l3": None, "l5": None, "commit": None,
         }
         self._stage_error_counts: dict[str, int] = {name: 0 for name in self._stage_errors}
         self._stage_completed_counts: dict[str, int] = {
-            "l2": 0, "l3": 0, "l4": 0, "commit": 0,
+            "l2": 0, "l3": 0, "l5": 0, "commit": 0,
         }
         self._pipeline_duration_lock = threading.RLock()
         self._pipeline_timing_generation = 0
         self._pipeline_timing_sealed = False
         self._pipeline_first_queued_ns: int | None = None
         self._pipeline_stage_finished_ns: dict[str, int | None] = {
-            "l2": None, "l3": None, "l4": None,
+            "l2": None, "l3": None, "l5": None,
         }
         self._pipeline_stage_pause_reasons: dict[str, set[str]] = {
-            "l2": set(), "l3": set(), "l4": set(),
+            "l2": set(), "l3": set(), "l5": set(),
         }
         self._pipeline_stage_pause_started_ns: dict[str, int | None] = {
-            "l2": None, "l3": None, "l4": None,
+            "l2": None, "l3": None, "l5": None,
         }
         self._pipeline_stage_excluded_ns: dict[str, int] = {
-            "l2": 0, "l3": 0, "l4": 0,
+            "l2": 0, "l3": 0, "l5": 0,
         }
         self._project_config_hash = config_hash(config=config)
         self._calibration_hash = calibration_config_hash(config.calibration)
@@ -353,7 +353,7 @@ class ApplicationRuntime:
         runtime = self.config.runtime
         self._l2_windows = queue.Queue(maxsize=runtime.l2_queue_windows)
         self._l3_windows = queue.Queue(maxsize=runtime.l3_queue_windows)
-        self._l4_windows = queue.Queue(maxsize=runtime.l4_queue_windows)
+        self._l5_windows = queue.Queue(maxsize=runtime.l5_queue_windows)
         self._completion_results = queue.Queue(maxsize=runtime.completion_queue_windows)
         self._completion_backlog = deque()
         self._completion_backlog_capacity = runtime.completion_queue_windows
@@ -379,12 +379,12 @@ class ApplicationRuntime:
         total = runtime.compute_cache_max_bytes
         l2_bytes = total // 4
         l3_bytes = total // 2
-        l4_bytes = total - l2_bytes - l3_bytes
+        l5_bytes = total - l2_bytes - l3_bytes
         self._compute_cache = ComputeCache(
             {
                 "l2": CachePartitionLimits(runtime.max_inflight_windows, l2_bytes, 8),
                 "l3": CachePartitionLimits(runtime.max_inflight_windows, l3_bytes, 8),
-                "l4": CachePartitionLimits(runtime.max_inflight_windows, l4_bytes, 8),
+                "l5": CachePartitionLimits(runtime.max_inflight_windows, l5_bytes, 8),
             },
             max_total_bytes=total,
         )
@@ -561,7 +561,7 @@ class ApplicationRuntime:
             (decision_sample - self.config.timing.context_samples, decision_sample),
             "error",
             diagnostics=(f"admission_drop={rejected.reason}",),
-            stage_statuses={"l2": "dropped", "l3": "dropped", "l4": "dropped"},
+            stage_statuses={"l2": "dropped", "l3": "dropped", "l5": "dropped"},
             terminal_reason=rejected.reason,
             config_hash=self._project_config_hash,
             calibration_version=self.config.hardware.hardware_calibration_status,
@@ -624,16 +624,16 @@ class ApplicationRuntime:
             )
             self._joiner_submit(lambda: self._result_joiner.submit_l3(l3))
             self._stage_completed_counts["l3"] += 1
-        l4 = L4StageResult.terminal(
+        l5 = L5StageResult.terminal(
             key,
             StageState.SKIPPED,
             reason,
             started_monotonic_ns=monotonic_ns(),
             finished_monotonic_ns=monotonic_ns(),
         )
-        self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
-        self._stage_completed_counts["l4"] += 1
-        self._record_l4_terminal(StageState.SKIPPED)
+        self._joiner_submit(lambda: self._result_joiner.submit_l5(l5))
+        self._stage_completed_counts["l5"] += 1
+        self._record_l5_terminal(StageState.SKIPPED)
 
     def _drop_waiting_l2(self, reason: str) -> bool:
         try:
@@ -672,7 +672,7 @@ class ApplicationRuntime:
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
                 )
-                l4 = L4StageResult.terminal(
+                l5 = L5StageResult.terminal(
                     displaced.work_item.key,
                     StageState.DROPPED,
                     "l3_admission_queue_overflow",
@@ -680,36 +680,36 @@ class ApplicationRuntime:
                     finished_monotonic_ns=now_ns,
                 )
                 self._joiner_submit(lambda: self._result_joiner.submit_l3(l3))
-                self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
+                self._joiner_submit(lambda: self._result_joiner.submit_l5(l5))
                 self._stage_completed_counts["l3"] += 1
-                self._stage_completed_counts["l4"] += 1
+                self._stage_completed_counts["l5"] += 1
                 self._record_processing_drop(displaced.work_item.key)
         return False
 
-    def _enqueue_l4_latest(self, item: _L4Work) -> bool:
+    def _enqueue_l5_latest(self, item: _L5Work) -> bool:
         """Latest-wins enqueue; completed L3 remains authoritative."""
 
         while not self._processing_abort.is_set():
             try:
-                self._l4_windows.put_nowait(item)
+                self._l5_windows.put_nowait(item)
                 return True
             except queue.Full:
                 try:
-                    displaced = self._l4_windows.get_nowait()
+                    displaced = self._l5_windows.get_nowait()
                 except queue.Empty:
                     continue
-                if not isinstance(displaced, _L4Work):
+                if not isinstance(displaced, _L5Work):
                     continue
                 now_ns = monotonic_ns()
-                l4 = L4StageResult.terminal(
+                l5 = L5StageResult.terminal(
                     displaced.work_item.key,
                     StageState.DROPPED,
-                    "l4_admission_queue_overflow",
+                    "l5_admission_queue_overflow",
                     started_monotonic_ns=now_ns,
                     finished_monotonic_ns=now_ns,
                 )
-                self._joiner_submit(lambda: self._result_joiner.submit_l4(l4))
-                self._stage_completed_counts["l4"] += 1
+                self._joiner_submit(lambda: self._result_joiner.submit_l5(l5))
+                self._stage_completed_counts["l5"] += 1
                 self._record_processing_drop(displaced.work_item.key)
         return False
 
@@ -768,7 +768,7 @@ class ApplicationRuntime:
         for mailbox in (
             self._l2_windows,
             self._l3_windows,
-            self._l4_windows,
+            self._l5_windows,
             self._completion_results,
         ):
             try:
@@ -829,13 +829,13 @@ class ApplicationRuntime:
             self._pipeline_timing_sealed = False
             self._pipeline_first_queued_ns = None
             self._pipeline_stage_finished_ns = {
-                "l2": None, "l3": None, "l4": None,
+                "l2": None, "l3": None, "l5": None,
             }
             self._pipeline_stage_pause_started_ns = {
-                "l2": None, "l3": None, "l4": None,
+                "l2": None, "l3": None, "l5": None,
             }
             self._pipeline_stage_excluded_ns = {
-                "l2": 0, "l3": 0, "l4": 0,
+                "l2": 0, "l3": 0, "l5": 0,
             }
 
     def set_pipeline_timing_paused(
@@ -843,7 +843,7 @@ class ApplicationRuntime:
         reason: str,
         paused: bool,
         *,
-        stages: tuple[str, ...] = ("l2", "l3", "l4"),
+        stages: tuple[str, ...] = ("l2", "l3", "l5"),
     ) -> None:
         """Exclude an operator-controlled pause from selected stage timers."""
 
@@ -852,7 +852,7 @@ class ApplicationRuntime:
         if type(paused) is not bool:
             raise ValueError("pipeline timing paused setting must be bool")
         if not stages or any(stage not in self._pipeline_stage_finished_ns for stage in stages):
-            raise ValueError("pipeline timing stages must be a non-empty L2/L3/L4 subset")
+            raise ValueError("pipeline timing stages must be a non-empty L2/L3/L5 subset")
         now_ns = monotonic_ns()
         with self._pipeline_duration_lock:
             for stage in stages:
@@ -896,7 +896,7 @@ class ApplicationRuntime:
 
     @property
     def pipeline_total_durations_seconds(self) -> dict[str, float | None]:
-        """Elapsed first-queue-to-drain time for L2/L3/L4 in the current run."""
+        """Elapsed first-queue-to-drain time for L2/L3/L5 in the current run."""
 
         with self._pipeline_duration_lock:
             started_ns = self._pipeline_first_queued_ns
@@ -904,10 +904,10 @@ class ApplicationRuntime:
             excluded_ns = dict(self._pipeline_stage_excluded_ns)
             pause_started_ns = dict(self._pipeline_stage_pause_started_ns)
         if started_ns is None:
-            return {"l2": None, "l3": None, "l4": None}
+            return {"l2": None, "l3": None, "l5": None}
         now_ns = monotonic_ns()
         durations: dict[str, float | None] = {}
-        for stage in ("l2", "l3", "l4"):
+        for stage in ("l2", "l3", "l5"):
             end_ns = finished_ns[stage]
             worker = self._processing_threads.get(stage)
             if end_ns is None and (worker is None or not worker.is_alive()):
@@ -929,7 +929,7 @@ class ApplicationRuntime:
         return {
             "l2": self._l2_windows.qsize(),
             "l3": self._l3_windows.qsize(),
-            "l4": self._l4_windows.qsize(),
+            "l5": self._l5_windows.qsize(),
             "completion": self._completion_results.qsize(),
         }
 
@@ -969,13 +969,13 @@ class ApplicationRuntime:
     def processing_status(self) -> dict[str, object]:
         snapshots = self._compute_cache.snapshots()
         joiner = self._result_joiner.snapshot()
-        l4_diagnostics = self._l4_diagnostic_snapshot()
+        l5_diagnostics = self._l5_diagnostic_snapshot()
         return {
             "queue_depths": self.processing_queue_depths,
             "queue_capacities": {
                 "l2": self._l2_windows.maxsize,
                 "l3": self._l3_windows.maxsize,
-                "l4": self._l4_windows.maxsize,
+                "l5": self._l5_windows.maxsize,
                 "completion": self._completion_results.maxsize,
             },
             "stage_alive": {
@@ -1013,13 +1013,13 @@ class ApplicationRuntime:
             "timeline_gap_count": self._timeline_gap_count,
             "last_timeline_gap": self._last_timeline_gap,
             "input_health": self._input_health_snapshot(),
-            "l4_actual_completed": l4_diagnostics["actual_completed"],
-            "l4_dropped": l4_diagnostics["dropped"],
-            "l4_skipped": l4_diagnostics["skipped"],
-            "l4_actual_hz": l4_diagnostics["actual_hz"],
-            "l4_ui_mailbox_depth": self.latest_l4_dev_ui.qsize(),
-            "l4_ui_mailbox_capacity": self.latest_l4_dev_ui.maxsize,
-            "l4_ui_mailbox_overwrites": l4_diagnostics["ui_mailbox_overwrites"],
+            "l5_actual_completed": l5_diagnostics["actual_completed"],
+            "l5_dropped": l5_diagnostics["dropped"],
+            "l5_skipped": l5_diagnostics["skipped"],
+            "l5_actual_hz": l5_diagnostics["actual_hz"],
+            "l5_ui_mailbox_depth": self.latest_l5_dev_ui.qsize(),
+            "l5_ui_mailbox_capacity": self.latest_l5_dev_ui.maxsize,
+            "l5_ui_mailbox_overwrites": l5_diagnostics["ui_mailbox_overwrites"],
             "downstream_processing_enabled": self.downstream_processing_enabled,
         }
 
@@ -1175,10 +1175,10 @@ class ApplicationRuntime:
         return threshold
 
     @property
-    def l4_input_gain_compensation_enabled(self) -> bool:
+    def l5_input_gain_compensation_enabled(self) -> bool:
         return self.track_audio_stream.gain_compensation_enabled
 
-    def set_l4_input_gain_compensation_enabled(self, value: bool) -> bool:
+    def set_l5_input_gain_compensation_enabled(self, value: bool) -> bool:
         return self.track_audio_stream.set_gain_compensation_enabled(value)
 
     @property
@@ -1197,12 +1197,12 @@ class ApplicationRuntime:
 
     @property
     def downstream_processing_enabled(self) -> bool:
-        """Whether L2 results are allowed to enter the L3/L4 stages."""
+        """Whether L2 results are allowed to enter the L3/L5 stages."""
 
         return self._downstream_processing_enabled.is_set()
 
     def set_downstream_processing_enabled(self, value: bool) -> bool:
-        """Enable or bypass L3/L4 without stopping L1/L2 or breaking joins."""
+        """Enable or bypass L3/L5 without stopping L1/L2 or breaking joins."""
 
         if type(value) is not bool:
             raise ValueError("downstream processing setting must be bool")
@@ -1266,37 +1266,37 @@ class ApplicationRuntime:
 
         self.processing_drops += 1
         self._performance.add_drop(key.session_id, key.stream_epoch)
-        self._record_l4_terminal(StageState.DROPPED)
+        self._record_l5_terminal(StageState.DROPPED)
 
-    def _record_l4_terminal(self, state: StageState) -> None:
-        """Count actual L4 inference separately from overload terminal markers."""
+    def _record_l5_terminal(self, state: StageState) -> None:
+        """Count actual L5 inference separately from overload terminal markers."""
 
         now = monotonic()
-        with self._l4_diagnostics_lock:
+        with self._l5_diagnostics_lock:
             if state is StageState.COMPLETED:
-                self._l4_actual_completed += 1
-                self._l4_completion_times.append(now)
+                self._l5_actual_completed += 1
+                self._l5_completion_times.append(now)
             elif state is StageState.DROPPED:
-                self._l4_dropped += 1
+                self._l5_dropped += 1
             elif state is StageState.SKIPPED:
-                self._l4_skipped += 1
+                self._l5_skipped += 1
 
-    def _l4_diagnostic_snapshot(self) -> dict[str, float | int]:
+    def _l5_diagnostic_snapshot(self) -> dict[str, float | int]:
         now = monotonic()
-        with self._l4_diagnostics_lock:
+        with self._l5_diagnostics_lock:
             cutoff = now - 1.0
-            while self._l4_completion_times and self._l4_completion_times[0] < cutoff:
-                self._l4_completion_times.popleft()
+            while self._l5_completion_times and self._l5_completion_times[0] < cutoff:
+                self._l5_completion_times.popleft()
             return {
-                "actual_completed": self._l4_actual_completed,
-                "dropped": self._l4_dropped,
-                "skipped": self._l4_skipped,
-                "actual_hz": float(len(self._l4_completion_times)),
-                "ui_mailbox_overwrites": self._l4_ui_overwrites,
+                "actual_completed": self._l5_actual_completed,
+                "dropped": self._l5_dropped,
+                "skipped": self._l5_skipped,
+                "actual_hz": float(len(self._l5_completion_times)),
+                "ui_mailbox_overwrites": self._l5_ui_overwrites,
             }
 
-    def _publish_completed_l4_ui(self, item: _L4Work, output: object) -> None:
-        """Publish one exact-window L2/L3/L4 frame before ordered commit.
+    def _publish_completed_l5_ui(self, item: _L5Work, output: object) -> None:
+        """Publish one exact-window L2/L3/L5 frame before ordered commit.
 
         The frame is a UI side channel only.  It carries the same immutable
         window identity at every layer and never changes formal result ordering.
@@ -1321,7 +1321,7 @@ class ApplicationRuntime:
             window.stream_epoch,
             self.config.timing.context_samples,
             self.config.timing.context_samples,
-            "Layer 4 completed",
+            "Layer 5 completed",
         )
         performance = AlgorithmPerformanceSnapshot(
             window.session_id,
@@ -1361,7 +1361,7 @@ class ApplicationRuntime:
             scan_config_revision=int(values["scan_config_revision"]),
             pipeline_status=status, performance=performance,
             published_monotonic=published, spatial_published_monotonic=published,
-            search_diagnostics=diagnostics, missing_reasons={}, l4_result=output,
+            search_diagnostics=diagnostics, missing_reasons={}, l5_result=output,
             directions=getattr(l2_output, "directions", ()),
             active_tracks=getattr(l2_output, "active_tracks", ()),
         )
@@ -1373,24 +1373,24 @@ class ApplicationRuntime:
             ):
                 return
         try:
-            self.latest_l4_dev_ui.put_nowait(frame)
+            self.latest_l5_dev_ui.put_nowait(frame)
         except queue.Full:
             try:
-                self.latest_l4_dev_ui.get_nowait()
+                self.latest_l5_dev_ui.get_nowait()
             except queue.Empty:
                 pass
-            with self._l4_diagnostics_lock:
-                self._l4_ui_overwrites += 1
-            self.latest_l4_dev_ui.put_nowait(frame)
+            with self._l5_diagnostics_lock:
+                self._l5_ui_overwrites += 1
+            self.latest_l5_dev_ui.put_nowait(frame)
 
     @staticmethod
     def _track_voice_annotations(
-        inputs: tuple[Layer4AudioSegment, ...],
+        inputs: tuple[Layer5AudioSegment, ...],
         output: object,
     ) -> tuple[TrackVoiceAnnotation, ...]:
         detections = tuple(getattr(output, "detections", ()))
         if len(inputs) != len(detections):
-            raise ValueError("L4 results must align with continuous track audio inputs")
+            raise ValueError("L5 results must align with continuous track audio inputs")
         threshold = float(getattr(output, "threshold"))
         annotations: list[TrackVoiceAnnotation] = []
         for audio, detection in zip(inputs, detections, strict=True):
@@ -1408,7 +1408,7 @@ class ApplicationRuntime:
                     detection.theta_deg, audio.theta_deg, atol=1e-6, rtol=0.0
                 )
             ):
-                raise ValueError("L4 annotation identity/order/theta mismatch")
+                raise ValueError("L5 annotation identity/order/theta mismatch")
             end_sample = int(audio.effective_end_sample)
             annotations.append(TrackVoiceAnnotation(
                 audio.session_id,
@@ -1479,7 +1479,7 @@ class ApplicationRuntime:
                 "direction_kalman_r_scale": r_scale,
                 "l3_mode": l3_mode,
                 "l3_config_revision": l3_revision,
-                "l4_threshold": self._layer4.threshold,
+                "l5_threshold": self._layer5.threshold,
             },
         )
 
@@ -1513,12 +1513,12 @@ class ApplicationRuntime:
             self.dev_ui_error = None
             self.recording_result_error = None
             self.processing_drops = 0
-            with self._l4_diagnostics_lock:
-                self._l4_actual_completed = 0
-                self._l4_dropped = 0
-                self._l4_skipped = 0
-                self._l4_ui_overwrites = 0
-                self._l4_completion_times.clear()
+            with self._l5_diagnostics_lock:
+                self._l5_actual_completed = 0
+                self._l5_dropped = 0
+                self._l5_skipped = 0
+                self._l5_ui_overwrites = 0
+                self._l5_completion_times.clear()
             self._input_exhausted = False
             self._layer2.reset()
             self._stop.clear()
@@ -1535,7 +1535,7 @@ class ApplicationRuntime:
             self.track_audio_stream.reset()
             self._l3_cache_snapshot = None
             self._reset_processing_graph()
-            self._stage_errors = {"l2": None, "l3": None, "l4": None, "commit": None}
+            self._stage_errors = {"l2": None, "l3": None, "l5": None, "commit": None}
             self._stage_error_counts = {name: 0 for name in self._stage_errors}
             self._stage_completed_counts = {name: 0 for name in self._stage_errors}
             with self._pipeline_duration_lock:
@@ -1543,13 +1543,13 @@ class ApplicationRuntime:
                 self._pipeline_timing_sealed = False
                 self._pipeline_first_queued_ns = None
                 self._pipeline_stage_finished_ns = {
-                    "l2": None, "l3": None, "l4": None,
+                    "l2": None, "l3": None, "l5": None,
                 }
                 self._pipeline_stage_pause_started_ns = {
-                    "l2": None, "l3": None, "l4": None,
+                    "l2": None, "l3": None, "l5": None,
                 }
                 self._pipeline_stage_excluded_ns = {
-                    "l2": 0, "l3": 0, "l4": 0,
+                    "l2": 0, "l3": 0, "l5": 0,
                 }
             with self._pre_denoise_lock:
                 self._pre_denoise_latency_active = self._pre_denoise_enabled
@@ -1568,7 +1568,7 @@ class ApplicationRuntime:
                 self.latest_l1,
                 self.latest_windows,
                 self.latest_dev_ui,
-                self.latest_l4_dev_ui,
+                self.latest_l5_dev_ui,
             ):
                 while True:
                     try:
@@ -1589,7 +1589,7 @@ class ApplicationRuntime:
                 "queue_capacities": {
                     "l2": self.config.runtime.l2_queue_windows,
                     "l3": self.config.runtime.l3_queue_windows,
-                    "l4": self.config.runtime.l4_queue_windows,
+                    "l5": self.config.runtime.l5_queue_windows,
                     "completion": self.config.runtime.completion_queue_windows,
                 },
                 "max_inflight_windows": self.config.runtime.max_inflight_windows,
@@ -1605,8 +1605,8 @@ class ApplicationRuntime:
                 "layer2_direction_id_tracking": self.config.layer2.direction_id_tracking.backend,
                 "layer3": self.config.layer3.main_backend,
                 "feature": self.config.feature.preprocessing_version,
-                "layer4_primary": self.config.layer4.primary_model_id,
-                "layer4_models": [item.model_id for item in self.config.layer4.models if item.enabled],
+                "layer5_primary": self.config.layer5.primary_model_id,
+                "layer5_models": [item.model_id for item in self.config.layer5.models if item.enabled],
             },
         )
         pipeline_start_attempted = False
@@ -1625,8 +1625,8 @@ class ApplicationRuntime:
                 "l3": threading.Thread(
                     target=self._run_l3, name="application-runtime-l3", daemon=True
                 ),
-                "l4": threading.Thread(
-                    target=self._run_l4, name="application-runtime-l4", daemon=True
+                "l5": threading.Thread(
+                    target=self._run_l5, name="application-runtime-l5", daemon=True
                 ),
                 "commit": threading.Thread(
                     target=self._run_commit, name="application-runtime-commit", daemon=True
@@ -1635,7 +1635,7 @@ class ApplicationRuntime:
             # Compatibility for callers that previously observed one terminal
             # processing thread.  The commit worker remains that owner.
             self._processing_thread = self._processing_threads["commit"]
-            for name in ("commit", "l4", "l3", "l2"):
+            for name in ("commit", "l5", "l3", "l2"):
                 worker = self._processing_threads[name]
                 worker.start()
                 started_threads.append(worker)
@@ -1731,7 +1731,7 @@ class ApplicationRuntime:
             if stream_changed:
                 while True:
                     try:
-                        self.latest_l4_dev_ui.get_nowait()
+                        self.latest_l5_dev_ui.get_nowait()
                     except queue.Empty:
                         break
             self._performance.add_block(block, received)
@@ -1847,7 +1847,7 @@ class ApplicationRuntime:
                 with self._pipeline_duration_lock:
                     self._pipeline_first_queued_ns = None
                     self._pipeline_stage_pause_started_ns = {
-                        "l2": None, "l3": None, "l4": None,
+                        "l2": None, "l3": None, "l5": None,
                     }
             # A producer race should be impossible with the single L1 owner,
             # but keep it terminal and observable rather than raising.
@@ -1928,7 +1928,7 @@ class ApplicationRuntime:
                 # Test-UI scan controls are live operator settings. Resolve
                 # them when L2 actually starts, not when a window entered a
                 # potentially backlogged queue, then propagate the exact
-                # applied snapshot to L3/L4, UI, and recording.
+                # applied snapshot to L3/L5, UI, and recording.
                 with self._scan_config_lock:
                     live_scan_config = self._scan_config
                     live_scan_revision = self._scan_config_revision
@@ -1985,7 +1985,7 @@ class ApplicationRuntime:
                 self._cache_publish("l2", item.key, "stage_result", stage)
                 self._joiner_submit(lambda: self._result_joiner.submit_l2(stage))
                 if stage.state is not StageState.COMPLETED:
-                    self._record_l4_terminal(StageState.SKIPPED)
+                    self._record_l5_terminal(StageState.SKIPPED)
                     self._joiner_submit(
                         lambda: self._result_joiner.skip_missing_downstream(
                             item.key, "l2_failed"
@@ -1995,7 +1995,7 @@ class ApplicationRuntime:
                     stage.output.spatial_response is None
                     and not tuple(getattr(stage.output, "directions", ()))
                 ):
-                    self._record_l4_terminal(StageState.SKIPPED)
+                    self._record_l5_terminal(StageState.SKIPPED)
                     self._joiner_submit(
                         lambda: self._result_joiner.skip_missing_downstream(
                             item.key, f"gate_{stage.output.gate_decision.state.value}"
@@ -2036,7 +2036,7 @@ class ApplicationRuntime:
                 if isinstance(item, _PipelineTimingBarrier):
                     self._mark_pipeline_stage_finished("l3", item.generation)
                     self._put_pipeline_timing_barrier_interruptibly(
-                        self._l4_windows, "l4", item
+                        self._l5_windows, "l5", item
                     )
                     continue
                 if self._processing_abort.is_set():
@@ -2107,8 +2107,8 @@ class ApplicationRuntime:
                             item.work_item.key.decision_sample,
                         ),
                     )
-                    l4_inputs = self._layer4_inputs_from_stream(audio_batch)
-                    self._validate_direction_outputs("track audio", candidates, l4_inputs)
+                    l5_inputs = self._layer5_inputs_from_stream(audio_batch)
+                    self._validate_direction_outputs("track audio", candidates, l5_inputs)
                     if self.dev_audio_tracker is not None:
                         try:
                             self.dev_audio_tracker.consume_stream_batch(
@@ -2169,32 +2169,32 @@ class ApplicationRuntime:
                     )
                 self._joiner_submit(lambda: self._result_joiner.submit_l3(stage))
                 if stage.state is StageState.COMPLETED:
-                    if not self._enqueue_l4_latest(
-                        _L4Work(item.work_item, item.l2, stage, l4_inputs)
+                    if not self._enqueue_l5_latest(
+                        _L5Work(item.work_item, item.l2, stage, l5_inputs)
                     ):
                         break
                 else:
-                    skipped = L4StageResult.terminal(
+                    skipped = L5StageResult.terminal(
                         item.work_item.key, StageState.SKIPPED, "l3_failed",
                         started_monotonic_ns=monotonic_ns(),
                         finished_monotonic_ns=monotonic_ns(),
                     )
-                    self._record_l4_terminal(StageState.SKIPPED)
-                    self._joiner_submit(lambda: self._result_joiner.submit_l4(skipped))
+                    self._record_l5_terminal(StageState.SKIPPED)
+                    self._joiner_submit(lambda: self._result_joiner.submit_l5(skipped))
         except Exception as exc:
             self._set_stage_error("l3", exc)
             self._processing_abort.set()
         finally:
             if drained:
                 self._mark_pipeline_stage_finished("l3")
-            self._put_eos_interruptibly(self._l4_windows, "l4")
+            self._put_eos_interruptibly(self._l5_windows, "l5")
 
-    def _run_l4(self) -> None:
+    def _run_l5(self) -> None:
         drained = False
         try:
             while True:
                 try:
-                    item = self._l4_windows.get(timeout=0.1)
+                    item = self._l5_windows.get(timeout=0.1)
                 except queue.Empty:
                     if self._processing_abort.is_set():
                         break
@@ -2203,11 +2203,11 @@ class ApplicationRuntime:
                     drained = True
                     break
                 if isinstance(item, _PipelineTimingBarrier):
-                    self._mark_pipeline_stage_finished("l4", item.generation)
+                    self._mark_pipeline_stage_finished("l5", item.generation)
                     continue
                 if self._processing_abort.is_set():
                     break
-                if not isinstance(item, _L4Work):
+                if not isinstance(item, _L5Work):
                     continue
                 if not self.downstream_processing_enabled:
                     self._skip_disabled_downstream(
@@ -2221,59 +2221,59 @@ class ApplicationRuntime:
                         getattr(item.l2.output, "directions", ()) or item.l2.output.candidates
                     )
                     inputs = item.inputs
-                    if self._l4_cuda_stream is None:
-                        output = self._layer4.process(inputs)
+                    if self._l5_cuda_stream is None:
+                        output = self._layer5.process(inputs)
                     else:
-                        with torch.cuda.stream(self._l4_cuda_stream):
-                            output = self._layer4.process(inputs)
-                        self._l4_cuda_stream.synchronize()
-                    frozen_threshold = float(item.work_item.config.values["l4_threshold"])
+                        with torch.cuda.stream(self._l5_cuda_stream):
+                            output = self._layer5.process(inputs)
+                        self._l5_cuda_stream.synchronize()
+                    frozen_threshold = float(item.work_item.config.values["l5_threshold"])
                     if output.threshold != frozen_threshold:
-                        output = self._layer4.rethreshold(output, frozen_threshold)
+                        output = self._layer5.rethreshold(output, frozen_threshold)
                     self._validate_direction_outputs(
-                        "L4", formal_directions, output.detections
+                        "L5", formal_directions, output.detections
                     )
                     annotations = self._track_voice_annotations(inputs, output)
-                    stage = L4StageResult.completed(
+                    stage = L5StageResult.completed(
                         item.work_item.key, output, started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(),
                     )
-                    self._stage_errors["l4"] = None
+                    self._stage_errors["l5"] = None
                 except Exception as exc:
-                    self._set_stage_error("l4", exc)
-                    stage = L4StageResult.terminal(
-                        item.work_item.key, StageState.FAILED, "l4_failed",
+                    self._set_stage_error("l5", exc)
+                    stage = L5StageResult.terminal(
+                        item.work_item.key, StageState.FAILED, "l5_failed",
                         started_monotonic_ns=started_ns,
                         finished_monotonic_ns=monotonic_ns(), error=str(exc),
                     )
-                self._stage_completed_counts["l4"] += 1
-                self._record_l4_terminal(stage.state)
+                self._stage_completed_counts["l5"] += 1
+                self._record_l5_terminal(stage.state)
                 if stage.state is StageState.COMPLETED and stage.output is not None:
                     self._cache_publish(
-                        "l4", item.work_item.key, "track_voice_annotations", annotations
+                        "l5", item.work_item.key, "track_voice_annotations", annotations
                     )
                     if self.dev_audio_tracker is not None:
                         try:
-                            self.dev_audio_tracker.apply_l4_annotations(annotations)
+                            self.dev_audio_tracker.apply_l5_annotations(annotations)
                             self.dev_audio_tracking_error = None
                         except Exception as exc:
-                            # UI history is diagnostic only. Formal L4 and its
+                            # UI history is diagnostic only. Formal L5 and its
                             # persisted annotation remain authoritative.
                             self.dev_audio_tracking_error = str(exc)
                     try:
-                        self._publish_completed_l4_ui(item, stage.output)
+                        self._publish_completed_l5_ui(item, stage.output)
                     except Exception as exc:
                         # This mailbox is diagnostic only; a rendering-contract
-                        # failure must not change the formal L4 result.
-                        self.dev_ui_error = f"L4 immediate UI: {exc}"
-                self._cache_publish("l4", item.work_item.key, "stage_result", stage)
-                self._joiner_submit(lambda: self._result_joiner.submit_l4(stage))
+                        # failure must not change the formal L5 result.
+                        self.dev_ui_error = f"L5 immediate UI: {exc}"
+                self._cache_publish("l5", item.work_item.key, "stage_result", stage)
+                self._joiner_submit(lambda: self._result_joiner.submit_l5(stage))
         except Exception as exc:
-            self._set_stage_error("l4", exc)
+            self._set_stage_error("l5", exc)
             self._processing_abort.set()
         finally:
             if drained:
-                self._mark_pipeline_stage_finished("l4")
+                self._mark_pipeline_stage_finished("l5")
             self._put_eos_interruptibly(self._completion_results, "commit")
 
     def _run_commit(self) -> None:
@@ -2360,7 +2360,7 @@ class ApplicationRuntime:
                     threading.Event().wait(0.01)
                 commit_contiguous()
                 if saw_eos:
-                    # EOS is ordered after L4 production but may overtake the
+                    # EOS is ordered after L5 production but may overtake the
                     # bounded fallback deque.  Exit only after every source and
                     # every registered joiner item is empty.
                     found = drain_fallbacks() or found
@@ -2373,8 +2373,8 @@ class ApplicationRuntime:
                     ):
                         break
                 elif self._processing_abort.is_set() and not found:
-                    l4 = self._processing_threads.get("l4")
-                    if l4 is None or (l4.ident is not None and not l4.is_alive()):
+                    l5 = self._processing_threads.get("l5")
+                    if l5 is None or (l5.ident is not None and not l5.is_alive()):
                         # Forced shutdown normally injects EOS.  This fallback
                         # prevents a failed injection from leaving commit in an
                         # infinite get() after all producers have stopped.
@@ -2450,7 +2450,7 @@ class ApplicationRuntime:
         values = work.config.values
         l2_output = joined.l2.output if joined.l2.state is StageState.COMPLETED else None
         l3_output = joined.l3.output if joined.l3.state is StageState.COMPLETED else None
-        l4_result = joined.l4.output if joined.l4.state is StageState.COMPLETED else None
+        l5_result = joined.l5.output if joined.l5.state is StageState.COMPLETED else None
         response = None if l2_output is None else l2_output.spatial_response
         candidates = () if l2_output is None else tuple(
             getattr(l2_output, "directions", ()) or l2_output.candidates
@@ -2560,17 +2560,17 @@ class ApplicationRuntime:
             "l3", joined.key, "track_audio_record"
         ) or ()
         track_voice_annotations = self._compute_cache.get(
-            "l4", joined.key, "track_voice_annotations"
+            "l5", joined.key, "track_voice_annotations"
         ) or ()
         annotation_by_id = {item.track_id: item for item in track_voice_annotations}
         if len(annotation_by_id) != len(track_voice_annotations):
-            raise ValueError("L4 track voice annotations contain duplicate IDs")
+            raise ValueError("L5 track voice annotations contain duplicate IDs")
         enhanced_records = tuple(
             {
                 **item[0],
                 **(
                     {
-                        "l4_voice_20ms": asdict(annotation_by_id[int(item[0]["track_id"])])
+                        "l5_voice_20ms": asdict(annotation_by_id[int(item[0]["track_id"])])
                     }
                     if int(item[0]["track_id"]) in annotation_by_id
                     else {}
@@ -2579,38 +2579,38 @@ class ApplicationRuntime:
             for item in track_audio_record
         )
         for audio_meta in enhanced_records:
-            annotation = audio_meta.get("l4_voice_20ms")
+            annotation = audio_meta.get("l5_voice_20ms")
             if annotation is not None and (
                 int(annotation["start_sample"]) != int(audio_meta["start_sample"])
                 or int(annotation["end_sample"]) != int(audio_meta["end_sample"])
             ):
-                raise ValueError("L4 voice result is not aligned to its 20 ms audio hop")
+                raise ValueError("L5 voice result is not aligned to its 20 ms audio hop")
         enhanced_waveforms = tuple(item[1] for item in track_audio_record)
-        l4_record = None if l4_result is None else {
-            "primary_model_id": l4_result.primary_model_id,
-            "threshold": l4_result.threshold,
+        l5_record = None if l5_result is None else {
+            "primary_model_id": l5_result.primary_model_id,
+            "threshold": l5_result.threshold,
             "predictions": [
                 {"model_id": prediction.model_id,
                  "probabilities": prediction.probabilities.tolist(),
                  "latency_ms": prediction.latency_ms,
                  "metadata": dict(prediction.metadata)}
-                for prediction in l4_result.predictions
+                for prediction in l5_result.predictions
             ],
-            "input_gain_compensation": [asdict(item) for item in l4_result.input_gain_compensation],
+            "input_gain_compensation": [asdict(item) for item in l5_result.input_gain_compensation],
         }
         stage_statuses = {
             "l2": joined.l2.state.value, "l3": joined.l3.state.value,
-            "l4": joined.l4.state.value,
+            "l5": joined.l5.state.value,
         }
         stage_timings = {
             name: float(stage.duration_ms)
-            for name, stage in (("l2", joined.l2), ("l3", joined.l3), ("l4", joined.l4))
+            for name, stage in (("l2", joined.l2), ("l3", joined.l3), ("l5", joined.l5))
             if stage.started_monotonic_ns > 0 and stage.duration_ms is not None
         }
         stage_waits = {
             "l2": self._stage_wait_ms(joined.l2, work.accepted_monotonic_ns),
             "l3": self._stage_wait_ms(joined.l3, joined.l2.finished_monotonic_ns),
-            "l4": self._stage_wait_ms(joined.l4, joined.l3.finished_monotonic_ns),
+            "l5": self._stage_wait_ms(joined.l5, joined.l3.finished_monotonic_ns),
         }
         latency_ms = max(
             0.0, (joined.completed_monotonic_ns - work.accepted_monotonic_ns) / 1_000_000.0
@@ -2618,7 +2618,7 @@ class ApplicationRuntime:
         compute_ms = sum(stage_timings.values())
         severe = {StageState.FAILED, StageState.TIMED_OUT, StageState.DROPPED, StageState.CANCELLED}
         has_severe_stage = any(
-            stage.state in severe for stage in (joined.l2, joined.l3, joined.l4)
+            stage.state in severe for stage in (joined.l2, joined.l3, joined.l5)
         )
         used_successful_fallback = (
             any(item.fallback_reason is not None for item in previews)
@@ -2632,27 +2632,27 @@ class ApplicationRuntime:
             else "degraded" if used_successful_fallback
             else "ok"
         )
-        l4_diagnostics = () if l4_result is None else (
-            f"l4_primary_model={l4_result.primary_model_id}",
-            f"l4_threshold={l4_result.threshold}",
-            *(f"l4_model_latency_ms={item.model_id}:{item.latency_ms:.3f}"
-              for item in l4_result.predictions),
+        l5_diagnostics = () if l5_result is None else (
+            f"l5_primary_model={l5_result.primary_model_id}",
+            f"l5_threshold={l5_result.threshold}",
+            *(f"l5_model_latency_ms={item.model_id}:{item.latency_ms:.3f}"
+              for item in l5_result.predictions),
             *(
-                f"l4_aggregation={item.model_id}:{item.metadata.get('aggregation', 'unknown')}"
-                for item in l4_result.predictions
+                f"l5_aggregation={item.model_id}:{item.metadata.get('aggregation', 'unknown')}"
+                for item in l5_result.predictions
             ),
             *(
-                "l4_input_gain="
+                "l5_input_gain="
                 f"{item.algorithm_version}:max={item.max_applied_gain_db:.3f}:"
                 f"mean={item.mean_applied_gain_db:.3f}:"
                 f"segments={item.compensated_segment_count}:"
                 f"peak_protection={item.peak_protection_trigger_count}"
-                for item in l4_result.input_gain_compensation
+                for item in l5_result.input_gain_compensation
             ),
         )
         terminal_diagnostics = tuple(
             f"{name}_stage={stage.state.value}:{stage.error or stage.reason}"
-            for name, stage in (("l2", joined.l2), ("l3", joined.l3), ("l4", joined.l4))
+            for name, stage in (("l2", joined.l2), ("l3", joined.l3), ("l5", joined.l5))
             if stage.state is not StageState.COMPLETED
         )
         candidate_records = tuple(asdict(item) for item in candidates)
@@ -2673,9 +2673,9 @@ class ApplicationRuntime:
                 "probability": item.probability,
                 "is_voice": item.is_voice,
                 "model_id": item.model_id,
-                "threshold": l4_result.threshold,
+                "threshold": l5_result.threshold,
             }
-            for index, item in enumerate(() if l4_result is None else l4_result.detections)
+            for index, item in enumerate(() if l5_result is None else l5_result.detections)
         )
         record = DecisionRecord(
             window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
@@ -2683,8 +2683,8 @@ class ApplicationRuntime:
             (window.context_start_sample, window.context_end_sample), status,
             candidates=candidate_records,
             detections=detection_records,
-            voice_direction_count=0 if l4_result is None else l4_result.voice_direction_count,
-            diagnostics=joined.l2.diagnostics + search_record_diagnostics + l4_diagnostics
+            voice_direction_count=0 if l5_result is None else l5_result.voice_direction_count,
+            diagnostics=joined.l2.diagnostics + search_record_diagnostics + l5_diagnostics
             + terminal_diagnostics,
             processing_latency_ms=latency_ms,
             raw_scores=None if response is None else response.raw_scores,
@@ -2692,7 +2692,7 @@ class ApplicationRuntime:
             gate_decision=gate_record, search_diagnostics=search_record,
             enhanced_audio=enhanced_records,
             enhanced_waveforms=enhanced_waveforms,
-            l4_result=l4_record,
+            l5_result=l5_record,
             stage_statuses=stage_statuses,
             stage_timings_ms=stage_timings,
             stage_queue_wait_ms=stage_waits,
@@ -2774,7 +2774,7 @@ class ApplicationRuntime:
                     tracked_audio = ()
         try:
             self._publish_joined_ui(
-                joined, values, l2_output, l3_output, l4_result,
+                joined, values, l2_output, l3_output, l5_result,
                 response, candidates, search_diagnostics, gate_decision,
                 previews, tracked_audio, compute_ms, latency_ms, stage_timings,
             )
@@ -2801,7 +2801,7 @@ class ApplicationRuntime:
         values,
         l2_output,
         l3_output,
-        l4_result,
+        l5_result,
         response,
         candidates,
         search_diagnostics,
@@ -2824,7 +2824,7 @@ class ApplicationRuntime:
                 window.session_id, window.stream_epoch, window.window_id,
                 compute_ms, latency_ms,
                 l2_ms=stage_timings.get("l2"), l3_ms=stage_timings.get("l3"),
-                l4_ms=stage_timings.get("l4"), completed_monotonic=monotonic(),
+                l5_ms=stage_timings.get("l5"), completed_monotonic=monotonic(),
                 processed=joined.state is StageState.COMPLETED,
             )
             scan = DirectionScanConfig(**dict(values["scan_config"]))
@@ -2885,7 +2885,7 @@ class ApplicationRuntime:
                 previews, None if l3_output is not None else f"L3 {joined.l3.state.value}",
                 tracked_audio=tracked_audio,
             )
-            frame = self._ui_aggregator.update_l4(l4_result)
+            frame = self._ui_aggregator.update_l5(l5_result)
             self._latest(self.latest_dev_ui, frame)
 
     @staticmethod
@@ -2907,14 +2907,14 @@ class ApplicationRuntime:
         )
 
     @staticmethod
-    def _layer4_audio_segments(
+    def _layer5_audio_segments(
         l3_output,
         stop: int | None = None,
         probabilities_20ms: tuple[float | None, ...] = (),
-    ) -> tuple[Layer4AudioSegment, ...]:
-        """Adapt the formal immutable L3 audio batch to L4's audio contract."""
+    ) -> tuple[Layer5AudioSegment, ...]:
+        """Adapt the formal immutable L3 audio batch to L5's audio contract."""
         return tuple(
-            Layer4AudioSegment(
+            Layer5AudioSegment(
                 item.session_id,
                 item.stream_epoch,
                 item.window_id,
@@ -2959,20 +2959,20 @@ class ApplicationRuntime:
         expected = spec.decision_hops
         if len(probabilities) != expected:
             raise RuntimeError(
-                f"L4 requires exactly {expected} context-aligned 20 ms probability slots"
+                f"L5 requires exactly {expected} context-aligned 20 ms probability slots"
             )
         return probabilities
 
-    def _layer4_inputs_from_output(self, window, l3_output, formal_count: int):
-        return self._layer4_audio_segments(
+    def _layer5_inputs_from_output(self, window, l3_output, formal_count: int):
+        return self._layer5_audio_segments(
             l3_output, formal_count, self._context_probabilities_20ms(window)
         )
 
     @staticmethod
-    def _layer4_inputs_from_stream(batch) -> tuple[Layer4AudioSegment, ...]:
-        """Adapt immutable compensated continuous tracks to the L4 contract."""
+    def _layer5_inputs_from_stream(batch) -> tuple[Layer5AudioSegment, ...]:
+        """Adapt immutable compensated continuous tracks to the L5 contract."""
         return tuple(
-            Layer4AudioSegment(
+            Layer5AudioSegment(
                 item.session_id,
                 item.stream_epoch,
                 item.window_id,
@@ -3027,8 +3027,8 @@ class ApplicationRuntime:
         formal_count = len(candidates)
         self._validate_direction_outputs("L3", candidates, l3_output.enhanced_audio)
         formal_previews = self._beamform_previews(l3_output, 0, formal_count)
-        l4_inputs = self._layer4_inputs_from_output(window, l3_output, formal_count)
-        return formal_previews, l4_inputs
+        l5_inputs = self._layer5_inputs_from_output(window, l3_output, formal_count)
+        return formal_previews, l5_inputs
 
     def set_light(self, enabled: bool) -> None:
         packet = led_command(enabled)
@@ -3083,7 +3083,7 @@ class ApplicationRuntime:
             worker.join(timeout=max(0.0, deadline - monotonic()))
 
         join_until(thread)
-        for name in ("l2", "l3", "l4", "commit"):
+        for name in ("l2", "l3", "l5", "commit"):
             join_until(workers.get(name))
         alive = {
             name: worker for name, worker in workers.items() if worker.is_alive()
@@ -3109,7 +3109,7 @@ class ApplicationRuntime:
             # complete configured shutdown interval instead of a fixed one
             # second, then report failure only if a worker is still alive.
             forced_deadline = monotonic() + timeout
-            for name in ("l2", "l3", "l4", "commit"):
+            for name in ("l2", "l3", "l5", "commit"):
                 worker = workers.get(name)
                 if worker is not None and worker is not threading.current_thread() and worker.is_alive():
                     worker.join(timeout=max(0.0, forced_deadline - monotonic()))
@@ -3137,7 +3137,7 @@ class ApplicationRuntime:
             for mailbox in (
                 self._l2_windows,
                 self._l3_windows,
-                self._l4_windows,
+                self._l5_windows,
                 self._completion_results,
             ):
                 while True:
@@ -3193,8 +3193,8 @@ class ApplicationRuntime:
             # Drop bounded formal previews and UI snapshot references.
             for mailbox in (
                 self.latest_l1, self.latest_windows, self.latest_dev_ui,
-                self.latest_l4_dev_ui,
-                self._l2_windows, self._l3_windows, self._l4_windows,
+                self.latest_l5_dev_ui,
+                self._l2_windows, self._l3_windows, self._l5_windows,
                 self._completion_results,
             ):
                 while True:

@@ -90,7 +90,7 @@ class DecisionRecord:
     search_diagnostics: Mapping[str, Any] | None = field(default=None, compare=False)
     enhanced_audio: tuple[Mapping[str, Any], ...] = field(default=(), compare=False)
     enhanced_waveforms: tuple[np.ndarray, ...] = field(default=(), compare=False)
-    l4_result: Mapping[str, Any] | None = field(default=None, compare=False)
+    l5_result: Mapping[str, Any] | None = field(default=None, compare=False)
     # v3 keeps the established payload while making staged-runtime terminal
     # states explicit.  Missing audio/detections no longer ambiguously mean
     # either "pending", "skipped" or "failed".
@@ -98,7 +98,7 @@ class DecisionRecord:
     stage_timings_ms: Mapping[str, float] = field(default_factory=dict, compare=False)
     stage_queue_wait_ms: Mapping[str, float] = field(default_factory=dict, compare=False)
     terminal_reason: str | None = field(default=None, compare=False)
-    schema_version: str = "decision_record_v4"
+    schema_version: str = "decision_record_v5"
     music_algorithm_version: str | None = None
     model_order: Mapping[str, Any] | None = field(default=None, compare=False)
     music_diagnostics: Mapping[str, Any] | None = field(default=None, compare=False)
@@ -111,8 +111,10 @@ class DecisionRecord:
     calibration_hash: str = ""
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {"decision_record_v3", "decision_record_v4"}:
-            raise ValueError("DecisionRecord schema必须是v3或v4")
+        if self.schema_version not in {
+            "decision_record_v3", "decision_record_v4", "decision_record_v5",
+        }:
+            raise ValueError("DecisionRecord schema必须是v3、v4或v5")
         if self.status not in {"ok", "degraded", "error"}:
             raise ValueError("未知DecisionRecord状态")
         if min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
@@ -134,7 +136,12 @@ class DecisionRecord:
             "completed", "skipped", "failed", "timed_out", "dropped", "cancelled",
         }
         statuses = {str(key): str(value) for key, value in self.stage_statuses.items()}
-        if any(key not in {"l2", "l3", "l4"} for key in statuses):
+        allowed_stage_names = (
+            {"l2", "l3", "l5"}
+            if self.schema_version == "decision_record_v5"
+            else {"l2", "l3", "l4"}
+        )
+        if any(key not in allowed_stage_names for key in statuses):
             raise ValueError("DecisionRecord阶段名称无效")
         if any(value not in allowed_stage_states for value in statuses.values()):
             raise ValueError("DecisionRecord阶段状态无效")
@@ -143,11 +150,12 @@ class DecisionRecord:
             if self.status != "error":
                 raise ValueError("阶段失败、超时、丢弃或取消时DecisionRecord必须为error")
         # A deliberately bypassed downstream is still a successful L2 record:
-        # preserve its candidates without inventing L4 detections.  Full
-        # candidate/detection alignment remains mandatory whenever L4 ran (or
+        # preserve its candidates without inventing L5 detections.  Full
+        # candidate/detection alignment remains mandatory whenever L5 ran (or
         # for legacy records that do not carry per-stage terminal states).
-        l4_requires_detections = not statuses or statuses.get("l4") == "completed"
-        if self.status in {"ok", "degraded"} and l4_requires_detections:
+        cnn_stage = "l5" if self.schema_version == "decision_record_v5" else "l4"
+        l5_requires_detections = not statuses or statuses.get(cnn_stage) == "completed"
+        if self.status in {"ok", "degraded"} and l5_requires_detections:
             if len(self.candidates) != len(self.detections):
                 raise ValueError("正式成功结果必须为每个候选提供一个同序检测")
             for candidate, detection in zip(self.candidates, self.detections, strict=True):
@@ -155,7 +163,7 @@ class DecisionRecord:
                 detection_theta = float(detection["theta_deg"])
                 if not np.isclose(candidate_theta, detection_theta, atol=1e-6, rtol=0.0):
                     raise ValueError("候选方向与检测方向必须同序对齐")
-        if self.schema_version == "decision_record_v4":
+        if self.schema_version in {"decision_record_v4", "decision_record_v5"}:
             self._validate_v4_track_alignment()
         detected_voice_count = sum(bool(item.get("is_voice", False)) for item in self.detections)
         if self.voice_direction_count != detected_voice_count:
@@ -208,15 +216,15 @@ class DecisionRecord:
     def _validate_v4_track_alignment(self) -> None:
         candidate_ids = self._track_ids(self.candidates, "L2候选")
         enhanced_ids = self._track_ids(self.enhanced_audio, "L3增强音频")
-        detection_ids = self._track_ids(self.detections, "L4检测")
+        detection_ids = self._track_ids(self.detections, "L5检测")
         active_ids = self._track_ids(self.active_tracks, "active_tracks")
         if candidate_ids:
             if enhanced_ids and enhanced_ids != candidate_ids:
                 raise ValueError("L3 track_id必须与L2同序对齐")
             if detection_ids and detection_ids != candidate_ids:
-                raise ValueError("L4 track_id必须与L2同序对齐")
+                raise ValueError("L5 track_id必须与L2同序对齐")
         elif enhanced_ids or detection_ids:
-            raise ValueError("L3/L4存在track_id时L2候选也必须包含track_id")
+            raise ValueError("L3/L5存在track_id时L2候选也必须包含track_id")
         if active_ids and candidate_ids and not set(candidate_ids).issubset(active_ids):
             raise ValueError("本窗L2方向必须包含在active_tracks中")
         for item in (*self.candidates, *self.active_tracks):

@@ -62,7 +62,7 @@ class L1SpectrumHost(QObject):
     def _make_pipeline(self) -> InputPipeline:
         # The audio pipeline deliberately owns only UAC input. The separate
         # CDC device starts lazily only when the operator sends a light command;
-        # no recording, windowing, hotmap consumer, or L2-L4 is created.
+        # no recording, windowing, hotmap consumer, or L2-L5 is created.
         return InputPipeline(
             LiveSipeedSource(AudioConfig.from_project(self.config)),
             ChannelCalibrator(CalibrationConfig.from_project(self.config)),

@@ -1,7 +1,7 @@
 # 独立 L1 Spectrum UI
 
 本界面是与 Development Test UI 平行的 L1-only 观察工具。启动后只创建 UAC 麦克风输入、通道校准、
-Ingest、IMCRA、可选 IMCRA 预降噪和 L1 电平/频谱分析，不创建 WindowAssembler、L2、L3、L4、
+Ingest、IMCRA、可选 IMCRA 预降噪和 L1 电平/频谱分析，不创建 WindowAssembler、L2、L3、L5、
 正式录音或数据管理服务。
 
 ## 启动

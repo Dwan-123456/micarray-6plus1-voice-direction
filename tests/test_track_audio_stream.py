@@ -7,10 +7,10 @@ from scipy.io import wavfile
 from scipy.signal import resample_poly
 
 from gui.dev_test_ui.audio_id_tracker import AudioIdTracker
-from layer4_voice_classifier import (
+from layer5_voice_classifier import (
     InputGainCompensationSettings,
-    Layer4AudioSegment,
-    Layer4Result,
+    Layer5AudioSegment,
+    Layer5Result,
     ModelPrediction,
     NvidiaMarbleNetPlugin,
     VoiceDetection,
@@ -121,7 +121,7 @@ def test_test_ui_caches_exact_same_compensated_samples_as_cnn(tmp_path):
     np.testing.assert_array_equal(playback, batch.continuous_audio[0].waveform)
 
 
-def test_l4_annotation_is_attached_to_the_exact_cached_20ms_id_hop(tmp_path):
+def test_l5_annotation_is_attached_to_the_exact_cached_20ms_id_hop(tmp_path):
     hub = TrackAudioStreamHub(InputGainCompensationSettings(), context_ms=160)
     batch = hub.process((_window(7_680),), active_track_ids=(7,), identity=_identity(7_680))
     tracker = AudioIdTracker("cache", project_root=tmp_path, downstream_window_samples=3_840)
@@ -132,11 +132,11 @@ def test_l4_annotation_is_attached_to_the_exact_cached_20ms_id_hop(tmp_path):
         0.7, True, "nv", 0.7,
     )
 
-    snapshots = tracker.apply_l4_annotations((annotation,))
+    snapshots = tracker.apply_l5_annotations((annotation,))
 
     assert snapshots[0].voice_annotations_20ms == (annotation,)
     with pytest.raises(ValueError, match="no matching cached audio ID"):
-        tracker.apply_l4_annotations((
+        tracker.apply_l5_annotations((
             TrackVoiceAnnotation(
                 "session", 0, 8, 7_680, 9, hop.start_sample, hop.end_sample,
                 0.2, False, "nv", 0.7,
@@ -144,11 +144,11 @@ def test_l4_annotation_is_attached_to_the_exact_cached_20ms_id_hop(tmp_path):
         ))
 
 
-def test_runtime_l4_annotation_uses_latest_continuous_hop_and_strict_identity():
+def test_runtime_l5_annotation_uses_latest_continuous_hop_and_strict_identity():
     from app.runtime import ApplicationRuntime
 
     waveform = np.zeros(1_920, np.float32)
-    audio = Layer4AudioSegment(
+    audio = Layer5AudioSegment(
         "session", 0, 8, 7_680, 30.0, 48_000, waveform,
         (0.5, 0.9), 7, 5_760, 7_680,
     )
@@ -156,13 +156,13 @@ def test_runtime_l4_annotation_uses_latest_continuous_hop_and_strict_identity():
         "session", 0, 8, 7_680, 30.0, 0.7, True, "nv", 7,
     )
     prediction = ModelPrediction("nv", np.asarray([0.7], np.float32), 1.0, {})
-    result = Layer4Result((detection,), (prediction,), "nv", 0.7)
+    result = Layer5Result((detection,), (prediction,), "nv", 0.7)
 
     annotations = ApplicationRuntime._track_voice_annotations((audio,), result)
 
     assert (annotations[0].start_sample, annotations[0].end_sample) == (6_720, 7_680)
     assert annotations[0].is_voice is True
-    wrong_id = Layer4Result(
+    wrong_id = Layer5Result(
         (VoiceDetection("session", 0, 8, 7_680, 30.0, 0.7, True, "nv", 8),),
         (prediction,), "nv", 0.7,
     )

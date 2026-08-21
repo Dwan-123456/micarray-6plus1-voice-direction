@@ -180,7 +180,7 @@ if QApplication is not None:
             controls.addStretch(1)
             layout.addLayout(controls)
             self.table = QTableWidget(0, 10)
-            self.table.setHorizontalHeaderLabels(("epoch", "window", "sample", "L1", "Gate", "L2", "L3", "L4", "commit", "reason"))
+            self.table.setHorizontalHeaderLabels(("epoch", "window", "sample", "L1", "Gate", "L2", "L3", "L5", "commit", "reason"))
             self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             self.table.horizontalHeader().setStretchLastSection(True)
             self.table.cellDoubleClicked.connect(self._select)
@@ -226,13 +226,13 @@ if QApplication is not None:
                 window = value
                 self._visible_keys.append(window.key)
                 values = [str(window.key.stream_epoch), str(window.key.window_id), str(window.key.decision_sample)]
-                values.extend(window.stages[name].state.value.upper() for name in ("l1", "gate", "l2", "l3", "l4", "commit"))
+                values.extend(window.stages[name].state.value.upper() for name in ("l1", "gate", "l2", "l3", "l5", "commit"))
                 values.append(window.terminal_reason or "")
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     item.setData(Qt.ItemDataRole.UserRole, window.key)
                     if 3 <= column <= 8:
-                        item.setBackground(QColor(_STAGE_COLOURS[window.stages[("l1", "gate", "l2", "l3", "l4", "commit")[column - 3]].state]))
+                        item.setBackground(QColor(_STAGE_COLOURS[window.stages[("l1", "gate", "l2", "l3", "l5", "commit")[column - 3]].state]))
                         item.setForeground(QColor("white"))
                     self.table.setItem(row, column, item)
 
@@ -290,7 +290,7 @@ if QApplication is not None:
             tracks_layout = QVBoxLayout(tracks_widget)
             self.track_table = QTableWidget(0, 11)
             self.track_table.setHorizontalHeaderLabels((
-                "epoch", "track", "首sample", "末sample", "寿命ms", "首角", "末角", "连续展开", "状态", "L4最新", "资产",
+                "epoch", "track", "首sample", "末sample", "寿命ms", "首角", "末角", "连续展开", "状态", "L5最新", "资产",
             ))
             self.track_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             tracks_layout.addWidget(self.track_table)
@@ -325,7 +325,7 @@ if QApplication is not None:
                 observations = grouped[key]
                 first, last = observations[0], observations[-1]
                 duration = None if sample_rate is None else (last.decision_sample - first.decision_sample + 960) * 1000 / sample_rate
-                probability = next((item.l4_probability for item in reversed(observations) if item.l4_probability is not None), None)
+                probability = next((item.l5_probability for item in reversed(observations) if item.l5_probability is not None), None)
                 unwrapped = _unwrap([item.theta_deg for item in observations if item.theta_deg is not None])
                 trajectory = "N/A" if not unwrapped else f"{unwrapped[0]:.1f}→{unwrapped[-1]:.1f}°"
                 values = (

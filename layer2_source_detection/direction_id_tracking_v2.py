@@ -56,7 +56,7 @@ class _PublishedPoint:
 
 
 class DirectionIdTrackerV2:
-    """Four-hypothesis private tracker with L4-controlled speaker semantics."""
+    """Four-hypothesis private tracker with L5-controlled speaker semantics."""
 
     backend = "confidence_id_tracker_v2"
 
@@ -265,7 +265,7 @@ class DirectionIdTrackerV2:
             track.voice_hits += 1
             track.voice_mass += float(probability)
             # A positive semantic result clears prior negative evidence. L2
-            # never hides an angle based on L4, because L4 can only classify
+            # never hides an angle based on L5, because L5 can only classify
             # angles that L2 continues to publish.
             track.nonvoice_mass = 0.0
             if track.formal:

@@ -13,7 +13,7 @@ from common.data_types import (
 )
 from layer2_source_detection.music import MusicDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
-from layer4_voice_classifier.contracts import Layer4Result
+from layer5_voice_classifier.contracts import Layer5Result
 from track_audio_stream import TrackVoiceAnnotation
 
 
@@ -174,10 +174,10 @@ class AlgorithmPerformanceSnapshot:
     evaluation_threshold: float | None = None
     l2_time_ms_last_second_avg: float | None = None
     l3_time_ms_last_second_avg: float | None = None
-    l4_time_ms_last_second_avg: float | None = None
+    l5_time_ms_last_second_avg: float | None = None
     l2_refresh_hz_last_second: float = 0.0
     l3_refresh_hz_last_second: float = 0.0
-    l4_refresh_hz_last_second: float = 0.0
+    l5_refresh_hz_last_second: float = 0.0
     processed_windows_last_second: int = 0
     dropped_windows_last_second: int = 0
     drop_rate_last_second: float = 0.0
@@ -194,10 +194,10 @@ class AlgorithmPerformanceSnapshot:
             self.latency_ms_p95,
             self.l2_time_ms_last_second_avg,
             self.l3_time_ms_last_second_avg,
-            self.l4_time_ms_last_second_avg,
+            self.l5_time_ms_last_second_avg,
             self.l2_refresh_hz_last_second,
             self.l3_refresh_hz_last_second,
-            self.l4_refresh_hz_last_second,
+            self.l5_refresh_hz_last_second,
         )
         if any(value is not None and (not np.isfinite(value) or value < 0) for value in values):
             raise ValueError("性能时间必须为非负finite或None")
@@ -242,7 +242,7 @@ class DevUiFrame:
     spatial_published_monotonic: float | None
     search_diagnostics: MusicDiagnostics | None
     missing_reasons: Mapping[str, str]
-    l4_result: Layer4Result | None = None
+    l5_result: Layer5Result | None = None
     directions: tuple[TrackedDirection, ...] = ()
     active_tracks: tuple[TrackedDirection, ...] = ()
     direction_id_tracking_enabled: bool | None = None
@@ -340,33 +340,33 @@ class DevUiFrame:
         for track in self.tracked_audio:
             if (track.session_id, track.stream_epoch) != pipeline_stream:
                 raise ValueError("DevUiFrame tracked audio must match the pipeline stream")
-        if self.l4_result is not None:
-            if self.l4_result.primary_model_id not in {
-                item.model_id for item in self.l4_result.predictions
+        if self.l5_result is not None:
+            if self.l5_result.primary_model_id not in {
+                item.model_id for item in self.l5_result.predictions
             }:
-                raise ValueError("DevUiFrame L4 primary model is missing")
-            for detection in self.l4_result.detections:
+                raise ValueError("DevUiFrame L5 primary model is missing")
+            for detection in self.l5_result.detections:
                 if (detection.session_id, detection.stream_epoch) != pipeline_stream:
-                    raise ValueError("DevUiFrame L4 result must match the pipeline stream")
+                    raise ValueError("DevUiFrame L5 result must match the pipeline stream")
                 if self.spatial_response is not None and (
                     detection.window_id != self.spatial_response.window_id
                     or detection.decision_sample != self.spatial_response.decision_sample
                 ):
-                    raise ValueError("DevUiFrame L4 result must match the SRP window")
+                    raise ValueError("DevUiFrame L5 result must match the SRP window")
                 if self.spatial_response is None and direction_identity is not None and (
                     detection.session_id,
                     detection.stream_epoch,
                     detection.window_id,
                     detection.decision_sample,
                 ) != direction_identity:
-                    raise ValueError("prediction-only L4 result must match the authoritative L2 window")
-            if self.spatial_response is None and self.l4_result.detections:
+                    raise ValueError("prediction-only L5 result must match the authoritative L2 window")
+            if self.spatial_response is None and self.l5_result.detections:
                 if direction_identity is None:
-                    raise ValueError("prediction-only L4 result requires authoritative L2 directions")
-                if tuple(item.track_id for item in self.l4_result.detections) != tuple(
+                    raise ValueError("prediction-only L5 result requires authoritative L2 directions")
+                if tuple(item.track_id for item in self.l5_result.detections) != tuple(
                     item.track_id for item in directions
                 ):
-                    raise ValueError("prediction-only L4 result must preserve authoritative L2 IDs")
+                    raise ValueError("prediction-only L5 result must preserve authoritative L2 IDs")
         if self.gate_decision is not None:
             gate_identity = (
                 self.gate_decision.session_id,

@@ -1,4 +1,4 @@
-schema_version: project_config_v1
+schema_version: project_config_v2
 
 paths:
   data_root: data
@@ -113,7 +113,7 @@ layer2:
     prediction_freeze_std_deg: .inf
   # Production/default runtime keeps direction-track IDs enabled. There is no
   # project-config enable field; Development Test UI owns a persisted MUSIC-only
-  # diagnostic switch that can bypass/reset tracking and skip L3/L4.
+  # diagnostic switch that can bypass/reset tracking and skip L3/L5.
   direction_id_tracking:
     backend: global_assignment_v1
     association_gate_deg: 45.0
@@ -221,7 +221,7 @@ feature:
   log_epsilon: 1.0e-6
   normalization: training_set_per_frequency_zscore
 
-layer4:
+layer5:
   primary_model_id: nv_marblenet_baseline_v1
   models:
     - model_id: nv_marblenet_baseline_v1
@@ -252,7 +252,7 @@ runtime:
   capture_handoff_blocks: 500
   # Legacy serial-queue field retained for old launch profiles.
   processing_queue_windows: 1
-  # Change this single value to resize all L2/L3/L4 latest-wins waiting queues.
+  # Change this single value to resize all L2/L3/L5 latest-wins waiting queues.
   # 2000 windows represent about 40 s at 50 windows/s.
   stage_queue_windows: 2000
   completion_queue_windows: 8

@@ -155,7 +155,7 @@ class GlobalDirectionTracker:
     def voice_confirmed_track_ids(
         self, session_id: str, stream_epoch: int, decision_sample: int
     ) -> frozenset[int]:
-        """Return live tracking-confirmed IDs with positive L4 voice evidence.
+        """Return live tracking-confirmed IDs with positive L5 voice evidence.
 
         A direction observation alone is deliberately insufficient here.  The
         returned IDs are the only tracks allowed to force the probability Gate
@@ -199,7 +199,7 @@ class GlobalDirectionTracker:
         probability: float,
         is_voice: bool,
     ) -> bool:
-        """Apply one delayed, authoritative L4 result to an existing ID."""
+        """Apply one delayed, authoritative L5 result to an existing ID."""
 
         if (session_id, stream_epoch) != (self._session_id, self._stream_epoch):
             return False
@@ -208,7 +208,7 @@ class GlobalDirectionTracker:
             return False
         probability = float(probability)
         if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
-            raise ValueError("L4 voice feedback probability must be in [0,1]")
+            raise ValueError("L5 voice feedback probability must be in [0,1]")
         track.last_voice_probability = probability
         if is_voice:
             if len(track.voice_confirmation_samples) < self.minimum_voice_confirmations:

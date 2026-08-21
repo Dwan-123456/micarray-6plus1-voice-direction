@@ -88,7 +88,7 @@ class TrackObservation:
     state: str | None
     is_observed: bool | None
     is_new_track: bool | None
-    l4_probability: float | None
+    l5_probability: float | None
     is_voice: bool | None
     enhanced_asset: Mapping[str, Any] | None = None
 

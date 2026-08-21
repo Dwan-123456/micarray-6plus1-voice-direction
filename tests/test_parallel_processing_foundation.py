@@ -18,7 +18,7 @@ from app.compute_cache import (
 from app.processing_contracts import (
     L2StageResult,
     L3StageResult,
-    L4StageResult,
+    L5StageResult,
     ProcessingConfigSnapshot,
     StageState,
     WindowKey,
@@ -82,7 +82,7 @@ def _stage_results(work: WindowWorkItem):
     return (
         L2StageResult.completed(key, _Payload.for_key(key, "l2"), finished_monotonic_ns=101),
         L3StageResult.completed(key, _Payload.for_key(key, "l3"), finished_monotonic_ns=102),
-        L4StageResult.completed(key, _Payload.for_key(key, "l4"), finished_monotonic_ns=103),
+        L5StageResult.completed(key, _Payload.for_key(key, "l5"), finished_monotonic_ns=103),
     )
 
 
@@ -171,8 +171,8 @@ def test_joiner_accepts_out_of_order_stage_completion_but_commits_in_sample_orde
         joiner.submit(result)
     assert joiner.drain_ready() == ()
 
-    l2, l3, l4 = _stage_results(first)
-    joiner.submit(l4)
+    l2, l3, l5 = _stage_results(first)
+    joiner.submit(l5)
     joiner.submit(l2)
     joiner.submit(l3)
     joined = joiner.drain_ready()
@@ -207,7 +207,7 @@ def test_joiner_skips_downstream_explicitly_and_rejects_duplicate_stage_publicat
 
     joined = joiner.drain_ready()
     assert len(joined) == 1
-    assert joined[0].l3.state is joined[0].l4.state is StageState.SKIPPED
+    assert joined[0].l3.state is joined[0].l5.state is StageState.SKIPPED
     assert joined[0].state is StageState.COMPLETED
 
 
@@ -242,11 +242,11 @@ def test_joiner_callback_runs_outside_lock_and_failed_delivery_is_retryable():
     )
     work = _work(0)
     joiner.register(work)
-    l2, l3, l4 = _stage_results(work)
+    l2, l3, l5 = _stage_results(work)
     joiner.submit_l2(l2)
     joiner.submit_l3(l3)
     with pytest.raises(ResultDeliveryError, match="callback failed"):
-        joiner.submit_l4(l4)
+        joiner.submit_l5(l5)
 
     for worker in callback_threads:
         worker.join(timeout=1.0)

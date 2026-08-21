@@ -271,7 +271,7 @@ class Layer2Pipeline:
                 reason="voice_confirmed_id_force_open",
                 diagnostics=decision.diagnostics + (
                     "voice_confirmed_id_force_open=true",
-                    "force_open_requires_l4_voice_confirmations=2",
+                    "force_open_requires_l5_voice_confirmations=2",
                 ),
             )
         response: SpatialResponse | None = None

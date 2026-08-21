@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from layer4_voice_classifier.gain_compensation import InputGainCompensationDiagnostic
+from layer5_voice_classifier.gain_compensation import InputGainCompensationDiagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +92,7 @@ class TrackAudioHop:
 
 @dataclass(frozen=True, slots=True)
 class TrackVoiceAnnotation:
-    """One formal L4 semantic result aligned to one exact 20 ms track hop."""
+    """One formal L5 semantic result aligned to one exact 20 ms track hop."""
 
     session_id: str
     stream_epoch: int
@@ -156,11 +156,11 @@ class ContinuousTrackAudio:
             or not waveform.flags.c_contiguous
             or not np.isfinite(waveform).all()
         ):
-            raise ValueError("continuous L4 audio must contain complete finite 20 ms hops")
+            raise ValueError("continuous L5 audio must contain complete finite 20 ms hops")
         if self.effective_end_sample - self.effective_start_sample != len(waveform):
-            raise ValueError("continuous L4 audio range must match its waveform")
+            raise ValueError("continuous L5 audio range must match its waveform")
         if len(self.probabilities_20ms) != len(waveform) // 960:
-            raise ValueError("continuous L4 probabilities must align with waveform hops")
+            raise ValueError("continuous L5 probabilities must align with waveform hops")
         object.__setattr__(self, "waveform", np.frombuffer(waveform.tobytes(), np.float32))
         object.__setattr__(self, "probabilities_20ms", tuple(self.probabilities_20ms))
 

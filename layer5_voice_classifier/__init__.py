@@ -1,16 +1,16 @@
-from .contracts import Layer4AudioSegment, Layer4Result, ModelPrediction, VoiceDetection
-from .engine import Layer4Engine, NvidiaMarbleNetPlugin, VoiceModelPlugin, max_contiguous_frame_mean
+from .contracts import Layer5AudioSegment, Layer5Result, ModelPrediction, VoiceDetection
+from .engine import Layer5Engine, NvidiaMarbleNetPlugin, VoiceModelPlugin, max_contiguous_frame_mean
 from .marblenet import NvidiaFrameVadMarbleNet
 from .gain_compensation import (
     InputGainCompensationDiagnostic,
     InputGainCompensationSettings,
     SegmentGainDiagnostic,
-    compensate_l4_input,
+    compensate_l5_input,
 )
 
 __all__ = [
-    "Layer4AudioSegment", "Layer4Engine", "Layer4Result", "ModelPrediction", "NvidiaFrameVadMarbleNet",
+    "Layer5AudioSegment", "Layer5Engine", "Layer5Result", "ModelPrediction", "NvidiaFrameVadMarbleNet",
     "InputGainCompensationDiagnostic", "InputGainCompensationSettings", "SegmentGainDiagnostic",
-    "compensate_l4_input",
+    "compensate_l5_input",
     "NvidiaMarbleNetPlugin", "VoiceDetection", "VoiceModelPlugin", "max_contiguous_frame_mean",
 ]

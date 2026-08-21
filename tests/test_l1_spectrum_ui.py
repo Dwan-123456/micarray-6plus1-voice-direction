@@ -67,7 +67,7 @@ def test_l1_spectrum_host_has_no_downstream_runtime_dependencies() -> None:
     source = (ROOT / "gui/l1_spectrum_ui/host.py").read_text(encoding="utf-8")
     for forbidden in (
         "ApplicationRuntime", "WindowAssembler", "layer2_source_detection",
-        "layer3_direction_signal", "layer4_voice_classifier", "RecordingStore",
+        "layer3_direction_signal", "layer5_voice_classifier", "RecordingStore",
     ):
         assert forbidden not in source
 

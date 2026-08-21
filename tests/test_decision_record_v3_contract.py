@@ -37,7 +37,7 @@ def test_failed_stage_cannot_be_misreported_as_degraded() -> None:
     with pytest.raises(ValueError, match="必须为error"):
         DecisionRecord(
             "session", 0, 0, 15_360, (13_440, 15_360), (0, 15_360), "degraded",
-            stage_statuses={"l2": "completed", "l3": "failed", "l4": "skipped"},
+            stage_statuses={"l2": "completed", "l3": "failed", "l5": "skipped"},
         )
 
 
@@ -51,7 +51,7 @@ def test_voice_count_is_derived_from_formal_detections() -> None:
         )
 
 
-def test_skipped_l4_preserves_l2_candidates_without_fake_detections() -> None:
+def test_skipped_l5_preserves_l2_candidates_without_fake_detections() -> None:
     record = DecisionRecord(
         "session",
         0,
@@ -62,7 +62,7 @@ def test_skipped_l4_preserves_l2_candidates_without_fake_detections() -> None:
         "ok",
         candidates=(_candidate(31.0),),
         detections=(),
-        stage_statuses={"l2": "completed", "l3": "skipped", "l4": "skipped"},
+        stage_statuses={"l2": "completed", "l3": "skipped", "l5": "skipped"},
         terminal_reason="downstream_disabled_by_test_ui",
     )
 

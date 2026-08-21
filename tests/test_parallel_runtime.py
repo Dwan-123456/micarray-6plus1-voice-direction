@@ -33,7 +33,7 @@ from layer2_source_detection import (
 )
 from layer2_source_detection.music import MusicDiagnostics, MusicStateDiagnostic
 from layer3_direction_signal import Layer3Output
-from layer4_voice_classifier import Layer4Result, ModelPrediction, VoiceDetection
+from layer5_voice_classifier import Layer5Result, ModelPrediction, VoiceDetection
 
 
 CONFIG = Path(__file__).parents[1] / "config/config.yaml"
@@ -171,9 +171,9 @@ class _StubUiAggregator:
         del args, kwargs
 
     @staticmethod
-    def update_l4(*args: object, **kwargs: object) -> object:
+    def update_l5(*args: object, **kwargs: object) -> object:
         del args, kwargs
-        return SimpleNamespace(stage="l4")
+        return SimpleNamespace(stage="l5")
 
 
 class _FailingUiAggregator:
@@ -308,7 +308,7 @@ def _l3_output(window: DecisionWindow, candidates: tuple[CandidateDirection, ...
     )
 
 
-def _l4_output(inputs: tuple[object, ...]) -> Layer4Result:
+def _l5_output(inputs: tuple[object, ...]) -> Layer5Result:
     detections = tuple(
         VoiceDetection(
             item.session_id,
@@ -323,7 +323,7 @@ def _l4_output(inputs: tuple[object, ...]) -> Layer4Result:
         )
         for item in inputs
     )
-    return Layer4Result(
+    return Layer5Result(
         detections,
         (
             ModelPrediction(
@@ -454,7 +454,7 @@ class _FirstBlockingL3(_StubL3):
         return super().prepare(window, mode=mode)
 
 
-class _StubL4:
+class _StubL5:
     threshold = 0.5
 
     def __init__(
@@ -468,24 +468,24 @@ class _StubL4:
         self.delay = delay
         self.fail_window = fail_window
 
-    def process(self, inputs: tuple[object, ...]) -> Layer4Result:
+    def process(self, inputs: tuple[object, ...]) -> Layer5Result:
         window_id = inputs[0].window_id
         started = time.monotonic()
         if self.delay:
             time.sleep(self.delay)
         try:
             if window_id == self.fail_window:
-                raise RuntimeError(f"injected L4 failure for window {window_id}")
-            return _l4_output(inputs)
+                raise RuntimeError(f"injected L5 failure for window {window_id}")
+            return _l5_output(inputs)
         finally:
-            self.probe.add("l4", window_id, started, time.monotonic())
+            self.probe.add("l5", window_id, started, time.monotonic())
 
 
 def _config(
     *,
     l2_queue_windows: int = 4,
     l3_queue_windows: int = 3,
-    l4_queue_windows: int = 3,
+    l5_queue_windows: int = 3,
     completion_queue_windows: int = 8,
     max_inflight_windows: int = 16,
     compute_cache_max_bytes: int = 8_388_608,
@@ -497,7 +497,7 @@ def _config(
             "preferred_device": "cpu",
             "l2_queue_windows": l2_queue_windows,
             "l3_queue_windows": l3_queue_windows,
-            "l4_queue_windows": l4_queue_windows,
+            "l5_queue_windows": l5_queue_windows,
             "completion_queue_windows": completion_queue_windows,
             "max_inflight_windows": max_inflight_windows,
             "compute_cache_max_bytes": compute_cache_max_bytes,
@@ -513,18 +513,18 @@ def _runtime(
     config=None,
     l2: _StubL2 | None = None,
     l3: _StubL3 | None = None,
-    l4: _StubL4 | None = None,
+    l5: _StubL5 | None = None,
 ) -> tuple[ApplicationRuntime, _MemoryRecordingStore, _StageProbe]:
     probe = _StageProbe()
     store = _MemoryRecordingStore()
-    l4 = l4 or _StubL4(probe)
+    l5 = l5 or _StubL5(probe)
     runtime = ApplicationRuntime(
         config or _config(),
         project_root=tmp_path,
         pipeline=_IdlePipeline(),
         serial_device=_StubSerial(),
         recording_store=store,
-        layer4_engine=l4,
+        layer5_engine=l5,
         source_probability_provider=lambda window: (),
     )
     runtime._layer2 = l2 or _StubL2(probe)
@@ -538,37 +538,37 @@ def _start_with_stubs(
     config=None,
     l2_factory: Callable[[_StageProbe], _StubL2] | None = None,
     l3_factory: Callable[[_StageProbe], _StubL3] | None = None,
-    l4_factory: Callable[[_StageProbe], _StubL4] | None = None,
+    l5_factory: Callable[[_StageProbe], _StubL5] | None = None,
 ) -> tuple[ApplicationRuntime, _MemoryRecordingStore, _StageProbe]:
     probe = _StageProbe()
     l2 = (l2_factory or (lambda value: _StubL2(value)))(probe)
     l3 = (l3_factory or (lambda value: _StubL3(value)))(probe)
-    l4 = (l4_factory or (lambda value: _StubL4(value)))(probe)
-    runtime, store, _ = _runtime(tmp_path, config=config, l2=l2, l3=l3, l4=l4)
+    l5 = (l5_factory or (lambda value: _StubL5(value)))(probe)
+    runtime, store, _ = _runtime(tmp_path, config=config, l2=l2, l3=l3, l5=l5)
     runtime.start()
     runtime._ui_aggregator = _StubUiAggregator()
     return runtime, store, probe
 
 
-def test_completed_l4_has_independent_bounded_latest_only_ui_mailbox(tmp_path: Path) -> None:
+def test_completed_l5_has_independent_bounded_latest_only_ui_mailbox(tmp_path: Path) -> None:
     runtime, _store, _probe = _start_with_stubs(tmp_path)
     try:
         runtime._admit_window(_window(0))
-        _wait_until(lambda: runtime.processing_status["l4_actual_completed"] >= 1)
-        _wait_until(lambda: runtime.latest_l4_dev_ui.qsize() == 1)
-        first = runtime.latest_l4_dev_ui.get_nowait()
+        _wait_until(lambda: runtime.processing_status["l5_actual_completed"] >= 1)
+        _wait_until(lambda: runtime.latest_l5_dev_ui.qsize() == 1)
+        first = runtime.latest_l5_dev_ui.get_nowait()
         assert isinstance(first, DevUiFrame)
-        assert first.l4_result is not None
+        assert first.l5_result is not None
         assert first.spatial_response is not None
-        assert first.spatial_response.window_id == first.l4_result.detections[0].window_id == 0
+        assert first.spatial_response.window_id == first.l5_result.detections[0].window_id == 0
 
         runtime._admit_window(_window(1))
         runtime._admit_window(_window(2))
-        _wait_until(lambda: runtime.processing_status["l4_actual_completed"] >= 3)
-        assert runtime.latest_l4_dev_ui.maxsize == 1
-        assert runtime.latest_l4_dev_ui.qsize() == 1
-        latest = runtime.latest_l4_dev_ui.get_nowait()
-        assert latest.spatial_response.window_id == latest.l4_result.detections[0].window_id == 2
+        _wait_until(lambda: runtime.processing_status["l5_actual_completed"] >= 3)
+        assert runtime.latest_l5_dev_ui.maxsize == 1
+        assert runtime.latest_l5_dev_ui.qsize() == 1
+        latest = runtime.latest_l5_dev_ui.get_nowait()
+        assert latest.spatial_response.window_id == latest.l5_result.detections[0].window_id == 2
     finally:
         runtime.stop()
 
@@ -592,7 +592,7 @@ def test_late_ordered_commit_from_old_epoch_cannot_update_new_epoch_ui(tmp_path:
         values={},
         l2_output=None,
         l3_output=None,
-        l4_result=None,
+        l5_result=None,
         response=None,
         candidates=(),
         search_diagnostics=None,
@@ -609,15 +609,15 @@ def test_late_ordered_commit_from_old_epoch_cannot_update_new_epoch_ui(tmp_path:
     assert runtime.latest_dev_ui.empty()
 
 
-def test_completed_l4_annotates_track_audio_without_feedback_to_l2(tmp_path: Path) -> None:
+def test_completed_l5_annotates_track_audio_without_feedback_to_l2(tmp_path: Path) -> None:
     runtime, store, _probe = _start_with_stubs(tmp_path)
     try:
         runtime._admit_window(_window(0))
-        _wait_until(lambda: runtime.processing_status["l4_actual_completed"] >= 1)
+        _wait_until(lambda: runtime.processing_status["l5_actual_completed"] >= 1)
         _wait_until(lambda: len(store.record_snapshot()) == 1)
         assert runtime._layer2.voice_feedback == []
         audio = store.record_snapshot()[0].enhanced_audio[0]
-        annotation = audio["l4_voice_20ms"]
+        annotation = audio["l5_voice_20ms"]
         assert annotation["track_id"] == audio["track_id"] == 1
         assert annotation["probability"] == 0.8
         assert annotation["is_voice"] is True
@@ -635,7 +635,7 @@ def test_stages_overlap_across_windows_but_preserve_same_window_dependencies_and
         tmp_path,
         l2_factory=lambda value: _StubL2(value, delay=0.03),
         l3_factory=lambda value: _StubL3(value, delay=0.06),
-        l4_factory=lambda value: _StubL4(value, delay=0.08),
+        l5_factory=lambda value: _StubL5(value, delay=0.08),
     )
     try:
         for window_id in range(4):
@@ -645,15 +645,15 @@ def test_stages_overlap_across_windows_but_preserve_same_window_dependencies_and
         for window_id in range(4):
             l2 = probe.get("l2", window_id)
             l3 = probe.get("l3", window_id)
-            l4 = probe.get("l4", window_id)
+            l5 = probe.get("l5", window_id)
             assert l2.finished <= l3.started
-            assert l3.finished <= l4.started
+            assert l3.finished <= l5.started
             assert l2.thread_name.endswith("-l2")
             assert l3.thread_name.endswith("-l3")
-            assert l4.thread_name.endswith("-l4")
+            assert l5.thread_name.endswith("-l5")
 
         assert probe.get("l2", 1).started < probe.get("l3", 0).finished
-        assert probe.get("l3", 1).started < probe.get("l4", 0).finished
+        assert probe.get("l3", 1).started < probe.get("l5", 0).finished
         assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
         assert [item.sample for item in store.watermark_snapshot()] == [
             7_680,
@@ -666,7 +666,7 @@ def test_stages_overlap_across_windows_but_preserve_same_window_dependencies_and
         runtime.stop()
 
 
-def test_gate_skip_is_formal_and_never_runs_l3_or_l4(tmp_path: Path) -> None:
+def test_gate_skip_is_formal_and_never_runs_l3_or_l5(tmp_path: Path) -> None:
     runtime, store, probe = _start_with_stubs(
         tmp_path,
         l2_factory=lambda value: _StubL2(value, blocked=True),
@@ -678,18 +678,18 @@ def test_gate_skip_is_formal_and_never_runs_l3_or_l4(tmp_path: Path) -> None:
         assert record.stage_statuses == {
             "l2": "completed",
             "l3": "skipped",
-            "l4": "skipped",
+            "l5": "skipped",
         }
         assert record.status == "ok"
         assert record.gate_decision is not None
         assert record.gate_decision["state"] == "closed"
         assert probe.count("l3") == 0
-        assert probe.count("l4") == 0
+        assert probe.count("l5") == 0
     finally:
         runtime.stop()
 
 
-def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l4(
+def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l5(
     tmp_path: Path,
 ) -> None:
     probe = _StageProbe()
@@ -719,24 +719,24 @@ def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l4(
             self.process_calls += 1
             raise AssertionError("empty candidates must not process prepared L3")
 
-    class EmptyBatchL4:
+    class EmptyBatchL5:
         threshold = 0.5
 
         def __init__(self) -> None:
             self.calls = 0
 
-        def process(self, inputs: tuple[object, ...]) -> Layer4Result:
+        def process(self, inputs: tuple[object, ...]) -> Layer5Result:
             self.calls += 1
             assert inputs == ()
-            return _l4_output(inputs)
+            return _l5_output(inputs)
 
     layer3 = PrepareForbiddenL3(probe)
-    layer4 = EmptyBatchL4()
+    layer5 = EmptyBatchL5()
     runtime, store, _ = _runtime(
         tmp_path,
         l2=EmptyCandidateL2(probe),
         l3=layer3,
-        l4=layer4,
+        l5=layer5,
     )
     runtime.start()
     runtime._ui_aggregator = _StubUiAggregator()
@@ -746,11 +746,11 @@ def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l4(
         record = store.record_snapshot()[0]
         assert layer3.prepare_calls == 0
         assert layer3.process_calls == 0
-        assert layer4.calls == 1
+        assert layer5.calls == 1
         assert record.stage_statuses == {
             "l2": "completed",
             "l3": "completed",
-            "l4": "completed",
+            "l5": "completed",
         }
         assert record.enhanced_audio == ()
         assert record.voice_direction_count == 0
@@ -758,7 +758,7 @@ def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l4(
         runtime.stop()
 
 
-def test_test_ui_can_bypass_l3_and_l4_while_l2_keeps_running(tmp_path: Path) -> None:
+def test_test_ui_can_bypass_l3_and_l5_while_l2_keeps_running(tmp_path: Path) -> None:
     runtime, store, probe = _start_with_stubs(tmp_path)
     try:
         assert runtime.set_downstream_processing_enabled(False) is False
@@ -769,11 +769,11 @@ def test_test_ui_can_bypass_l3_and_l4_while_l2_keeps_running(tmp_path: Path) -> 
         first = store.record_snapshot()[0]
         assert probe.count("l2") == 1
         assert probe.count("l3") == 0
-        assert probe.count("l4") == 0
+        assert probe.count("l5") == 0
         assert first.stage_statuses == {
             "l2": "completed",
             "l3": "skipped",
-            "l4": "skipped",
+            "l5": "skipped",
         }
         assert first.status == "ok"
         assert first.terminal_reason == "downstream_disabled_by_test_ui"
@@ -784,17 +784,17 @@ def test_test_ui_can_bypass_l3_and_l4_while_l2_keeps_running(tmp_path: Path) -> 
         _wait_until(lambda: len(store.record_snapshot()) == 2)
         assert probe.count("l2") == 2
         assert probe.count("l3") == 1
-        assert probe.count("l4") == 1
+        assert probe.count("l5") == 1
         assert store.record_snapshot()[1].stage_statuses == {
             "l2": "completed",
             "l3": "completed",
-            "l4": "completed",
+            "l5": "completed",
         }
     finally:
         runtime.stop()
 
 
-@pytest.mark.parametrize("failed_stage", ["l2", "l3", "l4"])
+@pytest.mark.parametrize("failed_stage", ["l2", "l3", "l5"])
 def test_stage_failure_has_explicit_terminal_state_and_later_window_continues(
     tmp_path: Path,
     failed_stage: str,
@@ -807,8 +807,8 @@ def test_stage_failure_has_explicit_terminal_state_and_later_window_continues(
         l3_factory=lambda value: _StubL3(
             value, fail_window=1 if failed_stage == "l3" else None
         ),
-        l4_factory=lambda value: _StubL4(
-            value, fail_window=1 if failed_stage == "l4" else None
+        l5_factory=lambda value: _StubL5(
+            value, fail_window=1 if failed_stage == "l5" else None
         ),
     )
     try:
@@ -823,9 +823,9 @@ def test_stage_failure_has_explicit_terminal_state_and_later_window_continues(
         assert records[1].status == "error"
         if failed_stage == "l2":
             assert records[1].stage_statuses["l3"] == "skipped"
-            assert records[1].stage_statuses["l4"] == "skipped"
+            assert records[1].stage_statuses["l5"] == "skipped"
         if failed_stage == "l3":
-            assert records[1].stage_statuses["l4"] == "skipped"
+            assert records[1].stage_statuses["l5"] == "skipped"
         assert runtime.processing_status["completed_counts"]["commit"] == 3
         assert runtime.processing_status["error_counts"][failed_stage] == 1
     finally:
@@ -838,7 +838,7 @@ def test_l2_admission_overflow_explicitly_drops_oldest_waiting_window(tmp_path: 
     config = _config(
         l2_queue_windows=1,
         l3_queue_windows=1,
-        l4_queue_windows=1,
+        l5_queue_windows=1,
         completion_queue_windows=3,
         max_inflight_windows=6,
     )
@@ -861,7 +861,7 @@ def test_l2_admission_overflow_explicitly_drops_oldest_waiting_window(tmp_path: 
         assert records[1].stage_statuses == {
             "l2": "dropped",
             "l3": "dropped",
-            "l4": "dropped",
+            "l5": "dropped",
         }
         assert records[1].terminal_reason == "l2_admission_queue_overflow"
         assert runtime.processing_drops >= 1
@@ -878,12 +878,12 @@ def test_graceful_stop_drains_every_admitted_window(tmp_path: Path) -> None:
         tmp_path,
         l2_factory=lambda value: _StubL2(value, delay=0.015),
         l3_factory=lambda value: _StubL3(value, delay=0.025),
-        l4_factory=lambda value: _StubL4(value, delay=0.025),
+        l5_factory=lambda value: _StubL5(value, delay=0.025),
     )
     for window_id in range(4):
         runtime._admit_window(_window(window_id))
     running_durations = runtime.pipeline_total_durations_seconds
-    assert all(running_durations[stage] is not None for stage in ("l2", "l3", "l4"))
+    assert all(running_durations[stage] is not None for stage in ("l2", "l3", "l5"))
     runtime.stop()
     assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
     assert [item.sample for item in store.watermark_snapshot()] == [
@@ -893,11 +893,11 @@ def test_graceful_stop_drains_every_admitted_window(tmp_path: Path) -> None:
         10_560,
     ]
     assert runtime.processing_running is False
-    assert runtime.processing_queue_depths == {"l2": 0, "l3": 0, "l4": 0, "completion": 0}
+    assert runtime.processing_queue_depths == {"l2": 0, "l3": 0, "l5": 0, "completion": 0}
     assert store.stop_reasons == ["normal"]
     final_durations = runtime.pipeline_total_durations_seconds
-    assert all(final_durations[stage] is not None for stage in ("l2", "l3", "l4"))
-    assert 0.0 < final_durations["l2"] <= final_durations["l3"] <= final_durations["l4"]
+    assert all(final_durations[stage] is not None for stage in ("l2", "l3", "l5"))
+    assert 0.0 < final_durations["l2"] <= final_durations["l3"] <= final_durations["l5"]
 
 
 def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_runtime(
@@ -907,7 +907,7 @@ def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_run
         tmp_path,
         l2_factory=lambda value: _StubL2(value, delay=0.005),
         l3_factory=lambda value: _StubL3(value, delay=0.010),
-        l4_factory=lambda value: _StubL4(value, delay=0.005),
+        l5_factory=lambda value: _StubL5(value, delay=0.005),
     )
     try:
         for window_id in range(4):
@@ -916,7 +916,7 @@ def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_run
         _wait_until(
             lambda: all(
                 runtime._pipeline_stage_finished_ns[stage] is not None
-                for stage in ("l2", "l3", "l4")
+                for stage in ("l2", "l3", "l5")
             )
         )
         frozen = runtime.pipeline_total_durations_seconds
@@ -924,7 +924,7 @@ def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_run
         assert runtime.pipeline_total_durations_seconds == frozen
         assert runtime.processing_running is True
         assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
-        assert 0.0 < frozen["l2"] <= frozen["l3"] <= frozen["l4"]
+        assert 0.0 < frozen["l2"] <= frozen["l3"] <= frozen["l5"]
     finally:
         runtime.stop()
 
@@ -938,15 +938,15 @@ def test_pipeline_total_durations_exclude_replay_pause_and_disabled_downstream(
     runtime._pipeline_first_queued_ns = 1_000_000_000
     runtime._processing_threads = {
         stage: SimpleNamespace(is_alive=lambda: True)
-        for stage in ("l2", "l3", "l4")
+        for stage in ("l2", "l3", "l5")
     }
 
     runtime.set_pipeline_timing_paused(
-        "downstream_disabled_by_test_ui", True, stages=("l3", "l4")
+        "downstream_disabled_by_test_ui", True, stages=("l3", "l5")
     )
     now_ns[0] = 5_000_000_000
     durations = runtime.pipeline_total_durations_seconds
-    assert durations == {"l2": 4.0, "l3": 1.0, "l4": 1.0}
+    assert durations == {"l2": 4.0, "l3": 1.0, "l5": 1.0}
 
     runtime.set_pipeline_timing_paused("simulation_input_paused", True)
     now_ns[0] = 8_000_000_000
@@ -955,16 +955,16 @@ def test_pipeline_total_durations_exclude_replay_pause_and_disabled_downstream(
     runtime.set_pipeline_timing_paused("simulation_input_paused", False)
     now_ns[0] = 10_000_000_000
     durations = runtime.pipeline_total_durations_seconds
-    assert durations == {"l2": 6.0, "l3": 1.0, "l4": 1.0}
+    assert durations == {"l2": 6.0, "l3": 1.0, "l5": 1.0}
 
     runtime.set_pipeline_timing_paused(
-        "downstream_disabled_by_test_ui", False, stages=("l3", "l4")
+        "downstream_disabled_by_test_ui", False, stages=("l3", "l5")
     )
     now_ns[0] = 12_000_000_000
     assert runtime.pipeline_total_durations_seconds == {
         "l2": 8.0,
         "l3": 3.0,
-        "l4": 3.0,
+        "l5": 3.0,
     }
 
 
@@ -990,7 +990,7 @@ def test_processing_status_exposes_bounded_queues_and_cache_never_exceeds_hard_l
     assert status["queue_capacities"] == {
         "l2": config.runtime.l2_queue_windows,
         "l3": config.runtime.l3_queue_windows,
-        "l4": config.runtime.l4_queue_windows,
+        "l5": config.runtime.l5_queue_windows,
         "completion": config.runtime.completion_queue_windows,
     }
     snapshots = runtime._compute_cache.snapshots()
@@ -1020,7 +1020,7 @@ def test_sustained_slow_l3_uses_latest_wins_without_stopping_l1(tmp_path: Path) 
     config = _config(
         l2_queue_windows=2,
         l3_queue_windows=1,
-        l4_queue_windows=1,
+        l5_queue_windows=1,
         completion_queue_windows=4,
         max_inflight_windows=7,
         graceful_shutdown_timeout_seconds=5.0,
@@ -1083,7 +1083,7 @@ def test_completion_saturation_rejects_admission_quickly_and_stays_bounded(
     config = _config(
         l2_queue_windows=1,
         l3_queue_windows=1,
-        l4_queue_windows=1,
+        l5_queue_windows=1,
         completion_queue_windows=1,
         max_inflight_windows=6,
     )
@@ -1093,7 +1093,7 @@ def test_completion_saturation_rejects_admission_quickly_and_stays_bounded(
         pipeline=_IdlePipeline(),
         serial_device=_StubSerial(),
         recording_store=store,
-        layer4_engine=_StubL4(probe),
+        layer5_engine=_StubL5(probe),
         source_probability_provider=lambda window: (),
     )
     runtime._layer2 = _StubL2(probe)
@@ -1133,7 +1133,7 @@ def test_cross_epoch_reorder_pending_is_hard_bounded_while_old_head_is_blocked(
     config = _config(
         l2_queue_windows=4,
         l3_queue_windows=1,
-        l4_queue_windows=1,
+        l5_queue_windows=1,
         completion_queue_windows=1,
         max_inflight_windows=9,
         graceful_shutdown_timeout_seconds=8.0,
@@ -1212,7 +1212,7 @@ def test_recording_mode_start_failure_rolls_back_session(tmp_path: Path) -> None
         pipeline=_IdlePipeline(),
         serial_device=_StubSerial(),
         recording_store=store,
-        layer4_engine=_StubL4(probe),
+        layer5_engine=_StubL5(probe),
         source_probability_provider=lambda window: (),
     )
     runtime._layer2 = _StubL2(probe)
@@ -1292,7 +1292,7 @@ def test_runtime_retains_recording_session_ownership_when_finalize_fails(
         pipeline=_IdlePipeline(),
         serial_device=_StubSerial(),
         recording_store=store,
-        layer4_engine=_StubL4(probe),
+        layer5_engine=_StubL5(probe),
         source_probability_provider=lambda window: (),
     )
     runtime._recording_session_started = True
@@ -1344,7 +1344,7 @@ def test_stuck_input_worker_cannot_finalize_recording_until_retry(
         pipeline=pipeline,
         serial_device=_StubSerial(),
         recording_store=store,
-        layer4_engine=_StubL4(probe),
+        layer5_engine=_StubL5(probe),
         source_probability_provider=lambda window: (),
     )
     runtime._layer2 = _StubL2(probe)

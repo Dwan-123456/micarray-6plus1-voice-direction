@@ -690,11 +690,11 @@ class AudioIdTracker:
             self._remove_quiet_ended_tracks()
             return self.snapshots()
 
-    def apply_l4_annotations(
+    def apply_l5_annotations(
         self,
         annotations: tuple[TrackVoiceAnnotation, ...],
     ) -> tuple[TrackedAudioSnapshot, ...]:
-        """Attach formal L4 results to already cached exact-ID 20 ms hops."""
+        """Attach formal L5 results to already cached exact-ID 20 ms hops."""
 
         annotations = tuple(annotations)
         identities = {
@@ -703,15 +703,15 @@ class AudioIdTracker:
         }
         ids = tuple(item.track_id for item in annotations)
         if len(identities) > 1 or len(ids) != len(set(ids)):
-            raise ValueError("L4 track annotations must be one unique-ID window batch")
+            raise ValueError("L5 track annotations must be one unique-ID window batch")
         with self._lock:
             updates: list[tuple[_Track, int, TrackVoiceAnnotation]] = []
             for annotation in annotations:
                 if self._stream != (annotation.session_id, annotation.stream_epoch):
-                    raise ValueError("L4 track annotation stream does not match Test UI cache")
+                    raise ValueError("L5 track annotation stream does not match Test UI cache")
                 track = self._tracks.get(annotation.track_id)
                 if track is None or track.last_emitted_decision_sample is None:
-                    raise ValueError("L4 track annotation has no matching cached audio ID")
+                    raise ValueError("L5 track annotation has no matching cached audio ID")
                 cached_end = int(track.last_emitted_decision_sample)
                 cached_start = cached_end - len(track.voice_annotations) * _HOP_SAMPLES
                 if annotation.end_sample <= cached_start:
@@ -723,13 +723,13 @@ class AudioIdTracker:
                     or annotation.end_sample > cached_end
                     or (annotation.start_sample - cached_start) % _HOP_SAMPLES
                 ):
-                    raise ValueError("L4 annotation does not align with cached 20 ms audio")
+                    raise ValueError("L5 annotation does not align with cached 20 ms audio")
                 index = (annotation.start_sample - cached_start) // _HOP_SAMPLES
                 if cached_start + (index + 1) * _HOP_SAMPLES != annotation.end_sample:
-                    raise ValueError("L4 annotation sample interval is misaligned")
+                    raise ValueError("L5 annotation sample interval is misaligned")
                 existing = track.voice_annotations[index]
                 if existing is not None and existing != annotation:
-                    raise ValueError("conflicting L4 annotation for one cached audio hop")
+                    raise ValueError("conflicting L5 annotation for one cached audio hop")
                 updates.append((track, index, annotation))
             for track, index, annotation in updates:
                 track.voice_annotations[index] = annotation

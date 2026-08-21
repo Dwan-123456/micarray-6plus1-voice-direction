@@ -13,7 +13,7 @@ from .gain_compensation import InputGainCompensationDiagnostic
 
 
 @dataclass(frozen=True, slots=True)
-class Layer4AudioSegment:
+class Layer5AudioSegment:
     """Enhanced mono audio for one candidate, independent of L3/UI DTOs."""
 
     session_id: str
@@ -32,13 +32,13 @@ class Layer4AudioSegment:
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
-            raise ValueError("invalid L4 audio stream/window identity")
+            raise ValueError("invalid L5 audio stream/window identity")
         if not np.isfinite(self.theta_deg) or not 0.0 <= self.theta_deg < 360.0:
-            raise ValueError("L4 audio theta_deg must be finite and in [0,360)")
+            raise ValueError("L5 audio theta_deg must be finite and in [0,360)")
         if self.sample_rate != 48_000:
-            raise ValueError("L4 audio must be sampled at 48 kHz")
+            raise ValueError("L5 audio must be sampled at 48 kHz")
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
-            raise ValueError("L4 audio track_id must be a positive integer")
+            raise ValueError("L5 audio track_id must be a positive integer")
         waveform = np.asarray(self.waveform)
         if (
             waveform.ndim != 1
@@ -48,7 +48,7 @@ class Layer4AudioSegment:
             or not waveform.flags.c_contiguous
             or not np.isfinite(waveform).all()
         ):
-            raise ValueError("L4 audio must be finite C-contiguous float32 complete 20 ms hops")
+            raise ValueError("L5 audio must be finite C-contiguous float32 complete 20 ms hops")
         expected_hops = len(waveform) // DECISION_HOP_SAMPLES
         probabilities = self.array_source_probabilities_20ms or (None,) * expected_hops
         if len(probabilities) != expected_hops or any(
@@ -56,7 +56,7 @@ class Layer4AudioSegment:
             for value in probabilities
         ):
             raise ValueError(
-                f"L4 audio requires {expected_hops} aligned IMCRA probabilities or missing values"
+                f"L5 audio requires {expected_hops} aligned IMCRA probabilities or missing values"
             )
         object.__setattr__(self, "waveform", np.frombuffer(waveform.tobytes(), dtype=np.float32))
         object.__setattr__(
@@ -73,11 +73,11 @@ class Layer4AudioSegment:
             if self.effective_end_sample is None else int(self.effective_end_sample)
         )
         if effective_end - effective_start != len(waveform) or effective_start < 0:
-            raise ValueError("L4 effective audio range must match waveform length")
+            raise ValueError("L5 effective audio range must match waveform length")
         if type(self.gain_compensated) is not bool:
             raise ValueError("gain_compensated must be bool")
         if self.gain_compensated != (self.gain_compensation_diagnostic is not None):
-            raise ValueError("pre-compensated L4 audio requires its gain diagnostic")
+            raise ValueError("pre-compensated L5 audio requires its gain diagnostic")
         object.__setattr__(self, "effective_start_sample", effective_start)
         object.__setattr__(self, "effective_end_sample", effective_end)
 
@@ -96,7 +96,7 @@ class VoiceDetection:
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.window_id, self.decision_sample) < 0:
-            raise ValueError("invalid L4 stream/window identity")
+            raise ValueError("invalid L5 stream/window identity")
         if not np.isfinite(self.theta_deg) or not 0.0 <= self.theta_deg < 360.0:
             raise ValueError("theta_deg must be finite and in [0,360)")
         if not np.isfinite(self.probability) or not 0.0 <= self.probability <= 1.0:
@@ -126,7 +126,7 @@ class ModelPrediction:
 
 
 @dataclass(frozen=True, slots=True)
-class Layer4Result:
+class Layer5Result:
     detections: tuple[VoiceDetection, ...]
     predictions: tuple[ModelPrediction, ...]
     primary_model_id: str
@@ -135,10 +135,10 @@ class Layer4Result:
 
     def __post_init__(self) -> None:
         if not self.primary_model_id or not np.isfinite(self.threshold) or not 0 <= self.threshold <= 1:
-            raise ValueError("invalid L4 result configuration")
+            raise ValueError("invalid L5 result configuration")
         model_ids = tuple(item.model_id for item in self.predictions)
         if len(model_ids) != len(set(model_ids)) or self.primary_model_id not in model_ids:
-            raise ValueError("L4 predictions must contain one unique primary model")
+            raise ValueError("L5 predictions must contain one unique primary model")
         primary = next(item for item in self.predictions if item.model_id == self.primary_model_id)
         if len(primary.probabilities) != len(self.detections):
             raise ValueError("primary probabilities and detections must have equal length")
@@ -147,7 +147,7 @@ class Layer4Result:
         track_ids = tuple(item.track_id for item in self.detections)
         if any(item is not None for item in track_ids):
             if any(item is None for item in track_ids) or len(set(track_ids)) != len(track_ids):
-                raise ValueError("L4 detection track IDs must be complete and unique")
+                raise ValueError("L5 detection track IDs must be complete and unique")
         object.__setattr__(self, "detections", tuple(self.detections))
         object.__setattr__(self, "predictions", tuple(self.predictions))
         object.__setattr__(self, "input_gain_compensation", tuple(self.input_gain_compensation))

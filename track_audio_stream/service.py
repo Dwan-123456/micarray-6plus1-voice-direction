@@ -6,11 +6,11 @@ import threading
 
 import numpy as np
 
-from layer4_voice_classifier.gain_compensation import (
+from layer5_voice_classifier.gain_compensation import (
     InputGainCompensationDiagnostic,
     InputGainCompensationSettings,
     SegmentGainDiagnostic,
-    compensate_l4_input,
+    compensate_l5_input,
 )
 
 from .contracts import ContinuousTrackAudio, TrackAudioBatch, TrackAudioHop, TrackAudioWindow
@@ -145,7 +145,7 @@ class TrackAudioStreamHub:
         end_sample = source_decision - _HOP_SAMPLES
         if state.last_emitted_end is not None and start_sample != state.last_emitted_end:
             raise ValueError("continuous track audio must advance by exactly one 20 ms hop")
-        compensated, diagnostic = compensate_l4_input(
+        compensated, diagnostic = compensate_l5_input(
             audio,
             (probability,),
             self.settings,

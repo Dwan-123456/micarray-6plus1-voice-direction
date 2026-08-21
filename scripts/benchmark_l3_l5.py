@@ -23,10 +23,10 @@ from common.data_types import (  # noqa: E402
 )
 from common.geometry import MicGeometry, physical_6plus1_geometry  # noqa: E402
 from layer3_direction_signal import Layer3Processor  # noqa: E402
-from layer4_voice_classifier import (  # noqa: E402
+from layer5_voice_classifier import (  # noqa: E402
     InputGainCompensationSettings,
-    Layer4AudioSegment,
-    Layer4Engine,
+    Layer5AudioSegment,
+    Layer5Engine,
     NvidiaMarbleNetPlugin,
 )
 
@@ -250,11 +250,11 @@ def _benchmark_l3(
     return output
 
 
-def _primary_l4_engine(config: ProjectConfig, root: Path, device: str) -> Layer4Engine:
+def _primary_l5_engine(config: ProjectConfig, root: Path, device: str) -> Layer5Engine:
     model = next(
         item
-        for item in config.layer4.models
-        if item.enabled and item.model_id == config.layer4.primary_model_id
+        for item in config.layer5.models
+        if item.enabled and item.model_id == config.layer5.primary_model_id
     )
     artifact = Path(model.model_artifact)
     if not artifact.is_absolute():
@@ -262,28 +262,28 @@ def _primary_l4_engine(config: ProjectConfig, root: Path, device: str) -> Layer4
     plugin = NvidiaMarbleNetPlugin(
         model.model_id, artifact, device=device, window_spec=config.downstream_audio_window,
     )
-    return Layer4Engine(
+    return Layer5Engine(
         plugin,
-        threshold=config.layer4.voice_probability_limit,
+        threshold=config.layer5.voice_probability_limit,
         input_gain_compensation=InputGainCompensationSettings(
-            **config.layer4.input_gain_compensation.model_dump()
+            **config.layer5.input_gain_compensation.model_dump()
         ),
         window_spec=config.downstream_audio_window,
     )
 
 
-def _l4_batches(
+def _l5_batches(
     total: int, count: int, seed: int, *, window_samples: int, window_hops: int,
-) -> tuple[tuple[Layer4AudioSegment, ...], ...]:
+) -> tuple[tuple[Layer5AudioSegment, ...], ...]:
     rng = np.random.default_rng(seed)
-    batches: list[tuple[Layer4AudioSegment, ...]] = []
+    batches: list[tuple[Layer5AudioSegment, ...]] = []
     for window_id in range(total):
         waveforms = np.ascontiguousarray(
             rng.normal(0.0, 0.01, (count, window_samples)), dtype=np.float32
         )
         batches.append(
             tuple(
-                Layer4AudioSegment(
+                Layer5AudioSegment(
                     "benchmark-session",
                     0,
                     window_id,
@@ -299,8 +299,8 @@ def _l4_batches(
     return tuple(batches)
 
 
-def _benchmark_l4(
-    engine: Layer4Engine,
+def _benchmark_l5(
+    engine: Layer5Engine,
     device: str,
     candidate_count: int,
     warmup: int,
@@ -315,7 +315,7 @@ def _benchmark_l4(
         torch.cuda.reset_peak_memory_stats()
     stream = torch.cuda.Stream() if device == "cuda" else None
     for repeat in range(repeats):
-        batches = _l4_batches(
+        batches = _l5_batches(
             warmup + iterations,
             candidate_count,
             seed + repeat,
@@ -346,7 +346,7 @@ def _benchmark_l4(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Repeatable warm-cache benchmark for the current L3 and L4 contracts."
+        description="Repeatable warm-cache benchmark for the current L3 and L5 contracts."
     )
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "config/config.yaml")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -373,7 +373,7 @@ def main() -> int:
         config.hardware.ring_radius_m,
     )
     report: dict[str, object] = {
-        "schema_version": "l3_l4_benchmark_v2",
+        "schema_version": "l3_l5_benchmark_v2",
         "device": device,
         "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
         "torch": torch.__version__,
@@ -417,8 +417,8 @@ def main() -> int:
             args.seed + 2_000,
         ),
     }
-    engine = _primary_l4_engine(config, root, device)
-    report["l4_single_candidate"] = _benchmark_l4(
+    engine = _primary_l5_engine(config, root, device)
+    report["l5_single_candidate"] = _benchmark_l5(
         engine,
         device,
         1,
@@ -427,7 +427,7 @@ def main() -> int:
         args.repeats,
         args.seed + 3_000,
     )
-    report["l4_double_candidate"] = _benchmark_l4(
+    report["l5_double_candidate"] = _benchmark_l5(
         engine,
         device,
         2,
@@ -436,7 +436,7 @@ def main() -> int:
         args.repeats,
         args.seed + 4_000,
     )
-    report["l4_triple_candidate"] = _benchmark_l4(
+    report["l5_triple_candidate"] = _benchmark_l5(
         engine,
         device,
         3,

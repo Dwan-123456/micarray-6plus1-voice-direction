@@ -74,7 +74,7 @@ class CalibrationConfig(StrictModel):
 
 @dataclass(frozen=True, slots=True)
 class DownstreamAudioWindowSpec:
-    """Single derived L3/L4/Test-UI audio-window contract."""
+    """Single derived L3/L5/Test-UI audio-window contract."""
 
     duration_ms: int
     samples: int
@@ -294,7 +294,7 @@ class FeatureConfig(StrictModel):
     normalization: str
 
 
-class Layer4ModelConfig(StrictModel):
+class Layer5ModelConfig(StrictModel):
     model_id: str
     backend: Literal["nvidia_marblenet_continuous_v2", "nvidia_marblenet_window_v1"]
     model_artifact: str
@@ -302,7 +302,7 @@ class Layer4ModelConfig(StrictModel):
     enabled: bool = True
 
 
-class Layer4InputGainCompensationConfig(StrictModel):
+class Layer5InputGainCompensationConfig(StrictModel):
     enabled: bool
     algorithm_version: Literal["imcra_probability_rms_v1"]
     target_rms_dbfs: float
@@ -313,35 +313,35 @@ class Layer4InputGainCompensationConfig(StrictModel):
     time_interpolation: Literal["linear_db"]
 
     @model_validator(mode="after")
-    def validate_gain_compensation(self) -> "Layer4InputGainCompensationConfig":
+    def validate_gain_compensation(self) -> "Layer5InputGainCompensationConfig":
         if self.no_compensation_probability >= self.full_compensation_probability:
-            raise ValueError("Layer4 gain probability breakpoints must increase")
+            raise ValueError("Layer5 gain probability breakpoints must increase")
         if self.silence_floor_dbfs >= self.target_rms_dbfs:
-            raise ValueError("Layer4 silence floor must be below the target RMS")
+            raise ValueError("Layer5 silence floor must be below the target RMS")
         return self
 
 
-class Layer4Config(StrictModel):
+class Layer5Config(StrictModel):
     primary_model_id: str
-    models: tuple[Layer4ModelConfig, ...]
+    models: tuple[Layer5ModelConfig, ...]
     allow_mock: bool
     voice_probability_limit: float
-    input_gain_compensation: Layer4InputGainCompensationConfig
+    input_gain_compensation: Layer5InputGainCompensationConfig
     continuous_context_ms: int = Field(default=3_200, ge=60)
 
     @model_validator(mode="after")
-    def validate_models(self) -> "Layer4Config":
+    def validate_models(self) -> "Layer5Config":
         enabled = tuple(item for item in self.models if item.enabled)
         ids = tuple(item.model_id for item in enabled)
         if not enabled or len(ids) != len(set(ids)):
-            raise ValueError("Layer4 enabled model ids must be non-empty and unique")
+            raise ValueError("Layer5 enabled model ids must be non-empty and unique")
         primary = tuple(item for item in enabled if item.role == "primary")
         if len(primary) != 1 or primary[0].model_id != self.primary_model_id:
-            raise ValueError("Layer4 must define exactly one enabled primary model")
+            raise ValueError("Layer5 must define exactly one enabled primary model")
         if not 0.0 <= self.voice_probability_limit <= 1.0:
-            raise ValueError("Layer4 voice probability threshold must be in [0,1]")
+            raise ValueError("Layer5 voice probability threshold must be in [0,1]")
         if self.continuous_context_ms % 20:
-            raise ValueError("Layer4 continuous context must use complete 20 ms hops")
+            raise ValueError("Layer5 continuous context must use complete 20 ms hops")
         return self
 
 
@@ -359,7 +359,7 @@ class RuntimeConfig(StrictModel):
     stage_queue_windows: int = Field(default=2_000, gt=0, le=10_000)
     l2_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     l3_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
-    l4_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
+    l5_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     completion_queue_windows: int = Field(default=8, gt=0, le=128)
     max_inflight_windows: int | None = Field(default=None, gt=0, le=30_003)
     compute_cache_max_bytes: int = Field(default=67_108_864, ge=8_388_608)
@@ -368,17 +368,17 @@ class RuntimeConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_pipeline_capacity(self) -> "RuntimeConfig":
-        for name in ("l2_queue_windows", "l3_queue_windows", "l4_queue_windows"):
+        for name in ("l2_queue_windows", "l3_queue_windows", "l5_queue_windows"):
             if getattr(self, name) is None:
                 object.__setattr__(self, name, self.stage_queue_windows)
         assert self.l2_queue_windows is not None
         assert self.l3_queue_windows is not None
-        assert self.l4_queue_windows is not None
-        # Joiner retains every admitted window until L2/L3/L4 are terminal.
+        assert self.l5_queue_windows is not None
+        # Joiner retains every admitted window until L2/L3/L5 are terminal.
         # Its hard bound must therefore cover all stage queues plus one active
         # item per worker; otherwise a valid configured backlog could fail at
         # registration before the advertised queue policy is reached.
-        minimum = self.l2_queue_windows + self.l3_queue_windows + self.l4_queue_windows + 3
+        minimum = self.l2_queue_windows + self.l3_queue_windows + self.l5_queue_windows + 3
         if self.max_inflight_windows is None:
             object.__setattr__(self, "max_inflight_windows", minimum)
         assert self.max_inflight_windows is not None
@@ -454,7 +454,7 @@ class PrivacyConfig(StrictModel):
 
 
 class ProjectConfig(StrictModel):
-    schema_version: Literal["project_config_v1"]
+    schema_version: Literal["project_config_v2"]
     paths: PathsConfig
     hardware: HardwareConfig
     device: DeviceConfig
@@ -466,7 +466,7 @@ class ProjectConfig(StrictModel):
     stft: StftConfig
     layer3: Layer3Config
     feature: FeatureConfig
-    layer4: Layer4Config
+    layer5: Layer5Config
     runtime: RuntimeConfig
     dev_test_ui: DevUiConfig
     recording: RecordingConfig
@@ -537,7 +537,7 @@ class ProjectConfig(StrictModel):
         if not self.stft.center or spec.stft_frames != 1 + spec.samples // self.stft.hop_length:
             raise ValueError("downstream STFT frame derivation与当前center=true配置不一致")
         if spec.resampled_16k_samples not in {640, 1280, 2560}:
-            raise ValueError("Layer4模型不支持所选downstream audio window")
+            raise ValueError("Layer5模型不支持所选downstream audio window")
         if (self.layer3.main_backend, self.layer3.fallback_backend) != (
             "imcra_spatial_separation",
             "das",
@@ -579,7 +579,7 @@ class ProjectConfig(StrictModel):
             raise ValueError("Layer3 loading、混叠保护、soft-null或数值稳定参数无效")
         if self.runtime.mode == "production":
             if (
-                self.layer4.allow_mock
+                self.layer5.allow_mock
                 or self.runtime.allow_cpu_fallback
                 or self.hardware.hardware_calibration_status != "verified"
             ):

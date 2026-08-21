@@ -8,15 +8,15 @@ from gui.dev_test_ui.app import (
 
 class _ParallelRuntime:
     processing_status = {
-        "queue_depths": {"l2": 1, "l3": 2, "l4": 0, "completion": 3},
-        "queue_capacities": {"l2": 4, "l3": 3, "l4": 3, "completion": 8},
-        "stage_alive": {"l2": True, "l3": True, "l4": False, "commit": True},
+        "queue_depths": {"l2": 1, "l3": 2, "l5": 0, "completion": 3},
+        "queue_capacities": {"l2": 4, "l3": 3, "l5": 3, "completion": 8},
+        "stage_alive": {"l2": True, "l3": True, "l5": False, "commit": True},
         "cache_bytes": 3 * 1024 * 1024,
         "cache_max_bytes": 64 * 1024 * 1024,
         "inflight_windows": 5,
-        "completed_counts": {"l2": 11, "l3": 10, "l4": 9, "commit": 8},
-        "error_counts": {"l2": 0, "l3": 1, "l4": 0, "commit": 0},
-        "latest_errors": {"l2": None, "l3": "test failure", "l4": None, "commit": None},
+        "completed_counts": {"l2": 11, "l3": 10, "l5": 9, "commit": 8},
+        "error_counts": {"l2": 0, "l3": 1, "l5": 0, "commit": 0},
+        "latest_errors": {"l2": None, "l3": "test failure", "l5": None, "commit": None},
         "processing_drops": 2,
     }
 
@@ -29,7 +29,7 @@ def test_parallel_pipeline_status_uses_only_public_snapshot():
 
     assert "L2 1/4 RUN #11" in text
     assert "L3 2/3 RUN #10 !1" in text
-    assert "L4 0/3 STOP #9" in text
+    assert "L5 0/3 STOP #9" in text
     assert "JOIN 3/8 RUN #8" in text
     assert "flight 5" in text
     assert "cache 3.0/64.0 MiB" in text

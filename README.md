@@ -2,16 +2,16 @@
 
 > 当前开发版本：`1.3.1`；Layer 2公开版本：`1.1`。最终发布基线为`v1.2.4`。
 
-> **开发状态：项目 `1.3.1`。** L1～L4、Rolling NormMUSIC、永久公共方向ID、并行Runtime、Development Test UI、Pipeline Log UI、RecordingStore、Audio Data Manager与Production UI均已整合。自动化验收通过不替代真实阵列、诊室声场和长时间运行门禁，未完成的实机项目继续明确标注。
+> **开发状态：项目 `1.3.1`。** L1、L2、L3和重命名后的L5 CNN已整合；离线L4双人分离目前只完成公共契约、后端边界和2～4 kHz主讲话人选择标准，尚未下载模型或接入运行编排。Rolling NormMUSIC、永久公共方向ID、并行Runtime、Development Test UI、Pipeline Log UI、RecordingStore、Audio Data Manager与Production UI保持可用。自动化验收通过不替代真实阵列、诊室声场和长时间运行门禁。
 
-> 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L4、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
+> 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L5、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
 > L3双声源分离、4 cm 6+1阵列物理边界和Python实时优化的深度研究报告收录在[`docs/references/`](docs/references/README.md)。这些报告是重要研究参考，不替代当前代码、配置和架构契约。
 
 ## 独立 L1 频谱观察界面
 
 运行 `scripts/launch_l1_spectrum_ui.ps1` 可无控制台启动只连接麦克风、校准、IMCRA和L1电平/频谱分析的独立界面；该界面每1秒自动扫描麦克风，允许先启动程序再插入设备，并默认最大化；
-它不会启动L2、L3、L4或正式录音链。界面提供CDC灯光开关、八路互斥选择、当前20 ms输入频谱、
+它不会启动L2、L3、L5或正式录音链。界面提供CDC灯光开关、八路互斥选择、当前20 ms输入频谱、
 IMCRA当前噪声频谱及手动频谱抓拍。详细契约见 [`gui/l1_spectrum_ui/README.md`](gui/l1_spectrum_ui/README.md)。
 
 ## 项目要解决什么问题
@@ -86,12 +86,12 @@ Sipeed R6+1 + MA-USB8：48 kHz HostAudio [N,8]
     ↓
 WindowWorkItem
     WindowKey=(session_id, stream_epoch, window_id, decision_sample)
-    冻结本窗Gate、MUSIC、ID、Kalman、L3/L4和几何配置
+    冻结本窗Gate、MUSIC、ID、Kalman、L3/L5和几何配置
     ↓ 有界L2 latest-wins队列（默认容量由runtime.stage_queue_windows=2000统一派生）
 【已完成】Layer 2 1.1：二维声源方向定位与公共方向轨迹
     Probability Gate
         末尾两个20 ms概率取平均得到40 ms Gate概率，默认阈值0.60
-        只有confirmed、已有L4人声证据且非噪声干扰的ID可在低概率时强制放行
+        只有confirmed、已有L5人声证据且非噪声干扰的ID可在低概率时强制放行
         其他情况下Gate关闭时跳过MUSIC；预热/缺失/无效概率仍保持阻断
     ↓ Gate放行
     2000～4000 Hz Rolling frequency-normalized MUSIC
@@ -105,7 +105,7 @@ WindowWorkItem
         滚动200 ms内累计至少6次匹配观测后confirmed
         session内track_id单调且不复用；内部最多4轨，公共输出最多3轨
         几何寿命按绝对sample计算，默认coasting TTL为3秒
-        L4概率用于Gate/coasting资格与噪声干扰标记，不拥有ID或几何寿命
+        L5概率用于Gate/coasting资格与噪声干扰标记，不拥有ID或几何寿命
     可选阻尼圆周Kalman（默认关闭）
         只平滑/预测theta_deg，不创建、重置或关闭ID
     ↓ TrackedDirection[0..3] + active_tracks → 有界L3 latest-wins队列
@@ -128,9 +128,9 @@ WindowWorkItem
     每个hop使用自己的IMCRA概率执行imcra_probability_rms_v1（默认开启，可实时切换）
     RMS目标-23 dBFS、只放大；新增增益受-3 dBFS峰值保护
     每个方向维护最长3200 ms连续48 kHz缓冲
-    同一补偿后样本同时供Test UI试听、RecordingStore逐ID长WAV和L4 CNN使用
-    ↓ 有界L4 latest-wins队列
-【已完成】Layer 4：按公共track_id判断各方向是否为人声
+    同一补偿后样本同时供Test UI试听、RecordingStore逐ID长WAV和L5 CNN使用
+    ↓ 有界L5 latest-wins队列
+【已完成】Layer 5：按公共track_id判断各方向是否为人声
     输入：由完整20 ms hop组成的可变长度ContinuousTrackAudio
     ↓ 最长3200 ms连续48 kHz轨降采样到16 kHz
     ↓ NVIDIA Frame VAD Multilingual MarbleNet（预训练直接接入，未微调）
@@ -139,15 +139,15 @@ WindowWorkItem
     ↓ 按精确ID回填连续轨最新20 ms：概率 + Voice/Non-Voice
     ↓
 【已完成】ResultJoiner与有序提交
-    按WindowKey和track_id逐项校验并合并L2/L3/L4终态
-    按全局window_id顺序提交DecisionRecord v4 + ResultWatermark
+    按WindowKey和track_id逐项校验并合并L2/L3/L5终态
+    按全局window_id顺序提交DecisionRecord v5 + ResultWatermark
     失败、超时、丢弃和取消保留明确error终态，不静默消失
     ├── RecordingStore
     │     原始/逻辑/物理音频、IMCRA、MUSIC、连续补偿音频和人声判断
     │     重叠L3窗不重复保存；20 ms hop按chunk/track_id合成长WAV并附带逐20 ms人声结果
     │     60秒切块、异步写盘、journal恢复、保留和逐ID音频资产
     ├── Development Test UI
-    │     有序审计帧 + 容量1的最新L4完成帧 + 播放公共补偿后连续轨
+    │     有序审计帧 + 容量1的最新L5完成帧 + 播放公共补偿后连续轨
     │     Voice区间黄色底色；Non-Voice/无结果/失败保留默认底色
     └── Audio Data Manager / Production UI
           Runtime/Test Corpus、标注、QA、回收站、导出和逐ID回放
@@ -159,13 +159,17 @@ WindowWorkItem
     独立进程尚无跨进程只读端口：未注入provider时明确显示Unavailable
 
 运行约束：
-    同窗严格L2(n) → L3(n) → TrackAudioStreamHub → L4(n)
-    跨窗稳态L2(n) || L3(n-1) || L4(n-2)
+    同窗严格L2(n) → L3(n) → TrackAudioStreamHub → L5(n)
+    跨窗稳态L2(n) || L3(n-1) || L5(n-2)
     各阶段单worker、队列/Joiner/缓存均有界；满队列按latest-wins替换未开始旧窗
     既有optimized隔离L3基准已低于20 ms节拍；五频段模式与真实阵列全链并发仍待复测
 ```
 
 上图描述当前1.3.1代码实现；`【已完成】`表示模块和自动化契约已经接通，不代表真实阵列、诊室声场、中文目标域或长时间负载已经验收。独立Pipeline Log UI的详细只读边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
+
+### 预留的采集后离线L4路径
+
+离线L4不在上面的20 ms Runtime中运行。目标路径是在停止采集、L3队列排空、按ID长WAV拼接并封存后，由未来的讲话人数分类器决定是否调用：一人音频绕过L4进入L5；两人音频分别调用同一个MossFormer2/TIGER适配器。每条L3长音频产生两个匿名候选后，只在完整音频上用原L3 BF的2～4 kHz幅度谱特征选择一个主讲话人候选；正式输出继承原`session_id/stream_epoch/track_id/theta_deg`，另一候选不发布。当前只实现[`layer4_speech_separation/`](layer4_speech_separation/README.md)的契约和确定性匹配标准，没有模型权重、人数分类器、任务队列、存储发布或UI接线。
 
 ## 算法流程说明
 
@@ -182,7 +186,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 项目各部分选取不同频率区间
 
 - 0～10000 Hz：用于IMCRA噪声统计和可选预降噪；
-- 80～8000 Hz：用于Layer 3增强和Layer 4分析；
+- 80～8000 Hz：用于Layer 3增强和Layer 5分析；
 - 500～4000 Hz：聚合成Layer 2的声源Gate概率；
 - 2000～4000 Hz：用于Rolling NormMUSIC方向定位。
 
@@ -192,7 +196,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 系统为每次采集建立唯一`session_id`，用`stream_epoch`表示连续音频段，并用绝对sample编号描述时间。发生输入丢失或不连续时会切换epoch，防止把不连续音频误拼到同一个算法窗口。
 
-WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为40 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop，完成IMCRA响度补偿并维护最长3200 ms连续轨；Test UI试听、正式轨音频和L4共同读取该连续轨。L2、L3、公共轨服务和L4沿用同一WindowKey，不能各自重新读取“当前最新音频”。
+WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为40 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop，完成IMCRA响度补偿并维护最长3200 ms连续轨；Test UI试听、正式轨音频和L5共同读取该连续轨。L2、L3、公共轨服务和L5沿用同一WindowKey，不能各自重新读取“当前最新音频”。
 
 ### 4. Probability Gate
 
@@ -206,19 +210,19 @@ MUSIC维护多帧STFT的逐频7×7协方差，只使用7个物理麦和2000～40
 
 Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + rank-1 MUSIC`按逐频主特征值间隙、平面波拟合度以及IMCRA的SPP/先验SNR筛选可靠频点，每个可靠频点按单源噪声子空间产生方向票，再执行跨359°/0°连续的圆周核聚类。当前每个合格簇至少需要5个支持频点、覆盖4个等宽子带中的2个、加权支持率不低于0.25、圆周集中度不低于0.95。归一化峰值均严格大于0.70且组内任意峰圆周距离不超过40°时，先按唯一支持频点权重融合为圆周平均角，再执行50°圆周NMS；蓝色投票谱不做二次归一化。合格簇数量决定0～手动上限个候选，MDL在此路径只保留为诊断。`IMCRA噪声白化`只读取DecisionWindow已有的READY IMCRA `noise_psd`，构造逐频、逐麦的对角噪声协方差，同时白化观测协方差和steering；当前公开IMCRA不提供跨麦互谱，因此不宣称完整噪声CSM。对角模型以逐麦逆平方根直接缩放，等价于对角Cholesky但避免通用7×7分解；没有READY数据或有效对角项时本窗明确标记`unavailable`并安全退回未白化计算。L2队列丢窗是独立的Runtime过载状态，不代表Gate或L1 IMCRA不可用，Test UI会保留最近一次成功结果并标记`STALE | L2 DROPPED`。
 
-已获得L4人声确认的方向ID在最后一次MUSIC观测后的3秒几何TTL内优先保留L3 BF槽位。新MUSIC峰用于更新角度；短时漏检时按该ID的保持/预测角继续每20 ms生成BF音频，不让临时候选峰抢占槽位并在试听缓存中造成空hop。未获得L4人声证据的tentative/coasting轨迹仍不会因几何存活而自动获得连续L3音频。
+已获得L5人声确认的方向ID在最后一次MUSIC观测后的3秒几何TTL内优先保留L3 BF槽位。新MUSIC峰用于更新角度；短时漏检时按该ID的保持/预测角继续每20 ms生成BF音频，不让临时候选峰抢占槽位并在试听缓存中造成空hop。未获得L5人声证据的tentative/coasting轨迹仍不会因几何存活而自动获得连续L3音频。
 
 50°是同一窗口内两个候选之间的最小角距。完整360°空间响应会保留供诊断，公共候选只保留角度、分数和时间身份。
 
-当前已知误检是笔记本电脑风扇：当麦克风阵列通过约50 cm连接线放在笔记本电脑附近、现场只有一个主要人声声源时，散热风扇仍可能形成一个稳定候选方向。现有Gate和MUSIC只能说明某个方向存在符合频带和空间特征的声源，不能仅凭这些结果判断它是不是讲话人。因此，系统进一步通过L4对每个候选方向的增强音频计算人声概率，用于辅助检查和筛选；但由于当前BF方向分离能力较差，尤其在两个方向夹角较小时，另一方向的人声可能串入增强音频，导致L4将其误判为该候选方向的人声。
+当前已知误检是笔记本电脑风扇：当麦克风阵列通过约50 cm连接线放在笔记本电脑附近、现场只有一个主要人声声源时，散热风扇仍可能形成一个稳定候选方向。现有Gate和MUSIC只能说明某个方向存在符合频带和空间特征的声源，不能仅凭这些结果判断它是不是讲话人。因此，系统进一步通过L5对每个候选方向的增强音频计算人声概率，用于辅助检查和筛选；但由于当前BF方向分离能力较差，尤其在两个方向夹角较小时，另一方向的人声可能串入增强音频，导致L5将其误判为该候选方向的人声。
 
 ### 6. 公共方向ID和圆周卡尔曼
 
-方向ID追踪是Layer 2永远开启的正式能力。它使用全局一对一分配，把不同窗口中的观测关联为`tentative / confirmed / coasting / deleted`轨迹；`track_id`在同一session内单调分配且不复用，并原样进入L3、L4、Runtime、DecisionRecord v4、Development Test UI和Production UI。它只表示空间方向轨迹，不表示人物身份。
+方向ID追踪是Layer 2永远开启的正式能力。它使用全局一对一分配，把不同窗口中的观测关联为`tentative / confirmed / coasting / deleted`轨迹；`track_id`在同一session内单调分配且不复用，并原样进入L3、L5、Runtime、DecisionRecord v5、Development Test UI和Production UI。它只表示空间方向轨迹，不表示人物身份。
 
 新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少6次匹配观测才进入tracking `confirmed`。匹配无需覆盖全部20 ms窗口，未达到6次时保持tentative并在后续滚动窗口继续尝试。
 
-Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking `confirmed`、至少收到一次L4正向人声反馈且未被标记为噪声干扰的ID。尚无人声证据的轨迹在有当前观测时仍可送往L3/L4分类，但不能靠自身维持Gate，也不会在失去观测后继续作为公共L3方向输出；其内部ID仍在3秒TTL内保留以便重新关联。
+Gate强制放行和漏检后的公共coasting输出只授予已经达到tracking `confirmed`、至少收到一次L5正向人声反馈且未被标记为噪声干扰的ID。尚无人声证据的轨迹在有当前观测时仍可送往L3/L5分类，但不能靠自身维持Gate，也不会在失去观测后继续作为公共L3方向输出；其内部ID仍在3秒TTL内保留以便重新关联。
 
 圆周卡尔曼是独立的可选平滑器，默认关闭。开启后按权威ID平滑角度和角速度并允许短时预测；关闭、重新开启或调整Q/R都不会关闭追踪、重置已有ID或改变几何寿命。
 
@@ -241,19 +245,19 @@ Layer 3对每个候选方向生成一条由`timing.downstream_audio_window_ms`�
 
 五频段鲁棒对照不使用上述`rho`表，也不查询空间可分度表。它在80～500 Hz使用温和干扰感知Loaded MVDR和声源专属Wiener增益，500～900 Hz、900～1500 Hz及1500～4000 Hz使用不同WNG下限的LCMV/DAS连续混合，4000～8000 Hz使用防混叠Loaded MVDR；第一版仍以自由场steering作为RTF代理，数值不安全频点回退DAS，不能写成已经完成在线RTF学习。
 
-历史实机链路的主要性能瓶颈位于Layer 3 BF。当前实现已经加入跳窗重叠复用，并将LCMV/MVDR改为批量Cholesky求解；本机隔离L3基准已低于20 ms节拍，但真实麦克风下与L1/L2/L4/UI并发的持续吞吐仍待重新验收，因此不能仅凭扩大队列或隔离基准宣称实机丢窗已经清零。
+历史实机链路的主要性能瓶颈位于Layer 3 BF。当前实现已经加入跳窗重叠复用，并将LCMV/MVDR改为批量Cholesky求解；本机隔离L3基准已低于20 ms节拍，但真实麦克风下与L1/L2/L5/UI并发的持续吞吐仍待重新验收，因此不能仅凭扩大队列或隔离基准宣称实机丢窗已经清零。
 
-### 8. 人声分类
+### 8. L5人声分类
 
-Layer 4判断每条连续方向轨中是否存在人声。公共轨服务先把L3重叠窗变成按ID连续的48 kHz音频，并按每个20 ms自己的IMCRA概率执行受限响度补偿；NVIDIA Frame-VAD适配器随后把最长3200 ms连续上下文降采样到16 kHz，一次产生连续20 ms帧概率，最终只聚合最新80 ms内连续3帧。当前CNN采用NVIDIA发布的多语言预训练模型；尚未使用目标阵列数据微调。
+Layer 5判断每条连续方向轨中是否存在人声。公共轨服务先把L3重叠窗变成按ID连续的48 kHz音频，并按每个20 ms自己的IMCRA概率执行受限响度补偿；NVIDIA Frame-VAD适配器随后把最长3200 ms连续上下文降采样到16 kHz，一次产生连续20 ms帧概率，最终只聚合最新80 ms内连续3帧。当前CNN采用NVIDIA发布的多语言预训练模型；尚未使用目标阵列数据微调。
 
 Test UI与CNN读取同一份补偿后连续轨。Test UI中的响度补偿开关默认开启，可实时切换且不清空轨道；这里只调整数字波形增益，不是dB SPL测量。
 
-L4继承并标注L2已经分配的公共方向`track_id`，不向L2回送角度、不创建ID，也不改变方向轨迹生命周期。
+L5继承并标注L2已经分配的公共方向`track_id`，不向L2回送角度、不创建ID，也不改变方向轨迹生命周期。
 
 ### 9. 并行、过载和结果保存
 
-同一个窗口必须依次完成L2、L3、L4；不同窗口可以形成分阶段流水。每层只有一个有状态worker，并使用有界latest-wins等待队列。队列满时只替换尚未开始的旧任务，不取消已经开始的计算。
+同一个窗口必须依次完成L2、L3、L5；不同窗口可以形成分阶段流水。每层只有一个有状态worker，并使用有界latest-wins等待队列。队列满时只替换尚未开始的旧任务，不取消已经开始的计算。
 
 被丢弃、失败、超时或停机取消的窗口不会静默消失，而会按原时间轴写入明确的终态和ResultWatermark。这样即使实时负载过高，录音和离线分析仍能知道哪些时间点没有得到完整结果。
 
@@ -339,11 +343,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
   中频强LCMV及高频防混叠loaded MVDR；第一版用自由场steering作为RTF代理；
 - 切换L3模式会清空旧模式的方向试听缓存；
 
-#### 右下：Layer 4人声判断
+#### 右下：Layer 5人声判断
 
 - 显示每个候选方向的CNN人声概率和Voice / Non-Voice结果；
-- L4阈值只重新判断缓存的CNN概率，不改变L2 Gate；
-- 界面优先显示最近一个真正完成的完整L2/L3/L4同窗帧；
+- L5阈值只重新判断缓存的CNN概率，不改变L2 Gate；
+- 界面优先显示最近一个真正完成的完整L2/L3/L5同窗帧；
 
 
 ### 4. 参数调整建议
@@ -354,7 +358,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 2. 再分别把MUSIC阶数上限设为1、2、3，记录MDL诊断、候选数量和误峰变化；
 3. 需要试验鲁棒定位时，每次只开启DPD或IMCRA白化中的一个；最后再开启卡尔曼并小幅调整Q/R倍率；
 4. 使用同一段录音比较`optimized`、`ds_baseline`和`subband_robust_baseline`；DAS只用于单声源，双声源重点比较优化方法与五频段鲁棒对照；
-5. Gate阈值、MUSIC候选阈值和L4分类阈值分别记录，不要把三者当成同一个“灵敏度”。
+5. Gate阈值、MUSIC候选阈值和L5分类阈值分别记录，不要把三者当成同一个“灵敏度”。
 
 ## 录音数据和配置
 
@@ -366,14 +370,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - IMCRA噪声与概率sidecar；
 - 360°空间响应和候选方向；
 - `TrackAudioStreamHub`补偿后的逐ID连续增强音频（每个录音chunk合成长WAV）；
-- Layer 4概率、阶段状态、耗时和错误原因；
+- Layer 5概率、阶段状态、耗时和错误原因；
 - DecisionRecord、ResultWatermark、manifest和配置hash。
 
 配置中的`privacy.local_only=true`、`automatic_upload=false`表示项目默认只在本机保存且不自动上传。但这只是软件默认行为，不等同于完成医疗数据合规。诊室采集前仍需要取得授权、限制访问权限、制定保留和删除策略，并根据所在地区要求进行去标识化和审计。
 
 ## Pipeline Log UI（1.3.1已实现）
 
-项目已提供独立只读的 Pipeline Log UI，用于查看单次运行记录中的阶段性能、终态、MUSIC/方向 ID、L3增强资产、L4结果、丢窗和时间线。其项目地位与 L1～L4、Development Test UI、RecordingStore/Audio Data Manager 平行，不属于算法流水线的下一层。
+项目已提供独立只读的 Pipeline Log UI，用于查看单次运行记录中的阶段性能、终态、MUSIC/方向 ID、L3增强资产、L5结果、丢窗和时间线。其项目地位与 L1～L5、Development Test UI、RecordingStore/Audio Data Manager 平行，不属于算法流水线的下一层。
 
 当前版本优先完整回看已完成、已封存的 session；若由同一正式进程显式提供 Runtime 引用，只额外展示公开的聚合运行状态。Log UI 不消费 Development Test UI 的 latest-only 邮箱，也不直接打开私有运行时数据绕过公共查询边界。
 
@@ -387,13 +391,13 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 - 唯一时间轴与160 ms/20 ms窗口装配；
 - L2 Probability Gate、Rolling NormMUSIC、永久公共方向ID和可选Kalman；
 - L3优化BF、单声源DAS基线和五频段鲁棒对照；旧恒定波束宽度模式已移除；
-- TrackAudioStreamHub逐ID去重拼接、响度补偿、连续试听/录音轨，以及L4连续MarbleNet人声结果；
-- 有界L2/L3/L4跨窗口流水、ResultJoiner和有序提交；
+- TrackAudioStreamHub逐ID去重拼接、响度补偿、连续试听/录音轨，以及L5连续MarbleNet人声结果；
+- 有界L2/L3/L5跨窗口流水、ResultJoiner和有序提交；
 - Development Test UI、正式录音、scratch录音、Audio Data Manager、Production UI和独立只读Pipeline Log UI。
 
 “代码已接通”不代表已经完成诊室部署验收。下列实机与目标域门禁仍需完成。
 
-历史v3实测曾出现较高的处理丢窗率和偏低的有效输出帧率。这里指算法处理队列中的window/frame drop，不是已经确认的USB输入数据包丢失。当前1.3.1已经优化Layer 3滚动缓存和矩阵求解，但尚无新的v4真实阵列全链session可以证明持续输入下的最终丢窗率。
+历史v3/v4实测曾出现较高的处理丢窗率和偏低的有效输出帧率。这里指算法处理队列中的window/frame drop，不是已经确认的USB输入数据包丢失。当前1.3.1已经优化Layer 3滚动缓存和矩阵求解，但尚无新的v5真实阵列全链session可以证明持续输入下的最终丢窗率。
 
 最近一份可计算的正式缓存来自2026-08-18 14:30，session为`ea30a66d-9d4b-44c5-bb52-e106c85e05ed`，记录了15.36秒、768个20 ms窗口。统计结果如下：
 
@@ -402,14 +406,14 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 | 完整输出 | 186 | 24.22% |
 | 任一处理阶段丢窗 | 582 | 75.78% |
 | L3入队溢出 | 581 | 75.65% |
-| L4入队溢出 | 1 | 0.13% |
+| L5入队溢出 | 1 | 0.13% |
 | L2完成 | 768 | 100% |
 
 这段缓存的完整结果有效输出率约为`12.11帧/秒`。187个实际执行完成的L3窗口中，BF计算耗时平均`81.3 ms`、P50为`79 ms`、P95为`125 ms`，明显大于每20 ms到达一个新窗口的输入速度。对应manifest中`missing_intervals=[]`，说明录制区间音频连续；75.78%主要是算法处理队列丢窗，而不是已确认的USB采集缺口。
 
 需要注意，这份缓存使用`circular_id_tracker_v3`，早于当前v4实现。之后生成的v4 session目录目前只有manifest，没有正式DecisionRecord，因此尚不能从现有文件计算v4的真实丢窗率。README中的75.78%只能作为最近一次有完整证据的性能基线，不能冒充当前v4最终结果。
 
-2026-08-19完成L3内部求解与跳窗滚动修复后，在本机RTX 5060 Laptop GPU上使用连续合成窗口、每档120个计时样本得到隔离L3端到端P95：1/2/3声源分别约`9.23/15.96/9.52 ms`，平均吞吐约`146.63/86.26/136.15窗/秒`；三档均低于20 ms输入节拍。该结果不包含真实麦克风、L1/L2/L4/UI并发，不能替代完整实机复测。当前`runtime.stage_queue_windows=2000`会同步设置L2/L3/L4等待容量，短时过载更少丢窗，但单层最坏可积累约40秒等待；以后只需改这一变量，Joiner容量会自动派生。仍需用新的v4正式session核对队列水位、端到端延迟、内存与真实丢窗率。
+2026-08-19完成L3内部求解与跳窗滚动修复后，在本机RTX 5060 Laptop GPU上使用连续合成窗口、每档120个计时样本得到隔离L3端到端P95：1/2/3声源分别约`9.23/15.96/9.52 ms`，平均吞吐约`146.63/86.26/136.15窗/秒`；三档均低于20 ms输入节拍。该结果不包含真实麦克风、L1/L2/L5/UI并发，不能替代完整实机复测。当前`runtime.stage_queue_windows=2000`会同步设置L2/L3/L5等待容量，短时过载更少丢窗，但单层最坏可积累约40秒等待；以后只需改这一变量，Joiner容量会自动派生。仍需用新的v5正式session核对队列水位、端到端延迟、内存与真实丢窗率。
 
 ## 局限性和待解决问题
 
@@ -453,7 +457,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 ### 6. 实时性和稳定性门禁尚未完成
 
 - 现有CUDA逐阶段基准不等于端到端延迟；
-- 历史v3缓存的高丢窗主要发生在Layer 3；当前滚动STFT/IMCRA/协方差复用和批量求解已改善隔离性能，但没有新的v4全链实测可证明问题已经消失；
+- 历史v3/v4缓存的高丢窗主要发生在Layer 3；当前滚动STFT/IMCRA/协方差复用和批量求解已改善隔离性能，但没有新的v5全链实测可证明问题已经消失；
 - 仍需测量当前有效输出帧率，并继续评估BF计算、GPU利用、默认2000窗阶段队列带来的等待/内存以及结果投影开销；
 - 仍需测试采集、GPU计算、队列等待、有序提交、录音写盘和UI共同运行时的实际延迟；
 - CUDA OOM、CPU fallback、设备断连和持续过载需要实机故障注入；
@@ -475,7 +479,8 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 - [Layer 1说明](layer1_input/README.md)
 - [Layer 2说明](layer2_source_detection/README.md)
 - [Layer 3说明](layer3_direction_signal/README.md)
-- [Layer 4说明](layer4_voice_classifier/README.md)
+- [离线Layer 4双人分离契约](layer4_speech_separation/README.md)
+- [Layer 5说明](layer5_voice_classifier/README.md)
 - [ApplicationRuntime说明](app/README.md)
 - [Development Test UI说明](gui/dev_test_ui/README.md)
 - [Audio Data Manager说明](data_management/README.md)

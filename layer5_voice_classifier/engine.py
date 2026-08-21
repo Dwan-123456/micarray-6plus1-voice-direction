@@ -12,8 +12,8 @@ from scipy.signal import resample_poly
 
 from common.config import DownstreamAudioWindowSpec
 
-from .contracts import Layer4AudioSegment, Layer4Result, ModelPrediction, VoiceDetection
-from .gain_compensation import InputGainCompensationSettings, compensate_l4_input
+from .contracts import Layer5AudioSegment, Layer5Result, ModelPrediction, VoiceDetection
+from .gain_compensation import InputGainCompensationSettings, compensate_l5_input
 from .marblenet import NvidiaFrameVadMarbleNet
 
 
@@ -98,7 +98,7 @@ class NvidiaMarbleNetPlugin:
             or not np.isfinite(waveforms).all()
         ):
             raise ValueError(
-                "L4 continuous input must be finite float32 [M,T] at 48 kHz "
+                "L5 continuous input must be finite float32 [M,T] at 48 kHz "
                 "with complete 20 ms hops"
             )
         started = perf_counter()
@@ -132,7 +132,7 @@ class NvidiaMarbleNetPlugin:
         )
 
 
-class Layer4Engine:
+class Layer5Engine:
     """Runs one primary plugin plus optional shadow plugins on the same immutable audio batch."""
 
     def __init__(
@@ -147,34 +147,34 @@ class Layer4Engine:
         plugins = (primary, *shadows)
         ids = tuple(item.model_id for item in plugins)
         if len(ids) != len(set(ids)):
-            raise ValueError("L4 model ids must be unique")
+            raise ValueError("L5 model ids must be unique")
         if not 0 <= threshold <= 1:
-            raise ValueError("L4 threshold must be in [0,1]")
+            raise ValueError("L5 threshold must be in [0,1]")
         self.primary = primary
         self.shadows = tuple(shadows)
         self.threshold = float(threshold)
         self.input_gain_compensation = input_gain_compensation or InputGainCompensationSettings()
         self.window_spec = window_spec or DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560)
 
-    def process(self, inputs: tuple[Layer4AudioSegment, ...]) -> Layer4Result:
+    def process(self, inputs: tuple[Layer5AudioSegment, ...]) -> Layer5Result:
         inputs = tuple(inputs)
         identities = {
             (item.session_id, item.stream_epoch, item.window_id, item.decision_sample)
             for item in inputs
         }
         if len(identities) > 1:
-            raise ValueError("L4 audio inputs must belong to one window")
+            raise ValueError("L5 audio inputs must belong to one window")
         angles = tuple(item.theta_deg for item in inputs)
         if len(angles) != len(set(angles)):
-            raise ValueError("L4 audio input angles must be unique")
+            raise ValueError("L5 audio input angles must be unique")
         track_ids = tuple(item.track_id for item in inputs)
         if any(item is not None for item in track_ids):
             if any(item is None for item in track_ids) or len(set(track_ids)) != len(track_ids):
-                raise ValueError("L4 audio track IDs must be complete and unique")
+                raise ValueError("L5 audio track IDs must be complete and unique")
         compensated = tuple(
             (item.waveform, item.gain_compensation_diagnostic)
             if item.gain_compensated
-            else compensate_l4_input(
+            else compensate_l5_input(
                 item.waveform,
                 item.array_source_probabilities_20ms,
                 self.input_gain_compensation,
@@ -202,7 +202,7 @@ class Layer4Engine:
             for indices, batch in grouped_batches:
                 prediction = plugin.predict(batch)
                 if len(prediction.probabilities) != len(indices):
-                    raise RuntimeError("every L4 model must return one probability per audio input")
+                    raise RuntimeError("every L5 model must return one probability per audio input")
                 values[list(indices)] = prediction.probabilities
                 latency_ms += prediction.latency_ms
                 group_metadata.append(dict(prediction.metadata))
@@ -213,7 +213,7 @@ class Layer4Engine:
 
         predictions = tuple(predict_grouped(plugin) for plugin in (self.primary, *self.shadows))
         if any(len(item.probabilities) != len(inputs) for item in predictions):
-            raise RuntimeError("every L4 model must return one probability per audio input")
+            raise RuntimeError("every L5 model must return one probability per audio input")
         primary = predictions[0]
         detections = tuple(
             VoiceDetection(
@@ -223,7 +223,7 @@ class Layer4Engine:
             )
             for item, probability in zip(inputs, primary.probabilities)
         )
-        return Layer4Result(
+        return Layer5Result(
             detections,
             predictions,
             self.primary.model_id,
@@ -231,17 +231,17 @@ class Layer4Engine:
             tuple(item[1] for item in compensated),
         )
 
-    def rethreshold(self, result: Layer4Result, threshold: float) -> Layer4Result:
+    def rethreshold(self, result: Layer5Result, threshold: float) -> Layer5Result:
         """Recompute decisions from existing probabilities; never reruns L3 or a model."""
         if not 0 <= threshold <= 1:
-            raise ValueError("L4 threshold must be in [0,1]")
+            raise ValueError("L5 threshold must be in [0,1]")
         detections = tuple(
             VoiceDetection(item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
                            item.theta_deg, item.probability, item.probability >= threshold, item.model_id,
                            item.track_id)
             for item in result.detections
         )
-        return Layer4Result(
+        return Layer5Result(
             detections,
             result.predictions,
             result.primary_model_id,

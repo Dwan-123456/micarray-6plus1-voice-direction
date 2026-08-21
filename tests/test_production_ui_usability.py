@@ -141,7 +141,7 @@ def test_runtime_detail_shows_public_tracks_and_plays_track_and_center(tmp_path,
         "last_theta_deg": 1.0,
         "angle_change_deg": 2.0,
         "state": "confirmed",
-        "latest_l4_probability": 0.91,
+        "latest_l5_probability": 0.91,
     }
     monkeypatch.setattr(window, "_job", lambda fn, done: done(fn()))
     monkeypatch.setattr(window.service, "runtime_session_tracks", lambda _sid: [summary])
