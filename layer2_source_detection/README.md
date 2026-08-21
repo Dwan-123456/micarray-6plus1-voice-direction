@@ -1,10 +1,14 @@
 # Layer 2 1.1：Rolling NormMUSIC 与公共方向轨迹
 
-本目录是项目`1.3.1`正式组成部分，L2公开版本为`1.1`，已实现Rolling NormMUSIC、公共方向ID、可选Kalman平滑、可选DPD与IMCRA白化。
+本目录是项目`1.3.1`正式组成部分，L2公开版本为`1.1`。Development Test UI可在运行中选择两套完整L2：现有Rolling NormMUSIC + Hungarian轨迹链，或GI-DOAEnet PM + LMB/JPDA轨迹链。两者共用公共方向DTO和后续L3边界。
+
+GI-DOAEnet链读取同一`DecisionWindow float32[7680,8]`，只取前7路物理麦，将48 kHz 160 ms上下文同相重采样为16 kHz，并补零高度坐标形成`[7,3]`阵列位置。网络最后一层最近5个时间帧平均为360点方向概率；候选继续使用UI门限、prominence、50°圆周NMS及1～3输出上限。候选进入独立的LMB存在概率与有界JPDA联合假设关联，再沿用圆周角度/角速度Kalman和公共`TrackedDirection`输出。运行中切换从下一完整窗口生效，并重置目标链的活动轨迹，防止MUSIC与NN状态混用。
+
+上游GI-DOAEnet固定为提交`af865978c783f309fc929f0f2499769a1c5499d5`和PM权重SHA-256 `d465...9fe8`。因该提交没有LICENSE文件，源码和权重不进入本仓库；运行`scripts/install_gi_doaenet.py --acknowledge-upstream-terms`下载安装到Git忽略目录。模型懒加载，默认仍为MUSIC；本机CUDA稳态实测适配器约5.8～11.8 ms/窗，首次加载约2.7秒。
 
 IMCRA白化严格只读DecisionWindow携带的L1不可变快照，不拥有、更新或重置IMCRA状态。逐麦PSD形成的噪声模型为对角矩阵，收缩和diagonal loading后仍保持对角，因此实现使用逐麦逆平方根直接缩放协方差与steering，不执行逐频通用7×7 Cholesky/solve。16个hop的固定频率映射按批量向量化处理；缺少READY快照或有效对角项时明确退回未白化MUSIC。
 
-## 正式主链
+## 默认MUSIC主链
 
 ```text
 DecisionWindow + 两个对齐的20 ms概率

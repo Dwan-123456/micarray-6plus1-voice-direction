@@ -15,6 +15,7 @@ from .configuration import DirectionScanConfig
 from .global_tracker import GlobalDirectionTracker, GlobalTrackerConfig
 from .interface import DetailedDirectionScanner
 from .music import MusicDiagnostics, MusicStateDiagnostic, RollingNormMusicScanner
+from .gi_doaenet import GiDoaEnetScanner, SwitchableDoaScanner
 from .probability_gate import ProbabilityGate, ProbabilityGateDecision, ProbabilityGateState, SourceProbability20ms
 
 
@@ -159,12 +160,18 @@ class Layer2PipelineResult:
 
 
 class Layer2Pipeline:
-    """Probability Gate -> rolling NormMUSIC -> permanent global ID tracker."""
+    """Probability Gate -> switchable DOA -> permanent global ID tracker."""
 
     def __init__(self, gate: ProbabilityGate, scanner: DetailedDirectionScanner,
-                 tracker: GlobalDirectionTracker | None = None) -> None:
+                 tracker: GlobalDirectionTracker | None = None,
+                 neural_tracker: GlobalDirectionTracker | None = None) -> None:
         self.gate, self.scanner = gate, scanner
-        self.id_tracker = tracker or GlobalDirectionTracker()
+        self._trackers = {
+            "frequency_normalized_music": tracker or GlobalDirectionTracker(),
+            "gi_doaenet": neural_tracker or GlobalDirectionTracker(association_backend="lmb_jpda"),
+        }
+        self._active_backend = "frequency_normalized_music"
+        self.id_tracker = self._trackers[self._active_backend]
         self.last_kalman_error: str | None = None
         self.last_id_tracking_error: str | None = None
         self._direction_id_tracking_enabled = True
@@ -172,14 +179,15 @@ class Layer2Pipeline:
         self._voice_feedback_lock = Lock()
 
     @classmethod
-    def from_project(cls, config: ProjectConfig, *, scanner: DetailedDirectionScanner | None = None) -> "Layer2Pipeline":
-        if config.layer2.scanner_backend != "frequency_normalized_music":
-            raise ValueError(f"unsupported L2 scanner backend: {config.layer2.scanner_backend}")
+    def from_project(cls, config: ProjectConfig, *, scanner: DetailedDirectionScanner | None = None,
+                     project_root=None) -> "Layer2Pipeline":
         if config.layer2.probability_gate.backend != ProbabilityGate.backend:
             raise ValueError(f"unsupported L2 probability Gate backend: {config.layer2.probability_gate.backend}")
         tracking = config.layer2.direction_id_tracking
-        return cls(ProbabilityGate(), scanner or RollingNormMusicScanner(), GlobalDirectionTracker(
-            GlobalTrackerConfig(
+        doa_scanner = scanner or SwitchableDoaScanner(
+            RollingNormMusicScanner(), GiDoaEnetScanner(project_root=project_root)
+        )
+        tracker_config = GlobalTrackerConfig(
                 association_gate_deg=tracking.association_gate_deg,
                 association_gate_base_deg=tracking.association_gate_base_deg,
                 association_gate_growth_dps=tracking.association_gate_growth_dps,
@@ -201,13 +209,18 @@ class Layer2Pipeline:
                 kalman_velocity_half_life_seconds=config.layer2.direction_kalman.velocity_half_life_seconds,
                 kalman_prediction_freeze_std_deg=config.layer2.direction_kalman.prediction_freeze_std_deg,
             )
-        ))
+        return cls(
+            ProbabilityGate(), doa_scanner,
+            GlobalDirectionTracker(tracker_config, association_backend="hungarian"),
+            GlobalDirectionTracker(tracker_config, association_backend="lmb_jpda"),
+        )
 
     def reset(self) -> None:
         reset_scanner = getattr(self.scanner, "reset", None)
         if callable(reset_scanner):
             reset_scanner()
-        self.id_tracker.reset()
+        for tracker in self._trackers.values():
+            tracker.reset()
         with self._voice_feedback_lock:
             self._voice_feedback.clear()
         self.last_kalman_error = self.last_id_tracking_error = None
@@ -253,6 +266,12 @@ class Layer2Pipeline:
             raise TypeError("L2 Kalman switch must be bool")
         if type(direction_id_tracking_enabled) is not bool:
             raise TypeError("L2 direction ID tracking switch must be bool")
+        if scan_config.scanner_backend != self._active_backend:
+            self._active_backend = scan_config.scanner_backend
+            self.id_tracker = self._trackers[self._active_backend]
+            self.id_tracker.reset(preserve_session_counters=True)
+            with self._voice_feedback_lock:
+                self._voice_feedback.clear()
         if direction_id_tracking_enabled != self._direction_id_tracking_enabled:
             # This transition runs on the single L2 worker, so tracker state is
             # never reset concurrently with an update. Re-enabling starts a

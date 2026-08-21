@@ -433,7 +433,7 @@ class DevUiFrame:
             raise ValueError("DevUiFrame SRP response requires search diagnostics")
         if self.search_diagnostics is not None and (
             self.scan_config_revision != self.search_diagnostics.config_revision
-            or self.search_diagnostics.mode != "frequency_normalized_music"
+            or self.search_diagnostics.mode not in {"frequency_normalized_music", "gi_doaenet"}
         ):
             raise ValueError("DevUiFrame MUSIC diagnostics/config revision mismatch")
         object.__setattr__(self, "candidates", tuple(self.candidates))

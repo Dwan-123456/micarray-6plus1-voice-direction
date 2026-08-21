@@ -135,6 +135,7 @@ def build_window(
     from .panels import (
         GateProbabilityThresholdControl,
         DirectionIdTrackingControl,
+        DoaBackendControl,
         DirectionKalmanControl,
         KalmanNoiseScaleControl,
         MusicDpdRank1Control,
@@ -202,6 +203,7 @@ def build_window(
     )
     persisted_threshold = ui_settings.load_direction_threshold(config.layer2.direction_threshold)
     runtime.set_direction_threshold(persisted_threshold)
+    runtime.set_doa_backend(ui_settings.load_doa_backend(config.layer2.scanner_backend))
     runtime.set_music_effective_order_limit(ui_settings.load_music_effective_order_limit(
         config.layer2.effective_order_limit
     ))
@@ -276,7 +278,7 @@ def build_window(
             outer.setContentsMargins(0, 0, 0, 0)
             outer.setSpacing(0)
             self.global_status = QLabel(
-                f"STOPPED | input drop 0 | processing drop 0 | CPU MUSIC + {runtime.processing_device.upper()} L3 | queue 0"
+                f"STOPPED | input drop 0 | processing drop 0 | L2 {runtime.doa_backend} + {runtime.processing_device.upper()} L3 | queue 0"
             )
             self.global_status.setFixedHeight(28)
             self.global_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -463,7 +465,7 @@ def build_window(
             return box
 
         def _doa_panel(self):
-            box = QGroupBox("L2 · DOA / MUSIC")
+            box = QGroupBox("L2 · 可切换定位与追踪")
             layout = QVBoxLayout(box)
             self.srp_header = QLabel("UNAVAILABLE | session — | epoch 0 | window — | sample — | age N/A")
             self.srp_header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -477,12 +479,16 @@ def build_window(
             self.gate_threshold = GateProbabilityThresholdControl(
                 runtime.gate_probability_threshold
             )
+            self.doa_backend = DoaBackendControl(runtime.doa_backend)
             self.srp_threshold = SrpThresholdControl(runtime.direction_threshold)
             self.music_order_limit = MusicOrderLimitControl(runtime.music_effective_order_limit)
             self.music_dpd_rank1 = MusicDpdRank1Control(runtime.music_dpd_rank1_enabled)
             self.music_noise_whitening = MusicNoiseWhiteningControl(
                 runtime.music_noise_whitening_enabled
             )
+            music_backend_active = runtime.doa_backend == "frequency_normalized_music"
+            self.music_dpd_rank1.setEnabled(music_backend_active)
+            self.music_noise_whitening.setEnabled(music_backend_active)
             self.music_dpd_rank1.setToolTip(
                 "仅使用通过直达声主导检验的频点，以rank-1 MUSIC逐频投票并执行圆周聚类；默认关闭。"
             )
@@ -514,6 +520,7 @@ def build_window(
                 "QLabel { background:#202a34; color:#9fb2c5; padding:0 8px; "
                 "font-family:Consolas; font-weight:600; }"
             )
+            right_layout.addWidget(self.doa_backend)
             right_layout.addWidget(self.gate_threshold)
             processing_switches = QHBoxLayout()
             processing_switches.setContentsMargins(0, 0, 0, 0)
@@ -539,6 +546,7 @@ def build_window(
             splitter.setSizes((700, 300))
             layout.addWidget(splitter, 1)
             self.srp_polar.candidate_selected.connect(self._select_candidate)
+            self.doa_backend.backend_changed.connect(self._set_doa_backend)
             self.srp_threshold.threshold_changed.connect(self._set_srp_threshold)
             self.music_order_limit.order_changed.connect(self._set_music_order_limit)
             self.music_dpd_rank1.enabled_changed.connect(self._set_music_dpd_rank1)
@@ -549,6 +557,25 @@ def build_window(
             self.srp_kalman_q.apply_requested.connect(self._apply_kalman_q_scale)
             self.srp_kalman_r.apply_requested.connect(self._apply_kalman_r_scale)
             return box
+
+        def _set_doa_backend(self, backend: str):
+            previous = runtime.doa_backend
+            try:
+                backend = ui_settings.save_doa_backend(backend)
+                runtime.set_doa_backend(backend)
+                self.doa_backend.set_backend(backend, pending=True)
+                music = backend == "frequency_normalized_music"
+                self.music_dpd_rank1.setEnabled(music)
+                self.music_noise_whitening.setEnabled(music)
+                self.statusBar().showMessage(
+                    f"完整L2方案切换为 {'MUSIC + Hungarian' if music else 'GI-DOAEnet + LMB/JPDA'}；下一窗口生效",
+                    5000,
+                )
+            except Exception as exc:
+                runtime.set_doa_backend(previous)
+                with QSignalBlocker(self.doa_backend):
+                    self.doa_backend.set_backend(previous)
+                self.statusBar().showMessage(f"L2方案切换失败: {exc}", 8000)
 
         def _set_gate_probability_threshold(self, threshold: float):
             previous = runtime.gate_probability_threshold
@@ -1272,7 +1299,7 @@ def build_window(
             self._set_text(
                 self.global_status,
                 f"{state:<7} | input drop {runtime.fanout.dropped_by_subscriber:06d} | "
-                f"processing drop {runtime.processing_drops:06d} | CPU MUSIC | "
+                f"processing drop {runtime.processing_drops:06d} | L2 {runtime.doa_backend} | "
                 f"{runtime.processing_device.upper()} L3 {runtime.l3_processing_mode} | "
                 f"{pipeline_status} | "
                 f"scratch queue {runtime.scratch.queued_blocks:03d}",
@@ -1404,6 +1431,11 @@ def build_window(
                         and applied_kalman != runtime.direction_kalman_enabled
                     ),
                 )
+            with QSignalBlocker(self.doa_backend):
+                self.doa_backend.set_backend(runtime.doa_backend, pending=revision_pending)
+            music_backend = runtime.doa_backend == "frequency_normalized_music"
+            self.music_dpd_rank1.setEnabled(music_backend)
+            self.music_noise_whitening.setEnabled(music_backend)
             applied_id_tracking = getattr(
                 frame, "direction_id_tracking_enabled", None
             )
@@ -1509,10 +1541,11 @@ def build_window(
                     if snapshot.age_ms > config.dev_test_ui.stale_after_ms
                     else "LIVE"
                 )
+                backend_name = "NN" if frame.search_diagnostics.mode == "gi_doaenet" else "MUSIC"
                 self._set_text(
                     self.music_status,
-                    f"MDL={model.estimated_sources}  "
-                    f"MUSIC={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
+                    f"{backend_name} sources={model.estimated_sources}  "
+                    f"output={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
                     f"valid={frame.spatial_response.valid_frequency_bins}  "
                     f"status={frame.spatial_response.numerical_status}  {panel_state}",
                 )
@@ -1520,13 +1553,14 @@ def build_window(
                 diagnostics = frame.search_diagnostics
                 if diagnostics is not None:
                     search_suffix = (
-                        f" | MDL {diagnostics.model_order.estimated_sources}"
-                        f" / MUSIC {diagnostics.effective_model_order}"
+                        f" | {diagnostics.mode.upper()} {diagnostics.model_order.estimated_sources}"
+                        f" / output {diagnostics.effective_model_order}"
                         f" | valid bins {diagnostics.valid_frequency_bins}"
                         f" | DPD {'ON' if diagnostics.dpd_rank1_enabled else 'OFF'}"
                         f" {diagnostics.selected_frequency_bins} bins"
                         f" | WHITE {diagnostics.whitening_status.upper()}"
                         f" | {diagnostics.covariance_quality.upper()}"
+                        f" | ASSOC {'LMB/JPDA' if diagnostics.mode == 'gi_doaenet' else 'HUNGARIAN'}"
                     )
                 dropped_reason = frame.missing_reasons.get("srp")
                 state_prefix = (

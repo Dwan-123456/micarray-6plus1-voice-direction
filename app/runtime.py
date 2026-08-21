@@ -222,7 +222,7 @@ class ApplicationRuntime:
             self._performance, stale_after_ms=config.dev_test_ui.stale_after_ms
         )
         self._ui_lock = threading.Lock()
-        self._layer2 = Layer2Pipeline.from_project(config)
+        self._layer2 = Layer2Pipeline.from_project(config, project_root=self.project_root)
         self._source_probability_provider = source_probability_provider or self._imcra_probabilities
         self._gate_config_lock = threading.Lock()
         self._gate_probability_threshold = config.layer2.probability_gate.threshold
@@ -1046,6 +1046,20 @@ class ApplicationRuntime:
             self._scan_config = replace(self._scan_config, direction_threshold=threshold)
             self._scan_config_revision += 1
         return threshold
+
+    @property
+    def doa_backend(self) -> str:
+        with self._scan_config_lock:
+            return self._scan_config.scanner_backend
+
+    def set_doa_backend(self, value: str) -> str:
+        if value not in {"frequency_normalized_music", "gi_doaenet"}:
+            raise ValueError("L2 DOA backend must be frequency_normalized_music or gi_doaenet")
+        with self._scan_config_lock:
+            if value != self._scan_config.scanner_backend:
+                self._scan_config = replace(self._scan_config, scanner_backend=value)
+                self._scan_config_revision += 1
+        return value
 
     @property
     def music_effective_order_limit(self) -> int:
@@ -2372,6 +2386,7 @@ class ApplicationRuntime:
         music_state = None if not is_music else getattr(music, "state", None)
         return (
             f"l2_pipeline_state={layer2_result.state.value}",
+            f"l2_chain_backend={dict(values['scan_config'])['scanner_backend']}",
             f"l2_gate_backend={gate.backend}",
             f"l2_gate_state={gate.state.value}",
             f"l2_gate_reason={gate.reason}",
@@ -2383,9 +2398,9 @@ class ApplicationRuntime:
             f"l2_direction_kalman_q_scale={values['direction_kalman_q_scale']}",
             f"l2_direction_kalman_r_scale={values['direction_kalman_r_scale']}",
             f"l2_direction_kalman_error={self._layer2.last_kalman_error}",
-            f"l2_direction_id_tracking_backend={self.config.layer2.direction_id_tracking.backend}",
+            f"l2_direction_id_tracking_backend={getattr(self._layer2.id_tracker, 'backend', self.config.layer2.direction_id_tracking.backend)}",
             f"l2_direction_id_tracking_enabled={values['direction_id_tracking_enabled']}",
-            f"l2_direction_identity={'authoritative' if values['direction_id_tracking_enabled'] else 'raw_music_peaks'}",
+            f"l2_direction_identity={'authoritative' if values['direction_id_tracking_enabled'] else 'raw_doa_peaks'}",
             f"l2_direction_id_active_tracks={self._layer2.id_tracker.active_track_count}",
             f"l2_direction_id_tracking_error={self._layer2.last_id_tracking_error}",
             *(() if not is_music else (

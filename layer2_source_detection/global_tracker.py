@@ -106,6 +106,7 @@ class _Track:
     kalman_covariance: np.ndarray | None = None
     kalman_last_sample: int | None = None
     kalman_last_trusted_theta: float | None = None
+    existence_probability: float = 0.55
 
 
 class GlobalDirectionTracker:
@@ -116,8 +117,12 @@ class GlobalDirectionTracker:
     minimum_voice_confirmations = 2
     max_active_tracks = 4
 
-    def __init__(self, config: GlobalTrackerConfig | None = None) -> None:
+    def __init__(self, config: GlobalTrackerConfig | None = None, *, association_backend: str = "hungarian") -> None:
+        if association_backend not in {"hungarian", "lmb_jpda"}:
+            raise ValueError("unsupported direction association backend")
         self.config = config or GlobalTrackerConfig()
+        self.association_backend = association_backend
+        self.backend = "lmb_jpda_v1" if association_backend == "lmb_jpda" else "global_assignment_v1"
         self._session_id: str | None = None
         self._stream_epoch: int | None = None
         self._next_by_session: dict[str, int] = {}
@@ -125,6 +130,72 @@ class GlobalDirectionTracker:
         self._last_sample: int | None = None
         self.last_assignments: tuple[int, ...] = ()
         self.last_assignment_is_new: tuple[bool, ...] = ()
+        self.last_association_probabilities: tuple[float, ...] = ()
+
+    def _jpda_assign(
+        self,
+        track_ids: tuple[int, ...],
+        candidates: tuple[CandidateDirection, ...],
+        predicted_by_track: dict[int, float],
+        decision_sample: int,
+    ) -> dict[int, int]:
+        """Exact bounded JPDA hypothesis sum, followed by deterministic MAP extraction."""
+        rows, columns = len(track_ids), len(candidates)
+        likelihood = np.zeros((rows, columns), dtype=np.float64)
+        for row, track_id in enumerate(track_ids):
+            track = self._tracks[track_id]
+            gate = self._association_gate(track, decision_sample)
+            for column, candidate in enumerate(candidates):
+                distance = abs(_delta(candidate.theta_deg, predicted_by_track[track_id]))
+                if distance <= gate:
+                    sigma = max(3.0, gate / 2.5)
+                    likelihood[row, column] = (
+                        np.exp(-0.5 * (distance / sigma) ** 2)
+                        * max(1.0e-4, candidate.normalized_score)
+                    )
+        hypotheses: list[tuple[float, tuple[int | None, ...]]] = []
+
+        def visit(row: int, used: frozenset[int], assignment: tuple[int | None, ...], weight: float) -> None:
+            if row == rows:
+                unused = columns - len(used)
+                hypotheses.append((weight * (0.35 ** unused), assignment))
+                return
+            visit(row + 1, used, assignment + (None,), weight * 0.25)
+            for column in range(columns):
+                value = likelihood[row, column]
+                if column not in used and value > 0.0:
+                    visit(row + 1, used | {column}, assignment + (column,), weight * value)
+
+        visit(0, frozenset(), (), 1.0)
+        normalizer = sum(weight for weight, _ in hypotheses)
+        marginals = np.zeros_like(likelihood)
+        if normalizer > 0.0:
+            for weight, hypothesis in hypotheses:
+                for row, column in enumerate(hypothesis):
+                    if column is not None:
+                        marginals[row, column] += weight / normalizer
+        assigned: dict[int, int] = {}
+        probabilities: list[float] = []
+        if rows and columns:
+            selected_rows, selected_columns = linear_sum_assignment(-marginals)
+            for row, column in zip(selected_rows, selected_columns, strict=True):
+                probability = float(marginals[row, column])
+                if probability >= 0.20:
+                    assigned[int(column)] = track_ids[int(row)]
+                    probabilities.append(probability)
+        self.last_association_probabilities = tuple(probabilities)
+        matched_ids = set(assigned.values())
+        for track_id in track_ids:
+            track = self._tracks[track_id]
+            if track_id in matched_ids:
+                probability = max(
+                    marginals[track_ids.index(track_id), column]
+                    for column, assigned_id in assigned.items() if assigned_id == track_id
+                )
+                track.existence_probability = min(0.995, 0.75 * track.existence_probability + 0.25 * probability)
+            else:
+                track.existence_probability *= 0.92
+        return assigned
 
     def reset(self, *, preserve_session_counters: bool = False) -> None:
         self._session_id = None
@@ -133,6 +204,7 @@ class GlobalDirectionTracker:
         self._last_sample = None
         self.last_assignments = ()
         self.last_assignment_is_new = ()
+        self.last_association_probabilities = ()
         if not preserve_session_counters:
             self._next_by_session.clear()
 
@@ -149,6 +221,7 @@ class GlobalDirectionTracker:
             self._last_sample = None
         self.last_assignments = ()
         self.last_assignment_is_new = ()
+        self.last_association_probabilities = ()
 
     @property
     def active_track_count(self) -> int:
@@ -604,6 +677,10 @@ class GlobalDirectionTracker:
             for row, column in zip(selected_rows, selected_columns, strict=True):
                 if row < rows and column < columns and cost[row, column] < 1.0e5:
                     assigned[column] = track_ids[row]
+            if self.association_backend == "lmb_jpda":
+                assigned = self._jpda_assign(
+                    track_ids, candidates, predicted_by_track, decision_sample
+                )
         noise_ids = tuple(sorted(
             track_id for track_id, track in self._tracks.items()
             if track.noise_interference

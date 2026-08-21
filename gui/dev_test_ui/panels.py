@@ -159,6 +159,30 @@ class MusicNoiseWhiteningControl(_RuntimeSwitchControl):
     label = "Whitening"
 
 
+class DoaBackendControl(QPushButton):
+    backend_changed = Signal(str)
+
+    def __init__(self, backend: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setMinimumHeight(38)
+        self.clicked.connect(self._toggle)
+        self.set_backend(backend)
+
+    def set_backend(self, backend: str, *, pending: bool = False) -> None:
+        if backend not in {"frequency_normalized_music", "gi_doaenet"}:
+            raise ValueError("invalid DOA backend")
+        self.backend = backend
+        name = "MUSIC" if backend == "frequency_normalized_music" else "GI-DOAEnet NN"
+        self.setText(f"DOA方法：{name}")
+        color = "#9a6b00" if pending else ("#245c99" if backend == "frequency_normalized_music" else "#16794b")
+        self.setStyleSheet(f"QPushButton {{ background:{color}; color:white; font-weight:600; }}")
+
+    def _toggle(self) -> None:
+        value = "gi_doaenet" if self.backend == "frequency_normalized_music" else "frequency_normalized_music"
+        self.set_backend(value, pending=True)
+        self.backend_changed.emit(value)
+
+
 class ContinuousTrackGainControl(_RuntimeSwitchControl):
     label = "响度补偿"
 

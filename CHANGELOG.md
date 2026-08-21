@@ -23,6 +23,36 @@
 
 ---
 
+## 2026-08-21 — 增加可运行的GI-DOAEnet完整L2替代链
+
+- **版本/标签**：项目仍为`1.3.1`；不创建或移动发布标签。
+- **类型**：L2双后端架构、神经网络适配、概率数据关联、Runtime/Test UI与本地模型安装。
+- **涉及文件**：`layer2_source_detection/gi_doaenet.py`、`global_tracker.py`、`pipeline.py`、配置/Runtime、Development Test UI、模型清单与安装器、定向测试、本README和本日志。
+
+### L2与Runtime
+
+- 保留默认`Probability Gate → Rolling NormMUSIC → Hungarian → 可选圆周Kalman`完整链。
+- 新增可切换的`Probability Gate → GI-DOAEnet PM → 候选门控 → LMB/JPDA → 圆周Kalman`完整链；两套链读取同一DecisionWindow并输出相同360点SpatialResponse、最多3个方向、TrackedDirection及active_tracks。
+- NN适配器只读取7路物理麦，48→16 kHz同相重采样，使用3维麦位和最后一层最近5帧平均概率；继续执行UI候选门限、prominence和50°圆周NMS。
+- LMB/JPDA链在最多4个内部轨迹、3个观测的有界空间内枚举一对一联合假设，计算边缘关联概率和Bernoulli存在概率，再确定性提取关联；不使用rank绑定。
+- Runtime配置快照新增完整L2后端，切换在下一窗口原子生效；目标链轨迹状态单独维护并在切换边界清理，录制诊断写入实际链与实际关联后端。
+
+### Development Test UI与模型资产
+
+- L2右侧顶部增加完整方案按钮，可在`MUSIC + Hungarian`与`GI-DOAEnet + LMB/JPDA`间实时切换并原子持久化；左侧360°谱与最终ID点绘制契约不变。
+- NN方案下禁用MUSIC专属DPD/Whitening控件，状态栏显示实际后端、输出源数与推理状态。
+- 固定上游提交和PM权重SHA-256；因上游无LICENSE，不提交其源码/权重，提供显式确认的本地安装器并将下载目录Git忽略。无Git LFS变化。
+
+### 未改变
+
+- L1/IMCRA、Probability Gate算法和门限、现有MUSIC数值路径、L3/L4/L5公共输入输出、录音音频内容及发布标签均未改变。
+
+### 验证
+
+- 新增NN 7麦/16 kHz适配、360点谱/双峰、双链独立关联器及UI设置持久化测试；既有配置、L2 MUSIC/ID/Kalman和Test UI回归同步执行。
+- 全量回归测试`513 passed`，Ruff全仓检查与Git差异检查通过。
+- 本机CUDA用官方PM权重完成真实推理：合成30°单源输出29°，稳态7窗均值约7.36 ms、p95约10.61 ms；首次懒加载约2.71秒。
+
 ## 2026-08-21 — 删除L3隐藏音轨并阻止其进入离线L4
 
 - **版本/标签**：项目仍为`1.3.1`；不创建或移动发布标签。

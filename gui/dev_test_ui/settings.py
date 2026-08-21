@@ -9,8 +9,8 @@ import tempfile
 class DevUiSettings:
     """Atomic persistent store for operator-tuned Development Test UI values."""
 
-    SCHEMA_VERSION = "dev_test_ui_settings_v12"
-    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v11"
+    SCHEMA_VERSION = "dev_test_ui_settings_v13"
+    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v12"
     OLDER_SCHEMA_VERSION = "dev_test_ui_settings_v2"
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
     OBSOLETE_KEYS = {
@@ -27,6 +27,7 @@ class DevUiSettings:
             if payload.get("schema_version") not in {
                 self.SCHEMA_VERSION,
                 self.PREVIOUS_SCHEMA_VERSION,
+                "dev_test_ui_settings_v11",
                 "dev_test_ui_settings_v10",
                 "dev_test_ui_settings_v9",
                 "dev_test_ui_settings_v8",
@@ -75,6 +76,18 @@ class DevUiSettings:
         threshold = self._validate_threshold(value)
         self._save_update(layer2_direction_threshold=threshold)
         return threshold
+
+    def load_doa_backend(self, default: str = "frequency_normalized_music") -> str:
+        fallback = self._validate_doa_backend(default)
+        try:
+            return self._validate_doa_backend(self._load_payload()["layer2_doa_backend"])
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_doa_backend(self, value: str) -> str:
+        backend = self._validate_doa_backend(value)
+        self._save_update(layer2_doa_backend=backend)
+        return backend
 
     def load_music_effective_order_limit(self, default: int = 3) -> int:
         fallback = self._validate_music_order_limit(default)
@@ -235,6 +248,12 @@ class DevUiSettings:
     def _validate_bool(value: bool) -> bool:
         if type(value) is not bool:
             raise ValueError("switch setting must be bool")
+        return value
+
+    @staticmethod
+    def _validate_doa_backend(value: str) -> str:
+        if value not in {"frequency_normalized_music", "gi_doaenet"}:
+            raise ValueError("invalid Layer 2 DOA backend")
         return value
 
     @staticmethod

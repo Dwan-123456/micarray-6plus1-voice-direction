@@ -9,6 +9,7 @@ from common.config import Layer2Config, ProjectConfig
 
 @dataclass(frozen=True, slots=True)
 class DirectionScanConfig:
+    scanner_backend: str
     angle_step_deg: float
     frequency_min_hz: float
     frequency_max_hz: float
@@ -44,18 +45,18 @@ class DirectionScanConfig:
 
     @classmethod
     def from_project(cls, config: ProjectConfig) -> "DirectionScanConfig":
-        if config.layer2.scanner_backend != "frequency_normalized_music":
-            raise ValueError("Layer 2 scanner_backend must be frequency_normalized_music")
         return cls.from_layer2(config.layer2)
 
     @classmethod
     def from_layer2(cls, config: Layer2Config) -> "DirectionScanConfig":
         values = config.model_dump(
-            exclude={"probability_gate", "music", "direction_kalman", "direction_id_tracking", "scanner_backend"}
+            exclude={"probability_gate", "music", "direction_kalman", "direction_id_tracking"}
         )
         return cls(**values)
 
     def __post_init__(self) -> None:
+        if self.scanner_backend not in {"frequency_normalized_music", "gi_doaenet"}:
+            raise ValueError("unsupported Layer 2 DOA backend")
         if self.angle_step_deg != 1.0:
             raise ValueError("MUSIC scan step must be one degree")
         if (self.frequency_min_hz, self.frequency_max_hz) != (2_000.0, 4_000.0):

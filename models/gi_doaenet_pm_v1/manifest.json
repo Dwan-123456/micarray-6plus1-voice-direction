@@ -1,0 +1,8 @@
+{
+  "checkpoint": "pretrained/GI_DOAEnet_PM.tar",
+  "checkpoint_sha256": "d465d2ccf0b7f2d1603186db3667e8c7b7a21c7eb0b8a126173b3292441f9fe8",
+  "model_variant": "PM",
+  "repository": "https://github.com/BaekMS/GI-DOAEnet",
+  "revision": "af865978c783f309fc929f0f2499769a1c5499d5",
+  "upstream_license_status": "no LICENSE file present at pinned revision"
+}

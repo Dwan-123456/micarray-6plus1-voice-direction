@@ -20,7 +20,7 @@ def track_colour_hex(track_id: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class MusicPanelSnapshot:
-    """One immutable, authoritative Layer-2 MUSIC/UI projection."""
+    """One immutable, authoritative Layer-2 DOA/UI projection."""
 
     response: SpatialResponse
     directions: tuple[TrackedDirection, ...]
@@ -130,7 +130,7 @@ if QWidget is not None:
             painter.setFont(QFont("Sans Serif", 11))
             snapshot = self._snapshot
             if snapshot is None or snapshot.response.model_order is None:
-                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "MUSIC UNAVAILABLE")
+                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "DOA UNAVAILABLE")
                 return
 
             margin = 34.0
