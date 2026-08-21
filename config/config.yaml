@@ -171,6 +171,9 @@ layer2:
   dpd_frequency_subbands: 4
   dpd_min_cluster_subbands: 2
   dpd_min_circular_concentration: 0.95
+  # Merge individually strong DPD peaks before the final 50-degree NMS.
+  dpd_peak_fusion_distance_deg: 40.0
+  dpd_peak_fusion_min_normalized_score: 0.70
   noise_whitening_enabled: false
   noise_covariance_shrinkage: 0.10
 

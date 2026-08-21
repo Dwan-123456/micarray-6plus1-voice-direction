@@ -11,6 +11,7 @@ from common.config import load_config
 from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapshot
 from common.geometry import MIC_POSITIONS_M, physical_6plus1_geometry
 from layer2_source_detection import DirectionScanConfig, Layer2Pipeline, RollingNormMusicScanner
+from layer2_source_detection.music import _DpdVoteCluster
 from layer2_source_detection.global_tracker import GlobalDirectionTracker, GlobalTrackerConfig
 from layer2_source_detection.pipeline import _select_l3_directions
 from layer2_source_detection.probability_gate import (
@@ -326,6 +327,108 @@ def test_dpd_vote_clustering_wraps_zero_and_rejects_narrowband_cluster() -> None
     assert clusters[0].supporting_frequency_bins == len(peak_angles)
     assert clusters[0].supporting_frequency_subbands >= config.dpd_min_cluster_subbands
     assert clusters[0].circular_concentration >= config.dpd_min_circular_concentration
+
+
+def test_dpd_strong_nearby_peaks_fuse_with_unique_frequency_weight() -> None:
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        dpd_rank1_enabled=True,
+        direction_threshold=0.20,
+    )
+    scanner = RollingNormMusicScanner()
+    normalized = np.zeros(360, dtype=np.float64)
+    normalized[[20, 25, 30]] = (0.80, 0.50, 0.90)
+    peak_angles = np.asarray((20, 20, 20, 30, 30, 30), dtype=int)
+    per_frequency = np.zeros((peak_angles.size, 360), dtype=np.float64)
+    per_frequency[np.arange(peak_angles.size), peak_angles] = 1.0
+    selected = np.ones(peak_angles.size, dtype=bool)
+    weights = np.ones(peak_angles.size, dtype=np.float64)
+    plane_fit = np.full(peak_angles.size, 0.9, dtype=np.float64)
+    frequencies = np.asarray((2_050, 2_250, 2_650, 2_850, 3_250, 3_750), dtype=np.float64)
+    clusters = (
+        _DpdVoteCluster(20, 4, 4 / 6, 0.9, 2, 1.0, 4.0, (0, 1, 2, 3)),
+        _DpdVoteCluster(30, 4, 4 / 6, 0.9, 3, 1.0, 4.0, (2, 3, 4, 5)),
+    )
+
+    fused = scanner._merge_dpd_peak_clusters(
+        clusters, normalized, per_frequency, selected, weights, plane_fit,
+        frequencies, config,
+    )
+
+    assert len(fused) == 1
+    assert fused[0].angle_index == 25
+    assert fused[0].supporting_frequency_bins == 6
+    assert fused[0].cluster_weight == pytest.approx(6.0)
+    assert fused[0].supporting_frequency_indices == tuple(range(6))
+
+
+def test_dpd_peak_fusion_requires_strictly_above_point_seven_and_avoids_chaining() -> None:
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        dpd_rank1_enabled=True,
+        direction_threshold=0.20,
+        dpd_min_frequency_support_ratio=0.10,
+        dpd_min_cluster_frequency_bins=2,
+        dpd_min_circular_concentration=0.90,
+    )
+    scanner = RollingNormMusicScanner()
+    selected = np.ones(6, dtype=bool)
+    weights = np.ones(6, dtype=np.float64)
+    plane_fit = np.full(6, 0.9, dtype=np.float64)
+    frequencies = np.asarray((2_050, 2_250, 2_650, 2_850, 3_250, 3_750), dtype=np.float64)
+    peak_angles = np.asarray((10, 10, 50, 50, 90, 90), dtype=int)
+    per_frequency = np.zeros((6, 360), dtype=np.float64)
+    per_frequency[np.arange(6), peak_angles] = 1.0
+    clusters = (
+        _DpdVoteCluster(10, 2, 1 / 3, 0.9, 2, 1.0, 2.0, (0, 1)),
+        _DpdVoteCluster(50, 2, 1 / 3, 0.9, 2, 1.0, 2.0, (2, 3)),
+        _DpdVoteCluster(90, 2, 1 / 3, 0.9, 2, 1.0, 2.0, (4, 5)),
+    )
+    normalized = np.full(360, 0.50, dtype=np.float64)
+    normalized[[10, 50, 90]] = 0.90
+
+    fused = scanner._merge_dpd_peak_clusters(
+        clusters, normalized, per_frequency, selected, weights, plane_fit,
+        frequencies, config,
+    )
+    assert len(fused) == 2
+    assert tuple(item.angle_index for item in fused) == (30, 90)
+
+    normalized[10] = 0.70
+    not_fused = scanner._merge_dpd_peak_clusters(
+        clusters[:2], normalized, per_frequency, selected, weights, plane_fit,
+        frequencies, config,
+    )
+    assert len(not_fused) == 2
+    assert {item.angle_index for item in not_fused} == {10, 50}
+
+
+def test_dpd_peak_fusion_wraps_zero_degrees() -> None:
+    config = replace(
+        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
+        dpd_rank1_enabled=True,
+        direction_threshold=0.20,
+        dpd_min_frequency_support_ratio=0.10,
+        dpd_min_cluster_frequency_bins=2,
+    )
+    scanner = RollingNormMusicScanner()
+    normalized = np.full(360, 0.50, dtype=np.float64)
+    normalized[[350, 10]] = 0.90
+    peak_angles = np.asarray((350, 350, 350, 10, 10, 10), dtype=int)
+    per_frequency = np.zeros((6, 360), dtype=np.float64)
+    per_frequency[np.arange(6), peak_angles] = 1.0
+    clusters = (
+        _DpdVoteCluster(350, 3, 0.5, 0.9, 2, 1.0, 3.0, (0, 1, 2)),
+        _DpdVoteCluster(10, 3, 0.5, 0.9, 2, 1.0, 3.0, (3, 4, 5)),
+    )
+    fused = scanner._merge_dpd_peak_clusters(
+        clusters, normalized, per_frequency, np.ones(6, dtype=bool),
+        np.ones(6), np.full(6, 0.9),
+        np.asarray((2_050, 2_250, 2_650, 2_850, 3_250, 3_750), dtype=np.float64),
+        config,
+    )
+    assert len(fused) == 1
+    assert fused[0].angle_index == 0
 
 
 def test_optional_imcra_noise_psd_whitening_is_independent_and_safe() -> None:

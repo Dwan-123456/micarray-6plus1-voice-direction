@@ -228,6 +228,8 @@ class Layer2Config(StrictModel):
     dpd_frequency_subbands: int = Field(ge=1)
     dpd_min_cluster_subbands: int = Field(ge=1)
     dpd_min_circular_concentration: float = Field(ge=0, le=1)
+    dpd_peak_fusion_distance_deg: float = Field(gt=0, le=50)
+    dpd_peak_fusion_min_normalized_score: float = Field(ge=0, le=1)
     noise_whitening_enabled: bool = False
     noise_covariance_shrinkage: float = Field(ge=0, le=1)
 
@@ -243,6 +245,8 @@ class Layer2Config(StrictModel):
             raise TypeError("Layer 2 DPD/whitening switches must be bool")
         if self.dpd_min_cluster_subbands > self.dpd_frequency_subbands:
             raise ValueError("DPD minimum cluster subbands cannot exceed configured subbands")
+        if self.dpd_peak_fusion_distance_deg > self.min_peak_distance_deg:
+            raise ValueError("DPD peak fusion distance cannot exceed circular NMS distance")
         return self
 
 class StftConfig(StrictModel):

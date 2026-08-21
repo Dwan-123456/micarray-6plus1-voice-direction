@@ -37,6 +37,8 @@ class DirectionScanConfig:
     dpd_frequency_subbands: int
     dpd_min_cluster_subbands: int
     dpd_min_circular_concentration: float
+    dpd_peak_fusion_distance_deg: float
+    dpd_peak_fusion_min_normalized_score: float
     noise_whitening_enabled: bool
     noise_covariance_shrinkage: float
 
@@ -68,6 +70,8 @@ class DirectionScanConfig:
             self.min_cross_frequency_consistency, self.dpd_min_eigenvalue_ratio,
             self.dpd_min_plane_wave_fit, self.dpd_min_frequency_support_ratio,
             self.dpd_min_circular_concentration,
+            self.dpd_peak_fusion_distance_deg,
+            self.dpd_peak_fusion_min_normalized_score,
             self.noise_covariance_shrinkage,
         )
         if not all(np.isfinite(value) for value in finite):
@@ -91,6 +95,8 @@ class DirectionScanConfig:
             or self.dpd_frequency_subbands < 1
             or not 1 <= self.dpd_min_cluster_subbands <= self.dpd_frequency_subbands
             or not 0 <= self.dpd_min_circular_concentration <= 1
+            or not 0 < self.dpd_peak_fusion_distance_deg <= self.min_peak_distance_deg
+            or not 0 <= self.dpd_peak_fusion_min_normalized_score <= 1
         ):
             raise ValueError("DPD rank-1 quality configuration is invalid")
         if (

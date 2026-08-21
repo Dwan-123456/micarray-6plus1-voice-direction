@@ -31,6 +31,8 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.direction_id_tracking.confirmation_observations == 6
     assert config.layer2.effective_order_limit == 3
     assert config.layer2.dpd_rank1_enabled is False
+    assert config.layer2.dpd_peak_fusion_distance_deg == 40.0
+    assert config.layer2.dpd_peak_fusion_min_normalized_score == 0.70
     assert config.layer2.noise_whitening_enabled is False
     assert config.layer2.direction_id_tracking.coasting_ttl_ms == 3000
     assert config.layer2.direction_id_tracking.stationary_history_ms == 3000

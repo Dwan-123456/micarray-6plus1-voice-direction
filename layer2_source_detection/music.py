@@ -47,6 +47,7 @@ class _DpdVoteCluster:
     supporting_frequency_subbands: int
     circular_concentration: float
     cluster_weight: float
+    supporting_frequency_indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +124,7 @@ class MusicDiagnostics:
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_greedy_peaks_v6"
+    algorithm_version = "frequency_normalized_music_dpd_peak_fusion_v7"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -461,13 +462,6 @@ class RollingNormMusicScanner:
                 or concentration < config.dpd_min_circular_concentration
             ):
                 continue
-            if any(
-                self._circular_distance_grid(
-                    np.asarray([float(angle_index)]), float(item.angle_index)
-                )[0] < config.min_peak_distance_deg
-                for item in accepted
-            ):
-                continue
             accepted.append(_DpdVoteCluster(
                 angle_index,
                 support_count,
@@ -476,8 +470,137 @@ class RollingNormMusicScanner:
                 subband_count,
                 concentration,
                 weight_sum,
+                tuple(int(index) for index in np.flatnonzero(supporters)),
             ))
         return tuple(accepted)
+
+    def _merge_dpd_peak_clusters(
+        self,
+        clusters: tuple[_DpdVoteCluster, ...],
+        normalized_vote: np.ndarray,
+        per_frequency: np.ndarray,
+        selected: np.ndarray,
+        weights: np.ndarray,
+        plane_fit: np.ndarray,
+        frequencies_hz: np.ndarray,
+        config: DirectionScanConfig,
+    ) -> tuple[_DpdVoteCluster, ...]:
+        """Fuse strong nearby DPD peaks using each unique frequency vote once."""
+
+        if not clusters:
+            return ()
+        peak_angles = np.argmax(per_frequency, axis=1).astype(np.float64)
+        total_weight = float(np.sum(weights[selected]))
+        if total_weight <= 0.0:
+            return ()
+        subband_edges = np.linspace(
+            config.frequency_min_hz,
+            config.frequency_max_hz,
+            config.dpd_frequency_subbands + 1,
+        )
+        frequency_subbands = np.clip(
+            np.searchsorted(subband_edges, frequencies_hz, side="right") - 1,
+            0,
+            config.dpd_frequency_subbands - 1,
+        )
+        ranked = sorted(
+            clusters,
+            key=lambda item: (-float(item.cluster_weight), item.angle_index),
+        )
+        consumed: set[int] = set()
+        fused: list[_DpdVoteCluster] = []
+        for anchor_index, anchor in enumerate(ranked):
+            if anchor_index in consumed:
+                continue
+            group = [anchor]
+            consumed.add(anchor_index)
+            anchor_is_strong = (
+                normalized_vote[anchor.angle_index]
+                > config.dpd_peak_fusion_min_normalized_score
+            )
+            if anchor_is_strong:
+                for candidate_index, candidate in enumerate(ranked):
+                    if candidate_index in consumed:
+                        continue
+                    if (
+                        normalized_vote[candidate.angle_index]
+                        <= config.dpd_peak_fusion_min_normalized_score
+                    ):
+                        continue
+                    if all(
+                        self._circular_distance_grid(
+                            np.asarray([float(candidate.angle_index)]),
+                            float(member.angle_index),
+                        )[0] <= config.dpd_peak_fusion_distance_deg
+                        for member in group
+                    ):
+                        group.append(candidate)
+                        consumed.add(candidate_index)
+            if len(group) == 1:
+                fused.append(anchor)
+                continue
+
+            supporter_indices = np.asarray(sorted({
+                index
+                for member in group
+                for index in member.supporting_frequency_indices
+            }), dtype=np.int64)
+            if supporter_indices.size == 0:
+                fused.append(anchor)
+                continue
+            supporter_weights = weights[supporter_indices]
+            weight_sum = float(np.sum(supporter_weights))
+            if weight_sum <= 0.0:
+                continue
+            supporter_angles = np.deg2rad(peak_angles[supporter_indices])
+            vector = np.sum(supporter_weights * np.exp(1j * supporter_angles))
+            center = float(np.rad2deg(np.angle(vector)) % 360.0)
+            angle_index = int(np.rint(center)) % 360
+            support_count = int(supporter_indices.size)
+            support_ratio = weight_sum / total_weight
+            concentration = float(abs(vector) / weight_sum)
+            subband_count = int(np.unique(frequency_subbands[supporter_indices]).size)
+            mean_fit = float(np.average(
+                plane_fit[supporter_indices], weights=supporter_weights,
+            ))
+            if (
+                normalized_vote[angle_index] < config.direction_threshold
+                or support_count < config.dpd_min_cluster_frequency_bins
+                or support_ratio < config.dpd_min_frequency_support_ratio
+                or subband_count < config.dpd_min_cluster_subbands
+                or concentration < config.dpd_min_circular_concentration
+            ):
+                continue
+            fused.append(_DpdVoteCluster(
+                angle_index,
+                support_count,
+                support_ratio,
+                mean_fit,
+                subband_count,
+                concentration,
+                weight_sum,
+                tuple(int(index) for index in supporter_indices),
+            ))
+        return tuple(sorted(
+            fused,
+            key=lambda item: (-float(item.cluster_weight), item.angle_index),
+        ))
+
+    @staticmethod
+    def _nms_dpd_clusters(
+        clusters: tuple[_DpdVoteCluster, ...],
+        minimum_distance_deg: float,
+    ) -> tuple[_DpdVoteCluster, ...]:
+        selected: list[_DpdVoteCluster] = []
+        for cluster in clusters:
+            if any(
+                abs(((cluster.angle_index - old.angle_index + 180) % 360) - 180)
+                < minimum_distance_deg
+                for old in selected
+            ):
+                continue
+            selected.append(cluster)
+        return tuple(selected)
 
     def _rebuild(self, window: DecisionWindow, config: DirectionScanConfig, reason: str) -> None:
         history_samples = config.context_ms * 48
@@ -693,7 +816,20 @@ class RollingNormMusicScanner:
                 valid_frequencies,
                 config,
             )
-            selected_clusters = qualified_clusters[:limit]
+            fused_clusters = self._merge_dpd_peak_clusters(
+                qualified_clusters,
+                normalized,
+                per_frequency,
+                selected,
+                weights,
+                plane_fit,
+                valid_frequencies,
+                config,
+            )
+            separated_clusters = self._nms_dpd_clusters(
+                fused_clusters, config.min_peak_distance_deg,
+            )
+            selected_clusters = separated_clusters[:limit]
             chosen = [item.angle_index for item in selected_clusters]
             support_by_index = {
                 item.angle_index: item for item in selected_clusters
@@ -704,10 +840,12 @@ class RollingNormMusicScanner:
                 stop_reason = "dpd_no_reliable_bins"
             elif not qualified_clusters:
                 stop_reason = "dpd_no_qualified_clusters"
+            elif not fused_clusters:
+                stop_reason = "dpd_no_qualified_fused_clusters"
             else:
-                stop_reason = "dpd_circular_clusters"
-            eligible_peak_count = len(qualified_clusters)
-            candidate_limit_applied = len(qualified_clusters) > limit
+                stop_reason = "dpd_circular_clusters_with_peak_fusion"
+            eligible_peak_count = len(separated_clusters)
+            candidate_limit_applied = len(separated_clusters) > limit
         else:
             chosen, eligible_peak_count, candidate_limit_applied = self._greedy_circular_peaks(
                 normalized, config, limit,
