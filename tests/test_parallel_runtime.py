@@ -24,7 +24,7 @@ from common.data_types import (
     TrackedDirection,
 )
 from data_management import DecisionRecord, ResultWatermark
-from gui.dev_test_ui.contracts import DevUiFrame, L1MeterSnapshot
+from gui.dev_test_ui.contracts import L1MeterSnapshot
 from layer2_source_detection import (
     Layer2ExecutionState,
     Layer2PipelineResult,
@@ -550,25 +550,19 @@ def _start_with_stubs(
     return runtime, store, probe
 
 
-def test_completed_l5_has_independent_bounded_latest_only_ui_mailbox(tmp_path: Path) -> None:
-    runtime, _store, _probe = _start_with_stubs(tmp_path)
+def test_realtime_l5_is_deferred_and_ui_mailbox_remains_empty(tmp_path: Path) -> None:
+    runtime, store, probe = _start_with_stubs(tmp_path)
     try:
         runtime._admit_window(_window(0))
-        _wait_until(lambda: runtime.processing_status["l5_actual_completed"] >= 1)
-        _wait_until(lambda: runtime.latest_l5_dev_ui.qsize() == 1)
-        first = runtime.latest_l5_dev_ui.get_nowait()
-        assert isinstance(first, DevUiFrame)
-        assert first.l5_result is not None
-        assert first.spatial_response is not None
-        assert first.spatial_response.window_id == first.l5_result.detections[0].window_id == 0
-
-        runtime._admit_window(_window(1))
-        runtime._admit_window(_window(2))
-        _wait_until(lambda: runtime.processing_status["l5_actual_completed"] >= 3)
+        _wait_until(lambda: len(store.record_snapshot()) == 1)
+        status = runtime.processing_status
+        assert status["l5_actual_completed"] == 0
+        assert probe.count("l5") == 0
         assert runtime.latest_l5_dev_ui.maxsize == 1
-        assert runtime.latest_l5_dev_ui.qsize() == 1
-        latest = runtime.latest_l5_dev_ui.get_nowait()
-        assert latest.spatial_response.window_id == latest.l5_result.detections[0].window_id == 2
+        assert runtime.latest_l5_dev_ui.empty()
+        record = store.record_snapshot()[0]
+        assert record.stage_statuses["l5"] == "skipped"
+        assert record.terminal_reason == "offline_after_l4"
     finally:
         runtime.stop()
 
@@ -609,21 +603,15 @@ def test_late_ordered_commit_from_old_epoch_cannot_update_new_epoch_ui(tmp_path:
     assert runtime.latest_dev_ui.empty()
 
 
-def test_completed_l5_annotates_track_audio_without_feedback_to_l2(tmp_path: Path) -> None:
+def test_realtime_track_audio_has_no_l5_annotation_or_feedback(tmp_path: Path) -> None:
     runtime, store, _probe = _start_with_stubs(tmp_path)
     try:
         runtime._admit_window(_window(0))
-        _wait_until(lambda: runtime.processing_status["l5_actual_completed"] >= 1)
         _wait_until(lambda: len(store.record_snapshot()) == 1)
         assert runtime._layer2.voice_feedback == []
         audio = store.record_snapshot()[0].enhanced_audio[0]
-        annotation = audio["l5_voice_20ms"]
-        assert annotation["track_id"] == audio["track_id"] == 1
-        assert annotation["probability"] == 0.8
-        assert annotation["is_voice"] is True
-        assert (annotation["start_sample"], annotation["end_sample"]) == (
-            audio["start_sample"], audio["end_sample"],
-        )
+        assert "l5_voice_20ms" not in audio
+        assert store.record_snapshot()[0].voice_direction_count == 0
     finally:
         runtime.stop()
 
@@ -645,16 +633,14 @@ def test_stages_overlap_across_windows_but_preserve_same_window_dependencies_and
         for window_id in range(4):
             l2 = probe.get("l2", window_id)
             l3 = probe.get("l3", window_id)
-            l5 = probe.get("l5", window_id)
             assert l2.finished <= l3.started
-            assert l3.finished <= l5.started
             assert l2.thread_name.endswith("-l2")
             assert l3.thread_name.endswith("-l3")
-            assert l5.thread_name.endswith("-l5")
 
         assert probe.get("l2", 1).started < probe.get("l3", 0).finished
-        assert probe.get("l3", 1).started < probe.get("l5", 0).finished
+        assert probe.count("l5") == 0
         assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
+        assert all(item.stage_statuses["l5"] == "skipped" for item in store.record_snapshot())
         assert [item.sample for item in store.watermark_snapshot()] == [
             7_680,
             8_640,
@@ -689,7 +675,7 @@ def test_gate_skip_is_formal_and_never_runs_l3_or_l5(tmp_path: Path) -> None:
         runtime.stop()
 
 
-def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l5(
+def test_open_l2_with_no_candidates_skips_l3_prepare_and_defers_l5(
     tmp_path: Path,
 ) -> None:
     probe = _StageProbe()
@@ -746,11 +732,11 @@ def test_open_l2_with_no_candidates_skips_l3_prepare_and_finishes_empty_l5(
         record = store.record_snapshot()[0]
         assert layer3.prepare_calls == 0
         assert layer3.process_calls == 0
-        assert layer5.calls == 1
+        assert layer5.calls == 0
         assert record.stage_statuses == {
             "l2": "completed",
             "l3": "completed",
-            "l5": "completed",
+            "l5": "skipped",
         }
         assert record.enhanced_audio == ()
         assert record.voice_direction_count == 0
@@ -784,17 +770,17 @@ def test_test_ui_can_bypass_l3_and_l5_while_l2_keeps_running(tmp_path: Path) -> 
         _wait_until(lambda: len(store.record_snapshot()) == 2)
         assert probe.count("l2") == 2
         assert probe.count("l3") == 1
-        assert probe.count("l5") == 1
+        assert probe.count("l5") == 0
         assert store.record_snapshot()[1].stage_statuses == {
             "l2": "completed",
             "l3": "completed",
-            "l5": "completed",
+            "l5": "skipped",
         }
     finally:
         runtime.stop()
 
 
-@pytest.mark.parametrize("failed_stage", ["l2", "l3", "l5"])
+@pytest.mark.parametrize("failed_stage", ["l2", "l3"])
 def test_stage_failure_has_explicit_terminal_state_and_later_window_continues(
     tmp_path: Path,
     failed_stage: str,
@@ -828,6 +814,21 @@ def test_stage_failure_has_explicit_terminal_state_and_later_window_continues(
             assert records[1].stage_statuses["l5"] == "skipped"
         assert runtime.processing_status["completed_counts"]["commit"] == 3
         assert runtime.processing_status["error_counts"][failed_stage] == 1
+    finally:
+        runtime.stop()
+
+
+def test_configured_realtime_l5_is_never_called(tmp_path: Path) -> None:
+    runtime, store, probe = _start_with_stubs(
+        tmp_path,
+        l5_factory=lambda value: _StubL5(value, fail_window=0),
+    )
+    try:
+        runtime._admit_window(_window(0))
+        _wait_until(lambda: len(store.record_snapshot()) == 1)
+        assert probe.count("l5") == 0
+        assert store.record_snapshot()[0].stage_statuses["l5"] == "skipped"
+        assert runtime.processing_status["error_counts"]["l5"] == 0
     finally:
         runtime.stop()
 
@@ -912,7 +913,7 @@ def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_run
     try:
         for window_id in range(4):
             assert runtime._admit_window(_window(window_id))
-        assert runtime.seal_pipeline_total_durations()
+        _wait_until(runtime.seal_pipeline_total_durations)
         _wait_until(
             lambda: all(
                 runtime._pipeline_stage_finished_ns[stage] is not None

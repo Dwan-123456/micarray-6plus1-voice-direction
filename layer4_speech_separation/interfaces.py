@@ -5,7 +5,7 @@ from typing import Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from .contracts import Layer4CandidatePair, SpeakerCountDecision
+from .contracts import Layer4CandidatePair, Layer4LongAudioInput, SpeakerCountDecision
 
 
 class SpeakerCountClassifier(Protocol):
@@ -13,7 +13,7 @@ class SpeakerCountClassifier(Protocol):
 
     classifier_id: str
 
-    def classify(self, asset_id: str, waveform_16k: NDArray[np.float32]) -> SpeakerCountDecision: ...
+    def classify(self, source: Layer4LongAudioInput) -> SpeakerCountDecision: ...
 
 
 class Layer4SeparationBackend(Protocol):

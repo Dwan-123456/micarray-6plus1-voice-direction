@@ -26,6 +26,7 @@ def _parent(waveform: np.ndarray | None = None) -> Layer4LongAudioInput:
         start_sample=0,
         sample_rate=48_000,
         waveform=np.ascontiguousarray(value, dtype=np.float32),
+        l2_direction_counts=((48_000, 2),),
     )
 
 
@@ -75,3 +76,36 @@ def test_layer4_candidate_contract_rejects_non_pair_or_misaligned_outputs() -> N
             "request", "model", "rev", 16_000,
             (audio, np.zeros(15_999, dtype=np.float32)),
         )
+
+
+def test_matcher_breaks_equal_out_of_band_candidates_with_zero() -> None:
+    sample_rate = 16_000
+    time = np.arange(sample_rate, dtype=np.float64) / sample_rate
+    reference = np.ascontiguousarray(np.sin(2 * np.pi * 2_600 * time), dtype=np.float32)
+    out_of_band = np.ascontiguousarray(np.sin(2 * np.pi * 900 * time), dtype=np.float32)
+    candidates = Layer4CandidatePair(
+        "request", "model", "rev", 16_000, (out_of_band, out_of_band.copy()),
+    )
+    result = BandMagnitudeMatcher().select(
+        parent=_parent(), reference_16k=reference, candidates=candidates,
+    )
+    assert result.candidate_scores[0] == result.candidate_scores[1]
+    assert result.selected_source_index == 0
+
+
+def test_matcher_includes_zero_padded_final_partial_frame() -> None:
+    sample_rate = 16_000
+    reference = np.zeros(701, dtype=np.float32)
+    time = np.arange(189, dtype=np.float64) / sample_rate
+    reference[-189:] = np.sin(2 * np.pi * 3_000 * time)
+    wrong = np.zeros_like(reference)
+    right = reference.copy()
+    result = BandMagnitudeMatcher().select(
+        parent=_parent(), reference_16k=np.ascontiguousarray(reference),
+        candidates=Layer4CandidatePair(
+            "request", "model", "rev", 16_000,
+            (np.ascontiguousarray(wrong), np.ascontiguousarray(right)),
+        ),
+    )
+    assert result.selected_source_index == 1
+    assert result.candidate_scores[1] > result.candidate_scores[0]

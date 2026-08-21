@@ -4,13 +4,13 @@
 
 权威目标架构见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。**本页描述当前分支已实施的Runtime边界。**
 
-Runtime负责唯一L1→Ingest→Window装配，以及L2、L3、L5分阶段流水调度。每个`DecisionWindow`只生成一次不可变`WindowWorkItem`，正式身份固定为`WindowKey(session_id, stream_epoch, window_id, decision_sample)`；入队时冻结该窗口使用的Gate、MUSIC历史/STFT/频点、MDL、关联生命周期、Kalman revision、L3模式、L5阈值、几何与config hash。配置快照不再包含iterative或ID-enable语义。所有StageResult必须继承完全相同的键。
+Runtime负责唯一L1→Ingest→Window装配，以及L2、L3与Hub长音频封存。每个`DecisionWindow`只生成一次不可变`WindowWorkItem`，正式身份固定为`WindowKey(session_id, stream_epoch, window_id, decision_sample)`。实时L5 worker只提交`offline_after_l4`跳过终态，不执行CNN；停机排空后由`offline_l4_sources`和`run_offline_l4()`把Hub封存包交给离线L4/L5。
 
-L2、L3、L5各有独立单worker和有界latest-wins等待队列。同一窗口仍严格按L2→L3→L5传递；稳态时允许L2(n)、L3(n-1)、L5(n-2)并行。正常部署只需修改`runtime.stage_queue_windows`一个变量，三层队列会同步使用该容量，`max_inflight_windows`自动派生为`3*stage_queue_windows+3`；当前值2000对应`max_inflight_windows=6003`。completion主队列和后备backlog仍分别为8。按50窗/秒计算，单层最多约40秒等待，因此该设置吸收短时过载，但会显著增加最坏端到端延迟和内存占用。新任务遇到本层满队列时替换尚未被worker取走的最旧窗口，已开始计算不取消。L2队列丢弃使三阶段全部`DROPPED`；L3队列丢弃保留L2、标记L3/L5 `DROPPED`；L5队列丢弃保留L2/L3、标记L5 `DROPPED`。L2 worker独占滚动MUSIC/方向轨迹状态和预计算导向缓存；连续窗口增量推进，sample跳跃或revision变化时安全重建并发布诊断。
+Runtime保留L2、L3、L5三个有界阶段队列和有序审计结构；当前实时计算只执行L2与L3，L5 worker为每个成功L3窗口提交`offline_after_l4`的`SKIPPED`终态。L2 worker独占滚动MUSIC/方向轨迹状态和预计算导向缓存；连续窗口增量推进，sample跳跃或revision变化时安全重建并发布诊断。L4与真正的L5推理不占用实时队列，只消费停机排空后的Hub封存包。
 
 `ResultJoiner`接收乱序完成的L2/L3/L5终态，只在同一WindowKey完整后生成一个`JoinedWindowResult`。每层`StageResult`携带有序公共`(track_id, theta_deg)`信息；Joiner逐项校验L2 directions、L3 enhanced与L5 detections的ID集合、顺序、角度及WindowKey。commit阶段按全局window ID有序调用RecordingStore的原子`append_result_with_watermark`，之后再做Test UI投影；stage worker不得绕过Joiner直接发布正式结果。Gate阻断产生L3/L5 `SKIPPED`；任一阶段`FAILED/TIMED_OUT/DROPPED/CANCELLED`都产生唯一`error` DecisionRecord v5；仅完整成功但使用声明回退的结果为`degraded`。旧DecisionRecord v3仅支持只读，不原地改写。
 
-L5 worker另有一个严格限于Test UI的`latest_l5_dev_ui` side channel：只有正式L5计算`COMPLETED`后才发布包含完整同窗L2空间响应、L3预览和L5结果的`DevUiFrame`。邮箱固定`maxsize=1`，新完成帧覆盖旧显示帧并累计覆盖数；失败不发布。该路径绕过的只是有序UI等待，不绕过ResultJoiner的正式结果、录音或watermark顺序。UI收到后续有序`DROPPED/SKIPPED`帧时保留最近有效CNN画面，直至`dev_test_ui.stale_after_ms`超时。
+`latest_l5_dev_ui` side channel为兼容性保留；全离线L5架构下实时链不会向其发布CNN结果。本期只预留离线L4/L5代码接口，不新增UI页面或控件。
 
 ResultJoiner注册前若在途窗口/字节容量已满，Runtime不保留新窗口的160 ms音频，只在有界范围审计中压缩保留身份、sample边界与原因；commit遇到对应window ID时展开为轻量`error` DecisionRecord和watermark。这条pre-joiner拒绝路径不会把容量异常抛回L1采集循环。
 
@@ -26,7 +26,7 @@ Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`�
 
 Development Test UI可实时关闭下游处理。关闭后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L5 `SKIPPED`终态，已经排队但尚未开始的L3/L5工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner、DecisionRecord或watermark顺序；重新开启后从下一条L2结果恢复L3/L5。
 
-Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Output(())`，不执行prepare/STFT/协方差；L5仍调用空batch公共接口并以`COMPLETED`空结果收束。正式记录中的三阶段均为completed，增强音频和Voice方向为空。
+Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Output(())`，不执行prepare/STFT/协方差；实时L5不调用空batch模型，仍以`offline_after_l4`的`SKIPPED`终态收束。增强音频和Voice方向为空。
 
 启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。超时的已注册窗口显式转为`CANCELLED/error`；仍有worker存活时拒绝假关闭。
 

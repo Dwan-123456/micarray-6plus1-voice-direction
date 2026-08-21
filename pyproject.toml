@@ -48,3 +48,7 @@ pythonpath = ["."]
 [tool.ruff]
 target-version = "py312"
 line-length = 120
+extend-exclude = [
+    "models/mossformer2_ss_16k_v1/source",
+    "models/tiger_speech_16k_v1/source",
+]

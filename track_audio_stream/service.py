@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field, replace
+import hashlib
 import threading
 
 import numpy as np
@@ -12,6 +13,7 @@ from layer5_voice_classifier.gain_compensation import (
     SegmentGainDiagnostic,
     compensate_l5_input,
 )
+from layer4_speech_separation.contracts import Layer4LongAudioInput
 
 from .contracts import ContinuousTrackAudio, TrackAudioBatch, TrackAudioHop, TrackAudioWindow
 
@@ -31,6 +33,15 @@ class _TrackState:
     audio: deque[np.ndarray] = field(default_factory=deque)
     probabilities: deque[float | None] = field(default_factory=deque)
     diagnostics: deque[SegmentGainDiagnostic] = field(default_factory=deque)
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchivedHop:
+    start_sample: int
+    end_sample: int
+    theta_deg: float
+    l2_direction_count: int
+    waveform: np.ndarray
 
 
 def _combined_diagnostic(
@@ -65,11 +76,15 @@ class TrackAudioStreamHub:
         self.settings = settings
         self.max_hops = context_ms // 20
         self._tracks: dict[tuple[str, int, int], _TrackState] = {}
+        self._archive: dict[tuple[str, int, int], list[_ArchivedHop]] = {}
+        self._sealed: tuple[Layer4LongAudioInput, ...] = ()
         self._lock = threading.RLock()
 
     def reset(self) -> None:
         with self._lock:
             self._tracks.clear()
+            self._archive.clear()
+            self._sealed = ()
 
     @property
     def gain_compensation_enabled(self) -> bool:
@@ -140,6 +155,8 @@ class TrackAudioStreamHub:
         source_decision: int,
         audio: np.ndarray,
         probability: float | None,
+        theta_deg: float,
+        l2_direction_count: int,
     ) -> TrackAudioHop:
         start_sample = source_decision - 2 * _HOP_SAMPLES
         end_sample = source_decision - _HOP_SAMPLES
@@ -161,6 +178,10 @@ class TrackAudioStreamHub:
             state.probabilities.popleft()
             state.diagnostics.popleft()
         state.last_emitted_end = end_sample
+        self._archive.setdefault(key, []).append(_ArchivedHop(
+            start_sample, end_sample, theta_deg, l2_direction_count,
+            np.frombuffer(compensated.tobytes(), dtype=np.float32),
+        ))
         return TrackAudioHop(
             key[0], key[1], key[2], start_sample, end_sample,
             compensated, probability, True,
@@ -172,6 +193,7 @@ class TrackAudioStreamHub:
         *,
         active_track_ids: tuple[int, ...],
         identity: tuple[str, int, int, int],
+        l2_direction_count: int | None = None,
     ) -> TrackAudioBatch:
         session_id, stream_epoch, window_id, decision_sample = identity
         windows = tuple(windows)
@@ -186,6 +208,9 @@ class TrackAudioStreamHub:
         active = tuple(int(item) for item in active_track_ids)
         if len(active) != len(set(active)) or any(item <= 0 for item in active):
             raise ValueError("active track IDs must be unique positive integers")
+        direction_count = len(windows) if l2_direction_count is None else l2_direction_count
+        if type(direction_count) is not int or direction_count not in {0, 1, 2, 3}:
+            raise ValueError("L2 direction count must be 0, 1, 2 or 3")
 
         emitted: list[TrackAudioHop] = []
         contexts: list[ContinuousTrackAudio] = []
@@ -237,6 +262,7 @@ class TrackAudioStreamHub:
                         )
                     emitted.append(self._append(
                         key, state, source_decision, audio, probability,
+                        window.theta_deg, direction_count,
                     ))
                 state.last_source_decision = window.decision_sample
                 # The current L3 window also contains the immediately following
@@ -270,3 +296,50 @@ class TrackAudioStreamHub:
             session_id, stream_epoch, window_id, decision_sample,
             tuple(emitted), tuple(contexts), active,
         )
+
+    def seal(self) -> tuple[Layer4LongAudioInput, ...]:
+        """Freeze all complete continuous ID runs after Runtime workers drain."""
+
+        outputs: list[Layer4LongAudioInput] = []
+        with self._lock:
+            for (session_id, epoch, track_id), hops in sorted(self._archive.items()):
+                run: list[_ArchivedHop] = []
+
+                def flush() -> None:
+                    if not run:
+                        return
+                    waveform = np.ascontiguousarray(
+                        np.concatenate(tuple(item.waveform for item in run)), dtype=np.float32,
+                    )
+                    digest = hashlib.sha256(waveform.tobytes()).hexdigest()
+                    outputs.append(Layer4LongAudioInput(
+                        asset_id=(
+                            f"{session_id}:epoch{epoch}:track{track_id}:"
+                            f"start{run[0].start_sample}"
+                        ),
+                        sha256=digest,
+                        session_id=session_id,
+                        stream_epoch=epoch,
+                        track_id=track_id,
+                        theta_deg=run[-1].theta_deg,
+                        start_sample=run[0].start_sample,
+                        sample_rate=48_000,
+                        waveform=waveform,
+                        l2_direction_counts=tuple(
+                            (item.end_sample, item.l2_direction_count) for item in run
+                        ),
+                    ))
+                    run.clear()
+
+                for hop in hops:
+                    if run and hop.start_sample != run[-1].end_sample:
+                        flush()
+                    run.append(hop)
+                flush()
+            self._sealed = tuple(outputs)
+            return self._sealed
+
+    @property
+    def sealed_tracks(self) -> tuple[Layer4LongAudioInput, ...]:
+        with self._lock:
+            return self._sealed

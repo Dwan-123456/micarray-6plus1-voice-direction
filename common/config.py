@@ -345,6 +345,21 @@ class Layer5Config(StrictModel):
         return self
 
 
+class Layer4Config(StrictModel):
+    enabled: bool = True
+    default_backend: Literal["mossformer2_ss_16k", "tiger_speech_16k"]
+    mossformer2_artifact: str
+    tiger_artifact: str
+
+    @model_validator(mode="after")
+    def validate_artifacts(self) -> "Layer4Config":
+        if any(not value.strip() for value in (
+            self.mossformer2_artifact, self.tiger_artifact,
+        )):
+            raise ValueError("Layer4 model artifact paths must be non-empty")
+        return self
+
+
 class RuntimeConfig(StrictModel):
     mode: Literal["development", "production"]
     preferred_device: str
@@ -465,6 +480,7 @@ class ProjectConfig(StrictModel):
     layer2: Layer2Config
     stft: StftConfig
     layer3: Layer3Config
+    layer4: Layer4Config
     feature: FeatureConfig
     layer5: Layer5Config
     runtime: RuntimeConfig

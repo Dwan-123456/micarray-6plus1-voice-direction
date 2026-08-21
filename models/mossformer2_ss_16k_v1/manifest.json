@@ -1,0 +1,15 @@
+{
+  "artifact_kind": "l4_mossformer2_official_v1",
+  "model_id": "alibabasglab/MossFormer2_SS_16K",
+  "model_revision": "407cb030cd66340918ebb6c8cc63b18f8592cdbe",
+  "model_file": "model.pt",
+  "model_sha256": "00a3a48bda492db1e829b85dd443f8f43a43039a3e90f1a24962ea9caf14a11a",
+  "sample_rate": 16000,
+  "source_count": 2,
+  "chunk_seconds": 30,
+  "overlap_seconds": 1,
+  "source_url": "https://github.com/modelscope/ClearerVoice-Studio",
+  "source_revision": "6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61",
+  "weights_url": "https://huggingface.co/alibabasglab/MossFormer2_SS_16K",
+  "license": "Apache-2.0"
+}

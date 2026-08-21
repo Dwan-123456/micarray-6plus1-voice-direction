@@ -2106,6 +2106,7 @@ class ApplicationRuntime:
                             item.work_item.key.window_id,
                             item.work_item.key.decision_sample,
                         ),
+                        l2_direction_count=len(candidates),
                     )
                     l5_inputs = self._layer5_inputs_from_stream(audio_batch)
                     self._validate_direction_outputs("track audio", candidates, l5_inputs)
@@ -2215,57 +2216,19 @@ class ApplicationRuntime:
                     )
                     continue
                 started_ns = monotonic_ns()
-                try:
-                    assert item.l2.output is not None and item.l3.output is not None
-                    formal_directions = tuple(
-                        getattr(item.l2.output, "directions", ()) or item.l2.output.candidates
-                    )
-                    inputs = item.inputs
-                    if self._l5_cuda_stream is None:
-                        output = self._layer5.process(inputs)
-                    else:
-                        with torch.cuda.stream(self._l5_cuda_stream):
-                            output = self._layer5.process(inputs)
-                        self._l5_cuda_stream.synchronize()
-                    frozen_threshold = float(item.work_item.config.values["l5_threshold"])
-                    if output.threshold != frozen_threshold:
-                        output = self._layer5.rethreshold(output, frozen_threshold)
-                    self._validate_direction_outputs(
-                        "L5", formal_directions, output.detections
-                    )
-                    annotations = self._track_voice_annotations(inputs, output)
-                    stage = L5StageResult.completed(
-                        item.work_item.key, output, started_monotonic_ns=started_ns,
-                        finished_monotonic_ns=monotonic_ns(),
-                    )
-                    self._stage_errors["l5"] = None
-                except Exception as exc:
-                    self._set_stage_error("l5", exc)
-                    stage = L5StageResult.terminal(
-                        item.work_item.key, StageState.FAILED, "l5_failed",
-                        started_monotonic_ns=started_ns,
-                        finished_monotonic_ns=monotonic_ns(), error=str(exc),
-                    )
+                # L5 is deliberately deferred until TrackAudioStreamHub has
+                # sealed the complete ID streams and offline L4 has performed
+                # speaker-count routing/separation.  Keeping this explicit
+                # terminal stage preserves ordered per-window audit records
+                # without executing the CNN on partial real-time context.
+                stage = L5StageResult.terminal(
+                    item.work_item.key, StageState.SKIPPED, "offline_after_l4",
+                    started_monotonic_ns=started_ns,
+                    finished_monotonic_ns=monotonic_ns(),
+                )
+                self._stage_errors["l5"] = None
                 self._stage_completed_counts["l5"] += 1
                 self._record_l5_terminal(stage.state)
-                if stage.state is StageState.COMPLETED and stage.output is not None:
-                    self._cache_publish(
-                        "l5", item.work_item.key, "track_voice_annotations", annotations
-                    )
-                    if self.dev_audio_tracker is not None:
-                        try:
-                            self.dev_audio_tracker.apply_l5_annotations(annotations)
-                            self.dev_audio_tracking_error = None
-                        except Exception as exc:
-                            # UI history is diagnostic only. Formal L5 and its
-                            # persisted annotation remain authoritative.
-                            self.dev_audio_tracking_error = str(exc)
-                    try:
-                        self._publish_completed_l5_ui(item, stage.output)
-                    except Exception as exc:
-                        # This mailbox is diagnostic only; a rendering-contract
-                        # failure must not change the formal L5 result.
-                        self.dev_ui_error = f"L5 immediate UI: {exc}"
                 self._cache_publish("l5", item.work_item.key, "stage_result", stage)
                 self._joiner_submit(lambda: self._result_joiner.submit_l5(stage))
         except Exception as exc:
@@ -3152,6 +3115,8 @@ class ApplicationRuntime:
         # Never close RecordingStore while a stage or commit worker can still
         # append to it.  A later stop/close call can finalize after the worker
         # exits, and the explicit error remains visible to the UI.
+        if not alive and not input_alive:
+            self.track_audio_stream.seal()
         if self._recording_session_started and not alive and not input_alive:
             try:
                 self.recording_store.stop_session("normal" if self.last_error is None else "runtime_error")
@@ -3159,6 +3124,25 @@ class ApplicationRuntime:
                 self.last_error = f"runtime recording finalize failed: {exc}"
             else:
                 self._recording_session_started = False
+
+    @property
+    def offline_l4_sources(self):
+        """Sealed Hub output; populated only after a fully drained stop."""
+
+        if self.running or any(thread.is_alive() for thread in self._processing_threads.values()):
+            raise RuntimeError("offline L4 requires capture stop and complete processing drain")
+        return self.track_audio_stream.sealed_tracks
+
+    def run_offline_l4(self, pipeline):
+        """Run a configured offline L4/L5 pipeline on the sealed Hub package."""
+
+        sources = self.offline_l4_sources
+        if not sources:
+            raise RuntimeError("TrackAudioStreamHub has no sealed long audio")
+        process_sealed = getattr(pipeline, "process_sealed", None)
+        if not callable(process_sealed):
+            raise TypeError("offline Layer4 pipeline must provide process_sealed")
+        return process_sealed(sources)
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:
         self.stop()

@@ -23,6 +23,17 @@
 
 ---
 
+## 2026-08-21 — 完成Hub长音频驱动的离线L4双人分离与L5接线
+
+- **链路改造**：实时链改为`L2→L3→TrackAudioStreamHub`，不再把拼接片段送入CNN；L3排空后Hub按`session/epoch/track_id`封存完整48 kHz单声道长音频、原ID/角度和逐窗L2方向输出数。Runtime预留`offline_l4_sources`与`run_offline_l4()`后端接口，UI页面和控件本次明确无变化。
+- **人数路由与重采样**：讲话人数取封存范围内L2方向输出数量最大值；1人和2人均使用L4统一拥有的48→16 kHz多相重采样，L5删除私有重采样实现并复用该组件。1人绕过分离直接进L5；2人进入所选分离后端；大于2人明确拒绝。Hub音频已完成增益补偿，离线L5带禁用补偿诊断，避免二次放大。
+- **分离模型与匹配**：加入官方ClearerVoice MossFormer2 SS 16K和TIGER speech的Apache-2.0推理源码快照、严格revision/SHA-256 manifest及权重；二者可配置切换。长音频按30秒、1秒重叠分块，并用重叠相似度修复匿名输出交换。完成512点Hann、160 hop、2～4 kHz参考能量加权幅度谱余弦匹配，含末尾补零、有界批处理和确定性平分规则，获胜音轨继承原ID与角度。
+- **离线结果与恢复**：增加同步离线编排、完成session的哈希校验恢复入口、原子WAV/作业manifest输出和批处理脚本；正常Runtime优先直接读取Hub内存封存包，RecordingStore读取仅用于恢复/批处理。模型推理结果记录后端、revision、候选分数、输出哈希和L5判断。
+- **测试与文档**：新增人数最大值、单人旁路、双人分离匹配、长块匿名排列稳定、Hub封存、模型契约和匹配边界测试，并把旧实时CNN测试更新为离线L5契约；同步根架构、模块说明、第三方NOTICE和配置。L1采集/预降噪、L2 MUSIC/Gate/ID/Kalman算法、L3波束形成数值算法、RecordingStore既有格式、Development/Production/Log UI及发布标签无变化。
+- **Git LFS与验收边界**：新增MossFormer2 `model.pt`与TIGER `model.safetensors` LFS资产；严格加载及两模型短音频有限值冒烟已验证。自动测试不替代真实双人录音、长时GPU吞吐、分离听感和2～4 kHz匹配质量实机验收。
+
+---
+
 ## 2026-08-21 — 现有CNN迁移为L5并冻结离线L4双人分离契约
 
 - **命名与实时主链**：将原`layer4_voice_classifier`及其`Layer4*`公共类型、配置、Runtime阶段、队列、状态、Development Test UI、Log UI、脚本和测试统一迁移为`layer5_voice_classifier`及L5命名；当前实时链明确为`L2→L3→TrackAudioStreamHub→L5`。原MarbleNet权重、算法、阈值、响度补偿和推理行为不变。

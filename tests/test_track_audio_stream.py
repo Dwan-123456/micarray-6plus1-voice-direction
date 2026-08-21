@@ -56,6 +56,23 @@ def test_hub_appends_one_aligned_compensated_hop_per_id_and_grows_context():
     assert second.continuous_audio[0].gain_diagnostic.enabled is True
 
 
+def test_hub_seals_complete_long_audio_with_aligned_l2_direction_counts() -> None:
+    hub = TrackAudioStreamHub(InputGainCompensationSettings(enabled=False), context_ms=60)
+    for index, decision in enumerate((7_680, 8_640, 9_600, 10_560)):
+        hub.process(
+            (_window(decision),), active_track_ids=(7,), identity=_identity(decision),
+            l2_direction_count=1 if index < 2 else 2,
+        )
+    sealed = hub.seal()
+    assert len(sealed) == 1
+    assert len(sealed[0].waveform) == 4 * 960
+    assert sealed[0].start_sample == 5_760
+    assert sealed[0].l2_direction_counts == (
+        (6_720, 1), (7_680, 1), (8_640, 2), (9_600, 2),
+    )
+    assert not sealed[0].waveform.flags.writeable
+
+
 def test_adjacent_windows_crossfade_the_future_overlap_without_a_20ms_seam():
     def offset_window(decision: int, offset: float) -> TrackAudioWindow:
         absolute = np.arange(decision - 3_840, decision, dtype=np.float64)

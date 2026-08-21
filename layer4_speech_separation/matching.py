@@ -29,33 +29,51 @@ class BandMagnitudeMatcher:
             frequencies <= L4_MATCH_FREQUENCY_MAX_HZ
         )
 
-    def _magnitude(self, waveform: NDArray[np.float32]) -> NDArray[np.float64]:
+    def _frames(self, waveform: NDArray[np.float32]) -> NDArray[np.float32]:
         value = np.asarray(waveform, dtype=np.float32)
         if value.ndim != 1 or not len(value) or not np.isfinite(value).all():
             raise ValueError("matching audio must be finite non-empty mono audio")
-        if len(value) < self.n_fft:
-            value = np.pad(value, (0, self.n_fft - len(value)))
-        frame_count = 1 + (len(value) - self.n_fft) // self.hop_length
-        frames = np.lib.stride_tricks.sliding_window_view(value, self.n_fft)[
+        frame_count = max(1, 1 + int(np.ceil((len(value) - self.n_fft) / self.hop_length)))
+        required = (frame_count - 1) * self.hop_length + self.n_fft
+        if len(value) < required:
+            value = np.pad(value, (0, required - len(value)))
+        return np.lib.stride_tricks.sliding_window_view(value, self.n_fft)[
             : frame_count * self.hop_length : self.hop_length
         ]
-        return np.abs(np.fft.rfft(frames * self._window, axis=1)[:, self._bins])
 
     def _score(self, reference: NDArray[np.float32], candidate: NDArray[np.float32]) -> float:
         if len(reference) != len(candidate):
             raise ValueError("matching reference and candidate must be time-aligned and equal length")
-        left = self._magnitude(reference)
-        right = self._magnitude(candidate)
-        numerator = np.sum(left * right, axis=1)
-        denominator = np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1)
-        valid = denominator > np.finfo(np.float64).eps
-        if not np.any(valid):
+        left_frames = self._frames(reference)
+        right_frames = self._frames(candidate)
+        weighted_score = 0.0
+        total_weight = 0.0
+        unweighted_score = 0.0
+        valid_count = 0
+        # Bound peak memory for session-length recordings while preserving the
+        # exact complete-audio statistic.
+        for start in range(0, len(left_frames), 4096):
+            stop = min(len(left_frames), start + 4096)
+            left = np.abs(np.fft.rfft(
+                left_frames[start:stop] * self._window, axis=1,
+            )[:, self._bins])
+            right = np.abs(np.fft.rfft(
+                right_frames[start:stop] * self._window, axis=1,
+            )[:, self._bins])
+            numerator = np.sum(left * right, axis=1)
+            denominator = np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1)
+            valid = denominator > np.finfo(np.float64).eps
+            if not np.any(valid):
+                continue
+            scores = np.clip(numerator[valid] / denominator[valid], 0.0, 1.0)
+            weights = np.sum(left[valid] ** 2, axis=1)
+            weighted_score += float(np.sum(scores * weights))
+            total_weight += float(np.sum(weights))
+            unweighted_score += float(np.sum(scores))
+            valid_count += len(scores)
+        if valid_count == 0:
             return 0.0
-        weights = np.sum(left[valid] ** 2, axis=1)
-        scores = np.clip(numerator[valid] / denominator[valid], 0.0, 1.0)
-        if not np.any(weights > 0.0):
-            return float(np.mean(scores))
-        return float(np.average(scores, weights=weights))
+        return weighted_score / total_weight if total_weight > 0.0 else unweighted_score / valid_count
 
     def select(
         self,

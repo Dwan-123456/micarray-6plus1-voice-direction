@@ -212,6 +212,13 @@ layer3:
   subband_wiener_min_gain: 0.25
   subband_soft_null_steps: 8
 
+layer4:
+  enabled: true
+  default_backend: mossformer2_ss_16k
+  # Local, hash-verified TorchScript exports. Offline L4 never downloads models.
+  mossformer2_artifact: models/mossformer2_ss_16k_v1
+  tiger_artifact: models/tiger_speech_16k_v1
+
 feature:
   preprocessing_version: voice_logmag_v1
   frequency_min_hz: 80.0

@@ -2,13 +2,13 @@
 
 > 项目1.3.1中，L5音频段、检测和阶段结果贯通`track_id`；L5不按角度创建或修补ID，语义概率反馈只按L2权威身份关联。
 
-权威目标契约见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。L3按统一配置输出40/80/160 ms重叠增强窗（当前40 ms）；正式`TrackAudioStreamHub`在L3与L5之间按`(session_id, stream_epoch, track_id)`把它们变为连续20 ms时间轴。
+权威目标契约见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。L3按统一配置输出40/80/160 ms重叠增强窗（当前40 ms）；`TrackAudioStreamHub`按`(session_id, stream_epoch, track_id)`把它们拼接并封存为完整长音频。L5不再实时消费连续片段，只在停机排空、Hub封存并完成L4一/二人路由后执行。
 
 公共服务每窗只追加一个内部稳定且与IMCRA网格严格对齐的20 ms hop，避免40 ms重叠重复；随后执行`imcra_probability_rms_v1`并维护最长3200 ms连续缓冲。Test UI试听、正式按ID轨音频和CNN读取同一份补偿后波形。重叠L3原始窗只作瞬时输入，不再作为正式音频资产重复保存。
 
 响度补偿目标RMS为`-23.0 dBFS`；概率不高于0.30时不补偿、达到0.80时完整补偿，中间线性插值。算法只放大、不主动衰减，并以`-3 dBFS`限制新增增益。Test UI开关默认ON且可实时切换；开关不重建ID、不清空连续上下文，增益从下一20 ms平滑过渡。
 
-NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`适配器接收可变长度连续48 kHz轨音频，polyphase降采样到16 kHz后一次输出约每20 ms一帧的概率。模型利用最长3200 ms上下文，但窗口标量只聚合最新80 ms内连续3帧，旧语音不得粘住当前判断。这里的“连续/流式”表示按ID维护连续序列并反复提供有界长上下文；MarbleNet本身不是隐藏状态缓存模型。
+NVIDIA `Frame_VAD_Multilingual_MarbleNet_v2.0`适配器接收完整连续48 kHz轨音频，并复用L4拥有的`Layer4Resampler`降采样到16 kHz后输出人声概率。实时Runtime的L5阶段明确记录`offline_after_l4`跳过原因，不执行CNN；离线结果保留模型、阈值和概率审计。
 
 L5不接收L2内部ID或`[17,169]`特征，方向标签只继承L3携带的平滑角；它不再次滤波、不做跨窗口Tracking或身份识别，也不反馈改变L2 Gate、SRP或L3音频。primary/shadow模型可读取同一不可变波形；只有primary结果进入正式VoiceDetection和DecisionRecord。
 

@@ -8,9 +8,9 @@ from typing import Protocol
 
 import numpy as np
 import torch
-from scipy.signal import resample_poly
 
 from common.config import DownstreamAudioWindowSpec
+from layer4_speech_separation.resampling import Layer4Resampler
 
 from .contracts import Layer5AudioSegment, Layer5Result, ModelPrediction, VoiceDetection
 from .gain_compensation import InputGainCompensationSettings, compensate_l5_input
@@ -68,6 +68,8 @@ def max_contiguous_frame_mean(
 
 
 class NvidiaMarbleNetPlugin:
+    resampler = Layer4Resampler()
+
     def __init__(
         self,
         model_id: str,
@@ -86,6 +88,7 @@ class NvidiaMarbleNetPlugin:
         self.device = torch.device(device)
         self.window_spec = window_spec or DownstreamAudioWindowSpec(160, 7_680, 8, 17, 2_560)
         self.model = NvidiaFrameVadMarbleNet.from_artifact(self.artifact, self.device)
+        self.resampler = Layer4Resampler()
 
     def predict(self, waveforms_48k: np.ndarray) -> ModelPrediction:
         waveforms = np.asarray(waveforms_48k)
@@ -105,7 +108,10 @@ class NvidiaMarbleNetPlugin:
         if len(waveforms) == 0:
             probabilities = np.empty((0,), dtype=np.float32)
         else:
-            audio_16k = resample_poly(waveforms, up=1, down=3, axis=1).astype(np.float32, copy=False)
+            audio_16k = np.ascontiguousarray(np.stack([
+                self.resampler.to_16k(np.ascontiguousarray(item, dtype=np.float32))
+                for item in waveforms
+            ]), dtype=np.float32)
             audio = torch.from_numpy(np.ascontiguousarray(audio_16k)).to(self.device)
             with torch.inference_mode():
                 logits, lengths = self.model(audio)

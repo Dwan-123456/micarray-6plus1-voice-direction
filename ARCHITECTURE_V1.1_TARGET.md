@@ -88,7 +88,7 @@ flowchart LR
     SEM --> REC
 ```
 
-跨窗口并行仍为 `L2(n) || L3(n-1) || L5(n-2)`；同一窗口仍严格执行 `L2 → L3 → L5`。`track_id` 只增加对齐维度，不允许绕过 `WindowKey = (session_id, stream_epoch, window_id, decision_sample)`。
+跨窗口实时并行为 `L2(n) || L3(n-1)`；同一窗口的实时审计严格执行 `L2 → L3 → L5(SKIPPED: offline_after_l4)`。真正的L4/L5只消费停机排空后的Hub封存包。
 
 ## 4. 公共方向与 ID 契约
 
@@ -226,24 +226,24 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
   五频段档使用IMCRA/声源SCM/WNG/Wiener鲁棒对照。切换模式不改变权威ID，
   只隔离各模式的试听缓存。
 
-## 10. Layer 5 改动
+## 10. Layer 4 / Layer 5 采集后链
 
-- L3公开1920/3840/7680个48 kHz重叠窗；`TrackAudioStreamHub`按精确ID抽取与IMCRA网格对齐的20 ms hop，去重拼接、响度补偿并维护最长3200 ms连续轨。L5公开输入改为一个或多个完整20 ms hop的可变长度连续48 kHz波形。
+- L3公开1920/3840/7680个48 kHz重叠窗；`TrackAudioStreamHub`按精确ID抽取20 ms hop，去重拼接、响度补偿并另外保留完整长音频。实时链到Hub结束，不执行CNN。
 - `Layer5AudioSegment`、`VoiceDetection` 和阶段结果均增加 `track_id`，并按 L3 的 `(WindowKey, track_id)` 原样返回。
 - L5 入口/出口校验 ID 集合、顺序、角度与音频严格对齐；重新阈值判断只能改变 Voice/Non-Voice 结论，不能改变 ID。
-- NVIDIA适配器对连续轨执行48→16 kHz polyphase重采样并产生连续20 ms帧概率；最终窗口概率只聚合最新80 ms内连续3帧，较早语音只提供卷积上下文。primary/shadow读取同一不可变连续音频批次。
+- 停止采集且L3完全排空后，Hub封存完整长音频和逐窗L2方向输出数量；统一重采样代码归L4所有，L5复用同一48→16 kHz实现。
 - 响度补偿开关默认开启并由Test UI持久化；切换不重建ID、不清空连续缓冲，从下一20 ms开始在dB域平滑过渡。Test UI试听与CNN必须逐样本读取同一补偿后轨。
 - 每次成功检测必须以完整`(WindowKey, track_id)`回填到该连续输入的最新20 ms hop，并保存`probability、is_voice、model_id、threshold`及绝对sample范围；失败、丢弃或无结果的hop保持无语义结果，不能伪造Non-Voice。
 - 删除 L5 通过角度向 L2 回送“正式化/续租”证据的路径。L5 是轨迹的语义标签消费者，不是方向 ID 的所有者。
 
-### 10.1 采集后离线 Layer 4 预留契约
+### 10.1 采集后离线 Layer 4 实现
 
-- 原Layer 4 CNN整体迁移为Layer 5；离线Layer 4只在采集结束、L3队列排空、逐ID长音频拼接并封存后由未来编排器调用，不加入20 ms Runtime、StageResult或ResultJoiner。
-- 合法输入至多两名讲话人。未来人数分类器输出一人时绕过Layer 4进入Layer 5；输出两人时，每条封存L3 ID长音频分别提交给同一个MossFormer2或TIGER适配器。当前只规定接口，不包含模型权重或人数分类实现。
+- 原Layer 4 CNN整体迁移为Layer 5；实时L5 StageResult以`offline_after_l4`明确跳过，保持逐窗有序审计但不得执行模型。
+- 讲话人数取封存时间范围内L2方向输出数量的最大值。最大值1直接进入L5；最大值2进入所选MossFormer2或TIGER后端；最大值3拒绝当前双人L4。
 - `Layer4LongAudioInput`固定接收带SHA-256、`session_id/stream_epoch/track_id/theta_deg/start_sample`的48 kHz单声道完整20 ms hop音频；后端输入固定16 kHz并必须返回恰好两条匿名、等长、finite `float32`候选。
 - 每条L3输入的两候选只发布一个。原L3 BF参考经相同重采样后，以512点Hann STFT、160点hop在2～4 kHz计算逐帧幅度谱余弦相似度并按参考频带能量加权；高分候选继承原ID和角度，低分候选不发布。平分固定选择索引0；记录两分数和差值，首版不设拒绝阈值。
-- 模型适配器负责先稳定长音频内部各分段的匿名输出排列；匹配器只对两条完整候选做一次整段选择，禁止逐20 ms重新选人。
-- 权威接口与当前未实现边界见[`layer4_speech_separation/README.md`](layer4_speech_separation/README.md)。
+- 官方MossFormer2/TIGER源码和权重作为可选对比模型，以manifest固定revision、SHA-256与许可证。模型适配器用重叠分块稳定匿名输出排列；匹配器只对两条完整候选做一次整段选择。
+- Runtime通过`offline_l4_sources`和`run_offline_l4()`预留非UI调用；本期不实现UI。
 
 ## 11. Runtime、时间线与并行管理
 
@@ -258,7 +258,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ## 12. Development Test UI 与逐 ID 试听
 
 - Test UI不拥有独立的音频窗口配置；面板文字、单窗试听波形和按ID恢复范围全部使用Runtime注入的同一40/80/160 ms派生规格。当前按钮显示40 ms。
-- Test UI不再从L3重叠窗自行形成正式试听轨。它只缓存并播放`TrackAudioStreamHub`已经拼好和补偿的连续hop；同一hop也是L5的CNN输入，播放端不得再增加独立响度归一化。L5面板提供默认ON的实时响度补偿开关，开关不切轨、不重置ID或CNN上下文。
+- Test UI继续只缓存并播放`TrackAudioStreamHub`已经拼好和补偿的连续hop；本期不新增离线L4/L5 UI。Hub另存完整长音频，停机排空后由后端接口封存并离线处理。
 - 方向轨波形按同一20 ms时间线接收L5概率。使用当前Test UI L5阈值重新判断并将Voice区间底色显示为黄色；Non-Voice、无结果及失败区间保留既有默认底色。滑块只读取已有概率，不重跑CNN。
 
 - 删除 “Iterative Multiple Peak” 开关。Development Test UI保留一个默认开启、持久化的`ID Tracking`诊断开关：开启时显示并发布L2权威ID；关闭时只显示360点MUSIC伪谱和原始峰值灰色小点，清空追踪状态，并将该窗L3/L5正常标记为`SKIPPED`，不得把原始峰值当作下游ID。重新开启后从新的权威ID状态开始。

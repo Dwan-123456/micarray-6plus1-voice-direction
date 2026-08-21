@@ -43,3 +43,19 @@
 - License: Apache-2.0
 - Use: design reference for the tracking-by-detection sequence of prediction, gated association, update, creation, and track retirement.
 - Runtime dependency: none; visual bounding-box tracking code is not imported or copied.
+
+## ClearerVoice-Studio / MossFormer2
+
+- Repository: https://github.com/modelscope/ClearerVoice-Studio
+- Vendored revision: `6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61`
+- Model: https://huggingface.co/alibabasglab/MossFormer2_SS_16K, revision `407cb030cd66340918ebb6c8cc63b18f8592cdbe`
+- License: Apache-2.0
+- Use: optional offline two-speaker comparison backend. The inference-only source snapshot and hash-pinned weights are redistributed with their license and manifest.
+
+## TIGER speech separation
+
+- Repository: https://github.com/JusperLee/TIGER
+- Vendored revision: `9f18d4a10a7137e1ce8052cfb62215179f1287b6`
+- Model: https://huggingface.co/JusperLee/TIGER-speech
+- License: Apache-2.0
+- Use: optional offline two-speaker comparison backend. The inference-only source snapshot and hash-pinned weights are redistributed with their license and manifest.

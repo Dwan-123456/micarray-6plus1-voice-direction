@@ -21,7 +21,7 @@
   - `global_tracker.py`：使用带birth/miss dummy项的`linear_sum_assignment`维护公共方向轨迹。
   - `pipeline.py`：按Probability Gate → Rolling NormMUSIC → Global ID → optional Kalman编排，并区分`BLOCKED / PROCESSED`。
 - `layer3_direction_signal/`：当前v0.2含共享STFT、DAS/MVDR和FeatureExtractor；v0.3公共输出将只保留逐方向48 kHz音频。
-- `layer4_speech_separation/`：采集结束后的可选离线双人分离框架；当前只冻结封存长音频输入、MossFormer2/TIGER双输出后端、1/2人路由边界及2～4 kHz主讲话人匹配输出契约，尚未接入模型和任务编排。
+- `layer4_speech_separation/`：采集结束后的离线双人分离实现；包含Hub封存输入、L2方向数最大值1/2人路由、统一重采样、官方MossFormer2/TIGER后端、长音频排列修复、2～4 kHz匹配、L5离线编排与结果持久化接口。
 - `layer5_voice_classifier/`：已实现MarbleNet基准的公共契约、插件引擎、artifact校验、CPU推理和运行时接线；目标域校准及CUDA门禁未完成。
 - `data_management/`：正式录音与数据管理；当前RecordingStore包含原子result+watermark、逐chunk结果释放、有界event pre-roll、hotmap流写入及增强WAV partial+journal恢复。
 - `gui/`：Development Test UI，以及带独立UAC采集主机的正式Audio Data Manager；最终人声方向production GUI尚未实现。

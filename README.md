@@ -2,7 +2,7 @@
 
 > 当前开发版本：`1.3.1`；Layer 2公开版本：`1.1`。最终发布基线为`v1.2.4`。
 
-> **开发状态：项目 `1.3.1`。** L1、L2、L3和重命名后的L5 CNN已整合；离线L4双人分离目前只完成公共契约、后端边界和2～4 kHz主讲话人选择标准，尚未下载模型或接入运行编排。Rolling NormMUSIC、永久公共方向ID、并行Runtime、Development Test UI、Pipeline Log UI、RecordingStore、Audio Data Manager与Production UI保持可用。自动化验收通过不替代真实阵列、诊室声场和长时间运行门禁。
+> **开发状态：项目 `1.3.1`。** 实时链运行到L3与`TrackAudioStreamHub`；采集停止并排空后，Hub封存按ID拼接的完整长音频，再进入离线L4与L5。L4已接入官方MossFormer2/TIGER可选对比模型、基于L2方向数最大值的1/2人路由、统一48→16 kHz重采样、2～4 kHz完整音频匹配和离线结果契约。UI只预留接口，本次未实现离线作业页面。自动化验收不替代真实双人录音和GPU质量门禁。
 
 > 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L5、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
@@ -159,17 +159,17 @@ WindowWorkItem
     独立进程尚无跨进程只读端口：未注入provider时明确显示Unavailable
 
 运行约束：
-    同窗严格L2(n) → L3(n) → TrackAudioStreamHub → L5(n)
-    跨窗稳态L2(n) || L3(n-1) || L5(n-2)
+    同窗严格L2(n) → L3(n) → TrackAudioStreamHub；实时L5记为offline_after_l4
+    跨窗稳态L2(n) || L3(n-1)；L5仅保留逐窗跳过审计
     各阶段单worker、队列/Joiner/缓存均有界；满队列按latest-wins替换未开始旧窗
     既有optimized隔离L3基准已低于20 ms节拍；五频段模式与真实阵列全链并发仍待复测
 ```
 
 上图描述当前1.3.1代码实现；`【已完成】`表示模块和自动化契约已经接通，不代表真实阵列、诊室声场、中文目标域或长时间负载已经验收。独立Pipeline Log UI的详细只读边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
 
-### 预留的采集后离线L4路径
+### 采集后离线L4/L5路径
 
-离线L4不在上面的20 ms Runtime中运行。目标路径是在停止采集、L3队列排空、按ID长WAV拼接并封存后，由未来的讲话人数分类器决定是否调用：一人音频绕过L4进入L5；两人音频分别调用同一个MossFormer2/TIGER适配器。每条L3长音频产生两个匿名候选后，只在完整音频上用原L3 BF的2～4 kHz幅度谱特征选择一个主讲话人候选；正式输出继承原`session_id/stream_epoch/track_id/theta_deg`，另一候选不发布。当前只实现[`layer4_speech_separation/`](layer4_speech_separation/README.md)的契约和确定性匹配标准，没有模型权重、人数分类器、任务队列、存储发布或UI接线。
+离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量；最大方向数1时统一降采样后直接进入L5，最大值2时先运行配置选择的MossFormer2或TIGER，再以原Hub长音频的2～4 kHz幅度谱从两个匿名候选中选择一条，继承原`session_id/stream_epoch/track_id/theta_deg`后进入L5。`ApplicationRuntime.offline_l4_sources`和`run_offline_l4()`已预留调用接口；本次不实现UI。
 
 ## 算法流程说明
 
@@ -196,7 +196,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 系统为每次采集建立唯一`session_id`，用`stream_epoch`表示连续音频段，并用绝对sample编号描述时间。发生输入丢失或不连续时会切换epoch，防止把不连续音频误拼到同一个算法窗口。
 
-WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为40 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop，完成IMCRA响度补偿并维护最长3200 ms连续轨；Test UI试听、正式轨音频和L5共同读取该连续轨。L2、L3、公共轨服务和L5沿用同一WindowKey，不能各自重新读取“当前最新音频”。
+WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为40 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop并完成IMCRA响度补偿；实时上下文仍有界，但另行归档的完整轨直到停机排空后才封存并交给L4。L5不再实时读取Hub片段。
 
 ### 4. Probability Gate
 
@@ -257,7 +257,7 @@ L5继承并标注L2已经分配的公共方向`track_id`，不向L2回送角度�
 
 ### 9. 并行、过载和结果保存
 
-同一个窗口必须依次完成L2、L3、L5；不同窗口可以形成分阶段流水。每层只有一个有状态worker，并使用有界latest-wins等待队列。队列满时只替换尚未开始的旧任务，不取消已经开始的计算。
+实时窗口依次完成L2、L3，再由L5阶段写入`offline_after_l4`跳过终态；不同窗口的L2与L3可以形成分阶段流水。真正的L4/L5仅在Hub长音频封存后离线执行。
 
 被丢弃、失败、超时或停机取消的窗口不会静默消失，而会按原时间轴写入明确的终态和ResultWatermark。这样即使实时负载过高，录音和离线分析仍能知道哪些时间点没有得到完整结果。
 

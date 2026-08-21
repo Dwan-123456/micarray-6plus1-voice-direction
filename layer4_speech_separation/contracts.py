@@ -42,6 +42,7 @@ class Layer4LongAudioInput:
     start_sample: int
     sample_rate: Literal[48000]
     waveform: NDArray[np.float32]
+    l2_direction_counts: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.asset_id or not self.session_id:
@@ -57,7 +58,20 @@ class Layer4LongAudioInput:
         waveform = _readonly_float32_1d(self.waveform, "Layer 4 input")
         if not len(waveform) or len(waveform) % L3_HOP_SAMPLES:
             raise ValueError("Layer 4 input must contain complete 20 ms Layer 3 hops")
+        counts = tuple((int(sample), int(count)) for sample, count in self.l2_direction_counts)
+        if not counts:
+            raise ValueError("Layer 4 input requires aligned L2 direction-count history")
+        if any(
+            sample < self.start_sample or sample > self.end_sample or count not in {0, 1, 2, 3}
+            for sample, count in counts
+        ):
+            raise ValueError("Layer 4 L2 direction counts must be 0..3 on the source timeline")
+        if any(right[0] <= left[0] for left, right in zip(counts, counts[1:])):
+            raise ValueError("Layer 4 L2 direction-count history must be strictly ordered")
+        if max(count for _, count in counts) not in {1, 2, 3}:
+            raise ValueError("Layer 4 requires at least one L2 direction in its time range")
         object.__setattr__(self, "waveform", waveform)
+        object.__setattr__(self, "l2_direction_counts", counts)
 
     @property
     def end_sample(self) -> int:
@@ -158,3 +172,39 @@ class Layer4PrimarySelection:
             raise ValueError("Layer 4 score margin must equal the candidate score difference")
         object.__setattr__(self, "candidate_scores", scores)
         object.__setattr__(self, "waveform", _readonly_float32_1d(self.waveform, "Layer 4 selection"))
+
+
+@dataclass(frozen=True, slots=True)
+class Layer4OfflineResult:
+    """Auditable terminal result for one sealed L3 asset."""
+
+    request_id: str
+    source: Layer4LongAudioInput
+    speaker_count: SpeakerCountDecision
+    path: Literal["single_speaker_bypass", "two_speaker_separation"]
+    selected: Layer4PrimarySelection | None
+    l5_probability: float
+    l5_is_voice: bool
+    l5_model_id: str
+    output_asset_id: str
+    output_sha256: str
+    metadata: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if not self.request_id or not self.output_asset_id or not self.l5_model_id:
+            raise ValueError("offline L4 result requires request, asset and L5 identities")
+        if self.speaker_count.asset_id != self.source.asset_id:
+            raise ValueError("offline L4 speaker count must describe its source")
+        if (self.path == "single_speaker_bypass") != (self.selected is None):
+            raise ValueError("only the single-speaker path may omit an L4 selection")
+        if self.path == "single_speaker_bypass" and self.speaker_count.speaker_count != 1:
+            raise ValueError("single-speaker bypass requires a one-speaker decision")
+        if self.path == "two_speaker_separation" and self.speaker_count.speaker_count != 2:
+            raise ValueError("two-speaker separation requires a two-speaker decision")
+        if not np.isfinite(self.l5_probability) or not 0.0 <= self.l5_probability <= 1.0:
+            raise ValueError("offline L5 probability must be in [0,1]")
+        if type(self.l5_is_voice) is not bool:
+            raise ValueError("offline L5 decision must be bool")
+        if len(self.output_sha256) != 64 or any(c not in "0123456789abcdef" for c in self.output_sha256):
+            raise ValueError("offline output sha256 must be lowercase hexadecimal")
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
