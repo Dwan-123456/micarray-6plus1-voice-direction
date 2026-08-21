@@ -1048,14 +1048,25 @@ def test_window_has_four_equal_grid_cells_and_fixed_performance_bar(monkeypatch)
         assert not hasattr(window, "srp_iterative")
         assert not hasattr(window, "srp_id_tracking")
         assert not hasattr(window, "direction_table")
-        assert right_layout.indexOf(window.srp_kalman) == 1
+        processing_switches = right_layout.itemAt(1).layout()
+        assert processing_switches is not None
+        assert processing_switches.indexOf(window.srp_kalman) == 0
+        assert processing_switches.indexOf(window.music_dpd_rank1) == 1
+        assert processing_switches.indexOf(window.music_noise_whitening) == 2
+        assert processing_switches.stretch(0) == 1
+        assert processing_switches.stretch(1) == 1
+        assert processing_switches.stretch(2) == 1
+        assert window.srp_kalman.text() == "Kalman"
+        assert window.music_dpd_rank1.text() == "DPD"
+        assert window.music_noise_whitening.text() == "Whitening"
+        assert "#5b6570" in window.srp_kalman.styleSheet()
+        assert "#5b6570" in window.music_dpd_rank1.styleSheet()
+        assert "#5b6570" in window.music_noise_whitening.styleSheet()
         assert right_layout.indexOf(window.srp_kalman_q) == 2
         assert right_layout.indexOf(window.srp_kalman_r) == 3
         assert right_layout.indexOf(window.gate_readout) == 4
-        assert right_layout.indexOf(window.music_dpd_rank1) == 5
-        assert right_layout.indexOf(window.music_noise_whitening) == 6
-        assert right_layout.indexOf(window.music_order_limit) == 7
-        assert right_layout.indexOf(window.srp_threshold) == 8
+        assert right_layout.indexOf(window.music_order_limit) == 5
+        assert right_layout.indexOf(window.srp_threshold) == 6
         decision = ProbabilityGateDecision(
             "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
             0.55, 0.75, 0.65, 0.60, 4, True, "probability_at_or_above_threshold",

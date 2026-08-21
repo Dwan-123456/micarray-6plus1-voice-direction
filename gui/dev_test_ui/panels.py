@@ -121,8 +121,7 @@ class _RuntimeSwitchControl(QPushButton):
 
     def set_enabled(self, enabled: bool, *, pending: bool = False) -> None:
         self.setChecked(bool(enabled))
-        suffix = " · next window" if pending else ""
-        self.setText(f"{self.label}: {'ON' if enabled else 'OFF'}{suffix}")
+        self.setText(self.label)
         color = "#9a6b00" if pending else ("#16794b" if enabled else "#5b6570")
         self.setStyleSheet(f"QPushButton {{ background:{color}; color:white; font-weight:600; }}")
 
@@ -132,15 +131,15 @@ class _RuntimeSwitchControl(QPushButton):
 
 
 class DirectionKalmanControl(_RuntimeSwitchControl):
-    label = "Circular Kalman"
+    label = "Kalman"
 
 
 class MusicDpdRank1Control(_RuntimeSwitchControl):
-    label = "DPD + rank-1 MUSIC"
+    label = "DPD"
 
 
 class MusicNoiseWhiteningControl(_RuntimeSwitchControl):
-    label = "IMCRA噪声白化"
+    label = "Whitening"
 
 
 class KalmanNoiseScaleControl(QWidget):
