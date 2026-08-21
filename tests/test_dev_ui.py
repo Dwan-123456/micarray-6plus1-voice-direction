@@ -1107,6 +1107,21 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
         assert window._last_l5_frame is None
         assert window._eof_stop_submitted is False
         assert "replay restarted" in window.srp_header.text()
+
+        deadline = time.monotonic() + 10.0
+        while not window._runtime.active and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window._runtime.active
+
+        while (
+            not window._eof_stop_submitted or window._runtime.active
+        ) and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window._eof_stop_submitted
+        assert not window._runtime.active
+        assert window._last_runtime_state == "stopped"
     finally:
         window.close()
         app.processEvents()

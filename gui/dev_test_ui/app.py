@@ -1165,8 +1165,12 @@ def build_window(
             playback_error = self.preview_player.take_error()
             if playback_error:
                 self.statusBar().showMessage(f"试听输出：{playback_error}", 5000)
+            replay_ended = (
+                replay_source is not None
+                and replay_source.status().state == "ended"
+            )
             if (
-                runtime.input_exhausted
+                (runtime.input_exhausted or replay_ended)
                 and runtime.active
                 and self._pending_command is None
                 and not self._eof_stop_submitted
