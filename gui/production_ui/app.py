@@ -1776,6 +1776,7 @@ class AudioDataManager(QMainWindow):
         except OSError as exc:
             return QMessageBox.warning(self, "无法启动模拟测试", str(exc))
         self.statusBar().showMessage("Test UI已打开，正在实时模拟所选样本输入", 8000)
+        self.showMinimized()
 
     def _listen_selected_channel(self):
         recording_id = self.corpus_table.selected_id()

@@ -395,7 +395,9 @@ def test_selected_database_sample_launches_audio_only_virtual_array_input(tmp_pa
     row = {"id": "sample-1", "path": str(root)}
     monkeypatch.setattr(window.service, "recordings", lambda **_filters: [row])
     launched = []
+    minimized = []
     monkeypatch.setattr("gui.production_ui.app.subprocess.Popen", lambda command, **options: launched.append((command, options)))
+    monkeypatch.setattr(window, "showMinimized", lambda: minimized.append(True))
     window.corpus_table.load([row])
     window.corpus_table.selectRow(0)
 
@@ -406,6 +408,7 @@ def test_selected_database_sample_launches_audio_only_virtual_array_input(tmp_pa
     assert command[1:3] == ["-m", "gui.dev_test_ui.app"]
     assert command[command.index("--replay-recording") + 1] == str(manifest_path.resolve())
     assert "--auto-start" in command
+    assert minimized == [True]
     window.close()
 
 
