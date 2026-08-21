@@ -1,6 +1,6 @@
 # 6+1 麦克风阵列二维人声方向识别系统
 
-> 当前开发版本：`1.2.4`；Layer 2公开版本：`1.1`。最终发布基线为`v1.2.3`。
+> 当前版本：`1.2.4`；Layer 2公开版本：`1.1`。最终发布基线为`v1.2.4`。
 
 > **开发状态：项目 `1.2.4`。** L1～L4、Rolling NormMUSIC、永久公共方向ID、并行Runtime、Development Test UI、Pipeline Log UI、RecordingStore、Audio Data Manager与Production UI均已整合。自动化验收通过不替代真实阵列、诊室声场和长时间运行门禁，未完成的实机项目继续明确标注。
 
