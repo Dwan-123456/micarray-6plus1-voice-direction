@@ -576,6 +576,41 @@ def test_imm_jpda_confirmation_coasting_reacquisition_and_ttl() -> None:
     assert expired == ()
 
 
+def test_confirmed_track_survives_probability_floor_until_absolute_sample_ttl() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (30.0,))
+    _update(tracker, 16_320, (30.5,))
+    confirmed, _ = _update(tracker, 17_280, (31.0,))
+    track_id = first[0].track_id
+    assert confirmed[0].track_id == track_id
+
+    # A confirmed track remains alive throughout coasting even after its
+    # diagnostic existence probability falls below the tentative-track floor.
+    _, coasting = _update(tracker, 17_280 + 95_040, ())
+    assert coasting[0].track_id == track_id
+    assert coasting[0].track_state == "coasting"
+    assert tracker._tracks[track_id].existence_probability < 0.05
+
+    _, expired = _update(tracker, 17_280 + 96_000, ())
+    assert expired == ()
+
+
+def test_confirmed_track_reacquires_original_id_after_long_coasting() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (30.0,))
+    _update(tracker, 16_320, (30.5,))
+    _update(tracker, 17_280, (31.0,))
+    track_id = first[0].track_id
+
+    _, coasting = _update(tracker, 17_280 + 72_000, ())
+    before = tracker._tracks[track_id].existence_probability
+    assert coasting[0].track_id == track_id
+    recovered, _ = _update(tracker, 17_280 + 72_960, (32.0,))
+    assert recovered[0].track_id == track_id
+    assert recovered[0].track_state == "confirmed"
+    assert tracker._tracks[track_id].existence_probability > before
+
+
 def test_l4_feedback_branch_is_retained_but_does_not_change_tracker() -> None:
     tracker = _tracker()
     first, _ = _update(tracker, 15_360, (30.0,))

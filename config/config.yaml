@@ -101,7 +101,7 @@ layer2:
   direction_id_tracking:
     backend: circular_imm_jpda_v1
     association_gate_deg: 50.0
-    association_chi2: 9.0
+    association_chi2: 20.0
     max_velocity_dps: 60.0
     confirmation_observations: 3
     confirmation_window_ms: 200
@@ -115,7 +115,8 @@ layer2:
     minimum_birth_probability: 0.45
     confirmation_existence_probability: 0.70
     deletion_existence_probability: 0.05
-    survival_probability_per_second: 0.995
+    # Equivalent to retaining about 0.97 of confirmed-ID existence every 20 ms.
+    survival_probability_per_second: 0.2180653753474073
     measurement_std_deg: 5.0
     stationary_angle_std_deg: 0.35
     stationary_velocity_std_dps: 3.0

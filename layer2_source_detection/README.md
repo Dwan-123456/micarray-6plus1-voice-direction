@@ -31,7 +31,7 @@ DecisionWindow + 两个对齐的20 ms概率
     → TrackedDirection[0..3] + active_tracks
 ```
 
-`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.2运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；tentative轨迹不进入L3。ID使用2秒绝对sample TTL；预热、缺失或无效概率不会被伪造成有效概率。tentative固定使用20°关联门限；confirmed从最后一次真实观测起按`min(50°, 20° + 15°/s × 漏检时长)`扩张。未匹配峰位于任一现存非噪声ID预测位置±20°内时禁止birth，避免单一峰分裂成两个ID；噪声干扰ID不参与该排他判断。短漏检保留同一内部ID，超过TTL后再次观察会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
+`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.3开发线运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；tentative轨迹不进入L3。tentative依然需在200 ms内累计3次观测才能确认，并可因低存在概率提前删除。confirmed漏检后则固定保留2秒绝对sample TTL，存在概率按真实时间约每20 ms保留0.97地平滑衰减，不再因低于0.05而在TTL前提前死亡。在TTL内重新匹配会恢复原ID和`confirmed`状态；连续2秒无匹配才删除。关联角度使用固定50°硬上限和卡方门限20，不按漏检时长额外扩大。未匹配候选与现存轨迹的预测位置相差不超过15°时禁止birth，避免近邻重复ID。超过TTL后再次观测会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
 
 为兼容旧在线分类实验，`Layer2Pipeline.submit_voice_feedback()`与`GlobalDirectionTracker.apply_voice_feedback()`仍保留精确`track_id`接口和专项测试：外部若显式提供至少2次正向结果，可使符合条件的confirmed轨在低Gate概率下强制放行；长期无正向结果还可触发噪声干扰标记。该接口当前没有Runtime调用方，不属于1.3.2普通主链，也不得用离线L5结果回写已经结束的实时轨迹。
 

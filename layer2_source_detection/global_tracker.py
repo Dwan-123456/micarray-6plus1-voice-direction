@@ -26,7 +26,7 @@ def _nearest_unwrapped(theta: float, reference: float) -> float:
 class GlobalTrackerConfig:
     backend: str = "circular_imm_jpda_v1"
     association_gate_deg: float = 50.0
-    association_chi2: float = 9.0
+    association_chi2: float = 20.0
     max_velocity_dps: float = 60.0
     confirmation_observations: int = 3
     confirmation_window_samples: int = 200 * 48
@@ -40,7 +40,8 @@ class GlobalTrackerConfig:
     minimum_birth_probability: float = 0.45
     confirmation_existence_probability: float = 0.70
     deletion_existence_probability: float = 0.05
-    survival_probability_per_second: float = 0.995
+    # 0.97 retention per 20 ms, expressed on the absolute one-second timeline.
+    survival_probability_per_second: float = 0.97**50
     measurement_std_deg: float = 5.0
     stationary_angle_std_deg: float = 0.35
     stationary_velocity_std_dps: float = 3.0
@@ -396,6 +397,7 @@ class GlobalDirectionTracker:
         beta: np.ndarray,
         model_likelihoods: np.ndarray,
         decision_sample: int,
+        observed: bool,
     ) -> None:
         detected_probability = float(np.sum(beta))
         missed_probability = max(0.0, 1.0 - detected_probability)
@@ -429,13 +431,25 @@ class GlobalDirectionTracker:
         track.model_probabilities = posterior_models / np.sum(posterior_models)
 
         prior_existence = track.existence_probability
-        missed_existence = (
-            prior_existence * (1.0 - self.config.probability_detect)
-            / max(1.0 - prior_existence * self.config.probability_detect, 1.0e-12)
-        )
-        track.existence_probability = min(
-            0.999, detected_probability + missed_probability * missed_existence
-        )
+        if track.confirmed and not observed:
+            # Prediction already applies the configured time-based survival
+            # decay. Do not additionally apply the per-window Bayesian miss
+            # collapse: confirmed tracks must remain recoverable throughout
+            # their two-second absolute-sample coasting lease.
+            track.existence_probability = prior_existence
+        else:
+            missed_existence = (
+                prior_existence * (1.0 - self.config.probability_detect)
+                / max(1.0 - prior_existence * self.config.probability_detect, 1.0e-12)
+            )
+            posterior_existence = min(
+                0.999, detected_probability + missed_probability * missed_existence
+            )
+            track.existence_probability = (
+                max(prior_existence, posterior_existence)
+                if track.confirmed and observed
+                else posterior_existence
+            )
         if detected_probability > 0 and candidates:
             weights = beta / detected_probability
             anchor, _ = self._combined(track)
@@ -482,7 +496,12 @@ class GlobalDirectionTracker:
         for track_id, track in tuple(self._tracks.items()):
             age = decision_sample - track.last_observed
             ttl = self.config.coasting_ttl_samples if track.confirmed else self.config.tentative_ttl_samples
-            if age > ttl or track.existence_probability < self.config.deletion_existence_probability:
+            ttl_expired = age >= ttl
+            probability_expired = (
+                not track.confirmed
+                and track.existence_probability < self.config.deletion_existence_probability
+            )
+            if ttl_expired or probability_expired:
                 del self._tracks[track_id]
 
     def _confirm(self, track: _Track, decision_sample: int, observed: bool) -> None:
@@ -581,14 +600,15 @@ class GlobalDirectionTracker:
                     observed_candidate_by_track[tracks[int(row)].track_id] = int(column)
 
         for row, track in enumerate(tracks):
+            observed = track.track_id in observed_candidate_by_track
             self._update_track(
                 track,
                 candidates,
                 association[row],
                 model_likelihoods[row],
                 decision_sample,
+                observed,
             )
-            observed = track.track_id in observed_candidate_by_track
             if observed:
                 track.last_observed = decision_sample
             self._confirm(track, decision_sample, observed)

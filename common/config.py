@@ -160,7 +160,7 @@ class Layer2MusicPreparationConfig(StrictModel):
 class Layer2DirectionIdTrackingConfig(StrictModel):
     backend: Literal["circular_imm_jpda_v1"]
     association_gate_deg: float = Field(gt=0, le=180)
-    association_chi2: float = Field(default=9.0, gt=0)
+    association_chi2: float = Field(default=20.0, gt=0)
     max_velocity_dps: float = Field(gt=0, le=360)
     confirmation_observations: int = Field(ge=1)
     confirmation_window_ms: int = Field(gt=0)
@@ -174,7 +174,7 @@ class Layer2DirectionIdTrackingConfig(StrictModel):
     minimum_birth_probability: float = Field(default=0.45, ge=0, le=1)
     confirmation_existence_probability: float = Field(default=0.70, ge=0, le=1)
     deletion_existence_probability: float = Field(default=0.05, ge=0, le=1)
-    survival_probability_per_second: float = Field(default=0.995, ge=0, le=1)
+    survival_probability_per_second: float = Field(default=0.97**50, ge=0, le=1)
     measurement_std_deg: float = Field(default=5.0, gt=0)
     stationary_angle_std_deg: float = Field(default=0.35, gt=0)
     stationary_velocity_std_dps: float = Field(default=3.0, gt=0)

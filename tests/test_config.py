@@ -26,7 +26,10 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.direction_id_tracking.backend == "circular_imm_jpda_v1"
     assert not hasattr(config.layer2.direction_id_tracking, "enabled")
     assert config.layer2.direction_id_tracking.association_gate_deg == 50.0
-    assert config.layer2.direction_id_tracking.association_chi2 == 9.0
+    assert config.layer2.direction_id_tracking.association_chi2 == 20.0
+    assert config.layer2.direction_id_tracking.survival_probability_per_second == pytest.approx(
+        0.97**50
+    )
     assert config.layer2.direction_id_tracking.confirmation_observations == 3
     assert config.layer2.direction_id_tracking.confirmation_window_ms == 200
     assert config.layer2.direction_id_tracking.coasting_ttl_ms == 2_000
