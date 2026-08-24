@@ -50,6 +50,7 @@ class _L2TrackTimeline:
     first_start_sample: int
     end_sample: int
     theta_deg: float
+    ever_formal: bool = False
     direction_counts: dict[int, int] = field(default_factory=dict)
 
 
@@ -129,6 +130,9 @@ class TrackAudioStreamHub:
             return
         with self._lock:
             for track in active_tracks:
+                track_state = str(getattr(track, "track_state", ""))
+                if track_state not in {"tentative", "confirmed", "coasting"}:
+                    raise ValueError("invalid authoritative L2 track state")
                 track_id = int(getattr(track, "track_id"))
                 theta_deg = float(getattr(track, "theta_deg"))
                 if track_id <= 0 or not np.isfinite(theta_deg) or not 0.0 <= theta_deg < 360.0:
@@ -138,6 +142,7 @@ class TrackAudioStreamHub:
                 if timeline is None or timeline.processing_mode != processing_mode:
                     timeline = _L2TrackTimeline(
                         processing_mode, start_sample, end_sample, theta_deg,
+                        track_state in {"confirmed", "coasting"},
                     )
                     self._l2_timelines[key] = timeline
                 else:
@@ -145,6 +150,7 @@ class TrackAudioStreamHub:
                         raise ValueError("L2 track timeline must be strictly ordered per ID")
                     timeline.end_sample = end_sample
                     timeline.theta_deg = theta_deg
+                    timeline.ever_formal |= track_state in {"confirmed", "coasting"}
                 timeline.direction_counts[end_sample] = l2_direction_count
 
     @property
@@ -407,7 +413,8 @@ class TrackAudioStreamHub:
         When the Development Test UI has hidden and deleted a short or mostly
         silent listening track, the Hub archive for that same identity is
         deleted as well so it cannot reappear in an offline L4 submission.
-        ``None`` preserves the generic/headless Hub behaviour.
+        ``None`` skips only the UI allow-list; the authoritative L2 timeline
+        still prevents a never-confirmed tentative ID from being published.
         """
 
         outputs: list[Layer4LongAudioInput] = []
@@ -421,6 +428,9 @@ class TrackAudioStreamHub:
                 if not hops:
                     continue
                 timeline = self._l2_timelines.get(key)
+                if timeline is not None and not timeline.ever_formal:
+                    discarded.append(key)
+                    continue
                 if timeline is not None and self._archive_modes.get(key) == timeline.processing_mode:
                     output_start = timeline.first_start_sample
                     output_end = timeline.end_sample

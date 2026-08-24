@@ -245,6 +245,25 @@ def test_hub_purges_sub_two_second_track_before_offline_l4() -> None:
     assert long_key in hub._archive
 
 
+def test_hub_never_seals_unconfirmed_tentative_id_even_over_two_seconds() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+        minimum_output_seconds=2.0,
+    )
+    tentative = _active(state="tentative")
+    for decision in range(7_680, 7_680 + 101 * 960, 960):
+        hub.observe_l2(
+            identity=_identity(decision), active_tracks=(tentative,),
+            processing_mode="optimized", l2_direction_count=1,
+        )
+        hub.process(
+            (_window(decision),), active_track_ids=(7,), identity=_identity(decision),
+        )
+
+    assert hub.seal() == ()
+    assert ("session", 0, 7) not in hub._archive
+
+
 def test_hub_purges_every_track_not_retained_by_the_test_ui() -> None:
     hub = TrackAudioStreamHub(
         InputGainCompensationSettings(enabled=False), context_ms=60,
