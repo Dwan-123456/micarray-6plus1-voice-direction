@@ -7,6 +7,8 @@ import numpy as np
 from common.data_types import TrackedDirection
 from gui.dev_test_ui.audio_id_tracker import (
     AudioIdTracker,
+    CENTER_IMCRA_TRACK_ID,
+    CENTER_RAW_TRACK_ID,
     _CROSSFADE_SAMPLES,
     _EDGE_FADE_SAMPLES,
 )
@@ -319,15 +321,33 @@ def test_mode_change_deletes_the_hidden_cache_partition(tmp_path):
     assert len(paths) == 1
 
 
-def test_center_reference_is_full_capture_and_deleted_only_on_close(tmp_path):
+def test_raw_and_imcra_center_references_are_distinct_full_capture_rows(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path, segment_seconds=0.02, retained_segments=1)
     for index in range(5):
         samples = np.zeros((960, 8), dtype=np.float32)
         samples[:, 6] = index + 1
-        tracker.append_center_reference(SimpleNamespace(
+        block = SimpleNamespace(
             session_id="session", stream_epoch=0, end_sample=(index + 1) * 960, samples=samples,
+        )
+        tracker.append_center_reference(block)
+        denoised = samples.copy()
+        denoised[:, 6] *= 0.1
+        tracker.append_imcra_center_reference(SimpleNamespace(
+            session_id=block.session_id,
+            stream_epoch=block.stream_epoch,
+            end_sample=block.end_sample,
+            samples=denoised,
         ))
-    assert tracker.snapshots()[0].audio_sample_count == 5 * 960
+    rows = tracker.snapshots()
+    assert [item.track_id for item in rows] == [
+        CENTER_RAW_TRACK_ID,
+        CENTER_IMCRA_TRACK_ID,
+    ]
+    assert [item.audio_sample_count for item in rows] == [5 * 960, 5 * 960]
     assert len(tuple((tmp_path / "cache/track_000").glob("segment_*.f32"))) == 5
+    assert len(tuple((tmp_path / "cache/track_imcra").glob("segment_*.f32"))) == 5
+    raw = np.fromfile(tracker.audio_cache_path(CENTER_RAW_TRACK_ID), dtype=np.float32)
+    imcra = np.fromfile(tracker.audio_cache_path(CENTER_IMCRA_TRACK_ID), dtype=np.float32)
+    np.testing.assert_allclose(imcra, raw * 0.1)
     tracker.close(delete_files=True)
     assert not (tmp_path / "cache").exists()

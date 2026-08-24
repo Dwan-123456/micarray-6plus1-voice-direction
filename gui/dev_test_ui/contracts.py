@@ -128,7 +128,12 @@ class TrackedAudioSnapshot:
     voice_annotations_20ms: tuple[TrackVoiceAnnotation | None, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.session_id or min(self.stream_epoch, self.track_id, self.audio_sample_count) < 0:
+        if (
+            not self.session_id
+            or self.stream_epoch < 0
+            or self.track_id < -1
+            or self.audio_sample_count < 0
+        ):
             raise ValueError("tracked audio identity is invalid")
         if self.state not in {"active", "coasting", "ended"}:
             raise ValueError("tracked audio state is invalid")

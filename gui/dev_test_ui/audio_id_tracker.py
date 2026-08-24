@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import shutil
 import threading
+from typing import BinaryIO
 
 import numpy as np
 
@@ -21,6 +22,9 @@ _CROSSFADE_SAMPLES = 96
 _EDGE_FADE_SAMPLES = 240
 _SOUND_RMS_THRESHOLD = 10.0 ** (-60.0 / 20.0)
 _MIN_SOUND_RATIO = 0.30
+CENTER_RAW_TRACK_ID = 0
+CENTER_IMCRA_TRACK_ID = -1
+_REFERENCE_TRACK_IDS = frozenset((CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID))
 
 
 @dataclass(slots=True)
@@ -47,10 +51,11 @@ class _Track:
 
 
 class AudioIdTracker:
-    """Test-UI cache keyed only by ``(session, epoch, authoritative track_id)``.
+    """Test-UI references plus exact authoritative-ID directional audio cache.
 
-    This sidecar never associates by angle, aliases IDs, or repairs L2
-    identity.  It only joins exact-ID L3 audio on the absolute sample timeline.
+    Reserved UI IDs 0/-1 identify RAW/IMCRA Center references. Directional
+    entries remain keyed only by ``(session, epoch, authoritative track_id)``;
+    this sidecar never associates by angle, aliases IDs, or repairs L2 identity.
     """
 
     def __init__(
@@ -90,9 +95,9 @@ class AudioIdTracker:
         self._mode_generation = 0
         self._processing_partition = "optimized_000"
         self._tracks: dict[int, _Track] = {}
-        self._reference_track: _Track | None = None
-        self._reference_stream = None
-        self._reference_stream_path: Path | None = None
+        self._reference_tracks: dict[int, _Track] = {}
+        self._reference_streams: dict[int, BinaryIO] = {}
+        self._reference_stream_paths: dict[int, Path] = {}
         self._next_track_id = 1
         self._snapshot_counter = 0
         self.reset()
@@ -104,7 +109,7 @@ class AudioIdTracker:
 
     def reset(self) -> None:
         with self._lock:
-            self._close_reference_stream()
+            self._close_reference_streams()
             if self.cache_root.exists():
                 shutil.rmtree(self.cache_root)
             self.cache_root.mkdir(parents=True, exist_ok=True)
@@ -114,7 +119,7 @@ class AudioIdTracker:
             self._mode_generation = 0
             self._processing_partition = "optimized_000"
             self._tracks.clear()
-            self._reference_track = None
+            self._reference_tracks.clear()
             self._next_track_id = 1
             self._snapshot_counter = 0
 
@@ -123,8 +128,8 @@ class AudioIdTracker:
 
         if self._stream is None:
             self._stream = stream
-            if self._reference_track is not None:
-                self._reference_track.stream_key = stream
+            for track in self._reference_tracks.values():
+                track.stream_key = stream
             return
         if self._stream == stream:
             return
@@ -140,7 +145,7 @@ class AudioIdTracker:
         # session.  Close live directional runs, but keep every playable file
         # and row.  L2 private IDs restart per epoch, so aliases must not cross
         # the boundary and future rows receive session-unique UI IDs.
-        self._close_reference_stream()
+        self._close_reference_streams()
         for track in self._tracks.values():
             if track.state != "ended":
                 self._flush_pending(track, fade_out=True)
@@ -148,19 +153,29 @@ class AudioIdTracker:
         self._remove_filtered_ended_tracks()
         self._stream = stream
         self._processing_mode = None
-        if self._reference_track is not None:
-            self._reference_track.stream_key = stream
+        for track in self._reference_tracks.values():
+            track.stream_key = stream
 
-    def _close_reference_stream(self) -> None:
-        stream = self._reference_stream
-        self._reference_stream = None
-        self._reference_stream_path = None
+    def _close_reference_stream(self, track_id: int) -> None:
+        stream = self._reference_streams.pop(int(track_id), None)
+        self._reference_stream_paths.pop(int(track_id), None)
         if stream is not None:
             stream.flush()
             stream.close()
 
+    def _close_reference_streams(self) -> None:
+        for track_id in tuple(self._reference_streams):
+            self._close_reference_stream(track_id)
+
     def append_center_reference(self, block, *, channel_index: int = 6) -> None:
         """Cache the raw logical Center microphone without entering L2/L3."""
+        self._append_center_reference(block, CENTER_RAW_TRACK_ID, channel_index)
+
+    def append_imcra_center_reference(self, block, *, channel_index: int = 6) -> None:
+        """Cache only Center hops that actually passed through IMCRA denoising."""
+        self._append_center_reference(block, CENTER_IMCRA_TRACK_ID, channel_index)
+
+    def _append_center_reference(self, block, track_id: int, channel_index: int) -> None:
         samples = np.asarray(block.samples, dtype=np.float32)
         if (
             samples.ndim != 2
@@ -172,45 +187,46 @@ class AudioIdTracker:
         stream_identity = (block.session_id, block.stream_epoch)
         with self._lock:
             self._ensure_stream(stream_identity)
-            if self._reference_track is None:
-                self._reference_track = _Track(
-                    0,
+            track = self._reference_tracks.get(track_id)
+            if track is None:
+                track = _Track(
+                    track_id,
                     0.0,
                     0.0,
                     int(block.end_sample),
                     authoritative_id=True,
                     stream_key=stream_identity,
                 )
-            track = self._reference_track
+                self._reference_tracks[track_id] = track
             if track.segment_samples >= self.segment_samples:
-                self._close_reference_stream()
+                self._close_reference_stream(track_id)
             path = self._segment_path(track)
-            if self._reference_stream_path != path:
-                self._close_reference_stream()
-                self._reference_stream = path.open("ab", buffering=1 << 20)
-                self._reference_stream_path = path
+            if self._reference_stream_paths.get(track_id) != path:
+                self._close_reference_stream(track_id)
+                self._reference_streams[track_id] = path.open("ab", buffering=1 << 20)
+                self._reference_stream_paths[track_id] = path
             center = np.ascontiguousarray(samples[:, int(channel_index)], dtype=np.float32)
-            self._reference_stream.write(center.tobytes())
+            self._reference_streams[track_id].write(center.tobytes())
             track.segment_samples += len(center)
             track.last_seen_sample = int(block.end_sample)
             self._update_envelope(track, center)
 
     def _segment_path(self, track: _Track) -> Path:
-        directory = (
-            self.cache_root / f"track_{track.track_id:03d}"
-            if track.track_id == 0
-            else self.cache_root / track.processing_mode / f"track_{track.track_id:03d}"
-        )
+        if track.track_id == CENTER_RAW_TRACK_ID:
+            directory = self.cache_root / "track_000"
+        elif track.track_id == CENTER_IMCRA_TRACK_ID:
+            directory = self.cache_root / "track_imcra"
+        else:
+            directory = self.cache_root / track.processing_mode / f"track_{track.track_id:03d}"
         directory.mkdir(parents=True, exist_ok=True)
         if not track.segments or track.segment_samples >= self.segment_samples:
             path = directory / f"segment_{track.segment_index:06d}.f32"
             track.segment_index += 1
             track.segment_samples = 0
             track.segments.append(path)
-            # Center Mic is the full-session input reference.  It remains
-            # segmented for bounded writes but is never rolled off before the
-            # user stops capture; close() still deletes the whole UI cache.
-            if track.track_id != 0:
+            # Center references remain segmented for bounded writes but never
+            # roll off before capture stops; close() deletes the whole UI cache.
+            if track.track_id not in _REFERENCE_TRACK_IDS:
                 while len(track.segments) > self.retained_segments:
                     track.segments.pop(0).unlink(missing_ok=True)
         return track.segments[-1]
@@ -285,7 +301,7 @@ class AudioIdTracker:
             track.total_hops += 1
             if float(rms) >= _SOUND_RMS_THRESHOLD:
                 track.sound_hops += 1
-        if track.track_id == 0:
+        if track.track_id in _REFERENCE_TRACK_IDS:
             return
         maximum = self.retained_segments * self.segment_samples // _HOP_SAMPLES
         while len(track.envelope_peaks) > maximum:
@@ -474,7 +490,7 @@ class AudioIdTracker:
 
     @staticmethod
     def _should_discard_quiet_track(track: _Track) -> bool:
-        if track.track_id == 0 or track.total_hops <= 0:
+        if track.track_id in _REFERENCE_TRACK_IDS or track.total_hops <= 0:
             return False
         # Judge the completed candidate as a whole.  A valid recording may
         # legitimately end with several seconds of silence while an offline
@@ -485,7 +501,7 @@ class AudioIdTracker:
 
     def _should_discard_short_track(self, track: _Track) -> bool:
         return (
-            track.track_id != 0
+            track.track_id not in _REFERENCE_TRACK_IDS
             and self._cached_samples(track) < self.minimum_listening_track_samples
         )
 
@@ -510,8 +526,8 @@ class AudioIdTracker:
                 self._delete_track_segments(track)
                 del self._tracks[track_id]
 
-    def _reference_cached_samples(self) -> int:
-        track = self._reference_track
+    def _reference_cached_samples(self, track_id: int) -> int:
+        track = self._reference_tracks.get(int(track_id))
         if track is None:
             return 0
         prior = sum(
@@ -768,7 +784,7 @@ class AudioIdTracker:
         """End live rows and physically remove completed non-playable tracks."""
 
         with self._lock:
-            self._close_reference_stream()
+            self._close_reference_streams()
             for track in self._tracks.values():
                 if track.state != "ended":
                     self._flush_pending(track, fade_out=True)
@@ -817,24 +833,29 @@ class AudioIdTracker:
                 )
                 for track in sorted(self._tracks.values(), key=lambda item: item.track_id)
             )
-            reference_samples = self._reference_cached_samples()
-            reference = () if reference_samples <= 0 else (TrackedAudioSnapshot(
-                self._stream[0], self._stream[1], 0, "active",
-                0.0, 0.0, reference_samples,
-                waveform_envelope=tuple(self._reference_track.envelope_peaks),
-            ),)
-            return reference + tracks
+            references = tuple(
+                TrackedAudioSnapshot(
+                    self._stream[0], self._stream[1], track_id, "active",
+                    0.0, 0.0, sample_count,
+                    waveform_envelope=tuple(self._reference_tracks[track_id].envelope_peaks),
+                )
+                for track_id in (CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID)
+                if (sample_count := self._reference_cached_samples(track_id)) > 0
+            )
+            return references + tracks
 
     def audio_cache_path(self, track_id: int) -> Path | None:
         """Create a stable bounded snapshot so playback never reads a live file."""
         with self._lock:
-            track = self._reference_track if int(track_id) == 0 else self._tracks.get(int(track_id))
-            if int(track_id) == 0 and self._reference_stream is not None:
-                self._reference_stream.flush()
+            resolved_id = int(track_id)
+            track = self._reference_tracks.get(resolved_id, self._tracks.get(resolved_id))
+            stream = self._reference_streams.get(resolved_id)
+            if stream is not None:
+                stream.flush()
             if track is None or not any(path.exists() and path.stat().st_size for path in track.segments):
                 return None
             self._snapshot_counter += 1
-            output = self.cache_root / "playback" / f"track_{track.track_id:03d}_{self._snapshot_counter:06d}.f32"
+            output = self.cache_root / "playback" / f"track_{track.track_id}_{self._snapshot_counter:06d}.f32"
             with output.open("wb") as target:
                 for path in track.segments:
                     if path.exists():
@@ -844,9 +865,9 @@ class AudioIdTracker:
 
     def close(self, *, delete_files: bool = True) -> None:
         with self._lock:
-            self._close_reference_stream()
+            self._close_reference_streams()
             self._tracks.clear()
-            self._reference_track = None
+            self._reference_tracks.clear()
             self._stream = None
             if delete_files and self.cache_root.exists():
                 shutil.rmtree(self.cache_root)

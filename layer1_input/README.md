@@ -55,7 +55,7 @@ IMCRA已迁入L1，对校准后的7个物理麦按20 ms hop独立更新。实现
 
 `ImcraWienerPreDenoiser`在IMCRA完成原始20 ms音频估计后运行。每个物理麦使用自己的`prior_snr`和`SPP`生成SPP保护Wiener增益，处理0～10000 Hz，最低增益为-18 dB；HardwareMix及10000 Hz以上内容直通。具体处理是：把相邻两个20 ms hop组成40 ms帧，乘平方根Hann窗后执行2048点RFFT；对每麦、每个0～10000 Hz频点的复数STFT系数乘实数增益，因此同时缩放该频点的幅度、保留相位；随后执行IRFFT、再次乘平方根Hann窗，并以20 ms步长50%重叠相加，恢复连续时域音频。当前频带版本为`imcra_wiener_wola_v3`。
 
-Test UI的L1区域提供“IMCRA预降噪”开关。OFF时输出原始LogicalAudio；ON时Runtime等待对应降噪hop完成，将下游音频前7路替换为降噪结果后再生成DecisionWindow。IMCRA预热或无效时使用单位增益。`native_samples`始终保持设备原始数据，第8路HardwareMix始终不修改。
+Test UI的L1区域提供“IMCRA预降噪”开关。OFF时输出原始LogicalAudio；ON时Runtime等待对应降噪hop完成，将下游音频前7路替换为降噪结果后再生成DecisionWindow。IMCRA预热或无效时使用单位增益。L3试听区同时保留`Center Mic RAW`，并只在ON期间追加实际降噪输出到`Center Mic IMCRA`，便于直接试听比较。`native_samples`始终保持设备原始数据，第8路HardwareMix始终不修改。
 
 PSD/SPP状态保留0～10000 Hz目标频带；概率证据仍仅从500～4000 Hz聚合，避免新增高频直接改变Gate判决。
 

@@ -354,7 +354,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 
 #### 左下：Layer 3方向增强与试听
 
-- 第一行是预降噪前Center麦克风原音参考；
+- 前两行是`Center Mic RAW`与`Center Mic IMCRA`：前者为校准后、预降噪前原音，后者仅缓存预降噪开启期间实际采用的Center降噪输出；
 - 方向轨严格按L2权威`track_id`缓存和显示，Test UI不再按角度创建第二套ID；
 - confirmed方向短时漏检时可进入coasting并在2秒TTL内沿用同一ID；
 - 可通过按键切换`optimized`、`ds_baseline`、`loaded_mvdr_baseline`和

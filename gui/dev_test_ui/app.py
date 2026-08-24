@@ -150,7 +150,11 @@ def build_window(
 
     from .panels import BeamformPanel, CnnPanel, Layer4AudioPanel
     from .preview_player import PreviewPlayer
-    from .audio_id_tracker import AudioIdTracker
+    from .audio_id_tracker import (
+        AudioIdTracker,
+        CENTER_IMCRA_TRACK_ID,
+        CENTER_RAW_TRACK_ID,
+    )
     from .offline_l4_store import OfflineLayer4UiStore
     from .panels import (
         GateProbabilityThresholdControl,
@@ -1081,7 +1085,12 @@ def build_window(
                 return
             cache_path = audio_id_tracker.audio_cache_path(track_id)
             if cache_path is None:
-                label = "Center Mic" if track_id == 0 else f"ID-{track_id:03d}"
+                if track_id == CENTER_RAW_TRACK_ID:
+                    label = "Center Mic RAW"
+                elif track_id == CENTER_IMCRA_TRACK_ID:
+                    label = "Center Mic IMCRA"
+                else:
+                    label = f"ID-{track_id:03d}"
                 self.statusBar().showMessage(f"{label} 暂无可播放缓存", 3000)
                 self.bf_panel.sync_track_playback_stopped()
                 return

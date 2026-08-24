@@ -23,6 +23,16 @@
 
 ---
 
+## 2026-08-24 — Test UI增加Center Mic IMCRA试听
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改项目版本，不创建或提前发布`v1.3.3`标签。
+- **Development Test UI**：L3试听区固定按`Center Mic RAW`、`Center Mic IMCRA`、方向ID音轨排序。RAW继续缓存校准后且预降噪前的逻辑Center；IMCRA只在开关开启且Runtime为该20 ms hop实际选择降噪块时追加，开关关闭期间的旁路原音不会混入IMCRA缓存。
+- **缓存与播放契约**：两个Center条目使用独立的会话级临时分段和播放快照；RAW保留完整采集，IMCRA完整保留所有实际降噪hop。IMCRA保持48 kHz及原session/epoch/sample顺序，仍不进入L2方向ID空间，也不改变正式录音或L5输入。
+- **未改变**：IMCRA/Cohen噪声估计与Wiener增益、预降噪音频本身、L1采集与校准、CountNet、Windowing、L2～L5算法、方向ID、Production/Log UI、正式录音和数据管理均无变化。
+- **验证与资产**：增加RAW/IMCRA独立缓存内容、完整保留、播放路径、UI名称/排序和开关边界标记测试；无模型、音频或Git LFS资产变化。
+
+---
+
 ## 2026-08-24 — Development Test UI四层独立性能计时
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不修改项目版本，不创建或提前发布`v1.3.3`标签。

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .audio_id_tracker import CENTER_IMCRA_TRACK_ID, CENTER_RAW_TRACK_ID
 from .srp_panel import track_colour_hex
 
 
@@ -511,12 +512,12 @@ class BeamformPanel(QGroupBox):
                 self.clear_tracks()
             self._track_stream = incoming_stream
         incoming_ids = {item.track_id for item in all_tracks}
-        # A Center Mic row marks a complete authoritative tracker snapshot.
+        # The RAW Center row marks a complete authoritative tracker snapshot.
         # Directional IDs omitted from such a snapshot were explicitly
         # filtered together with their cache files, so their previously drawn
         # waveform rows must not remain as unplayable UI ghosts.  Empty/error
         # projections still retain the last good rows.
-        if 0 in incoming_ids:
+        if CENTER_RAW_TRACK_ID in incoming_ids:
             removed_ids = set(self._track_rows) - incoming_ids
             if self._playing_track_id in removed_ids:
                 self._playing_track_id = None
@@ -529,11 +530,11 @@ class BeamformPanel(QGroupBox):
         tracks = tuple(
             item
             for item in all_tracks
-            if item.track_id == 0
+            if item.track_id in {CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID}
             or item.duration_seconds >= self._minimum_listening_track_seconds
         )
         hidden_count = sum(
-            item.track_id != 0
+            item.track_id not in {CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID}
             and item.duration_seconds < self._minimum_listening_track_seconds
             for item in all_tracks
         )
@@ -550,7 +551,10 @@ class BeamformPanel(QGroupBox):
         ordered_ids = sorted(
             self._track_rows,
             key=lambda track_id: (
-                track_id != 0,
+                {
+                    CENTER_RAW_TRACK_ID: 0,
+                    CENTER_IMCRA_TRACK_ID: 1,
+                }.get(track_id, 2),
                 -self._track_snapshots[track_id].duration_seconds,
                 track_id,
             ),
@@ -561,7 +565,8 @@ class BeamformPanel(QGroupBox):
             self.track_layout.insertWidget(index, row)
         if tracks or self._track_rows:
             self.help.setText(
-                "首行为Center Mic原始输入对照；其余仅显示L2 confirmed/coasting权威ID，并按缓存时长从长到短排列。"
+                "前两行为Center Mic RAW与开启期间的Center Mic IMCRA；"
+                "其余仅显示L2 confirmed/coasting权威ID，并按缓存时长从长到短排列。"
                 "权威ID音频：ACTIVE实时追加，"
                 "COASTING等待恢复，ENDED停止追加；"
                 f"仅显示≥{self._minimum_listening_track_seconds:.1f}s音频，"
@@ -874,8 +879,11 @@ class AudioTrackRow(QWidget):
         layout.addWidget(self.waveform, 1)
 
     def set_snapshot(self, snapshot, *, playing: bool) -> None:
-        if snapshot.track_id == 0:
-            text = "Center Mic 对照"
+        if snapshot.track_id == CENTER_RAW_TRACK_ID:
+            text = "Center Mic RAW"
+            label_style = "font-family:Consolas"
+        elif snapshot.track_id == CENTER_IMCRA_TRACK_ID:
+            text = "Center Mic IMCRA"
             label_style = "font-family:Consolas"
         else:
             text = f"{snapshot.track_id} · {snapshot.theta_deg:.1f}°"

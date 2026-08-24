@@ -345,6 +345,60 @@ def test_runtime_l1_pre_denoise_live_switch_never_duplicates_sample_ranges(tmp_p
     np.testing.assert_array_equal(selected[-1].samples, blocks[-1].samples)
 
 
+def test_runtime_marks_only_actual_imcra_outputs_for_center_preview(tmp_path):
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+    blocks = tuple(
+        IngestedAudioBlock(
+            "session", 0, index * 960, (index + 1) * 960, 48_000, index, index * 0.02,
+            np.full((960, 8), index + 1, np.float32),
+        )
+        for index in range(4)
+    )
+    selected = list(runtime._select_pre_denoise_with_mode(blocks[0]))
+    runtime.set_l1_pre_denoise_enabled(True)
+    selected.extend(runtime._select_pre_denoise_with_mode(blocks[1]))
+    selected.extend(runtime._select_pre_denoise_with_mode(blocks[2]))
+    runtime.set_l1_pre_denoise_enabled(False)
+    selected.extend(runtime._select_pre_denoise_with_mode(blocks[3]))
+    selected.extend(runtime._flush_pre_denoise_with_mode())
+
+    assert [(item.start_sample, denoised) for item, denoised in selected] == [
+        (0, False),
+        (960, True),
+        (1920, False),
+        (2880, False),
+    ]
+
+
+def test_runtime_caches_only_marked_imcra_center_selection(tmp_path, monkeypatch):
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+    block = IngestedAudioBlock(
+        "session", 0, 0, 960, 48_000, 0, 0.0, np.zeros((960, 8), np.float32),
+    )
+    cached, published = [], []
+    runtime.dev_audio_tracker = SimpleNamespace(
+        append_imcra_center_reference=lambda item, channel_index: cached.append(
+            (item, channel_index)
+        ),
+    )
+    monkeypatch.setattr(
+        runtime, "_publish_l1_block",
+        lambda item, received: published.append((item, received)),
+    )
+
+    runtime._publish_l1_selection(block, 1.0, denoised=False)
+    runtime._publish_l1_selection(block, 2.0, denoised=True)
+
+    assert cached == [(block, 6)]
+    assert published == [(block, 1.0), (block, 2.0)]
+
+
 def test_runtime_l3_mode_switch_is_available_before_and_during_capture(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}),

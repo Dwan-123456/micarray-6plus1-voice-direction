@@ -1447,16 +1447,18 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         accepted = TrackedAudioSnapshot("s", 0, 2, "active", 20.0, 0.8, 96_000)
         longer = TrackedAudioSnapshot("s", 0, 3, "active", 30.0, 0.9, 144_000)
         reference = TrackedAudioSnapshot("s", 0, 0, "active", 0.0, 0.0, 48_000)
-        window.bf_panel.set_tracks((short, accepted, longer, reference))
+        imcra = TrackedAudioSnapshot("s", 0, -1, "active", 0.0, 0.0, 47_040)
+        window.bf_panel.set_tracks((short, accepted, longer, reference, imcra))
         app.processEvents()
 
-        assert set(window.bf_panel._track_rows) == {0, 2, 3}
+        assert set(window.bf_panel._track_rows) == {-1, 0, 2, 3}
         ordered = [
             window.bf_panel.track_layout.itemAt(index).widget().track_id
-            for index in range(3)
+            for index in range(4)
         ]
-        assert ordered == [0, 3, 2]
-        assert "Center Mic" in window.bf_panel._track_rows[0].label.text()
+        assert ordered == [0, -1, 3, 2]
+        assert window.bf_panel._track_rows[0].label.text() == "Center Mic RAW"
+        assert window.bf_panel._track_rows[-1].label.text() == "Center Mic IMCRA"
         assert window.bf_panel._track_rows[3].label.text() == "3 · 30.0°"
         assert "#ffb000" in window.bf_panel._track_rows[3].label.styleSheet().lower()
         assert window.bf_panel._track_rows[2].label.text() == "2 · 20.0°"
@@ -1475,15 +1477,15 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
 
         window.bf_panel.set_tracks(())
         app.processEvents()
-        assert set(window.bf_panel._track_rows) == {0, 2, 3}
+        assert set(window.bf_panel._track_rows) == {-1, 0, 2, 3}
 
         # A complete tracker snapshot (identified by Center Mic) removes an ID
         # whose cache was explicitly filtered, instead of retaining a stale,
         # unplayable waveform row.
-        window.bf_panel.set_tracks((longer, reference))
+        window.bf_panel.set_tracks((longer, reference, imcra))
         app.processEvents()
-        assert set(window.bf_panel._track_rows) == {0, 3}
-        assert set(window.bf_panel._track_snapshots) == {0, 3}
+        assert set(window.bf_panel._track_rows) == {-1, 0, 3}
+        assert set(window.bf_panel._track_snapshots) == {-1, 0, 3}
 
         next_session = TrackedAudioSnapshot(
             "next", 0, 0, "active", 0.0, 0.0, 48_000,

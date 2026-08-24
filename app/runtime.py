@@ -1814,27 +1814,49 @@ class ApplicationRuntime:
                     self._recording_session_started = False
             raise
 
-    def _select_pre_denoise(self, block) -> tuple[object, ...]:
+    def _select_pre_denoise_with_mode(self, block) -> tuple[tuple[object, bool], ...]:
         pairs = self.pre_denoiser.process(block)
         with self._pre_denoise_lock:
             enabled = self._pre_denoise_enabled
             if not self._pre_denoise_latency_active:
                 if not enabled:
-                    return (block,)
+                    return ((block, False),)
                 # Everything before this point has already been published in
                 # bypass mode. Start the fixed one-hop latency here and wait
                 # for this exact hop's denoised replacement.
                 self._pre_denoise_latency_active = True
                 return ()
-        return tuple(item.denoised if enabled else item.raw for item in pairs)
+        return tuple(
+            (item.denoised if enabled else item.raw, enabled)
+            for item in pairs
+        )
 
-    def _flush_pre_denoise(self) -> tuple[object, ...]:
+    def _select_pre_denoise(self, block) -> tuple[object, ...]:
+        return tuple(item for item, _denoised in self._select_pre_denoise_with_mode(block))
+
+    def _flush_pre_denoise_with_mode(self) -> tuple[tuple[object, bool], ...]:
         pairs = self.pre_denoiser.flush()
         with self._pre_denoise_lock:
             if not self._pre_denoise_latency_active:
                 return ()
             enabled = self._pre_denoise_enabled
-        return tuple(item.denoised if enabled else item.raw for item in pairs)
+        return tuple(
+            (item.denoised if enabled else item.raw, enabled)
+            for item in pairs
+        )
+
+    def _flush_pre_denoise(self) -> tuple[object, ...]:
+        return tuple(item for item, _denoised in self._flush_pre_denoise_with_mode())
+
+    def _publish_l1_selection(self, block, received: float, *, denoised: bool) -> None:
+        if denoised and self.dev_audio_tracker is not None:
+            try:
+                self.dev_audio_tracker.append_imcra_center_reference(
+                    block, channel_index=6,
+                )
+            except Exception as exc:
+                self.dev_audio_tracking_error = f"IMCRA center reference: {exc}"
+        self._publish_l1_block(block, received)
 
     def _publish_l1_block(self, block, received: float) -> None:
         imcra_hops = () if block.imcra_hop is None else (block.imcra_hop,)
@@ -2039,14 +2061,14 @@ class ApplicationRuntime:
                     except Exception as exc:
                         self.dev_audio_tracking_error = f"center reference: {exc}"
                 received = monotonic()
-                for selected in self._select_pre_denoise(block):
-                    self._publish_l1_block(selected, received)
+                for selected, denoised in self._select_pre_denoise_with_mode(block):
+                    self._publish_l1_selection(selected, received, denoised=denoised)
         except Exception as exc:
             self.last_error = str(exc)
         finally:
             try:
-                for selected in self._flush_pre_denoise():
-                    self._publish_l1_block(selected, monotonic())
+                for selected, denoised in self._flush_pre_denoise_with_mode():
+                    self._publish_l1_selection(selected, monotonic(), denoised=denoised)
                 self.scratch.close()
             finally:
                 try:
