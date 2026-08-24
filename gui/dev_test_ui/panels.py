@@ -828,7 +828,7 @@ class Layer6AudioPanel(QGroupBox):
         header.addWidget(self.summary, 1)
         header.addWidget(self.run)
         layout.addLayout(header)
-        layout.addWidget(QLabel("手动执行声纹聚类、质量择优，并按绝对时间线输出Speaker A/B/C。"))
+        layout.addWidget(QLabel("按L6 ID显示绝对时间线长音频；未讲话区保留等时静音。"))
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
         self.track_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -869,7 +869,7 @@ class Layer6AudioPanel(QGroupBox):
             row.set_snapshot(track, playing=False)
             self._rows[track.track_id] = row
             self.track_layout.insertWidget(self.track_layout.count() - 1, row)
-        self.summary.setText(f"L6完成：{len(self._rows)}名讲话人")
+        self.summary.setText(f"L6完成：{len(self._rows)}个ID时间线")
         self.run.setEnabled(True)
 
     def _toggle_track(self, track_id: int) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from types import SimpleNamespace
+import wave
 
 import numpy as np
 
@@ -10,7 +11,12 @@ from layer4_speech_separation import (
     Layer4OfflineResult,
     SpeakerCountDecision,
 )
-from layer6_speaker_consolidation import OfflineLayer6Pipeline
+from gui.dev_test_ui.offline_l6_store import OfflineLayer6UiStore
+from layer6_speaker_consolidation import (
+    Layer6Result,
+    Layer6SpeakerAudio,
+    OfflineLayer6Pipeline,
+)
 
 
 class _Embedder:
@@ -65,3 +71,33 @@ def test_l6_clusters_candidates_and_keeps_one_quality_winner_per_speaker_timelin
     assert all(item.sample_rate == 16_000 and len(item.waveform_16k) == 32_000 for item in result.outputs)
     assert len(result.fragments) == 4
     assert all(np.max(np.abs(item.waveform_16k)) <= 0.1 for item in result.outputs)
+
+
+def test_l6_ui_aligns_each_final_id_to_one_shared_absolute_timeline() -> None:
+    first = Layer6SpeakerAudio(
+        1, "Speaker A", 16_000, 0, 1_920,
+        np.full(640, 0.25, np.float32), (7,), ("a",), 0.8,
+    )
+    second = Layer6SpeakerAudio(
+        2, "Speaker B", 16_000, 1_920, 3_840,
+        np.full(640, -0.25, np.float32), (9,), ("b",), 0.7,
+    )
+    store = OfflineLayer6UiStore()
+    try:
+        store.set_result(Layer6Result("session", 2, (first, second), (), {}))
+        rendered = []
+        for speaker_id in (1, 2):
+            path = store.audio_path(speaker_id)
+            assert path is not None
+            with wave.open(str(path), "rb") as reader:
+                assert reader.getframerate() == 16_000
+                assert reader.getnframes() == 1_280
+                rendered.append(np.frombuffer(reader.readframes(1_280), dtype="<i2"))
+        assert np.any(rendered[0][:640]) and not np.any(rendered[0][640:])
+        assert not np.any(rendered[1][:640]) and np.any(rendered[1][640:])
+        snapshots = store.snapshots()
+        assert tuple(item.audio_sample_count for item in snapshots) == (3_840, 3_840)
+        assert snapshots[0].display_label == "L6 ID 1 · Speaker A · 来源L2 ID 7 · Q0.80"
+        assert snapshots[1].display_label == "L6 ID 2 · Speaker B · 来源L2 ID 9 · Q0.70"
+    finally:
+        store.close()
