@@ -157,7 +157,7 @@ def _open_l2_result(
     )
     model_order = ModelOrderEstimate(1, 43, 23, 1.0, 0, "ready")
     diagnostics = MusicDiagnostics(
-        "frequency_normalized_music", "frequency_normalized_music_mdl_v1", revision,
+        "frequency_normalized_music", "frequency_normalized_music_manual_order_v1", revision,
         model_order, MusicStateDiagnostic("advanced", decision_sample - 960, decision_sample, 0, 23, 2, 2, False, "sample_continuous"),
         43, "ready",
     )

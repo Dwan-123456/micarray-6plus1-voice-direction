@@ -43,13 +43,15 @@ def _direction(window: DecisionWindow, track_id: int, theta: float) -> TrackedDi
     )
 
 
-def test_processing_config_has_music_mdl_lifecycle_and_no_removed_switches() -> None:
+def test_processing_config_has_manual_music_order_and_no_removed_switches() -> None:
     config = load_config("config/config.yaml", environ={})
     values = config.layer2.model_dump()
     assert config.layer2.scanner_backend == "frequency_normalized_music"
     assert values["music"]["context_ms"] in {160, 240, 320}
     assert (values["n_fft"], values["win_length"], values["hop_length"]) == (1024, 960, 480)
-    assert values["mdl_max_age_ms"] <= 100
+    assert values["effective_order_limit"] in {1, 2, 3}
+    assert "mdl_max_age_ms" not in values
+    assert "min_cross_frequency_consistency" not in values
     assert values["dpd_rank1_enabled"] is False
     assert values["noise_whitening_enabled"] is False
     assert values["direction_id_tracking"]["coasting_ttl_ms"] > 0

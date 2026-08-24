@@ -100,8 +100,8 @@ WindowWorkItem
     ↓ Gate放行
     2000～4000 Hz Rolling frequency-normalized MUSIC
         240 ms滚动历史；20 ms增量STFT/协方差；0～359°逐度扫描
-        MDL与跨频一致性诊断0～6阶
-        MDL只作诊断；实际MUSIC阶数与最多搜峰数=Test UI手动上限1/2/3
+        Test UI手动选择MUSIC阶数1/2/3
+        普通路径信号子空间阶数与最多搜峰数=该手动值
         可选DPD逐频投票 + 圆周核聚类、可选IMCRA对角噪声白化（均默认关闭）
         圆周峰值 + 50° NMS → 最多3个方向
     永久在线Circular IMM-JPDA方向ID
@@ -184,6 +184,7 @@ WindowWorkItem
     同窗实时审计严格L2(n) → L3(n) → TrackAudioStreamHub → L5(SKIPPED: offline_after_l4)
     跨窗实际计算稳态为L2(n) || L3(n-1)；真正L4/L5只在停机封存后运行
     各阶段单worker、队列/Joiner/缓存均有界；满队列按latest-wins替换未开始旧窗
+    L2先登记每个权威ID的绝对20 ms时间槽，L3只填BF波形，缺失槽保留等时静音
     既有optimized隔离L3基准已低于20 ms节拍；五频段模式与真实阵列全链并发仍待复测
 ```
 
@@ -191,7 +192,7 @@ WindowWorkItem
 
 ### 采集后离线L4/L5路径
 
-离线L4/L5不在20 ms Runtime中执行。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存其已拼好的完整ID长音频和逐窗L2方向数量。Test UI下半区按L3/L4/L5三等分：由“发送到L4”运行人数路由、分离和2～4 kHz复频谱相干匹配；短于2秒或匹配低可信时安全回退原L3人声，并保存带原ID/角度的L4 WAV供试听。整批L4完成后自动运行NVIDIA长音频Frame-VAD。L5为L4音频的每个20 ms hop输出独立概率和Voice判断，黄色逐帧绘制在L4音频条，L3音频不再着色。
+离线L4/L5不在20 ms Runtime中执行。L2按权威ID先登记绝对20 ms时间槽，L3只把BF波形填入对应槽；未生成BF的槽保留等时静音，因此不同L3算法只改变内容而不改变轨长。停止采集并排空L3后，`TrackAudioStreamHub.seal()`直接封存完整ID长音频和逐窗L2方向数量。完整模拟输入EOF等待全部阶段数据完整排空，实时/手动停止才使用有限安全超时。Test UI下半区按L3/L4/L5三等分：由“发送到L4”运行人数路由、分离和2～4 kHz复频谱相干匹配；短于2秒或匹配低可信时安全回退原L3人声，并保存带原ID/角度的L4 WAV供试听。整批L4完成后自动运行NVIDIA长音频Frame-VAD。L5为L4音频的每个20 ms hop输出独立概率和Voice判断，黄色逐帧绘制在L4音频条，L3音频不再着色。
 
 ## 算法流程说明
 
@@ -228,9 +229,9 @@ Gate阈值与MUSIC候选阈值是两个不同参数：前者决定“是否启�
 
 ### 5. Rolling NormMUSIC二维定位
 
-MUSIC维护多帧STFT的逐频7×7协方差，只使用7个物理麦和2000～4000 Hz频率。每频点执行加载/收缩与Hermitian特征分解，MDL和跨频一致性估计0～6阶空间模态，NormMUSIC式逐频归一化后在0～359°逐度形成伪谱。MDL诊断值保持原样；普通路径的Test UI手动阶数上限1/2/3直接决定实际MUSIC阶数和最多搜索峰数。每轮取未屏蔽区域内符合当前Test UI候选门限与prominence的最强局部峰，屏蔽与已选峰圆周距离小于50°的区域后继续，恰好50°允许共存；无达标峰时提前停止，最终输出0～阶数上限个备选方向。
+MUSIC维护多帧STFT的逐频7×7协方差，只使用7个物理麦和2000～4000 Hz频率。每频点执行加载/收缩与Hermitian特征分解，普通路径直接使用Test UI手动选择的1/2/3阶信号子空间，NormMUSIC式逐频归一化后在0～359°逐度形成伪谱。该手动值同时决定最多搜索峰数。每轮取未屏蔽区域内符合当前Test UI候选门限与prominence的最强局部峰，屏蔽与已选峰圆周距离小于50°的区域后继续，恰好50°允许共存；无达标峰时提前停止，最终输出0～手动阶数个备选方向。
 
-Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + rank-1 MUSIC`按逐频主特征值间隙、平面波拟合度以及IMCRA的SPP/先验SNR筛选可靠频点，每个可靠频点按单源噪声子空间产生方向票，再执行跨359°/0°连续的圆周核聚类。当前每个合格簇至少需要4个支持频点、覆盖4个等宽子带中的2个、加权支持率不低于0.20、圆周集中度不低于0.85。归一化峰值均严格大于0.70且组内任意峰圆周距离不超过40°时，先按唯一支持频点权重融合为圆周平均角，再执行50°圆周NMS；蓝色投票谱不做二次归一化。合格簇数量决定0～手动上限个候选，MDL在此路径只保留为诊断。`IMCRA噪声白化`只读取DecisionWindow已有的READY IMCRA `noise_psd`，构造逐频、逐麦的对角噪声协方差，同时白化观测协方差和steering；当前公开IMCRA不提供跨麦互谱，因此不宣称完整噪声CSM。对角模型以逐麦逆平方根直接缩放，等价于对角Cholesky但避免通用7×7分解；没有READY数据或有效对角项时本窗明确标记`unavailable`并安全退回未白化计算。L2队列丢窗是独立的Runtime过载状态，不代表Gate或L1 IMCRA不可用，Test UI会保留最近一次成功结果并标记`STALE | L2 DROPPED`。
+Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + rank-1 MUSIC`按逐频主特征值间隙、平面波拟合度以及IMCRA的SPP/先验SNR筛选可靠频点，每个可靠频点按单源噪声子空间产生方向票，再执行跨359°/0°连续的圆周核聚类。当前每个合格簇至少需要4个支持频点、覆盖4个等宽子带中的2个、加权支持率不低于0.20、圆周集中度不低于0.85。归一化峰值均严格大于0.70且组内任意峰圆周距离不超过40°时，先按唯一支持频点权重融合为圆周平均角，再执行50°圆周NMS；蓝色投票谱不做二次归一化。合格簇数量决定0～手动上限个候选。`IMCRA噪声白化`只读取DecisionWindow已有的READY IMCRA `noise_psd`，构造逐频、逐麦的对角噪声协方差，同时白化观测协方差和steering；当前公开IMCRA不提供跨麦互谱，因此不宣称完整噪声CSM。对角模型以逐麦逆平方根直接缩放，等价于对角Cholesky但避免通用7×7分解；没有READY数据或有效对角项时本窗明确标记`unavailable`并安全退回未白化计算。L2队列丢窗是独立的Runtime过载状态，不代表Gate或L1 IMCRA不可用，Test UI会保留最近一次成功结果并标记`STALE | L2 DROPPED`。
 
 达到L2 `confirmed`的方向ID在最后一次MUSIC观测后的2秒几何TTL内继续保留。新MUSIC峰用于更新角度；短时漏检时，公共投影可按该ID的保持/预测角继续每20 ms生成BF音频。当前离线L5不参与实时槽位准入、排序或续租；tentative轨迹不会进入L3。
 
@@ -344,7 +345,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - 大点表示当前窗口有真实观测，小点表示IMM预测；
 - “L2声源Gate”阈值决定是否执行定位，默认0.60；
 - MUSIC候选阈值决定伪谱峰是否进入候选；
-- “MUSIC阶数上限”可设为1、2或3，只限制实际处理阶数，不覆盖MDL的0～6阶诊断；
+- “MUSIC阶数”可设为1、2或3，直接设置普通路径的信号子空间阶数和最多搜峰数；
 - DPD rank-1 MUSIC和IMCRA噪声白化是默认关闭的独立试验开关；
 - 公共方向ID追踪默认开启；Test UI只保留`ID Tracking`总开关，不再提供独立Kalman或Q/R控件；
 - 开启ID Tracking即运行完整Circular IMM-JPDA，针对静止和慢速移动自动调整模型概率。
@@ -376,7 +377,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 初次实机测试应保持默认配置，只改变一个参数并记录前后结果：
 
 1. 先保持预降噪、DPD、IMCRA白化和卡尔曼关闭，检查基础Gate、MUSIC伪谱和永久ID关联；
-2. 再分别把MUSIC阶数上限设为1、2、3，记录MDL诊断、候选数量和误峰变化；
+2. 再分别把MUSIC阶数设为1、2、3，记录候选数量和误峰变化；
 3. 需要试验鲁棒定位时，每次只开启DPD或IMCRA白化中的一个；最后再开启卡尔曼并小幅调整Q/R倍率；
 4. 使用同一段录音比较`optimized`、`ds_baseline`和`subband_robust_baseline`；DAS只用于单声源，双声源重点比较优化方法与五频段鲁棒对照；
 5. Gate阈值、MUSIC候选阈值和L5分类阈值分别记录，不要把三者当成同一个“灵敏度”。

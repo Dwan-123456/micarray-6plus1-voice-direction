@@ -155,16 +155,13 @@ layer2:
   covariance_shrinkage: 0.05
   diagonal_loading: 1.0e-3
   eigenvalue_floor: 1.0e-10
-  mdl_max_age_ms: 100
   min_valid_frequency_bins: 12
-  min_cross_frequency_consistency: 0.20
   direction_threshold: 0.35
   peak_prominence: 0.05
   # L2候选间的最小圆周角距；低于该角距的较低分峰会被NMS抑制。
   min_peak_distance_deg: 50.0
   max_candidates: 3
-  # Test UI may change this runtime ceiling to 1, 2, or 3. The diagnostic MDL
-  # result remains 0..6 and the scanner uses min(diagnostic, this limit).
+  # Test UI changes this exact MUSIC subspace/search order to 1, 2, or 3.
   effective_order_limit: 3
   # Optional experimental safeguards. Both remain OFF until explicitly enabled
   # from Development Test UI; the manual ceiling remains independent.

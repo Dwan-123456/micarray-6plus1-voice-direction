@@ -102,7 +102,7 @@ class MusicOrderLimitControl(QWidget):
         self.combo = QComboBox()
         self.combo.addItems(("1", "2", "3"))
         self.combo.setFixedWidth(64)
-        self.combo.setToolTip("实际MUSIC阶数 = min(MDL诊断阶数, 手动上限)")
+        self.combo.setToolTip("直接设置MUSIC信号子空间阶数和最多搜峰数")
         layout.addWidget(self.label)
         layout.addWidget(self.combo)
         self.setMaximumWidth(185)

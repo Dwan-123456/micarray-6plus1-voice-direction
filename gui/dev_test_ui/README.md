@@ -4,7 +4,7 @@
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**本README描述当前已迁移界面。**
 
-当前回归状态：L1预降噪及界面相关自动化门禁已通过。L1区域已增加持久化的“IMCRA预降噪”开关；开启后Runtime等待对应20 ms降噪块完成，再将替换后的7路音频送入后续层。L1区域另有持久化“CountNet人数估计”开关：只读校准后Center Mic，开启后先预热5秒、随后每100 ms显示0/1/2及P0/P1/P2；关闭会清空其私有状态。该worker不在GUI或采集线程推理，第一阶段结果不进入Windowing和L2～L5。
+当前回归状态：L1预降噪及界面相关自动化门禁已通过。L1区域已增加持久化的“IMCRA预降噪”开关；开启后Runtime等待对应20 ms降噪块完成，再将替换后的7路音频送入后续层。L1区域另有持久化“CountNet人数估计”开关：只读校准后Center Mic，开启后先预热5秒、随后每100 ms显示0/1/2、三位P0/P1/P2、输入RMS、模型输入增益和标注end sample；关闭会清空其私有状态。该worker不在GUI或采集线程推理，第一阶段结果不进入Windowing和L2～L5。
 
 每次麦克风采集成功连接后，Test UI会尽力发送一次官方关灯命令`e`。麦克风未连接时不会访问CDC或发送灯控命令；启动默认关灯失败也不弹出灯控错误，手动“灯光开/灯光关”仍保留完整错误提示。
 
@@ -12,9 +12,9 @@
 
 主窗口默认以系统最大化窗口启动，保留标题栏、最小化和还原能力，不进入无边框全屏；只有配置显式启用`start_fullscreen`时才使用全屏模式。
 
-L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但按ID长轨不再由UI自行拼接。Runtime中的`TrackAudioStreamHub`每20 ms生成一份已经去重、按IMCRA概率响度补偿的连续轨hop；Test UI的L3试听和停机封存读取同一份48 kHz波形，播放端不再额外提高响度。L3栏提供默认ON的补偿开关，切换不清空ID或连续轨；L5读取的是L4最终原生16 kHz输出。
+L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但按ID长轨不再由UI自行拼接。Runtime先根据每个L2完成窗口登记权威ID的绝对20 ms时间槽，`TrackAudioStreamHub`再把已经去重、按IMCRA概率响度补偿的L3 hop写入对应槽；没有BF结果的首尾或中间槽保留等时静音。Test UI的L3试听和停机封存读取同一份48 kHz波形，所以算法速度不改变轨长。L3栏提供默认ON的补偿开关，切换不清空ID或连续轨；L5读取的是L4最终原生16 kHz输出。
 
-只有完整模拟输入模式会在L1显示操作者填写的音频名称以及“开始/继续、暂停、从头重播”控件。暂停不推进sample，也不在继续时追赶；播放结束保留最后结果并等待重播。重播立即清空上一轮L1～L5画面、试听缓存和旧结果邮箱，并通过新的stream epoch重新预热算法状态。普通真实设备模式不创建这些控件。
+只有完整模拟输入模式会在L1显示操作者填写的音频名称以及“开始/继续、暂停、从头重播”控件。暂停不推进sample，也不在继续时追赶；播放到EOF后进入`FINALIZING`并等待L2/L3/L5/Commit数据完整排空，随后保留最后结果和各层总运行时长并进入`stopped`等待重播。重播立即清空上一轮L1～L5画面、试听缓存和旧结果邮箱，并通过新的stream epoch重新预热算法状态。普通真实设备模式不创建这些控件。
 
 主界面使用10 ms精确定时器以100 Hz轮询容量1的latest-value邮箱。正式审计邮箱只接收ResultJoiner按`(session_id, stream_epoch, window_id, decision_sample)`合并并有序提交的快照；实时L5固定写入`offline_after_l4`跳过终态，因此兼容邮箱`latest_l5_dev_ui`不会发布CNN结果。离线L5结果由当前后台作业直接写入L4/L5面板，不进入DecisionRecord或watermark。算法正式窗口仍为20 ms（50 Hz）；某阶段SKIPPED/FAILED时仍由有序审计快照表达真实终态。
 
@@ -24,7 +24,7 @@ L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但�
 
 ## 上二栏与下三栏
 
-- 左上L1：MIC0～MIC5、Center、HardwareMix共8路电平；显示IMCRA预热状态与7个物理麦的0～10000 Hz噪声dB摘要，并提供持久化“IMCRA预降噪”开关和当前采集流的历史平均频率增益；提供独立CountNet开关和100 ms人数读数，其中2表示2人或以上；不在L1显示20/40 ms IMCRA概率；保留灯控与scratch录音。
+- 左上L1：MIC0～MIC5、Center、HardwareMix共8路电平；显示IMCRA预热状态与7个物理麦的0～10000 Hz噪声dB摘要，并提供持久化“IMCRA预降噪”开关和当前采集流的历史平均频率增益；提供独立CountNet开关和100 ms人数读数，其中2表示2人或以上。CountNet行的`end`每100 ms推进，`input/gain`用于确认安静阵列输入已进入预训练模型的有效电平范围；不在L1显示20/40 ms IMCRA概率；保留灯控与scratch录音。
 - 右上L2：显示500～4000 Hz Gate概率、状态和原始MUSIC 360°伪谱；紧凑的`MUSIC阶数`下拉框右侧提供`ID Tracking`按钮。追踪开启时，候选点严格使用L2最终输出角度：首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点，正式ID使用稳定颜色且观测为大点、预测为小点。追踪关闭时只显示原始MUSIC峰值对应的灰色小点，不显示彩色ID，L3与实时L5审计按正常跳过终态停止运行而不报错。
 - 下左L3：连续试听首行固定为Center Mic参考，其余方向轨显示L2权威ID和角度。停止采集并等待L3排空后，“发送到L4”把Hub已经拼好的完整长音频整体交给L4。L3波形不再读取或绘制L5黄色人声区间。
 - 下中L4：试听缓存是L4原生16 kHz单声道PCM16 WAV；播放端解析RIFF/WAV后以16 kHz直接建立声卡流，不做16→48 kHz重采样，也不得复用L3裸`.f32`缓存入口。L4全部音轨完成后，Test UI自动把同一份16 kHz波形交给L5；播放只做去直流、必要的衰减型峰值保护和首尾淡化，不改写缓存或L5输入。
@@ -33,7 +33,7 @@ L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但�
 
 L2 Gate滑条范围`0.00～1.00`、建议步长`0.01`。拖动后在下一完整DecisionWindow生效并显示新的`config_revision`，默认不写回`config.yaml`。L5阈值滑条只重判缓存的CNN概率。两个滑条必须用“L2声源Gate”和“L5人声判断”清晰区分。
 
-L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3，并直接决定普通路径的实际子空间阶数与最多搜峰数；MDL只保留0～6阶诊断。右侧状态条同时显示`MDL`和`MUSIC`，便于直接比较。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不启用逐频支持或可靠性加权门禁。
+L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3，并直接决定普通路径的信号子空间阶数与最多搜峰数；DPD路径将它作为最多候选数。右侧状态条显示当前手动阶数和实际输出候选数。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不启用逐频支持或可靠性加权门禁。
 
 所有算法信息按session、epoch、window和sample endpoint对齐。缺少任一20 ms IMCRA概率、跨epoch或尚未预热时，右上明确显示`WARMING_UP/UNAVAILABLE`，不能拼接旧数据或显示假SRP结果。
 

@@ -1510,10 +1510,10 @@ class ApplicationRuntime:
                 "music_frequency_band_hz": (
                     scan_config.frequency_min_hz, scan_config.frequency_max_hz,
                 ),
-                "mdl": {
-                    "max_age_ms": scan_config.mdl_max_age_ms,
+                "music_order": {
+                    "source": "test_ui_manual",
+                    "value": scan_config.effective_order_limit,
                     "min_valid_frequency_bins": scan_config.min_valid_frequency_bins,
-                    "min_cross_frequency_consistency": scan_config.min_cross_frequency_consistency,
                 },
                 "association_lifecycle": self.config.layer2.direction_id_tracking.model_dump(),
                 "association_config_revision": 0,
@@ -2438,8 +2438,7 @@ class ApplicationRuntime:
                 f"l2_music_algorithm={music.algorithm_version}",
                 f"l2_music_valid_frequency_bins={music.valid_frequency_bins}",
                 f"l2_music_covariance_quality={music.covariance_quality}",
-                f"l2_music_model_order={music.model_order.estimated_sources}",
-                f"l2_music_mdl_age_samples={music.model_order.mdl_age_samples}",
+                f"l2_music_manual_order={music.model_order.estimated_sources}",
                 f"l2_music_dpd_rank1_enabled={music.dpd_rank1_enabled}",
                 f"l2_music_selected_frequency_bins={music.selected_frequency_bins}",
                 f"l2_music_noise_whitening_enabled={music.noise_whitening_enabled}",

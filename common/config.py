@@ -224,9 +224,7 @@ class Layer2Config(StrictModel):
     covariance_shrinkage: float = Field(ge=0, lt=1)
     diagonal_loading: float = Field(gt=0)
     eigenvalue_floor: float = Field(gt=0)
-    mdl_max_age_ms: int = Field(gt=0, le=100)
     min_valid_frequency_bins: int = Field(gt=0)
-    min_cross_frequency_consistency: float = Field(ge=0, le=1)
     direction_threshold: float
     peak_prominence: float
     min_peak_distance_deg: Literal[50.0]

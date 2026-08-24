@@ -130,18 +130,6 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     assert not scan.noise_whitening_enabled
 
 
-@pytest.mark.parametrize("source_count", range(7))
-def test_mdl_model_order_covers_zero_through_six_sources(source_count: int) -> None:
-    eigenvalues = np.r_[
-        np.ones(7 - source_count),
-        np.arange(1, source_count + 1, dtype=np.float64) * 20.0 + 20.0,
-    ]
-    order, consistency = RollingNormMusicScanner._mdl_order(
-        np.tile(eigenvalues, (100, 1)), snapshots=31
-    )
-    assert (order, consistency) == (source_count, 1.0)
-
-
 @pytest.mark.parametrize("context_ms, expected_frames", ((160, 15), (240, 23), (320, 31)))
 def test_music_history_candidates_preserve_direction(context_ms: int, expected_frames: int) -> None:
     scan = replace(
@@ -168,7 +156,8 @@ def test_music_single_source_direction_and_no_mirror(theta: float) -> None:
     )
     error = abs(((float(np.argmax(response.raw_scores)) - theta + 180.0) % 360.0) - 180.0)
     assert error <= 2.0
-    assert diagnostics.model_order.estimated_sources == 1
+    assert diagnostics.model_order.estimated_sources == scan.effective_order_limit
+    assert diagnostics.model_order.mdl_age_samples == 0
     assert candidates and abs(((candidates[0].theta_deg - theta + 180.0) % 360.0) - 180.0) <= 2.0
 
 
@@ -192,12 +181,12 @@ def test_music_hardware_mix_is_excluded_and_incremental_update_is_two_frames() -
 def test_music_two_sources_are_50_degree_nms_separated() -> None:
     config = replace(
         DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
-        direction_threshold=0.15, min_cross_frequency_consistency=0.0,
+        direction_threshold=0.15,
     )
     response, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
         _window(_audio((40.0, 170.0), seed=13)), physical_6plus1_geometry(), config,
     )
-    assert 0 <= diagnostics.model_order.estimated_sources <= 6
+    assert diagnostics.model_order.estimated_sources == config.effective_order_limit
     assert len(candidates) <= 3
     assert all(
         abs(((left.theta_deg - right.theta_deg + 180.0) % 360.0) - 180.0) >= 50.0
@@ -207,14 +196,7 @@ def test_music_two_sources_are_50_degree_nms_separated() -> None:
 
 
 @pytest.mark.parametrize("manual_limit", (1, 2, 3))
-def test_manual_music_order_controls_peak_search_without_hiding_diagnostic_mdl(
-    monkeypatch, manual_limit: int,
-) -> None:
-    monkeypatch.setattr(
-        RollingNormMusicScanner,
-        "_mdl_order",
-        staticmethod(lambda _eigenvalues, _snapshots: (5, 1.0)),
-    )
+def test_manual_music_order_directly_controls_subspace_and_peak_search(manual_limit: int) -> None:
     config = replace(
         DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
         effective_order_limit=manual_limit,
@@ -222,19 +204,13 @@ def test_manual_music_order_controls_peak_search_without_hiding_diagnostic_mdl(
     _, _, diagnostics = RollingNormMusicScanner().scan_detailed(
         _window(_audio((73.0,), seed=47)), physical_6plus1_geometry(), config,
     )
-    assert diagnostics.model_order.estimated_sources == 5
+    assert diagnostics.model_order.estimated_sources == manual_limit
     assert diagnostics.effective_model_order == manual_limit
-    assert diagnostics.mdl_saturated
     assert diagnostics.births_allowed
     assert diagnostics.stop_reason == "manual_order_greedy_peak_search"
 
 
-def test_manual_music_order_two_finds_two_peaks_when_mdl_underestimates(monkeypatch) -> None:
-    monkeypatch.setattr(
-        RollingNormMusicScanner,
-        "_mdl_order",
-        staticmethod(lambda _eigenvalues, _snapshots: (1, 1.0)),
-    )
+def test_manual_music_order_two_finds_two_peaks() -> None:
     config = replace(
         DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
         effective_order_limit=2,
@@ -243,7 +219,7 @@ def test_manual_music_order_two_finds_two_peaks_when_mdl_underestimates(monkeypa
     _, candidates, diagnostics = RollingNormMusicScanner().scan_detailed(
         _window(_audio((30.0, 210.0), seed=49)), physical_6plus1_geometry(), config,
     )
-    assert diagnostics.model_order.estimated_sources == 1
+    assert diagnostics.model_order.estimated_sources == 2
     assert diagnostics.effective_model_order == 2
     assert len(candidates) == 2
     assert all(
@@ -641,7 +617,7 @@ def test_internal_unwrapped_state_is_periodically_rebased() -> None:
         assert all(abs(model.mean[0]) <= 180.0 for model in track.models)
 
 
-def test_tracker_blocks_birth_for_saturated_mdl_window() -> None:
+def test_tracker_respects_explicit_birth_suppression() -> None:
     tracker = _tracker()
     observed, active = tracker.update(
         "track", 0, 15_360, (_candidate(15_360, 30.0),),

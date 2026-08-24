@@ -149,7 +149,11 @@ def test_runtime_processing_snapshot_freezes_music_and_imm_jpda_lifecycle(tmp_pa
         "n_fft": 1024, "win_length": 960, "hop_length": 480, "window": "hann_periodic",
     }
     assert values["music_frequency_band_hz"] == (2_000.0, 4_000.0)
-    assert values["mdl"]["max_age_ms"] <= 100
+    assert values["music_order"] == {
+        "source": "test_ui_manual",
+        "value": 3,
+        "min_valid_frequency_bins": 12,
+    }
     assert values["association_lifecycle"]["coasting_ttl_ms"] > 0
     assert values["association_config_revision"] == 0
     assert values["kalman_config_revision"] == 0

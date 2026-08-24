@@ -21,9 +21,7 @@ class DirectionScanConfig:
     covariance_shrinkage: float
     diagonal_loading: float
     eigenvalue_floor: float
-    mdl_max_age_ms: int
     min_valid_frequency_bins: int
-    min_cross_frequency_consistency: float
     direction_threshold: float
     peak_prominence: float
     min_peak_distance_deg: float
@@ -68,7 +66,7 @@ class DirectionScanConfig:
         finite = (
             self.direction_threshold, self.peak_prominence, self.min_peak_distance_deg,
             self.covariance_shrinkage, self.diagonal_loading, self.eigenvalue_floor,
-            self.min_cross_frequency_consistency, self.dpd_min_eigenvalue_ratio,
+            self.dpd_min_eigenvalue_ratio,
             self.dpd_min_plane_wave_fit, self.dpd_min_frequency_support_ratio,
             self.dpd_min_circular_concentration,
             self.dpd_peak_fusion_distance_deg,
@@ -106,7 +104,7 @@ class DirectionScanConfig:
             raise ValueError("MUSIC noise covariance configuration is invalid")
         if not 0 <= self.covariance_shrinkage < 1 or self.diagonal_loading <= 0:
             raise ValueError("MUSIC covariance regularization is invalid")
-        if self.eigenvalue_floor <= 0 or not 1 <= self.mdl_max_age_ms <= 100:
-            raise ValueError("MUSIC eigensolver/MDL configuration is invalid")
-        if self.min_valid_frequency_bins < 1 or not 0 <= self.min_cross_frequency_consistency <= 1:
+        if self.eigenvalue_floor <= 0:
+            raise ValueError("MUSIC eigensolver configuration is invalid")
+        if self.min_valid_frequency_bins < 1:
             raise ValueError("MUSIC frequency quality configuration is invalid")

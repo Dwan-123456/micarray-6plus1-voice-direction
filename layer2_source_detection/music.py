@@ -1,8 +1,8 @@
 """Rolling broadband frequency-normalized MUSIC for the L2 runtime.
 
-This is a project-specific implementation of Schmidt's MUSIC formulation,
-Wax/Kailath MDL model-order selection, and the per-frequency normalization
-described by Pyroomacoustics NormMUSIC (MIT). No Israel Cohen MUSIC source is
+This is a project-specific implementation of Schmidt's MUSIC formulation and
+the per-frequency normalization described by Pyroomacoustics NormMUSIC (MIT).
+The signal-subspace order is supplied explicitly by the Test UI. No Israel Cohen MUSIC source is
 claimed or copied; his material is used only for the separately documented
 noise-estimation background.
 """
@@ -81,7 +81,6 @@ class MusicDiagnostics:
     candidate_limit: int = 3
     candidate_limit_applied: bool = False
     effective_model_order: int | None = None
-    mdl_saturated: bool = False
     births_allowed: bool = True
     dpd_rank1_enabled: bool = False
     selected_frequency_bins: int = 0
@@ -106,8 +105,8 @@ class MusicDiagnostics:
         )
         if not 0 <= effective_model_order <= 3:
             raise ValueError("effective MUSIC order must be 0..3")
-        if type(self.mdl_saturated) is not bool or type(self.births_allowed) is not bool:
-            raise TypeError("MUSIC saturation/birth flags must be bool")
+        if type(self.births_allowed) is not bool:
+            raise TypeError("MUSIC birth flag must be bool")
         if type(self.dpd_rank1_enabled) is not bool or type(self.noise_whitening_enabled) is not bool:
             raise TypeError("MUSIC DPD/whitening flags must be bool")
         if min(self.selected_frequency_bins, self.imcra_noise_hops) < 0:
@@ -124,7 +123,7 @@ class MusicDiagnostics:
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_dpd_peak_fusion_v7"
+    algorithm_version = "frequency_normalized_music_manual_order_v8"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -135,8 +134,6 @@ class RollingNormMusicScanner:
         self._frequencies_hz: np.ndarray | None = None
         self._steering: np.ndarray | None = None
         self._steering_key: tuple[object, ...] | None = None
-        self._last_model_order: ModelOrderEstimate | None = None
-        self._last_mdl_sample: int | None = None
         self.last_state_diagnostic: MusicStateDiagnostic | None = None
 
     def reset(self) -> None:
@@ -144,8 +141,6 @@ class RollingNormMusicScanner:
         self._last_sample = None
         self._frame_covariances.clear()
         self._covariance_sum = None
-        self._last_model_order = None
-        self._last_mdl_sample = None
         self.last_state_diagnostic = None
 
     @staticmethod
@@ -666,25 +661,6 @@ class RollingNormMusicScanner:
         assert self._steering is not None
         return self._steering, rebuilt
 
-    @staticmethod
-    def _mdl_order(eigenvalues: np.ndarray, snapshots: int) -> tuple[int, float]:
-        orders: list[int] = []
-        for values in eigenvalues:
-            values = np.maximum(np.real(values), 1.0e-12)
-            scores = []
-            for k in range(7):
-                noise = values[: 7 - k]
-                ratio = np.exp(np.mean(np.log(noise))) / np.mean(noise)
-                score = -snapshots * (7 - k) * np.log(max(ratio, 1.0e-12))
-                score += 0.5 * k * (14 - k) * np.log(max(snapshots, 2))
-                scores.append(score)
-            orders.append(int(np.argmin(scores)))
-        if not orders:
-            return 0, 0.0
-        counts = np.bincount(orders, minlength=7)
-        order = int(np.argmax(counts))
-        return order, float(counts[order] / len(orders))
-
     def scan_detailed(
         self,
         window: DecisionWindow,
@@ -700,8 +676,6 @@ class RollingNormMusicScanner:
         if not continuous:
             reason = "new_stream" if self._stream_key != stream_key else "sample_discontinuity"
             self._rebuild(window, config, reason)
-            self._last_model_order = None
-            self._last_mdl_sample = None
         else:
             self._advance(window, config)
         self._stream_key = stream_key
@@ -734,28 +708,13 @@ class RollingNormMusicScanner:
         eigenvalues = eigenvalues[valid]
         eigenvectors = eigenvectors[valid]
         steering = steering[valid]
-        refresh_mdl = self._last_mdl_sample is None or (
-            window.decision_sample - self._last_mdl_sample >= config.mdl_max_age_ms * 48
+        manual_order = config.effective_order_limit
+        # Keep the established ModelOrderEstimate DTO for downstream recording
+        # compatibility. Its order is now the explicit operator selection and
+        # the legacy MDL age is always zero; no model-order estimator runs.
+        model_order = ModelOrderEstimate(
+            manual_order, int(valid.sum()), snapshots, 1.0, 0, "ready",
         )
-        if refresh_mdl:
-            order, consistency = self._mdl_order(eigenvalues, snapshots)
-            status = "ready" if consistency >= config.min_cross_frequency_consistency else "degraded"
-            self._last_model_order = ModelOrderEstimate(
-                order, int(valid.sum()), snapshots, consistency, 0, status,
-            )
-            self._last_mdl_sample = window.decision_sample
-        else:
-            assert self._last_model_order is not None and self._last_mdl_sample is not None
-            old = self._last_model_order
-            self._last_model_order = ModelOrderEstimate(
-                old.estimated_sources, int(valid.sum()), snapshots,
-                old.cross_frequency_consistency,
-                window.decision_sample - self._last_mdl_sample, old.status,
-            )
-        model_order = self._last_model_order
-        assert model_order is not None
-        diagnostic_order = model_order.estimated_sources
-        mdl_saturated = diagnostic_order > config.max_candidates
         selected = np.ones(int(valid.sum()), dtype=bool)
         weights = np.ones(int(valid.sum()), dtype=np.float64)
         plane_fit = np.zeros(int(valid.sum()), dtype=np.float64)
@@ -770,11 +729,9 @@ class RollingNormMusicScanner:
                 else None
             )
         else:
-            # The Test UI order selector is the requested MUSIC subspace order
-            # and the maximum number of peaks to search. MDL remains diagnostic
-            # only, so an underestimated MDL result cannot hide a weaker second
-            # or third local maximum.
-            effective_order = config.effective_order_limit
+            # The Test UI order selector directly supplies the signal-subspace
+            # order and the maximum number of peaks to search.
+            effective_order = manual_order
             limit = effective_order
             noise = eigenvectors[:, :, : 7 - effective_order]
             projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
@@ -786,9 +743,7 @@ class RollingNormMusicScanner:
             fallback_reason = (
                 "imcra_noise_psd_unavailable"
                 if config.noise_whitening_enabled and whitening_status == "unavailable"
-                else (
-                    "diagnostic_order_exceeds_output_limit" if mdl_saturated else None
-                )
+                else None
             )
             births_allowed = True
         normalized = np.asarray(
@@ -907,7 +862,7 @@ class RollingNormMusicScanner:
             "degraded"
             if (config.dpd_rank1_enabled and not births_allowed)
             or (config.noise_whitening_enabled and whitening_status == "unavailable")
-            else ("ready" if model_order.status == "ready" else "degraded")
+            else "ready"
         )
         diagnostics = MusicDiagnostics(
             "frequency_normalized_music", self.algorithm_version, config_revision,
@@ -919,7 +874,6 @@ class RollingNormMusicScanner:
             eligible_peak_count=eligible_peak_count, candidate_limit=limit or 3,
             candidate_limit_applied=candidate_limit_applied,
             effective_model_order=effective_order,
-            mdl_saturated=mdl_saturated,
             births_allowed=births_allowed,
             dpd_rank1_enabled=config.dpd_rank1_enabled,
             selected_frequency_bins=int(selected.sum()) if config.dpd_rank1_enabled else int(valid.sum()),

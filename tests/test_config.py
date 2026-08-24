@@ -34,6 +34,8 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.direction_id_tracking.confirmation_window_ms == 200
     assert config.layer2.direction_id_tracking.coasting_ttl_ms == 2_000
     assert config.layer2.effective_order_limit == 3
+    assert not hasattr(config.layer2, "mdl_max_age_ms")
+    assert not hasattr(config.layer2, "min_cross_frequency_consistency")
     assert config.layer2.dpd_rank1_enabled is False
     assert config.layer2.dpd_peak_fusion_distance_deg == 40.0
     assert config.layer2.dpd_peak_fusion_min_normalized_score == 0.70

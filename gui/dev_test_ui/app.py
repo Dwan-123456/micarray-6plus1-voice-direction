@@ -506,7 +506,7 @@ def build_window(
                 "开启时运行圆周IMM-JPDA、ID生命周期和2秒预测；关闭时仅显示DOA原始峰值。"
             )
             self.gate_readout = ProbabilityGateReadout()
-            self.music_status = QLabel("MDL=—  MUSIC=—  valid=—  status=UNAVAILABLE")
+            self.music_status = QLabel("MUSIC order=—  output=—  valid=—  status=UNAVAILABLE")
             self.music_status.setFixedHeight(30)
             self.music_status.setSizePolicy(
                 QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
@@ -653,7 +653,7 @@ def build_window(
                 value = ui_settings.save_music_effective_order_limit(value)
                 runtime.set_music_effective_order_limit(value)
                 self.statusBar().showMessage(
-                    f"MUSIC实际阶数改为 min(MDL, {value})；下一窗口生效", 3500
+                    f"MUSIC阶数已设为 {value}；下一窗口生效", 3500
                 )
             except Exception as exc:
                 runtime.set_music_effective_order_limit(previous)
@@ -759,7 +759,7 @@ def build_window(
             self._last_l1_seen = monotonic()
             self.srp_polar.set_snapshot(None, live=True)
             self.gate_readout.set_unavailable("WARMING")
-            self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=WARMING")
+            self.music_status.setText("MUSIC order=—  output=—  valid=—  status=WARMING")
             self.cnn_panel.set_unavailable("WARMING: waiting for completed L5 window")
             self.bf_panel.set_send_enabled(False)
             self.l4_panel.clear_tracks()
@@ -778,7 +778,7 @@ def build_window(
             self.srp_polar.set_live(False)
             self.gate_readout.set_unavailable("STOPPED")
             if self._frame is None or self._frame.spatial_response is None:
-                self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=STOPPED")
+                self.music_status.setText("MUSIC order=—  output=—  valid=—  status=STOPPED")
             else:
                 status = self.music_status.text()
                 if status.endswith(" LIVE"):
@@ -887,7 +887,7 @@ def build_window(
             self._last_rendered_window = None
             self.srp_polar.set_snapshot(None, live=True)
             self.gate_readout.set_unavailable("WARMING")
-            self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=WARMING")
+            self.music_status.setText("MUSIC order=—  output=—  valid=—  status=WARMING")
             self.cnn_panel.set_unavailable("WARMING: replay restarted")
             self.srp_header.setText("WARMING | replay restarted | waiting for new result")
             self.l1_header.setText("WARMING | replay restarted | waiting for first block")
@@ -1508,7 +1508,7 @@ def build_window(
                 backend_name = "NN" if frame.search_diagnostics.mode == "gi_doaenet" else "MUSIC"
                 self._set_text(
                     self.music_status,
-                    f"{backend_name} sources={model.estimated_sources}  "
+                    f"{backend_name} order={model.estimated_sources}  "
                     f"output={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
                     f"valid={frame.spatial_response.valid_frequency_bins}  "
                     f"status={frame.spatial_response.numerical_status}  {panel_state}",
@@ -1541,7 +1541,9 @@ def build_window(
             elif "srp" in frame.missing_reasons:
                 self.srp_header.setText(frame.missing_reasons["srp"])
                 self.srp_polar.set_snapshot(None)
-                self.music_status.setText("MDL=—  MUSIC=—  valid=—  status=UNAVAILABLE")
+                self.music_status.setText(
+                    "MUSIC order=—  output=—  valid=—  status=UNAVAILABLE"
+                )
                 self._last_rendered_window = None
             now = monotonic()
             if now - self._last_performance_refresh >= 1.0 / config.dev_test_ui.performance_refresh_hz:

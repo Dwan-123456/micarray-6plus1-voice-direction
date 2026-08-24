@@ -133,7 +133,7 @@ DecisionWindow + IMCRA p20
        → 0..3个公共TrackedDirection
 ```
 
-普通MUSIC路径的实际阶数由Test UI的1/2/3上限直接控制，MDL只显示诊断。`confirmed`和`coasting`方向可进入L3；`tentative`不进入L3。
+普通MUSIC路径的信号子空间阶数和最多搜峰数由Test UI手动选择的1/2/3直接控制。`confirmed`和`coasting`方向可进入L3；`tentative`不进入L3。
 
 ### 3.3 Layer 3内部图
 
@@ -248,7 +248,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 1. 连接阵列，确认Windows识别设备；启动UI并检查顶部设备、CUDA和模型状态。
 2. 点击“启动采集”。等待160 ms窗口累计及IMCRA预热；L2的240 ms滚动定位历史会继续独立预热。
 3. 检查左上8路电平。依次轻敲麦克风，确认MIC0–MIC5、Center及HardwareMix映射没有镜像或错位。
-4. 在右上查看L2 Gate、360°MUSIC谱、MDL诊断和方向ID。初次测试保持DPD和IMCRA白化关闭；ID Tracking开启即使用完整IMM-JPDA。
+4. 在右上查看L2 Gate、360°MUSIC谱、手动MUSIC阶数、实际候选数和方向ID。初次测试保持DPD和IMCRA白化关闭；ID Tracking开启即使用完整IMM-JPDA。
 5. 在左下查看Center参考和按`track_id`排列的L3方向轨，可切换四种BF方法进行同源比较。
 6. 需要正式数据时使用“正式录音开始/暂停”；只做临时试听时使用scratch录音。两者不要混作同一资产。
 7. 点击“停止采集”，等待L2/L3队列完全排空和Hub封存。未排空时不能提交L4。
