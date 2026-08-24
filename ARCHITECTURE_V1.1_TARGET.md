@@ -212,7 +212,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ### 8.2 生命周期
 
 - 状态为 `tentative → confirmed → coasting → deleted`。
-- 首次高new概率且不与现存轨迹重复的观测立即分配新ID；滚动200 ms内累计至少3次关联观测且存在概率达标后确认。ID一经分配，在同一session内不得复用。
+- 首次高new概率且不与现存轨迹重复的观测立即分配新ID；滚动200 ms内累计至少5次关联观测且存在概率达标后确认。ID一经分配，在同一session内不得复用。
 - 短时漏检或 Gate 关闭进入内部 coasting；在 TTL 内重新落入关联门限应恢复原 ID。有效TTL内的confirmed/coasting轨迹均可发布为公共L3方向，准入与排序只依赖L2状态。
 - GlobalDirectionTracker保留精确`track_id`的L4反馈接口和有界审计缓存；当前版本反馈不影响关联、确认、存在概率、寿命、Gate或IMM。
 - 超过 TTL 删除轨迹；之后出现的方向即使相近也必须获得新 ID。

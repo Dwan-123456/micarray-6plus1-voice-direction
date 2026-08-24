@@ -106,7 +106,7 @@ WindowWorkItem
         圆周峰值 + 50° NMS → 最多3个方向
     永久在线Circular IMM-JPDA方向ID
         tentative → confirmed → coasting → deleted
-        滚动200 ms内累计至少3次匹配观测后confirmed
+        滚动200 ms内累计至少5次匹配观测后confirmed
         session内track_id单调且不复用；内部最多4轨，公共输出最多3轨
         几何寿命按绝对sample计算，默认coasting TTL为2秒
         confirmed/coasting公共方向完全由L2状态投影；离线L5不改变ID或几何寿命
@@ -243,7 +243,7 @@ Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + ran
 
 方向ID追踪是Layer 2默认开启的正式能力（Development Test UI可为MUSIC诊断临时旁路）。它使用全局一对一分配，把不同窗口中的观测关联为`tentative / confirmed / coasting / deleted`轨迹；`track_id`在同一session内单调分配且不复用，并原样进入L3、Runtime、DecisionRecord v5以及停机后的L4/L5、Development Test UI和Production UI。它只表示空间方向轨迹，不表示人物身份。
 
-新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少3次匹配观测才进入tracking `confirmed`。匹配无需覆盖全部20 ms窗口，未达到3次时保持tentative并在后续滚动窗口继续尝试。tentative关联角距固定为20°；confirmed关联角距按距离该ID最后一次真实MUSIC观测的时间扩张：`min(50°, 20° + 15°/s × 漏检时长)`。未匹配峰若位于任一现存非噪声ID的当前预测位置±20°内，禁止创建重复ID；噪声干扰ID仍保持非排他。
+新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少5次匹配观测才进入tracking `confirmed`。匹配无需覆盖全部20 ms窗口，未达到5次时保持tentative并在后续滚动窗口继续尝试。tentative关联角距固定为20°；confirmed关联角距按距离该ID最后一次真实MUSIC观测的时间扩张：`min(50°, 20° + 15°/s × 漏检时长)`。未匹配峰若位于任一现存非噪声ID的当前预测位置±20°内，禁止创建重复ID；噪声干扰ID仍保持非排他。
 
 达到tracking `confirmed`的轨迹可以在2秒TTL内以`coasting`状态继续作为公共L3方向输出；公共投影只依赖L2的权威观测、关联、角距和数量限制。代码保留在线语义反馈接口以兼容旧契约和专项测试，但当前离线L5不调用它，所以不会实时强制打开Gate、标记噪声干扰或改变轨迹寿命。
 

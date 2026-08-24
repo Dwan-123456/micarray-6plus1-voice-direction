@@ -28,7 +28,7 @@ class GlobalTrackerConfig:
     association_gate_deg: float = 50.0
     association_chi2: float = 20.0
     max_velocity_dps: float = 60.0
-    confirmation_observations: int = 3
+    confirmation_observations: int = 5
     confirmation_window_samples: int = 200 * 48
     tentative_ttl_samples: int = 500 * 48
     coasting_ttl_samples: int = 2_000 * 48
