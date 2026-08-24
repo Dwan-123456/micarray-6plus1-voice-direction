@@ -128,16 +128,25 @@ class _RuntimeSwitchControl(QPushButton):
 
     def __init__(self, enabled: bool, parent: QWidget | None = None):
         super().__init__(parent)
+        self._rendered_state: tuple[bool, bool] | None = None
         self.setCheckable(True)
         self.setMinimumHeight(34)
         self.toggled.connect(self._changed)
         self.set_enabled(enabled)
 
     def set_enabled(self, enabled: bool, *, pending: bool = False) -> None:
-        self.setChecked(bool(enabled))
-        self.setText(self.label)
-        color = "#9a6b00" if pending else ("#16794b" if enabled else "#5b6570")
-        self.setStyleSheet(f"QPushButton {{ background:{color}; color:white; font-weight:600; }}")
+        state = (bool(enabled), bool(pending))
+        if self._rendered_state == state:
+            return
+        self._rendered_state = state
+        if self.isChecked() != state[0]:
+            self.setChecked(state[0])
+        if self.text() != self.label:
+            self.setText(self.label)
+        color = "#9a6b00" if state[1] else ("#16794b" if state[0] else "#5b6570")
+        self.setStyleSheet(
+            f"QPushButton {{ background:{color}; color:white; font-weight:600; }}"
+        )
 
     def _changed(self, enabled: bool) -> None:
         self.set_enabled(bool(enabled), pending=True)

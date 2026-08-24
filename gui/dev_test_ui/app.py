@@ -56,8 +56,10 @@ def _is_current_monotonic_l2_snapshot(
     )
 
 
-def _format_processing_pipeline_status(runtime: object) -> str:
-    status = _runtime_processing_status(runtime)
+def _format_processing_pipeline_status(
+    runtime: object, status: Mapping[str, Any] | None = None,
+) -> str:
+    status = _runtime_processing_status(runtime) if status is None else status
     if status is None:
         return "pipeline telemetry unavailable"
 
@@ -104,8 +106,10 @@ def _format_processing_pipeline_status(runtime: object) -> str:
     return " | ".join((*segments, f"flight {inflight}", cache_text))
 
 
-def _format_processing_pipeline_tooltip(runtime: object) -> str:
-    status = _runtime_processing_status(runtime)
+def _format_processing_pipeline_tooltip(
+    runtime: object, status: Mapping[str, Any] | None = None,
+) -> str:
+    status = _runtime_processing_status(runtime) if status is None else status
     if status is None:
         return "当前Runtime未提供分层流水线诊断。"
     latest_errors = status.get("latest_errors", {})
@@ -371,10 +375,15 @@ def build_window(
             self._refresh_timer = QTimer(self)
             self._refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
             self._refresh_timer.timeout.connect(self._refresh)
-            # Poll the latest atomic L1/L2/L3/L5 frame every 10 ms. Formal
-            # algorithm windows remain 20 ms (50 Hz), so the UI never invents
-            # intermediate results; it simply presents new frames promptly.
-            self._refresh_timer.start(10)
+            # Formal windows arrive at most every 20 ms (50 Hz). Polling the
+            # same frame faster only repeats widget work and competes with the
+            # CPU L1/L2 workers for the Python GIL.
+            refresh_hz = max(
+                config.dev_test_ui.l1_meter_refresh_hz,
+                config.dev_test_ui.polar_refresh_hz,
+                config.dev_test_ui.waveform_refresh_hz,
+            )
+            self._refresh_timer.start(max(1, round(1_000 / refresh_hz)))
             self._update_control_states()
 
         def _l1_panel(self):
@@ -1408,7 +1417,10 @@ def build_window(
                 self.runtime_record.setEnabled(False)
                 self.runtime_pause.setEnabled(False)
             self._update_control_states()
-            pipeline_status = _format_processing_pipeline_status(runtime)
+            status_snapshot = _runtime_processing_status(runtime)
+            pipeline_status = _format_processing_pipeline_status(
+                runtime, status_snapshot
+            )
             self._set_text(
                 self.global_status,
                 f"{state:<7} | input drop {runtime.fanout.dropped_by_subscriber:06d} | "
@@ -1417,7 +1429,9 @@ def build_window(
                 f"{pipeline_status} | "
                 f"scratch queue {runtime.scratch.queued_blocks:03d}",
             )
-            self.global_status.setToolTip(_format_processing_pipeline_tooltip(runtime))
+            tooltip = _format_processing_pipeline_tooltip(runtime, status_snapshot)
+            if self.global_status.toolTip() != tooltip:
+                self.global_status.setToolTip(tooltip)
             self._last_runtime_state = state.casefold()
             if runtime.scratch_error or runtime.scratch.last_error:
                 self._set_text(self.recording_label, f"状态: error | {runtime.scratch_error or runtime.scratch.last_error}")
@@ -1570,7 +1584,7 @@ def build_window(
                     frame.spatial_response.stream_epoch,
                     frame.spatial_response.window_id,
                 )
-                if window_key != self._last_rendered_window:
+                if live_microphone_mode and window_key != self._last_rendered_window:
                     self.srp_polar.set_snapshot(snapshot, live=True)
                     self._last_rendered_window = window_key
                 model = frame.spatial_response.model_order
@@ -1618,11 +1632,13 @@ def build_window(
                 )
             elif "srp" in frame.missing_reasons:
                 self.srp_header.setText(frame.missing_reasons["srp"])
-                self.srp_polar.set_snapshot(None)
+                if live_microphone_mode:
+                    self.srp_polar.set_snapshot(None)
                 self.music_status.setText(
                     "MUSIC order=—  output=—  valid=—  status=UNAVAILABLE"
                 )
-                self._last_rendered_window = None
+                if live_microphone_mode:
+                    self._last_rendered_window = None
 
         def _render_frame(self, frame, *, render_l2=True, render_l5=True):
             self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
@@ -1698,7 +1714,9 @@ def build_window(
                 self._set_record_buttons(l1.recording_state)
                 for index, (name, label) in enumerate(self.meter_labels):
                     rms = float(l1.rms_dbfs[index])
-                    self.meter_bars[index].setValue(max(-90, round(rms)))
+                    meter_value = max(-90, round(rms))
+                    if self.meter_bars[index].value() != meter_value:
+                        self.meter_bars[index].setValue(meter_value)
                     self._set_text(label, f"{name}\n{rms:.1f} dB")
                 hop = l1.imcra_hop
                 if hop is None:

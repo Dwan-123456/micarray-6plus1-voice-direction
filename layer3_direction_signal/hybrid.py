@@ -163,22 +163,34 @@ class ImcraSpatialSeparationBeamformer:
             geometry.positions_m.tobytes(),
             self._frequency_key,
         )
-        vectors: list[torch.Tensor] = []
-        for candidate in candidates:
-            key = (*geometry_key, float(candidate.theta_deg))
-            cached = self._steering_cache.get(key)
-            if cached is None:
-                theta = torch.tensor(
-                    [candidate.theta_deg], dtype=torch.float32, device=self.device,
-                )
-                cached = self._bounded_put(
+        keys = tuple(
+            (*geometry_key, float(candidate.theta_deg)) for candidate in candidates
+        )
+        missing_keys: list[tuple[object, ...]] = []
+        missing_angles: list[float] = []
+        for key, candidate in zip(keys, candidates, strict=True):
+            if key not in self._steering_cache and key not in missing_keys:
+                missing_keys.append(key)
+                missing_angles.append(float(candidate.theta_deg))
+        if missing_keys:
+            # Kalman-smoothed directions often change together. Computing one
+            # batched exponential is cheaper than launching one steering call
+            # per cache miss, while preserving the exact (unquantized) angle.
+            theta = torch.tensor(
+                missing_angles, dtype=torch.float32, device=self.device,
+            )
+            generated = steering_vectors(frequencies, theta, geometry)
+            for key, vector in zip(missing_keys, generated, strict=True):
+                self._bounded_put(
                     self._steering_cache,
                     key,
-                    steering_vectors(frequencies, theta, geometry)[0],
+                    vector,
                     self._static_cache_limit,
                 )
-            else:
-                self._steering_cache.move_to_end(key)
+        vectors: list[torch.Tensor] = []
+        for key in keys:
+            cached = self._steering_cache[key]
+            self._steering_cache.move_to_end(key)
             vectors.append(cached)
         return torch.stack(vectors, dim=0)
 
@@ -260,13 +272,28 @@ class ImcraSpatialSeparationBeamformer:
         reused_frames = self._stft_cache.snapshot().reused_frames
         if mode in {L3_MODE_LOADED_MVDR, L3_MODE_OPTIMIZED, L3_MODE_SUBBAND_ROBUST}:
             try:
+                # A rolling covariance update removes and adds both reflected
+                # STFT boundaries. For the current 40 ms / five-frame window,
+                # those two small GEMMs touch more frames than one full GEMM.
+                # Keep rolling only when its actual frame count is lower; this
+                # remains beneficial for the supported longer windows.
+                hop_gap = max(
+                    0,
+                    (stft.frame_count - 2 - reused_frames)
+                    // 2,
+                )
+                rolling_covariance_frames = 4 * hop_gap + 4
+                allow_covariance_rolling = (
+                    reused_frames > 0
+                    and rolling_covariance_frames < stft.frame_count
+                )
                 noise, noise_version = self._noise_cache.estimate_window(
                     window,
                     spectrum_fct,
                     frequencies,
                     config,
                     stft,
-                    allow_rolling=reused_frames > 0,
+                    allow_rolling=allow_covariance_rolling,
                     validate_values=not defer_device_validation,
                 )
                 covariance_rolled = self._noise_cache.snapshot().rolled

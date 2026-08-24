@@ -91,6 +91,14 @@ class _L3Work:
 
 
 @dataclass(frozen=True, slots=True)
+class _L3PreparedWork:
+    work: _L3Work
+    started_ns: int
+    candidates: tuple[object, ...]
+    result: object
+
+
+@dataclass(frozen=True, slots=True)
 class _L3HostWork:
     work: _L3Work
     started_ns: int
@@ -148,6 +156,12 @@ class ApplicationRuntime:
     ) -> None:
         self.config = config
         self.project_root = Path(project_root).resolve()
+        # These L1-L3 tensors are small (7 channels, at most 513 bins). Letting
+        # every operation fan out to every logical core creates more scheduler
+        # work than arithmetic and makes concurrent L2/L3 stages fight over the
+        # same pool. L3 preparation, beamforming and stitching have independent
+        # bounded pipeline workers instead.
+        torch.set_num_threads(config.runtime.torch_cpu_threads)
         cdc = CdcConfig.from_project(config)
         self.serial_device = serial_device or SerialDevice(cdc.port, cdc.baudrate)
         if pipeline is None:
@@ -222,6 +236,8 @@ class ApplicationRuntime:
         # stateful layer instance.
         self._l2_windows: queue.Queue[object]
         self._l3_windows: queue.Queue[object]
+        self._l3_prepared_windows: queue.Queue[object]
+        self._l3_host_windows: queue.Queue[object]
         self._l5_windows: queue.Queue[object]
         self._completion_results: queue.Queue[object]
         self._completion_backlog: deque[JoinedWindowResult]
@@ -409,7 +425,14 @@ class ApplicationRuntime:
         runtime = self.config.runtime
         self._l2_windows = queue.Queue(maxsize=runtime.l2_queue_windows)
         self._l3_windows = queue.Queue(maxsize=runtime.l3_queue_windows)
-        self._l3_host_windows = queue.Queue(maxsize=runtime.l3_queue_windows)
+        self._l3_prepared_windows = queue.Queue(maxsize=runtime.l3_queue_windows)
+        # CUDA submission may overlap one GPU batch with one CPU stitching
+        # batch, but must never enqueue the full external L3 backlog as an
+        # unbounded device graph. Two micro-batches provide double buffering
+        # and explicit GPU-to-host backpressure.
+        self._l3_host_windows = queue.Queue(
+            maxsize=2 * runtime.l3_cuda_microbatch_windows
+        )
         self._l5_windows = queue.Queue(maxsize=runtime.l5_queue_windows)
         self._completion_results = queue.Queue(maxsize=runtime.completion_queue_windows)
         self._completion_backlog = deque()
@@ -829,6 +852,8 @@ class ApplicationRuntime:
         for mailbox in (
             self._l2_windows,
             self._l3_windows,
+            self._l3_prepared_windows,
+            self._l3_host_windows,
             self._l5_windows,
             self._completion_results,
         ):
@@ -990,6 +1015,8 @@ class ApplicationRuntime:
         return {
             "l2": self._l2_windows.qsize(),
             "l3": self._l3_windows.qsize(),
+            "l3_prepared": self._l3_prepared_windows.qsize(),
+            "l3_host": self._l3_host_windows.qsize(),
             "l5": self._l5_windows.qsize(),
             "completion": self._completion_results.qsize(),
         }
@@ -1043,6 +1070,8 @@ class ApplicationRuntime:
             "queue_capacities": {
                 "l2": self._l2_windows.maxsize,
                 "l3": self._l3_windows.maxsize,
+                "l3_prepared": self._l3_prepared_windows.maxsize,
+                "l3_host": self._l3_host_windows.maxsize,
                 "l5": self._l5_windows.maxsize,
                 "completion": self._completion_results.maxsize,
             },
@@ -1806,10 +1835,27 @@ class ApplicationRuntime:
                     target=self._run_commit, name="application-runtime-commit", daemon=True
                 ),
             }
+            self._processing_threads["l3_host"] = threading.Thread(
+                target=self._run_l3_host,
+                name="application-runtime-l3-host",
+                daemon=True,
+            )
+            if self._l3_cuda_stream is None:
+                self._processing_threads["l3_prepare"] = threading.Thread(
+                    target=self._run_l3_prepare,
+                    name="application-runtime-l3-prepare",
+                    daemon=True,
+                )
             # Compatibility for callers that previously observed one terminal
             # processing thread.  The commit worker remains that owner.
             self._processing_thread = self._processing_threads["commit"]
-            for name in ("commit", "l5", "l3", "l2"):
+            start_order = ["commit", "l5"]
+            start_order.append("l3_host")
+            start_order.append("l3")
+            if "l3_prepare" in self._processing_threads:
+                start_order.append("l3_prepare")
+            start_order.append("l2")
+            for name in start_order:
                 worker = self._processing_threads[name]
                 worker.start()
                 started_threads.append(worker)
@@ -2275,38 +2321,269 @@ class ApplicationRuntime:
                 self._mark_pipeline_stage_finished("l2")
             self._put_eos_interruptibly(self._l3_windows, "l3")
 
-    def _run_l3(self) -> None:
-        drained = False
-        cuda_ready: deque[tuple[_L3Work, int, tuple[object, ...], object]] = deque()
-        deferred_items: deque[object] = deque()
+    def _complete_l3_work(
+        self,
+        item: _L3Work,
+        started_ns: int,
+        candidates: tuple[object, ...],
+        result: object,
+    ) -> bool:
+        """Finish host validation, ID stitching and publication for one L3 window."""
+        try:
+            if isinstance(result, Exception):
+                raise result
+            if not isinstance(result, Layer3Output):
+                result = self._layer3.finalize_host_output(result)
+            output = result
+            assert item.l2.output is not None
+            self._validate_direction_outputs("L3", candidates, output.enhanced_audio)
+            probability_slots = self._context_probabilities_20ms(item.work_item.window)
+            audio_windows = tuple(
+                TrackAudioWindow(
+                    enhanced.session_id,
+                    enhanced.stream_epoch,
+                    enhanced.window_id,
+                    enhanced.decision_sample,
+                    int(enhanced.track_id),
+                    enhanced.theta_deg,
+                    enhanced.enhanced_audio,
+                    probability_slots,
+                    enhanced.algorithm,
+                )
+                for enhanced in output.enhanced_audio
+            )
+            active_tracks = tuple(getattr(item.l2.output, "active_tracks", ()))
+            active_ids = tuple(track.track_id for track in active_tracks)
+            context_track_ids: tuple[int, ...] | None
+            if self.dev_audio_tracker is None:
+                # Realtime L5 is deliberately deferred; the Hub archive owns
+                # the full exact-ID stream for offline L4/L5, so no rolling
+                # 3.2 s context needs to be rebuilt for every 20 ms window.
+                context_track_ids = ()
+            else:
+                required_contexts = getattr(
+                    self.dev_audio_tracker, "required_context_track_ids", None
+                )
+                context_track_ids = (
+                    tuple(required_contexts(
+                        item.work_item.key.session_id,
+                        item.work_item.key.stream_epoch,
+                        active_tracks,
+                    ))
+                    if callable(required_contexts)
+                    else None
+                )
+            audio_batch = self.track_audio_stream.process(
+                audio_windows,
+                active_track_ids=active_ids,
+                identity=(
+                    item.work_item.key.session_id,
+                    item.work_item.key.stream_epoch,
+                    item.work_item.key.window_id,
+                    item.work_item.key.decision_sample,
+                ),
+                l2_direction_count=len(candidates),
+                context_track_ids=context_track_ids,
+            )
+            if self.dev_audio_tracker is not None:
+                try:
+                    self.dev_audio_tracker.consume_stream_batch(
+                        audio_batch, active_tracks=active_tracks
+                    )
+                    self.dev_audio_tracking_error = None
+                except Exception as exc:
+                    self.dev_audio_tracking_error = str(exc)
+            stage = L3StageResult.completed(
+                item.work_item.key,
+                output,
+                started_monotonic_ns=started_ns,
+                finished_monotonic_ns=monotonic_ns(),
+            )
+            self._stage_errors["l3"] = None
+        except Exception as exc:
+            self._set_stage_error("l3", exc)
+            if self._l3_cuda_stream is not None:
+                self._layer3.clear_cache()
+            stage = L3StageResult.terminal(
+                item.work_item.key,
+                StageState.FAILED,
+                "l3_failed",
+                started_monotonic_ns=started_ns,
+                finished_monotonic_ns=monotonic_ns(),
+                error=str(exc),
+            )
+        self._stage_completed_counts["l3"] += 1
+        try:
+            self._l3_cache_snapshot = self._layer3.cache_snapshot()
+        except Exception:
+            self._l3_cache_snapshot = None
+        self._cache_publish("l3", item.work_item.key, "stage_result", stage)
+        if stage.state is StageState.COMPLETED:
+            latest_hop_by_id = {
+                hop.track_id: hop
+                for hop in audio_batch.emitted_hops
+                if hop.waveform is not None
+            }
+            track_audio_record = tuple(
+                (
+                    {
+                        "track_id": source.track_id,
+                        "theta_deg": source.theta_deg,
+                        "backend": source.algorithm,
+                        "fallback_reason": source.fallback_reason,
+                        "diagnostics": list(source.diagnostics),
+                        "sample_rate": 48_000,
+                        "start_sample": latest_hop_by_id[source.track_id].start_sample,
+                        "end_sample": latest_hop_by_id[source.track_id].end_sample,
+                        "stream_kind": "id_continuous_gain_compensated",
+                        "gain_compensation_enabled": (
+                            self.track_audio_stream.gain_compensation_enabled
+                        ),
+                    },
+                    latest_hop_by_id[source.track_id].waveform,
+                )
+                for source in output.enhanced_audio
+                if source.track_id in latest_hop_by_id
+            )
+            self._cache_publish(
+                "l3", item.work_item.key, "track_audio_record", track_audio_record
+            )
+        self._joiner_submit(lambda: self._result_joiner.submit_l3(stage))
+        if stage.state is StageState.COMPLETED:
+            return self._enqueue_l5_latest(_L5Work(item.work_item, item.l2, stage))
+        skipped = L5StageResult.terminal(
+            item.work_item.key,
+            StageState.SKIPPED,
+            "l3_failed",
+            started_monotonic_ns=monotonic_ns(),
+            finished_monotonic_ns=monotonic_ns(),
+        )
+        self._record_l5_terminal(StageState.SKIPPED)
+        self._joiner_submit(lambda: self._result_joiner.submit_l5(skipped))
+        return True
+
+    def _run_l3_prepare(self) -> None:
+        """Prepare ordered CPU L3 contexts ahead of candidate-dependent BF."""
+
         try:
             while True:
-                precomputed: object | None = None
-                candidates: tuple[object, ...] = ()
-                if cuda_ready:
-                    item, started_ns, candidates, precomputed = cuda_ready.popleft()
-                else:
-                    try:
-                        item = (
-                            deferred_items.popleft()
-                            if deferred_items
-                            else self._l3_windows.get(timeout=0.1)
-                        )
-                    except queue.Empty:
-                        if self._processing_abort.is_set():
-                            break
-                        continue
+                try:
+                    item = self._l3_windows.get(timeout=0.1)
+                except queue.Empty:
+                    if self._processing_abort.is_set():
+                        break
+                    continue
                 if item is _PIPELINE_EOS:
-                    drained = True
                     break
                 if isinstance(item, _PipelineTimingBarrier):
-                    self._mark_pipeline_stage_finished("l3", item.generation)
                     self._put_pipeline_timing_barrier_interruptibly(
-                        self._l5_windows, "l5", item
+                        self._l3_prepared_windows, "l3", item
                     )
                     continue
                 if self._processing_abort.is_set():
                     break
+                if not isinstance(item, _L3Work):
+                    continue
+                if not self.downstream_processing_enabled:
+                    self._skip_disabled_downstream(
+                        item.work_item.key, include_l3=True
+                    )
+                    continue
+                started_ns = monotonic_ns()
+                candidates: tuple[object, ...] = ()
+                try:
+                    assert item.l2.output is not None
+                    candidates = tuple(
+                        getattr(item.l2.output, "directions", ())
+                        or item.l2.output.candidates
+                    )
+                    if not candidates:
+                        result: object = Layer3Output(())
+                    else:
+                        mode = str(item.work_item.config.values["l3_mode"])
+                        prepare_kwargs: dict[str, object] = {"mode": mode}
+                        if isinstance(self._layer3, Layer3Processor):
+                            prepare_kwargs["defer_device_validation"] = True
+                        result = self._layer3.prepare(
+                            item.work_item.window, **prepare_kwargs
+                        )
+                except Exception as exc:
+                    result = exc
+                prepared = _L3PreparedWork(
+                    item, started_ns, candidates, result
+                )
+                while not self._processing_abort.is_set():
+                    try:
+                        self._l3_prepared_windows.put(prepared, timeout=0.05)
+                        break
+                    except queue.Full:
+                        downstream = self._processing_threads.get("l3")
+                        if downstream is not None and not downstream.is_alive():
+                            self._processing_abort.set()
+                            break
+        except Exception as exc:
+            self._set_stage_error("l3", exc)
+            self._processing_abort.set()
+        finally:
+            self._put_eos_interruptibly(self._l3_prepared_windows, "l3")
+
+    def _run_l3(self) -> None:
+        deferred_items: deque[object] = deque()
+        input_queue = (
+            self._l3_windows
+            if self._l3_cuda_stream is not None
+            else self._l3_prepared_windows
+        )
+        try:
+            while True:
+                candidates: tuple[object, ...] = ()
+                try:
+                    item = (
+                        deferred_items.popleft()
+                        if deferred_items
+                        else input_queue.get(timeout=0.1)
+                    )
+                except queue.Empty:
+                    if self._processing_abort.is_set():
+                        break
+                    continue
+                if item is _PIPELINE_EOS:
+                    break
+                if isinstance(item, _PipelineTimingBarrier):
+                    self._put_pipeline_timing_barrier_interruptibly(
+                        self._l3_host_windows, "l3_host", item
+                    )
+                    continue
+                if self._processing_abort.is_set():
+                    break
+                if self._l3_cuda_stream is None:
+                    if not isinstance(item, _L3PreparedWork):
+                        continue
+                    result = item.result
+                    if not isinstance(result, (Layer3Output, Exception)):
+                        try:
+                            result = self._layer3.process_prepared(
+                                result, item.candidates, self._geometry
+                            )
+                        except Exception as exc:
+                            result = exc
+                    host_work = _L3HostWork(
+                        item.work,
+                        item.started_ns,
+                        item.candidates,
+                        result,
+                        None,
+                    )
+                    while not self._processing_abort.is_set():
+                        try:
+                            self._l3_host_windows.put(host_work, timeout=0.05)
+                            break
+                        except queue.Full:
+                            host = self._processing_threads.get("l3_host")
+                            if host is not None and not host.is_alive():
+                                self._processing_abort.set()
+                                break
+                    continue
                 if not isinstance(item, _L3Work):
                     continue
                 if not self.downstream_processing_enabled:
@@ -2320,7 +2597,6 @@ class ApplicationRuntime:
                 if (
                     self._l3_cuda_stream is not None
                     and cuda_batch_api
-                    and precomputed is None
                 ):
                     # CUDA kernels here are intentionally small.  When L3 is
                     # backlogged, submit several complete windows and perform
@@ -2377,161 +2653,105 @@ class ApplicationRuntime:
                             staged.append((
                                 work, work_started_ns, work_candidates, result,
                             ))
-                    try:
-                        self._l3_cuda_stream.synchronize()
-                    except Exception as exc:
-                        staged = [
-                            (work, work_started_ns, work_candidates, exc)
-                            for work, work_started_ns, work_candidates, _result in staged
-                        ]
+                        ready_event = torch.cuda.Event()
+                        ready_event.record(self._l3_cuda_stream)
                     for work, work_started_ns, work_candidates, result in staged:
-                        if not isinstance(result, (Layer3Output, Exception)):
+                        while not self._processing_abort.is_set():
                             try:
-                                result = self._layer3.finalize_host_output(result)
-                            except Exception as exc:
-                                result = exc
-                        cuda_ready.append((
-                            work, work_started_ns, work_candidates, result,
-                        ))
+                                self._l3_host_windows.put(
+                                    _L3HostWork(
+                                        work,
+                                        work_started_ns,
+                                        work_candidates,
+                                        result,
+                                        ready_event,
+                                    ),
+                                    timeout=0.05,
+                                )
+                                break
+                            except queue.Full:
+                                host = self._processing_threads.get("l3_host")
+                                if host is not None and not host.is_alive():
+                                    self._processing_abort.set()
+                                    break
                     continue
 
-                if precomputed is None:
-                    started_ns = monotonic_ns()
+                started_ns = monotonic_ns()
                 try:
                     assert item.l2.output is not None
-                    if precomputed is not None:
-                        if isinstance(precomputed, Exception):
-                            raise precomputed
-                        assert isinstance(precomputed, Layer3Output)
-                        output = precomputed
-                    else:
-                        candidates = tuple(
-                            getattr(item.l2.output, "directions", ())
-                            or item.l2.output.candidates
-                        )
-                        mode = str(item.work_item.config.values["l3_mode"])
-                    if precomputed is not None:
-                        pass
-                    elif not candidates:
+                    candidates = tuple(
+                        getattr(item.l2.output, "directions", ())
+                        or item.l2.output.candidates
+                    )
+                    mode = str(item.work_item.config.values["l3_mode"])
+                    if not candidates:
                         # A valid SRP response can have no accepted peaks.  Do
                         # not pay the 160 ms STFT/covariance preparation cost
                         # when there is no direction to synthesize.
                         output = Layer3Output(())
                     else:
-                        prepared = self._layer3.prepare(item.work_item.window, mode=mode)
+                        # Runtime validates the final host waveform and public
+                        # direction contract below. Re-scanning every trusted
+                        # intermediate tensor (STFT, covariance, weights and
+                        # ISTFT) repeats the same O(n) work and, on CUDA,
+                        # introduces synchronization points.
+                        prepared = self._layer3.prepare(
+                            item.work_item.window,
+                            mode=mode,
+                            defer_device_validation=True,
+                        )
                         output = self._layer3.process_prepared(prepared, candidates, self._geometry)
-                    self._validate_direction_outputs(
-                        "L3", candidates, output.enhanced_audio
-                    )
-                    probability_slots = self._context_probabilities_20ms(
-                        item.work_item.window
-                    )
-                    audio_windows = tuple(
-                        TrackAudioWindow(
-                            enhanced.session_id,
-                            enhanced.stream_epoch,
-                            enhanced.window_id,
-                            enhanced.decision_sample,
-                            int(enhanced.track_id),
-                            enhanced.theta_deg,
-                            enhanced.enhanced_audio,
-                            probability_slots,
-                            enhanced.algorithm,
-                        )
-                        for enhanced in output.enhanced_audio
-                    )
-                    active_tracks = tuple(
-                        getattr(item.l2.output, "active_tracks", ())
-                    )
-                    active_ids = tuple(
-                        track.track_id for track in active_tracks
-                    )
-                    audio_batch = self.track_audio_stream.process(
-                        audio_windows,
-                        active_track_ids=active_ids,
-                        identity=(
-                            item.work_item.key.session_id,
-                            item.work_item.key.stream_epoch,
-                            item.work_item.key.window_id,
-                            item.work_item.key.decision_sample,
-                        ),
-                        l2_direction_count=len(candidates),
-                    )
-                    self._validate_direction_outputs(
-                        "track audio", candidates, audio_batch.continuous_audio
-                    )
-                    if self.dev_audio_tracker is not None:
-                        try:
-                            self.dev_audio_tracker.consume_stream_batch(
-                                audio_batch, active_tracks=active_tracks
-                            )
-                            self.dev_audio_tracking_error = None
-                        except Exception as exc:
-                            self.dev_audio_tracking_error = str(exc)
-                    stage = L3StageResult.completed(
-                        item.work_item.key, output, started_monotonic_ns=started_ns,
-                        finished_monotonic_ns=monotonic_ns(),
-                    )
-                    self._stage_errors["l3"] = None
+                    if not self._complete_l3_work(item, started_ns, candidates, output):
+                        break
+                    continue
                 except Exception as exc:
-                    self._set_stage_error("l3", exc)
-                    stage = L3StageResult.terminal(
-                        item.work_item.key, StageState.FAILED, "l3_failed",
-                        started_monotonic_ns=started_ns,
-                        finished_monotonic_ns=monotonic_ns(), error=str(exc),
-                    )
-                self._stage_completed_counts["l3"] += 1
-                try:
-                    self._l3_cache_snapshot = self._layer3.cache_snapshot()
-                except Exception:
-                    self._l3_cache_snapshot = None
-                self._cache_publish("l3", item.work_item.key, "stage_result", stage)
-                if stage.state is StageState.COMPLETED:
-                    latest_hop_by_id = {
-                        hop.track_id: hop for hop in audio_batch.emitted_hops
-                        if hop.waveform is not None
-                    }
-                    context_by_id = {
-                        context.track_id: context for context in audio_batch.continuous_audio
-                    }
-                    track_audio_record = tuple(
-                        (
-                            {
-                                "track_id": source.track_id,
-                                "theta_deg": source.theta_deg,
-                                "backend": source.algorithm,
-                                "fallback_reason": source.fallback_reason,
-                                "diagnostics": list(source.diagnostics),
-                                "sample_rate": 48_000,
-                                "start_sample": latest_hop_by_id[source.track_id].start_sample,
-                                "end_sample": latest_hop_by_id[source.track_id].end_sample,
-                                "stream_kind": "id_continuous_gain_compensated",
-                                "gain_compensation_enabled": (
-                                    context_by_id[source.track_id].gain_diagnostic.enabled
-                                ),
-                            },
-                            latest_hop_by_id[source.track_id].waveform,
-                        )
-                        for source in output.enhanced_audio
-                        if source.track_id in latest_hop_by_id
-                    )
-                    self._cache_publish(
-                        "l3", item.work_item.key, "track_audio_record", track_audio_record
-                    )
-                self._joiner_submit(lambda: self._result_joiner.submit_l3(stage))
-                if stage.state is StageState.COMPLETED:
-                    if not self._enqueue_l5_latest(
-                        _L5Work(item.work_item, item.l2, stage)
+                    if not self._complete_l3_work(
+                        item, started_ns, candidates, exc
                     ):
                         break
-                else:
-                    skipped = L5StageResult.terminal(
-                        item.work_item.key, StageState.SKIPPED, "l3_failed",
-                        started_monotonic_ns=monotonic_ns(),
-                        finished_monotonic_ns=monotonic_ns(),
+        except Exception as exc:
+            self._set_stage_error("l3", exc)
+            self._processing_abort.set()
+        finally:
+            self._put_eos_interruptibly(self._l3_host_windows, "l3_host")
+
+    def _run_l3_host(self) -> None:
+        """Finalize asynchronous CUDA L3 results and run CPU-only stitching."""
+        drained = False
+        try:
+            while True:
+                try:
+                    item = self._l3_host_windows.get(timeout=0.1)
+                except queue.Empty:
+                    if self._processing_abort.is_set():
+                        break
+                    continue
+                if item is _PIPELINE_EOS:
+                    drained = True
+                    break
+                if isinstance(item, _PipelineTimingBarrier):
+                    self._mark_pipeline_stage_finished("l3", item.generation)
+                    self._put_pipeline_timing_barrier_interruptibly(
+                        self._l5_windows, "l5", item
                     )
-                    self._record_l5_terminal(StageState.SKIPPED)
-                    self._joiner_submit(lambda: self._result_joiner.submit_l5(skipped))
+                    continue
+                if self._processing_abort.is_set():
+                    break
+                if not isinstance(item, _L3HostWork):
+                    continue
+                result = item.result
+                try:
+                    if item.ready_event is not None:
+                        item.ready_event.synchronize()
+                except Exception as exc:
+                    result = exc
+                if not self._complete_l3_work(
+                    item.work,
+                    item.started_ns,
+                    item.candidates,
+                    result,
+                ):
+                    break
         except Exception as exc:
             self._set_stage_error("l3", exc)
             self._processing_abort.set()
@@ -3388,7 +3608,7 @@ class ApplicationRuntime:
             )
 
         join_until(thread)
-        for name in ("l2", "l3", "l5", "commit"):
+        for name in ("l2", "l3_prepare", "l3", "l3_host", "l5", "commit"):
             join_until(workers.get(name))
         alive = {
             name: worker for name, worker in workers.items() if worker.is_alive()
@@ -3416,7 +3636,7 @@ class ApplicationRuntime:
             # complete configured shutdown interval instead of a fixed one
             # second, then report failure only if a worker is still alive.
             forced_deadline = monotonic() + timeout
-            for name in ("l2", "l3", "l5", "commit"):
+            for name in ("l2", "l3_prepare", "l3", "l3_host", "l5", "commit"):
                 worker = workers.get(name)
                 if worker is not None and worker is not threading.current_thread() and worker.is_alive():
                     worker.join(timeout=max(0.0, forced_deadline - monotonic()))
@@ -3453,6 +3673,8 @@ class ApplicationRuntime:
             for mailbox in (
                 self._l2_windows,
                 self._l3_windows,
+                self._l3_prepared_windows,
+                self._l3_host_windows,
                 self._l5_windows,
                 self._completion_results,
             ):
@@ -3532,6 +3754,8 @@ class ApplicationRuntime:
             for name, mailbox in (
                 ("l2", self._l2_windows),
                 ("l3", self._l3_windows),
+                ("l3", self._l3_prepared_windows),
+                ("l3", self._l3_host_windows),
                 ("l5", self._l5_windows),
                 ("completion", self._completion_results),
             ):
@@ -3564,7 +3788,7 @@ class ApplicationRuntime:
             worker.join(timeout=max(0.0, deadline - monotonic()))
 
         join_until(thread)
-        for name in ("l2", "l3", "l5", "commit"):
+        for name in ("l2", "l3_prepare", "l3", "l3_host", "l5", "commit"):
             join_until(workers.get(name))
         alive = {
             name: worker for name, worker in workers.items() if worker.is_alive()
@@ -3692,7 +3916,9 @@ class ApplicationRuntime:
             for mailbox in (
                 self.latest_l1, self.latest_windows, self.latest_dev_ui,
                 self.latest_l2_dev_ui, self.latest_l5_dev_ui,
-                self._l2_windows, self._l3_windows, self._l5_windows,
+                self._l2_windows, self._l3_windows, self._l3_prepared_windows,
+                self._l3_host_windows,
+                self._l5_windows,
                 self._completion_results,
             ):
                 while True:

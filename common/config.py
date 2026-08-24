@@ -382,6 +382,7 @@ class RuntimeConfig(StrictModel):
     l3_device: Literal["cpu", "cuda"] | None = None
     l4_device: Literal["cpu", "cuda"] | None = None
     l5_device: Literal["cpu", "cuda"] | None = None
+    torch_cpu_threads: int = Field(default=1, gt=0, le=64)
     allow_cpu_fallback: bool
     max_candidate_batch: Literal[3]
     capture_handoff_blocks: int = Field(gt=0)

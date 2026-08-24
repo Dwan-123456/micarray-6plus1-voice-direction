@@ -95,15 +95,20 @@ def test_tentative_l3_audio_is_hidden_then_backfilled_when_same_id_confirms(tmp_
     )
     first = hub.process(
         (_window(7_680),), active_track_ids=(7,), identity=_identity(7_680),
+        context_track_ids=(),
     )
+    assert first.continuous_audio == ()
     assert tracker.consume_stream_batch(first, active_tracks=(tentative,)) == ()
 
     hub.observe_l2(
         identity=_identity(8_640), active_tracks=(confirmed,),
         processing_mode="optimized", l2_direction_count=1,
     )
+    required = tracker.required_context_track_ids("session", 0, (confirmed,))
+    assert required == (7,)
     second = hub.process(
         (_window(8_640),), active_track_ids=(7,), identity=_identity(8_640),
+        context_track_ids=required,
     )
     rows = tracker.consume_stream_batch(second, active_tracks=(confirmed,))
 

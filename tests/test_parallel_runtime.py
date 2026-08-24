@@ -894,7 +894,10 @@ def test_graceful_stop_drains_every_admitted_window(tmp_path: Path) -> None:
         10_560,
     ]
     assert runtime.processing_running is False
-    assert runtime.processing_queue_depths == {"l2": 0, "l3": 0, "l5": 0, "completion": 0}
+    assert runtime.processing_queue_depths == {
+        "l2": 0, "l3": 0, "l3_prepared": 0, "l3_host": 0,
+        "l5": 0, "completion": 0,
+    }
     assert store.stop_reasons == ["normal"]
     final_durations = runtime.pipeline_total_durations_seconds
     assert all(final_durations[stage] is not None for stage in ("l2", "l3", "l5"))
@@ -998,11 +1001,15 @@ def test_replay_restart_discards_waiting_l3_and_old_commit_state(tmp_path: Path)
     assert not command.is_alive()
     assert failure == []
     assert result["l3"] >= 1
-    assert probe.count("l3") == 1
+    # The blocked item is still in the new preparation stage. A replay reset
+    # discards it before candidate-dependent BF, so no obsolete L3 output is
+    # allowed to publish after the generation changes.
+    assert probe.count("l3") == 0
     assert store.record_snapshot() == ()
     assert store.stop_reasons[-1] == "replay_restarted_discarded"
     assert runtime.processing_queue_depths == {
-        "l2": 0, "l3": 0, "l5": 0, "completion": 0,
+        "l2": 0, "l3": 0, "l3_prepared": 0, "l3_host": 0,
+        "l5": 0, "completion": 0,
     }
     assert not runtime.active
 
@@ -1132,8 +1139,10 @@ def test_processing_status_exposes_bounded_queues_and_cache_never_exceeds_hard_l
     status = runtime.processing_status
     assert status["queue_capacities"] == {
         "l2": config.runtime.l2_queue_windows,
-        "l3": config.runtime.l3_queue_windows,
-        "l5": config.runtime.l5_queue_windows,
+            "l3": config.runtime.l3_queue_windows,
+            "l3_prepared": config.runtime.l3_queue_windows,
+            "l3_host": 2 * config.runtime.l3_cuda_microbatch_windows,
+            "l5": config.runtime.l5_queue_windows,
         "completion": config.runtime.completion_queue_windows,
     }
     snapshots = runtime._compute_cache.snapshots()

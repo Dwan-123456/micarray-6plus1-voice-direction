@@ -408,7 +408,7 @@ def test_fixed_shape_retries_select_the_first_numerically_valid_loading():
     assert torch.allclose(result.weights_mfc, expected, atol=2e-5, rtol=2e-5)
 
 
-def test_two_candidate_solver_batches_one_lazy_retry_and_soft_null_dimensions(
+def test_two_candidate_solver_only_solves_the_selected_rho_routes(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[tuple[int, ...]] = []
@@ -430,4 +430,8 @@ def test_two_candidate_solver_batches_one_lazy_retry_and_soft_null_dimensions(
         spatial_p_f=torch.tensor((0.1, 0.5, 0.9)),
     )
 
-    assert calls == [(3, 7, 7), (1, 3, 2, 2), (1, 2, 3, 7, 7)]
+    # The shared loaded covariance is factored for all three active bins.  Of
+    # those bins, exactly one selects hard LCMV, one selects soft-null MVDR and
+    # one keeps the already-computed loaded-MVDR result.  Unselected branches
+    # must not perform matrix factorizations.
+    assert calls == [(3, 7, 7), (1, 1, 2, 2), (1, 2, 1, 7, 7)]

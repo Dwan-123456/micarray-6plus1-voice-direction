@@ -330,12 +330,23 @@ def _finalize_noise_statistics(
     config: SpatialSeparationConfig,
     frame_count: int,
     *,
+    frequency_indices: torch.Tensor | None = None,
     validate_values: bool = True,
 ) -> NoiseStatistics:
+    frequency_count = len(frequencies_hz)
+    if frequency_indices is None:
+        frequency_indices = torch.arange(
+            frequency_count, dtype=torch.long, device=frequencies_hz.device,
+        )
     covariance = covariance_numerator_fcc / denominator_f[:, None, None].clamp_min(1e-6)
     covariance = 0.5 * (covariance + covariance.mH)
 
-    psd_fc = interpolated.noise_psd_hmf.mean(dim=0).transpose(0, 1).clamp_min(1e-12)
+    psd_fc = (
+        interpolated.noise_psd_hmf.mean(dim=0)
+        .transpose(0, 1)
+        .index_select(0, frequency_indices)
+        .clamp_min(1e-12)
+    )
     level_c = torch.pow(10.0, interpolated.noise_level_db.mean(dim=0) / 10.0).clamp_min(1e-12)
     level_relative = level_c / level_c.mean()
     psd_relative = psd_fc / psd_fc.mean(dim=-1, keepdim=True)
@@ -346,7 +357,7 @@ def _finalize_noise_statistics(
     covariance = (1.0 - shrinkage) * covariance + shrinkage * diagonal_anchor
     covariance = 0.5 * (covariance + covariance.mH)
 
-    confidence = (denominator_f / float(frame_count)).clamp(0.0, 1.0)
+    confidence_active = (denominator_f / float(frame_count)).clamp(0.0, 1.0)
     prior = interpolated.prior_snr_hmf.median(dim=0).values.median(dim=0).values
     posterior = interpolated.posterior_snr_hmf.median(dim=0).values.median(dim=0).values
     prior_gain = prior / (1.0 + prior)
@@ -355,6 +366,21 @@ def _finalize_noise_statistics(
     gain = torch.sqrt(prior_gain * posterior_gain).clamp(config.min_frequency_gain, 1.0)
     speech_band = (frequencies_hz >= config.frequency_min_hz) & (frequencies_hz <= config.frequency_max_hz)
     gain = torch.where(speech_band, gain, torch.zeros_like(gain))
+
+    # Preserve the public full-frequency tensor contract while avoiding 7x7
+    # covariance work for bins that every supported L3 target mode discards.
+    if len(frequency_indices) != frequency_count:
+        full_covariance = torch.zeros(
+            (frequency_count, covariance.shape[-2], covariance.shape[-1]),
+            dtype=covariance.dtype,
+            device=covariance.device,
+        )
+        full_covariance[frequency_indices] = covariance
+        covariance = full_covariance
+        confidence = torch.zeros_like(frequencies_hz, dtype=torch.float32)
+        confidence[frequency_indices] = confidence_active
+    else:
+        confidence = confidence_active
 
     if validate_values and not torch.stack((
         torch.isfinite(covariance).all(), torch.isfinite(gain).all(),
@@ -425,6 +451,17 @@ class RollingNoiseStatisticsCache:
             ).clamp(0, stft.window_hops - 1)
         return self._interpolation_plan, self._frame_hop_indices
 
+    @staticmethod
+    def _active_frequency_indices(
+        frequencies_hz: torch.Tensor,
+        config: SpatialSeparationConfig,
+    ) -> torch.Tensor:
+        return torch.nonzero(
+            (frequencies_hz >= config.frequency_min_hz)
+            & (frequencies_hz <= config.frequency_max_hz),
+            as_tuple=False,
+        ).flatten()
+
     def _rolling_indices(
         self,
         hop_gap: int,
@@ -480,6 +517,7 @@ class RollingNoiseStatisticsCache:
         interpolation_plan, frame_hop_indices = self._plans(
             context.frequencies_hz, frequencies_hz, spectrum_fct, stft,
         )
+        frequency_indices = self._active_frequency_indices(frequencies_hz, config)
         previous = self._identity
         sample_delta = 0 if previous is None else identity[2] - previous[2]
         hop_gap = sample_delta // _HOP_SAMPLES if sample_delta > 0 else 0
@@ -511,14 +549,16 @@ class RollingNoiseStatisticsCache:
             else _full_interpolated_context(context, frequencies_hz, interpolation_plan)
         )
         weights = _frame_weights(interpolated, spectrum_fct, stft, frame_hop_indices)
+        active_spectrum = spectrum_fct.index_select(0, frequency_indices)
+        active_weights = weights.index_select(0, frequency_indices)
         if can_roll:
             current_indices, previous_indices = self._rolling_indices(
                 hop_gap,
                 stft.frame_count,
                 device=spectrum_fct.device,
             )
-            current_edge_spectrum = spectrum_fct.index_select(-1, current_indices)
-            current_edge_weights = weights.index_select(-1, current_indices)
+            current_edge_spectrum = active_spectrum.index_select(-1, current_indices)
+            current_edge_weights = active_weights.index_select(-1, current_indices)
             previous_edge_spectrum = self._previous_spectrum.index_select(-1, previous_indices)
             previous_edge_weights = self._previous_weights.index_select(-1, previous_indices)
             numerator = (
@@ -532,10 +572,16 @@ class RollingNoiseStatisticsCache:
                 + current_edge_weights.sum(dim=-1)
             )
         else:
-            numerator = _covariance_numerator(spectrum_fct, weights)
-            denominator = weights.sum(dim=-1)
+            numerator = _covariance_numerator(active_spectrum, active_weights)
+            denominator = active_weights.sum(dim=-1)
         result = _finalize_noise_statistics(
-            interpolated, numerator, denominator, frequencies_hz, config, stft.frame_count,
+            interpolated,
+            numerator,
+            denominator,
+            frequencies_hz,
+            config,
+            stft.frame_count,
+            frequency_indices=frequency_indices,
         )
 
         self._identity = identity
@@ -545,8 +591,8 @@ class RollingNoiseStatisticsCache:
         self._interpolated = interpolated
         self._numerator = numerator
         self._denominator = denominator
-        self._previous_spectrum = spectrum_fct.clone()
-        self._previous_weights = weights.clone()
+        self._previous_spectrum = active_spectrum.clone()
+        self._previous_weights = active_weights.clone()
         self._last_rolled = can_roll
         return result
 
@@ -580,6 +626,7 @@ class RollingNoiseStatisticsCache:
         interpolation_plan, frame_hop_indices = self._plans(
             source_frequencies, frequencies_hz, spectrum_fct, stft,
         )
+        frequency_indices = self._active_frequency_indices(frequencies_hz, config)
         previous = self._identity
         sample_delta = 0 if previous is None else identity[2] - previous[2]
         hop_gap = sample_delta // _HOP_SAMPLES if sample_delta > 0 else 0
@@ -615,14 +662,16 @@ class RollingNoiseStatisticsCache:
             )
         )
         weights = _frame_weights(interpolated, spectrum_fct, stft, frame_hop_indices)
+        active_spectrum = spectrum_fct.index_select(0, frequency_indices)
+        active_weights = weights.index_select(0, frequency_indices)
         if can_roll:
             current_indices, previous_indices = self._rolling_indices(
                 hop_gap,
                 stft.frame_count,
                 device=spectrum_fct.device,
             )
-            current_edge_spectrum = spectrum_fct.index_select(-1, current_indices)
-            current_edge_weights = weights.index_select(-1, current_indices)
+            current_edge_spectrum = active_spectrum.index_select(-1, current_indices)
+            current_edge_weights = active_weights.index_select(-1, current_indices)
             previous_edge_spectrum = self._previous_spectrum.index_select(-1, previous_indices)
             previous_edge_weights = self._previous_weights.index_select(-1, previous_indices)
             numerator = (
@@ -636,8 +685,8 @@ class RollingNoiseStatisticsCache:
                 + current_edge_weights.sum(dim=-1)
             )
         else:
-            numerator = _covariance_numerator(spectrum_fct, weights)
-            denominator = weights.sum(dim=-1)
+            numerator = _covariance_numerator(active_spectrum, active_weights)
+            denominator = active_weights.sum(dim=-1)
         result = _finalize_noise_statistics(
             interpolated,
             numerator,
@@ -645,6 +694,7 @@ class RollingNoiseStatisticsCache:
             frequencies_hz,
             config,
             stft.frame_count,
+            frequency_indices=frequency_indices,
             validate_values=validate_values,
         )
 
@@ -655,8 +705,8 @@ class RollingNoiseStatisticsCache:
         self._interpolated = interpolated
         self._numerator = numerator
         self._denominator = denominator
-        self._previous_spectrum = spectrum_fct.clone()
-        self._previous_weights = weights.clone()
+        self._previous_spectrum = active_spectrum.clone()
+        self._previous_weights = active_weights.clone()
         self._last_rolled = can_roll
         return result, algorithm_version
 

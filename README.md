@@ -445,6 +445,8 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 
 同日进一步实现了L3 CUDA有界微批实验路径：STFT、IMCRA协方差、波束形成和ISTFT保持在GPU，只有批次完成后的短音频通过pinned host buffer回传，由CPU继续ID连续音频拼接和写盘；批次只合并已经积压的窗口，绝不等待未来窗口。RTX 5060 Laptop GPU实测双候选连续四窗约`11.03 ms/窗`，同条件CPU约`6.21 ms/窗`；28.8秒真实八通道回放的CPU完整排空约`29.07 s`，CUDA最佳约`32.30 s`，所以正式默认仍为CPU。显式设置`runtime.l3_device: cuda`可继续诊断，停机后创建L4前会同步L3 stream、释放L3缓存再清理CUDA allocator。
 
+2026-08-24全链优化后，CPU L3进一步拆为“候选无关STFT/IMCRA准备→DS/MVDR/optimized BF+ISTFT→CPU ID拼接/发布”三个有界FIFO阶段，并将7通道小矩阵的PyTorch CPU intra-op固定为1线程。28.84秒双声源模拟压力录音中，L2约`28.83 s`、L3含拼接约`33.34 s`，无丢窗或阶段错误；10秒真实MicArray采集并同时运行Test UI时，L2/L3均在`9.875 s`排空且所有L3队列峰值为0。完整链实测CUDA约`42.33 s`、双BF worker约`42 s`，因此正式最快配置仍是CPU单BF worker与层间流水线。模拟输入不向Test UI极坐标控件提交热力图；按ID连续音频只在首次确认时复制一次历史，之后逐20 ms hop追加。
+
 ## 局限性和待解决问题
 
 ### 1. 低频空间分离受阵列孔径限制

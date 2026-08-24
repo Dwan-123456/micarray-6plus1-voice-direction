@@ -269,6 +269,10 @@ runtime:
   l3_device: cpu
   l4_device: cuda
   l5_device: cpu
+  # L1/L2 and candidate-independent L3 preparation stay responsive with one
+  # intra-op CPU thread; L3 preparation, beamforming and stitching are already
+  # separate pipeline workers.
+  torch_cpu_threads: 1
   allow_cpu_fallback: true
   max_candidate_batch: 3
   # Ten seconds absorbs transient Windows/GPU/UI stalls without hiding a
@@ -297,9 +301,9 @@ dev_test_ui:
   performance_refresh_hz: 1
   performance_window_count: 500
   sample_rate_window_seconds: 5
-  l1_meter_refresh_hz: 100
-  polar_refresh_hz: 100
-  waveform_refresh_hz: 100
+  l1_meter_refresh_hz: 50
+  polar_refresh_hz: 50
+  waveform_refresh_hz: 50
   snapshot_mailbox_capacity: 1
   scratch_root: data/dev_test_ui/scratch/current
   autoplay: true

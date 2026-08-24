@@ -263,6 +263,7 @@ class TrackAudioStreamHub:
         active_track_ids: tuple[int, ...],
         identity: tuple[str, int, int, int],
         l2_direction_count: int | None = None,
+        context_track_ids: tuple[int, ...] | None = None,
     ) -> TrackAudioBatch:
         session_id, stream_epoch, window_id, decision_sample = identity
         windows = tuple(windows)
@@ -277,6 +278,16 @@ class TrackAudioStreamHub:
         active = tuple(int(item) for item in active_track_ids)
         if len(active) != len(set(active)) or any(item <= 0 for item in active):
             raise ValueError("active track IDs must be unique positive integers")
+        requested_contexts = (
+            None
+            if context_track_ids is None
+            else tuple(int(item) for item in context_track_ids)
+        )
+        if requested_contexts is not None and (
+            len(requested_contexts) != len(set(requested_contexts))
+            or any(item <= 0 for item in requested_contexts)
+        ):
+            raise ValueError("context track IDs must be unique positive integers")
         direction_count = len(windows) if l2_direction_count is None else l2_direction_count
         if type(direction_count) is not int or direction_count not in {0, 1, 2, 3}:
             raise ValueError("L2 direction count must be 0, 1, 2 or 3")
@@ -357,7 +368,10 @@ class TrackAudioStreamHub:
                 future = self._extract_hop(window, future_source_decision)
                 state.future_source_decision = future_source_decision
                 state.future_audio = None if future is None else future[0]
-                if not state.audio:
+                if not state.audio or (
+                    requested_contexts is not None
+                    and window.track_id not in requested_contexts
+                ):
                     continue
                 waveform = np.ascontiguousarray(np.concatenate(tuple(state.audio)), dtype=np.float32)
                 effective_end = int(state.last_emitted_end)

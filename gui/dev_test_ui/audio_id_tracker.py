@@ -731,6 +731,25 @@ class AudioIdTracker:
             self._remove_filtered_ended_tracks()
             return self.snapshots()
 
+    def required_context_track_ids(
+        self,
+        session_id: str,
+        stream_epoch: int,
+        active_tracks=(),
+    ) -> tuple[int, ...]:
+        """Return only newly visible IDs that need one historical seed context."""
+
+        active_tracks = tuple(active_tracks)
+        stream = (str(session_id), int(stream_epoch))
+        with self._lock:
+            existing = set() if self._stream != stream else set(self._tracks)
+            return tuple(
+                int(item.track_id)
+                for item in active_tracks
+                if item.track_state in {"confirmed", "coasting"}
+                and int(item.track_id) not in existing
+            )
+
     def apply_l5_annotations(
         self,
         annotations: tuple[TrackVoiceAnnotation, ...],

@@ -23,6 +23,18 @@
 
 ---
 
+## 2026-08-24 — L1/L2/L3/拼接/Test UI全链实时优化与实机验证
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。
+- **Runtime层间调度**：CPU L3拆为有界的候选无关准备（滚动STFT/IMCRA）、候选相关DS/Loaded MVDR/optimized BF+ISTFT、主机连续音频拼接/发布三段FIFO worker；阶段屏障只有在主机拼接排空后才冻结L3总时长。新增`runtime.torch_cpu_threads=1`，避免7通道小矩阵让每个PyTorch操作占满16个逻辑核并与L1/L2争抢；CUDA微批路径继续保留作显式诊断，但不作为默认最快路径。
+- **L3无效计算删除**：optimized双声源只对实际命中的rho频点执行LCMV或soft-null分支；多个新角度的steering一次批量生成；IMCRA空间协方差只在L3有效频带计算后回填公开全频契约；滚动协方差仅在增删帧数确实小于全量计算时启用；Runtime只在最终host DTO边界执行完整有限值检查，保留条件数、约束响应、DAS fallback和绝对sample语义。
+- **拼接与Test UI**：实时Runtime不再每20 ms重建并复制每个ID的完整3.2秒上下文；Test UI仅在ID首次确认时请求一次历史种子，之后只追加新的960-sample hop，Hub完整归档和停机L4输入不变。UI按正式50 Hz节拍轮询、控件/仪表只在值变化时重绘、每帧只读取一次Runtime状态。根据操作者最新要求，模拟WAV/数据库回放仍显示Gate、MUSIC、ID和文字诊断，但不再向极坐标控件提交热力图；真实麦克风继续显示实时极坐标图。
+- **性能裁决**：同一28.84秒八通道双声源压力录音中，CPU单BF worker、PyTorch单线程为当前最快配置；L2约`28.83 s`、L3含拼接约`33.34 s`，处理丢窗和阶段错误均为0。相同整链的L3 CUDA约`42.33 s`，两个并发BF worker约`42 s`，均已判定更慢且不设为默认。真实MicArray 8通道48 kHz采集10秒并同时运行L1/L2/L3/拼接/Test UI：L2/L3均在`9.875 s`排空，L3各队列峰值0，输入溢出、交接丢块、处理丢窗、时间轴中断和阶段错误均为0。
+- **未改变与资产**：L1 IMCRA论文输出字段及0–10 kHz范围、L2 Gate/MUSIC/ID算法、DS/MVDR/optimized数学定义、离线L4/L5模型、Production/Log UI、正式录音schema、数据集与发布标签均无变化；无模型、音频或Git LFS对象变化。10秒实机验证证明当前设备上的短时实时性，不替代长时间、三声源、设备断连和热降频压力验收。
+- **验证**：完整Ruff通过；L3、Runtime、TrackAudioStream、Test UI、回放、配置等聚焦回归`235 passed`；项目完整pytest为`535 passed, 1 warning`，唯一警告是既有CountNet `torch.jit.load`弃用提示。
+
+---
+
 ## 2026-08-24 — 修复模拟输入L2 DOA极坐标图不显示
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。

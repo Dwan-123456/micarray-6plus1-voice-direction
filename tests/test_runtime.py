@@ -490,7 +490,10 @@ def test_stop_waits_for_forced_commit_exit_and_reports_success(tmp_path):
     assert not commit.is_alive()
     assert runtime.last_error is None
     assert runtime.active is False
-    assert runtime.processing_queue_depths == {"l2": 0, "l3": 0, "l5": 0, "completion": 0}
+    assert runtime.processing_queue_depths == {
+        "l2": 0, "l3": 0, "l3_prepared": 0, "l3_host": 0,
+        "l5": 0, "completion": 0,
+    }
 
 
 def test_runtime_pre_denoise_replaces_audio_before_window_and_preserves_timeline(tmp_path):

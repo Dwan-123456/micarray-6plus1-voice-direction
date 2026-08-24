@@ -143,7 +143,11 @@ def test_rolling_l3_matches_a_fresh_full_recalculation(hop_gap: int):
         else (settings.frame_count - 2 - 2 * hop_gap, 2 + 2 * hop_gap)
     )
     assert (snapshot.stft_reused_frames, snapshot.stft_recomputed_frames) == expected
-    assert snapshot.covariance_rolled == (hop_gap < settings.window_hops)
+    expected_covariance_rolling = (
+        hop_gap < settings.window_hops
+        and 4 * hop_gap + 4 < settings.frame_count
+    )
+    assert snapshot.covariance_rolled == expected_covariance_rolling
     assert snapshot.stft_temporal_hops == snapshot.imcra_temporal_hops == settings.window_hops
     assert snapshot.max_temporal_hops == 50
 

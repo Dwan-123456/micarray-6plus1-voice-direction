@@ -79,7 +79,7 @@ flowchart TB
     HW -.独立入口.-> L1ONLY
 ```
 
-图中实线是正式数据流，虚线是独立观察工具。L2和L3各有单worker及有界等待队列；同一窗口遵循`L2(n) → L3(n) → L5审计(n)`，不同窗口稳态可形成`L2(n) || L3(n-1)`的流水。L4/L5不与实时链并行运行。
+图中实线是正式数据流，虚线是独立观察工具。L2有独立worker；CPU L3再分为候选无关STFT/IMCRA准备、候选相关BF+ISTFT、host连续音频拼接三个有界FIFO worker。同一窗口仍遵循`L2(n) → L3(n) → L5审计(n)`，不同窗口可形成跨层和L3内部流水；L3阶段只有host拼接排空后才算完成。L4/L5不与实时链并行运行。
 
 ## 3. 逐层输入、内部处理单元与输出
 
@@ -92,7 +92,7 @@ flowchart TB
 | Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/DOA/IMM-JPDA/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
 | Layer 2 | `DecisionWindow`、末尾两个20 ms声源概率、7麦几何、扫描配置 | 40 ms Probability Gate；MUSIC或GI-DOAEnet；圆周峰值与50° NMS；Circular IMM-JPDA方向ID；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；DOA诊断 | 每20 ms判断；定位历史按DOA后端 |
 | Layer 3 | `DecisionWindow`末尾40/80/160 ms、0–3个公共方向、7麦几何、IMCRA噪声 | 共享STFT与协方差缓存；steering；按`rho`逐频选择Dual LCMV / Soft-null loaded MVDR / Loaded MVDR；或DAS/loaded MVDR/五频段基线；数值保护；批量ISTFT | `Layer3Output`，其中每方向一个`EnhancedAudio`：48 kHz mono `[1920/3840/7680]`，携带`track_id/theta/algorithm/fallback` | 当前默认40 ms音频；每20 ms产生新重叠窗 |
-| TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；2 ms模式切换淡化；IMCRA概率响度补偿；维护实时上下文和完整归档 | `TrackAudioBatch`：`TrackAudioHop [960]`与最长3200 ms `ContinuousTrackAudio`；停机输出`Layer4LongAudioInput`完整48 kHz长轨 | 20 ms hop；目标均值-23 dBFS，峰值不超过-3 dBFS |
+| TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；2 ms模式切换淡化；IMCRA概率响度补偿；维护完整归档；仅在消费者明确请求时构造滚动上下文 | `TrackAudioBatch`：每窗`TrackAudioHop [960]`，ID首次确认可附最长3200 ms `ContinuousTrackAudio`；停机输出`Layer4LongAudioInput`完整48 kHz长轨 | 20 ms hop；目标均值-23 dBFS，峰值不超过-3 dBFS |
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
 | ResultJoiner | 同一`WindowKey`的L2/L3/L5阶段终态 | 校验ID与角度对齐；等待完整终态；按全局window顺序提交；保留失败/丢弃/取消原因 | `JoinedWindowResult`、`DecisionRecord v5`、`ResultWatermark`、UI快照 | 有序逐窗提交 |
 | RecordingStore | 原生/逻辑音频、IMCRA、Joined结果、Hub hop | 异步有界写盘；60秒切块；逐ID hop合并；SHA-256；journal事务；崩溃恢复；Catalog投影 | WAV/NPZ/JSONL/manifest/Catalog；逐ID连续48 kHz增强WAV | 不反压采集 |
@@ -202,6 +202,7 @@ L3输出保留80–8000 Hz，但80–1500 Hz受4 cm阵列孔径限制，不能�
 - Windows；已验证Python 3.12；
 - Sipeed R6+1、MA-USB8，设备采样率48 kHz、8通道；
 - 默认设备拓扑为`L1 CPU → L2 CPU → L3 CPU → 离线L4 CUDA → L5 CPU`；
+- `runtime.torch_cpu_threads=1`是当前16逻辑核主机的全链最快配置；不要把隔离单层的多线程或CUDA结果直接当作整链配置；
 - `runtime.l3_device/l4_device/l5_device`相互独立，旧配置缺少这些字段时才回退到`preferred_device`；
 - L4配置CUDA但设备不可用时，在`allow_cpu_fallback: true`下自动回退CPU；离线分离会明显变慢；
 - 麦克风面朝向与坐标定义保持一致，MIC0方向作为0°。

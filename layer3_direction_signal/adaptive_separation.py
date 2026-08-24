@@ -250,32 +250,39 @@ def adaptive_separation_weights(
         )
 
         if candidate_count == 2:
-            lcmv_weights, lcmv_valid = _dual_lcmv_from_solved(
-                solved_pcm[None],
-                steering_pcm,
-                covariance_ok[None],
-                config.condition_number_limit,
-                config.constraint_tolerance,
-            )
-            soft_weights, soft_valid = _soft_null_mvdr_batched(
-                loaded_fcc[None],
-                steering_mpc,
-                config.soft_null_strength,
-                config.condition_number_limit,
-                config.constraint_tolerance,
-            )
             local_lcmv = lcmv_mask.index_select(0, frequency_indices)
             local_soft = soft_mask.index_select(0, frequency_indices)
-            routed_weights = torch.where(
-                local_lcmv[None, None, :, None],
-                lcmv_weights,
-                torch.where(local_soft[None, None, :, None], soft_weights, mvdr_weights),
-            )[0]
-            routed_valid = torch.where(
-                local_lcmv[None, None, :],
-                lcmv_valid,
-                torch.where(local_soft[None, None, :], soft_valid, mvdr_valid),
-            )[0]
+            routed_weights = mvdr_weights[0]
+            routed_valid = mvdr_valid[0]
+
+            # Each frequency belongs to exactly one rho route.  The previous
+            # implementation solved LCMV and soft-null systems for every
+            # active bin and discarded two thirds of those results.  Preserve
+            # the shared covariance factorization, but run each expensive
+            # branch only for the positions that can actually select it.
+            lcmv_positions = torch.nonzero(local_lcmv, as_tuple=False).flatten()
+            if lcmv_positions.numel():
+                lcmv_weights, lcmv_valid = _dual_lcmv_from_solved(
+                    solved_pcm.index_select(0, lcmv_positions)[None],
+                    steering_pcm.index_select(0, lcmv_positions),
+                    covariance_ok.index_select(0, lcmv_positions)[None],
+                    config.condition_number_limit,
+                    config.constraint_tolerance,
+                )
+                routed_weights[:, lcmv_positions] = lcmv_weights[0]
+                routed_valid[:, lcmv_positions] = lcmv_valid[0]
+
+            soft_positions = torch.nonzero(local_soft, as_tuple=False).flatten()
+            if soft_positions.numel():
+                soft_weights, soft_valid = _soft_null_mvdr_batched(
+                    loaded_fcc.index_select(0, soft_positions)[None],
+                    steering_mpc.index_select(1, soft_positions),
+                    config.soft_null_strength,
+                    config.condition_number_limit,
+                    config.constraint_tolerance,
+                )
+                routed_weights[:, soft_positions] = soft_weights[0]
+                routed_valid[:, soft_positions] = soft_valid[0]
         else:
             routed_weights = mvdr_weights[0]
             routed_valid = mvdr_valid[0]
