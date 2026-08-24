@@ -18,7 +18,6 @@ try:
         QDialog,
         QDialogButtonBox,
         QFileDialog,
-        QFrame,
         QFormLayout,
         QGridLayout,
         QGroupBox,
@@ -291,7 +290,15 @@ class AudioDataManager(QMainWindow):
         self.duration_label = QLabel("时长：00:00:00")
         self.disk_label = QLabel("磁盘余量：—")
         self.capacity_label = QLabel("预计可录：—")
-        for widget in (self.rec_badge, self.session_label, self.duration_label, self.disk_label, self.capacity_label):
+        self.corpus_duration_label = QLabel("测试语料总时长：00:00:00")
+        for widget in (
+            self.rec_badge,
+            self.session_label,
+            self.duration_label,
+            self.corpus_duration_label,
+            self.disk_label,
+            self.capacity_label,
+        ):
             status_row.addWidget(widget)
         status_row.addStretch()
         self.connection_badge = QLabel("● 采集源未连接")
@@ -344,13 +351,14 @@ class AudioDataManager(QMainWindow):
         self.tabs.tabBar().setUsesScrollButtons(True)
         layout.addWidget(self.tabs)
         self.setCentralWidget(central)
-        self._home_tab()
+        self.pages: dict[str, QWidget] = {}
         self._runtime_tab()
         self._corpus_tab()
         self._wizard_tab()
         self._qa_tab()
         self._storage_tab()
-        self.statusBar().showMessage("数据只保存在本机，不会自动上传。首次使用请从“操作首页”开始。")
+        self.tabs.setCurrentWidget(self.pages["corpus"])
+        self.statusBar().showMessage("数据只保存在本机，不会自动上传。当前默认显示测试语料库。")
         self.setStyleSheet(
             """
             QMainWindow, QWidget {
@@ -379,12 +387,6 @@ class AudioDataManager(QMainWindow):
                 border: 1px solid #d97706;
                 border-radius: 6px;
                 padding: 10px;
-            }
-            QFrame#taskCard {
-                background-color: #0d2949;
-                border: 1px solid #466b91;
-                border-radius: 10px;
-                padding: 8px;
             }
             QTabWidget::pane {
                 border: 1px solid #3b5f87;
@@ -569,89 +571,6 @@ class AudioDataManager(QMainWindow):
         description.setObjectName("pageIntro")
         description.setWordWrap(True)
         return heading, description
-
-    def _task_card(self, title: str, description: str, button_text: str, route: str) -> QFrame:
-        card = QFrame()
-        card.setObjectName("taskCard")
-        box = QVBoxLayout(card)
-        heading = QLabel(title)
-        heading.setStyleSheet("font-size:18px;font-weight:800;color:#7dd3fc")
-        text = QLabel(description)
-        text.setWordWrap(True)
-        text.setStyleSheet("color:#dbeafe")
-        button = QPushButton(button_text)
-        button.clicked.connect(lambda: self._go(route))
-        box.addWidget(heading)
-        box.addWidget(text)
-        box.addStretch()
-        box.addWidget(button)
-        return card
-
-    def _home_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        title, intro = self._page_heading(
-            "操作首页",
-            "按目的选择下一步。日常录音、建立正式测试语料和检查已有数据是三条相互独立的流程。",
-        )
-        layout.addWidget(title)
-        layout.addWidget(intro)
-        self.capture_notice = QLabel(
-            "当前未连接麦克风采集主程序：可以浏览、导入、质检和维护数据；实际录音按钮暂不可用。"
-        )
-        self.capture_notice.setObjectName("warningText")
-        self.capture_notice.setWordWrap(True)
-        layout.addWidget(self.capture_notice)
-        cards = QGridLayout()
-        cards.addWidget(
-            self._task_card(
-                "录制日常运行音频",
-                "用于保存系统正常运行时的声音，方便回看、复现问题和提取候选片段。没有人工真值。",
-                "查看运行录音",
-                "runtime",
-            ),
-            0,
-            0,
-        )
-        cards.addWidget(
-            self._task_card(
-                "采集带角度真值的测试样本",
-                "按向导填写环境和声源信息，边录边保存原始8通道音频与热力图；质量检查可稍后手动执行。",
-                "开始测试录制向导",
-                "wizard",
-            ),
-            0,
-            1,
-        )
-        cards.addWidget(
-            self._task_card(
-                "导入或整理已有音频",
-                "查看专门录制、外部导入或从运行录音提取的样本；可导入、导出和进入质量管理。",
-                "打开测试语料库",
-                "corpus",
-            ),
-            1,
-            0,
-        )
-        cards.addWidget(
-            self._task_card(
-                "检查并发布数据集版本",
-                "运行音频质量检查、检查训练/验证/测试泄漏，并在确认后生成不可修改的数据集版本。",
-                "打开质量管理",
-                "quality",
-            ),
-            1,
-            1,
-        )
-        layout.addLayout(cards)
-        summary_box = QGroupBox("当前数据概况")
-        summary_layout = QVBoxLayout(summary_box)
-        self.home_summary = QLabel("正在读取数据…")
-        self.home_summary.setWordWrap(True)
-        summary_layout.addWidget(self.home_summary)
-        layout.addWidget(summary_box)
-        self.tabs.addTab(page, "操作首页")
-        self.pages = {"home": page}
 
     def _go(self, route: str) -> None:
         page = self.pages.get(route)
@@ -1217,6 +1136,12 @@ class AudioDataManager(QMainWindow):
         hours = data["free_bytes"] / ((8 * 2 + 7 * 2 + 7 * 4) * 48_000) / 3600
         self.capacity_label.setText(f"预计可录：约 {hours:.1f} 小时")
         s = data["statistics"]
+        total_seconds = max(0, round(float(s["duration_hours"]) * 3600))
+        total_hours, remainder = divmod(total_seconds, 3600)
+        total_minutes, total_seconds = divmod(remainder, 60)
+        self.corpus_duration_label.setText(
+            f"测试语料总时长：{total_hours:02d}:{total_minutes:02d}:{total_seconds:02d}"
+        )
         status_names = {
             "pending": "待检查",
             "passed": "检查通过",
@@ -1236,10 +1161,6 @@ class AudioDataManager(QMainWindow):
             "，".join(f"{status_names.get(key, key)} {value}" for key, value in s["by_status"].items()) or "暂无"
         )
         by_split = "，".join(f"{split_names.get(key, key)} {value}" for key, value in s["by_split"].items()) or "暂无"
-        self.home_summary.setText(
-            f"运行录音：{data['sessions']} 个　|　测试样本：{data['recordings']} 个　|　测试语料总时长：{s['duration_hours']:.2f} 小时\n"
-            f"质量状态：{by_status}\n数据用途：{by_split}\n最后刷新：{datetime.now().strftime('%H:%M:%S')}"
-        )
         self.stats_cards.setText(
             f"运行录音数量：{data['sessions']}\n测试样本数量：{data['recordings']}\n测试语料总时长：{s['duration_hours']:.2f} 小时\n\n"
             f"质量状态：{by_status}\n\n数据用途：{by_split}"
@@ -1275,14 +1196,8 @@ class AudioDataManager(QMainWindow):
             self._begin_wizard_recording(pending)
         self.connection_badge.setText("● 采集源已连接" if connected else "● 采集源未连接")
         self.connection_badge.setStyleSheet(f"color:{'#86efac' if connected else '#fde68a'}")
-        self.capture_notice.setText(
-            message
-            or (
-                "麦克风采集源已连接：可以进行运行录音和正式测试录制。"
-                if connected
-                else "当前未连接麦克风采集主程序：可以浏览、导入、质检和维护数据；实际录音按钮暂不可用。"
-            )
-        )
+        if message:
+            self.statusBar().showMessage(message, 6000)
         self._update_recording_buttons("idle")
 
     def _toggle_capture(self):
@@ -1292,7 +1207,7 @@ class AudioDataManager(QMainWindow):
             self.capture_host.stop()
         else:
             self.connection_badge.setText("● 正在连接…")
-            self.capture_notice.setText("正在打开配置的8通道麦克风，请稍候…")
+            self.statusBar().showMessage("正在打开配置的8通道麦克风，请稍候…")
             self.capture_host.start()
 
     def _capture_connection_changed(self, connected: bool, message: str):
@@ -1306,8 +1221,6 @@ class AudioDataManager(QMainWindow):
     def _capture_error(self, message: str):
         self._pending_wizard_input = None
         self.connect_button.setEnabled(True)
-        self.capture_notice.setText(f"连接或采集失败：{message}\n请检查麦克风USB连接、设备名称和主机接口配置。")
-        self.capture_notice.setObjectName("warningText")
         self.statusBar().showMessage(f"采集错误：{message}", 10000)
 
     def _apply_wizard_status(self, status):

@@ -31,17 +31,18 @@ def process_events_until(predicate, timeout: float = 3.0) -> bool:
     return bool(predicate())
 
 
-def test_manager_uses_six_chinese_task_pages_and_clear_disconnected_state(tmp_path):
+def test_manager_uses_five_chinese_task_pages_and_opens_corpus_by_default(tmp_path):
     app_instance()
     window = AudioDataManager(tmp_path)
     assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == [
-        "操作首页",
         "运行录音",
         "测试语料库",
         "测试录制向导",
         "质量与标注",
         "系统维护",
     ]
+    assert window.tabs.currentWidget() is window.pages["corpus"]
+    assert window.tabs.tabText(window.tabs.currentIndex()) == "测试语料库"
     assert not window.mode_select.isEnabled()
     assert window.wizard_start.isEnabled()
     assert "未连接" in window.connection_badge.text()
@@ -277,6 +278,28 @@ def test_recording_page_has_only_requested_actions_and_can_listen_to_any_native_
     assert button_texts == {
         "试听所选通道", "停止试听", "用所选样本进行模拟测试", "修改所选名称", "移到回收站",
     }
+    window.close()
+
+
+def test_dashboard_shows_total_corpus_duration_in_top_status_row(tmp_path):
+    app_instance()
+    window = AudioDataManager(tmp_path)
+
+    window._show_dashboard(
+        {
+            "free_bytes": 1024**3,
+            "storage_bytes": 0,
+            "sessions": 0,
+            "recordings": 1,
+            "statistics": {
+                "duration_hours": 1.5,
+                "by_status": {"pending": 1},
+                "by_split": {"unset": 1},
+            },
+        }
+    )
+
+    assert window.corpus_duration_label.text() == "测试语料总时长：01:30:00"
     window.close()
 
 
