@@ -2445,7 +2445,6 @@ class ApplicationRuntime:
                     )
                     active_ids = tuple(
                         track.track_id for track in active_tracks
-                        if track.track_state != "tentative"
                     )
                     audio_batch = self.track_audio_stream.process(
                         audio_windows,

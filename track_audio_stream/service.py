@@ -129,8 +129,6 @@ class TrackAudioStreamHub:
             return
         with self._lock:
             for track in active_tracks:
-                if getattr(track, "track_state", None) == "tentative":
-                    continue
                 track_id = int(getattr(track, "track_id"))
                 theta_deg = float(getattr(track, "theta_deg"))
                 if track_id <= 0 or not np.isfinite(theta_deg) or not 0.0 <= theta_deg < 360.0:

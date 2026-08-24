@@ -31,11 +31,17 @@ def _select_l3_directions(
     limit: int = 3,
     minimum_separation_deg: float = 50.0,
 ) -> tuple[TrackedDirection, ...]:
-    """Publish every eligible confirmed/coasting ID using only authoritative L2 state."""
+    """Publish observed starts plus formal/coasting IDs using authoritative L2 state."""
 
     observed_confirmed = tuple(item for item in observed if item.track_state == "confirmed")
-    observed_by_id = {item.track_id: item for item in observed_confirmed}
+    observed_tentative = tuple(item for item in observed if item.track_state == "tentative")
+    observed_by_id = {item.track_id: item for item in (*observed_confirmed, *observed_tentative)}
     prioritized = list(observed_confirmed)
+    # Tentative observations enter L3 immediately so confirmation does not
+    # cut the beginning off the canonical per-ID audio.  They remain lower
+    # priority than observed formal IDs and never survive as final output
+    # unless the same authoritative ID is later confirmed.
+    prioritized.extend(observed_tentative)
     prioritized.extend(sorted(
         (
             item for item in active

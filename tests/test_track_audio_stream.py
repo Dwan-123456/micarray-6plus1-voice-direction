@@ -40,10 +40,10 @@ def _identity(decision: int):
     return ("session", 0, decision // 960, decision)
 
 
-def _active(track_id: int = 7):
+def _active(track_id: int = 7, *, state: str = "confirmed"):
     return SimpleNamespace(
         track_id=track_id,
-        track_state="confirmed",
+        track_state=state,
         theta_deg=30.0,
         normalized_score=0.8,
     )
@@ -76,6 +76,49 @@ def test_hub_appends_one_aligned_compensated_hop_per_id_and_grows_context():
     assert len(second.continuous_audio[0].waveform) == 1_920
     assert second.continuous_audio[0].effective_end_sample == 7_680
     assert second.continuous_audio[0].gain_diagnostic.enabled is True
+
+
+def test_tentative_l3_audio_is_hidden_then_backfilled_when_same_id_confirms(tmp_path) -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+    )
+    tracker = AudioIdTracker(
+        "cache", project_root=tmp_path, downstream_window_samples=3_840,
+        minimum_listening_track_seconds=2.0,
+    )
+    tentative = _active(state="tentative")
+    confirmed = _active(state="confirmed")
+
+    hub.observe_l2(
+        identity=_identity(7_680), active_tracks=(tentative,),
+        processing_mode="optimized", l2_direction_count=1,
+    )
+    first = hub.process(
+        (_window(7_680),), active_track_ids=(7,), identity=_identity(7_680),
+    )
+    assert tracker.consume_stream_batch(first, active_tracks=(tentative,)) == ()
+
+    hub.observe_l2(
+        identity=_identity(8_640), active_tracks=(confirmed,),
+        processing_mode="optimized", l2_direction_count=1,
+    )
+    second = hub.process(
+        (_window(8_640),), active_track_ids=(7,), identity=_identity(8_640),
+    )
+    rows = tracker.consume_stream_batch(second, active_tracks=(confirmed,))
+
+    assert len(rows) == 1
+    assert rows[0].track_id == 7
+    assert rows[0].audio_sample_count == 2 * 960
+    playback = np.asarray(np.memmap(tracker.audio_cache_path(7), dtype=np.float32, mode="r"))
+    np.testing.assert_array_equal(playback, second.continuous_audio[0].waveform)
+    del playback
+
+    # Confirmation makes the opening available for this live pass, but the
+    # existing post-stitch two-second rule still removes the short final row
+    # and its exact Hub identity before offline L4/L5 submission.
+    assert tracker.finalize_capture() == ()
+    assert hub.seal(allowed_track_keys=set()) == ()
 
 
 def test_hub_seals_complete_long_audio_with_aligned_l2_direction_counts() -> None:

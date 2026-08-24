@@ -626,11 +626,11 @@ def test_tracker_respects_explicit_birth_suppression() -> None:
     assert observed == active == ()
 
 
-def test_tentative_track_is_not_published_but_confirmed_coasting_is() -> None:
+def test_tentative_observation_then_confirmed_and_coasting_are_published() -> None:
     tracker = _tracker()
     first, active = _update(tracker, 15_360, (20.0,))
     assert first[0].track_state == "tentative"
-    assert _select_l3_directions(first, active) == ()
+    assert _select_l3_directions(first, active) == first
     _update(tracker, 16_320, (20.5,))
     confirmed, active = _update(tracker, 17_280, (21.0,))
     assert _select_l3_directions(confirmed, active) == confirmed
@@ -718,7 +718,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
     )
     assert first.active_tracks
     assert first.active_tracks[0].track_state == "tentative"
-    assert first.directions == ()
+    assert first.directions == first.active_tracks
 
     confirmed = first
     for index in range(1, 6):

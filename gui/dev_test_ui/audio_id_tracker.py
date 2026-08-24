@@ -651,6 +651,7 @@ class AudioIdTracker:
         active_by_id = {item.track_id: item for item in active_tracks}
         if len(active_by_id) != len(active_tracks):
             raise ValueError("authoritative L2 track IDs must be unique")
+        continuous_by_id = {item.track_id: item for item in batch.continuous_audio}
         stream = (batch.session_id, batch.stream_epoch)
         modes = {item.processing_mode for item in batch.continuous_audio}
         if len(modes) > 1:
@@ -685,6 +686,18 @@ class AudioIdTracker:
                     )
                     self._tracks[hop.track_id] = track
                     self._next_track_id = max(self._next_track_id, hop.track_id + 1)
+                    # The Hub has already cached this ID from its tentative
+                    # observations.  When L2 confirms the same ID, seed the
+                    # visible cache from that complete canonical waveform so
+                    # the spoken beginning is not cut off.  Never-confirmed
+                    # tentative IDs stay hidden and are excluded by the final
+                    # exact-ID allow-list.
+                    continuous = continuous_by_id.get(hop.track_id)
+                    if continuous is not None:
+                        self._append_audio(track, continuous.waveform)
+                        track.last_emitted_decision_sample = int(
+                            continuous.effective_end_sample
+                        )
                 previous = track.last_emitted_decision_sample
                 if previous is not None and hop.end_sample <= previous:
                     continue
