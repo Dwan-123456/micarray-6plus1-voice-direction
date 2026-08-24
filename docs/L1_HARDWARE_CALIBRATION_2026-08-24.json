@@ -1,0 +1,48 @@
+{
+  "schema_version": "l1_hardware_calibration_report_v1",
+  "calibration_version": "office_overhead_1m_20260824_v2",
+  "correction_model": "gain_polarity_integer_delay_v1",
+  "captured_at_local_date": "2026-08-24",
+  "environment": "occupied office",
+  "sample_rate_hz": 48000,
+  "native_channel_count": 8,
+  "physical_channel_map": [0, 1, 2, 3, 4, 5, 7],
+  "hardware_mix_channel": 6,
+  "stimulus": {
+    "type": "phone loudspeaker centered approximately 1 m overhead",
+    "pink_noise_band_hz": [100, 8000],
+    "pink_noise_rms_dbfs": -18.0,
+    "chirp_band_hz": [200, 10000],
+    "chirp_count": 20,
+    "chirp_interval_ms": 600,
+    "stimulus_sha256": "139eba66966406fa074d83e8c89382b7e60b2e1ff8b3cb2ad25651d9a89b2fc1"
+  },
+  "capture": {
+    "duration_seconds": 60.0,
+    "capture_sha256": "9a28ab8d96e27a3f94ff082a62bbb6a54933eca5f937d69d5c0d7281986a1d39",
+    "raw_capture_committed": false,
+    "stream_status_events": [],
+    "clipped_samples_native_8ch": [0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  "gain_measurement": {
+    "method": "median noise-power-subtracted energy over 20 detected 250 ms logarithmic chirps",
+    "raw_signal_level_dbfs": [-40.7542, -40.4603, -41.0025, -40.6467, -40.9452, -40.6422, -36.7289],
+    "median_signal_to_noise_db": [27.5511, 27.0734, 27.0757, 26.9972, 27.1708, 27.5938, 29.8156],
+    "relative_level_std_db": [0.0260, 0.0189, 0.0542, 0.0156, 0.0168, 0.0294, 0.0922],
+    "normalization": "zero-mean relative dB across seven physical microphones"
+  },
+  "timing_measurement": {
+    "current_capture_result": "inconclusive_due_to_1m_office_reflections",
+    "current_direct_correlation_median": [0.7047, 0.7547, 0.7263, 0.7269, 0.7598, 0.6819, 1.0],
+    "inherited_report": "docs/L1_HARDWARE_CALIBRATION_2026-08-21.json",
+    "inherited_report_sha256": "230186dcb663e84d436671e0fee7ce6d78b3f28ac5d4aae2694ee4465852bd11",
+    "reason": "The array and channel mapping are unchanged. The prior centered-overhead capture had 28-30 stable trials per channel and higher correlation, so its verified polarity and integer delays remain authoritative."
+  },
+  "result": {
+    "status": "verified",
+    "gains": [1.069754, 1.034156, 1.100770, 1.056586, 1.093528, 1.056039, 0.673006],
+    "polarity": [1, 1, 1, 1, 1, 1, 1],
+    "delay_samples": [2, 1, 2, 0, 1, 0, 1]
+  },
+  "scope": "The 2026-08-24 capture refreshes relative gain only. Polarity and integer delay retain the verified 2026-08-21 evidence. HardwareMix is excluded from calibration and MUSIC."
+}

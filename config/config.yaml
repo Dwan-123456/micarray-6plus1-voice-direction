@@ -10,7 +10,7 @@ hardware:
   speed_of_sound_mps: 343.0
   geometry_version: r6plus1_mic_face_ccw_v1
   hardware_calibration_status: verified
-  hardware_calibration_report_hash: 230186dcb663e84d436671e0fee7ce6d78b3f28ac5d4aae2694ee4465852bd11
+  hardware_calibration_report_hash: 3b8a186010790916557c753fac31eca554f6746be2e67d7f5f97bb143894b3a2
 
 device:
   sample_rate: 48000
@@ -30,9 +30,9 @@ device:
   light_service_url: null
 
 calibration:
-  version: office_overhead_20260821_v1
+  version: office_overhead_1m_20260824_v2
   correction_model: gain_polarity_integer_delay_v1
-  gains: [1.120238, 1.042237, 1.099878, 1.041010, 1.087692, 1.108739, 0.620281]
+  gains: [1.069754, 1.034156, 1.100770, 1.056586, 1.093528, 1.056039, 0.673006]
   polarity: [1, 1, 1, 1, 1, 1, 1]
   delay_samples: [2, 1, 2, 0, 1, 0, 1]
   # Reserved versioned asset boundaries. Current L1 rejects non-null values

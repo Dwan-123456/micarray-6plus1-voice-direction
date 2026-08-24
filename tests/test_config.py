@@ -9,7 +9,7 @@ from layer1_input.configuration import AudioConfig, CalibrationConfig, CdcConfig
 
 
 CONFIG = Path(__file__).parents[1] / "config" / "config.yaml"
-CALIBRATION_REPORT = Path(__file__).parents[1] / "docs" / "L1_HARDWARE_CALIBRATION_2026-08-21.json"
+CALIBRATION_REPORT = Path(__file__).parents[1] / "docs" / "L1_HARDWARE_CALIBRATION_2026-08-24.json"
 
 
 def test_root_config_is_valid_and_builds_layer1_adapters():
@@ -55,7 +55,10 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert CdcConfig.from_project(config).required is False
     calibration = CalibrationConfig.from_project(config)
     assert calibration.delay_samples == (2, 1, 2, 0, 1, 0, 1)
-    assert calibration.version == "office_overhead_20260821_v1"
+    assert calibration.version == "office_overhead_1m_20260824_v2"
+    assert calibration.gains == pytest.approx(
+        (1.069754, 1.034156, 1.100770, 1.056586, 1.093528, 1.056039, 0.673006)
+    )
     assert calibration.status == "verified"
     assert calibration.report_hash is not None
     assert len(calibration.report_hash) == 64
