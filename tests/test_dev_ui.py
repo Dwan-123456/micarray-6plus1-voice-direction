@@ -1270,6 +1270,7 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         assert "L3" in window.bf_panel.title()
         assert "L4" in window.l4_panel.title()
         assert "L5" in window.cnn_panel.title()
+        assert "L6" in window.l6_panel.title()
         assert window.bf_panel.send.text() == "发送到L4"
         assert not hasattr(window.l4_panel, "send")
         assert set(window.l4_panel.backend_buttons) == {
@@ -1291,9 +1292,9 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         )
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | "
+            "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 手动离线 | "
             "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%    "
-            "总处理时长 | L2 N/A | L3 N/A | L4 N/A | L5 N/A"
+            "总处理时长 | L2 N/A | L3 N/A | L4 N/A | L5 N/A | L6 N/A"
         )
         assert window.start_button.text() == "启动采集"
         assert window.stop_button.text() == "停止采集"
@@ -1447,7 +1448,7 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
 
         window._send_l3_to_l4()
         assert events == ["clear", "process", "l5-process", "write", "l5-write"]
-        assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0}
+        assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0, "l6": None}
         assert "L4 2.50 s | L5 4.00 s" in window.performance_bar.text()
         assert window.bf_panel.send.isEnabled()
         assert "L5完成" in window.l4_panel.summary.text()
@@ -1457,7 +1458,7 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
             "clear", "process", "l5-process", "write", "l5-write",
             "clear", "process", "l5-process", "write", "l5-write",
         ]
-        assert window._offline_stage_durations_seconds == {"l4": 1.0, "l5": 2.0}
+        assert window._offline_stage_durations_seconds == {"l4": 1.0, "l5": 2.0, "l6": None}
         assert "L4 1.00 s | L5 2.00 s" in window.performance_bar.text()
         assert window.bf_panel.send.isEnabled()
 
@@ -1465,7 +1466,7 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
         window._send_l3_to_l4()
         assert events[-5:] == ["clear", "process", "l5-process", "write", "l5-write"]
         assert merge_modes == [True, True, False]
-        assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0}
+        assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0, "l6": None}
         assert "未合并候选" in window.l4_panel.summary.text()
         assert "L5完成" in window.l4_panel.summary.text()
         assert window.bf_panel.send.isEnabled()

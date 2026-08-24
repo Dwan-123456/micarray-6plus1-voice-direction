@@ -1,0 +1,14 @@
+{
+  "schema_version": "speaker_embedding_artifact_v1",
+  "model_id": "campplus_zh_en_16k_v1",
+  "architecture": "CAMPPlus",
+  "sample_rate": 16000,
+  "feature": "80-bin Kaldi fbank, 25 ms window, 10 ms shift, utterance CMN",
+  "embedding_size": 192,
+  "weights_file": "model.pt",
+  "weights_sha256": "92f29b94e6948786a26778c9e302525d185bb08c8b9f5252ed98776902840199",
+  "source_model": "iic/speech_campplus_sv_zh_en_16k-common_advanced",
+  "source_url": "https://modelscope.cn/models/iic/speech_campplus_sv_zh_en_16k-common_advanced",
+  "code_source": "https://github.com/modelscope/3D-Speaker",
+  "license": "Apache-2.0"
+}

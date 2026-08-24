@@ -152,7 +152,7 @@ def build_window(
     except ImportError as exc:
         raise RuntimeError("Development Test UI需要安装项目ui依赖") from exc
 
-    from .panels import BeamformPanel, CnnPanel, Layer4AudioPanel
+    from .panels import BeamformPanel, CnnPanel, Layer4AudioPanel, Layer6AudioPanel
     from .preview_player import PreviewPlayer
     from .audio_id_tracker import (
         AudioIdTracker,
@@ -160,6 +160,7 @@ def build_window(
         CENTER_RAW_TRACK_ID,
     )
     from .offline_l4_store import OfflineLayer4UiStore
+    from .offline_l6_store import OfflineLayer6UiStore
     from .panels import (
         GateProbabilityThresholdControl,
         DirectionIdTrackingControl,
@@ -292,8 +293,11 @@ def build_window(
             self._audio_source_key = None
             self._offline_l4_pipeline = None
             self._l4_processed = ()
-            self._offline_stage_durations_seconds = {"l4": None, "l5": None}
+            self._l5_results = ()
+            self._l6_result = None
+            self._offline_stage_durations_seconds = {"l4": None, "l5": None, "l6": None}
             self._l4_store = OfflineLayer4UiStore()
+            self._l6_store = OfflineLayer6UiStore()
             self._replay_previous_stream = None
             self._replay_reset_pending = False
             root = QWidget()
@@ -347,16 +351,20 @@ def build_window(
                 self.bf_panel.mode_switch.setEnabled(True)
             self.cnn_panel = CnnPanel(config.layer5.voice_probability_limit)
             self.l4_panel = Layer4AudioPanel(persisted_l4_backend)
+            self.l6_panel = Layer6AudioPanel()
             self.l4_panel.track_play_requested.connect(self._toggle_l4_audio)
             self.l4_panel.track_stop_requested.connect(self._pause_track_audio)
             self.l4_panel.backend_changed.connect(ui_settings.save_layer4_backend)
+            self.l6_panel.run_requested.connect(self._run_l6)
+            self.l6_panel.track_play_requested.connect(self._toggle_l6_audio)
+            self.l6_panel.track_stop_requested.connect(self._pause_track_audio)
             self.l4_panel.set_voice_threshold(config.layer5.voice_probability_limit)
             self.cnn_panel.threshold_changed.connect(
                 self.l4_panel.set_voice_threshold
             )
             grid.addWidget(self.bf_panel, 1, 0, 1, 2)
             grid.addWidget(self.l4_panel, 1, 2, 1, 2)
-            grid.addWidget(self.cnn_panel, 1, 4, 1, 2)
+            grid.addWidget(self.l6_panel, 1, 4, 1, 2)
             for item_index in range(grid.count()):
                 quadrant = grid.itemAt(item_index).widget()
                 quadrant.setMinimumSize(0, 0)
@@ -779,6 +787,8 @@ def build_window(
                 elif name == "L3发送到L4":
                     self.bf_panel.set_send_enabled(True)
                     self.l4_panel.set_processing(f"L4失败：{exc}")
+                elif name == "运行L6":
+                    self.l6_panel.set_error(str(exc))
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -805,7 +815,12 @@ def build_window(
             self._l4_store.clear()
             self._offline_l4_pipeline = None
             self._l4_processed = ()
-            self._offline_stage_durations_seconds = {"l4": None, "l5": None}
+            self._l5_results = ()
+            self._l6_result = None
+            self._l6_store.clear()
+            self.l6_panel.clear_tracks()
+            self.l6_panel.set_run_enabled(False)
+            self._offline_stage_durations_seconds = {"l4": None, "l5": None, "l6": None}
             self.srp_header.setText("WARMING | session — | epoch 0 | window — | sample — | age —")
             self.l1_header.setText("WARMING | waiting for the first audio block")
 
@@ -1168,6 +1183,29 @@ def build_window(
                 self.l4_panel.sync_track_playback_stopped()
                 self.statusBar().showMessage(f"L4试听失败：{error}", 5000)
 
+        def _toggle_l6_audio(self, speaker_id: int):
+            if (
+                self._audio_source_key is not None
+                and self._audio_source_key[0] == "l6_speaker"
+                and int(self._audio_source_key[1]) == int(speaker_id)
+            ):
+                if not self.preview_player.play():
+                    self.l6_panel.sync_track_playback_stopped()
+                return
+            cache_path = self._l6_store.audio_path(speaker_id)
+            if cache_path is None:
+                self.l6_panel.sync_track_playback_stopped()
+                self.statusBar().showMessage(f"L6 Speaker-{speaker_id}暂无可播放音频", 3000)
+                return
+            self.preview_player.stop()
+            self.preview_player.set_volume(1.0)
+            self.preview_player.load_wav_file(cache_path)
+            self._audio_source_key = ("l6_speaker", int(speaker_id), str(cache_path))
+            if not self.preview_player.play():
+                error = self.preview_player.take_error() or "unknown audio output error"
+                self.l6_panel.sync_track_playback_stopped()
+                self.statusBar().showMessage(f"L6试听失败：{error}", 5000)
+
         def _send_l3_to_l4(self):
             self.preview_player.close()
             self._audio_source_key = None
@@ -1179,7 +1217,12 @@ def build_window(
             self._l4_store.clear()
             self._offline_l4_pipeline = None
             self._l4_processed = ()
-            self._offline_stage_durations_seconds = {"l4": None, "l5": None}
+            self._l5_results = ()
+            self._l6_result = None
+            self._l6_store.clear()
+            self.l6_panel.clear_tracks()
+            self.l6_panel.set_run_enabled(False)
+            self._offline_stage_durations_seconds = {"l4": None, "l5": None, "l6": None}
             self._refresh_total_duration_text()
             self.cnn_panel.set_unavailable("等待L4完成后自动处理")
             backend_id = self.l4_panel.backend_id
@@ -1223,6 +1266,7 @@ def build_window(
                 self._offline_stage_durations_seconds = {
                     "l4": l4_elapsed,
                     "l5": l5_elapsed,
+                    "l6": None,
                 }
                 self._refresh_total_duration_text()
                 self._l4_store.set_processed(self._l4_processed)
@@ -1235,6 +1279,7 @@ def build_window(
                     self.bf_panel.set_send_enabled(True)
                     return
                 self._l4_store.apply_l5(l5_results)
+                self._l5_results = tuple(l5_results)
                 self.l4_panel.set_tracks(
                     self._l4_store.snapshots(), l5_complete=True, unmerged=not merged,
                 )
@@ -1250,9 +1295,39 @@ def build_window(
                     ),
                     threshold=pipeline.layer5.threshold,
                 ))
+                self.l6_panel.clear_tracks(
+                    "L4已合并；关闭“合并”并重新发送后才能运行L6"
+                    if merged else "L4双候选与L5已完成；可手动运行L6"
+                )
+                self.l6_panel.set_run_enabled(not merged and bool(l5_results))
                 self.bf_panel.set_send_enabled(True)
 
             self._submit_command("L3发送到L4", process_l4_and_l5, completed)
+
+        def _run_l6(self):
+            if not self._l5_results:
+                self.l6_panel.set_error("没有可用的L4/L5双候选")
+                return
+            self.preview_player.close()
+            self._audio_source_key = None
+            self._l6_store.clear()
+            self.l6_panel.clear_tracks()
+            self.l6_panel.set_processing()
+
+            def process_l6():
+                pipeline = runtime.build_offline_l6_pipeline()
+                started = perf_counter()
+                return pipeline.process(self._l5_results), perf_counter() - started
+
+            def completed(value):
+                result, elapsed = value
+                self._l6_result = result
+                self._offline_stage_durations_seconds["l6"] = elapsed
+                self._l6_store.set_result(result)
+                self.l6_panel.set_tracks(self._l6_store.snapshots())
+                self._refresh_total_duration_text()
+
+            self._submit_command("运行L6", process_l6, completed)
 
         def _refresh(self):
             self._poll_command()
@@ -1281,6 +1356,16 @@ def build_window(
                     self.l4_panel.clear_track_playback_progress()
             else:
                 self.l4_panel.clear_track_playback_progress()
+            if self._audio_source_key is not None and self._audio_source_key[0] == "l6_speaker":
+                progress = self.preview_player.playback_progress
+                if self.preview_player.playing or progress > 0.0:
+                    self.l6_panel.set_track_playback_progress(
+                        int(self._audio_source_key[1]), progress
+                    )
+                else:
+                    self.l6_panel.clear_track_playback_progress()
+            else:
+                self.l6_panel.clear_track_playback_progress()
             playback_error = self.preview_player.take_error()
             if playback_error:
                 self.statusBar().showMessage(f"试听输出：{playback_error}", 5000)
@@ -1746,7 +1831,7 @@ def build_window(
         def _set_performance(self, perf):
             if perf is None:
                 text = (
-                    "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | "
+                    "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 手动离线 | "
                     "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
                 )
             else:
@@ -1754,7 +1839,7 @@ def build_window(
                     "上一秒性能 | "
                     f"L2 {_time(perf.l2_time_ms_last_second_avg)} | "
                     f"L3 {_time(perf.l3_time_ms_last_second_avg)} | "
-                    "L4 离线 | L5 离线 | "
+                    "L4 离线 | L5 离线 | L6 手动离线 | "
                     f"20ms窗口 {perf.processed_windows_last_second} | "
                     f"丢窗 {perf.dropped_windows_last_second} | "
                     f"丢窗率 {perf.drop_rate_last_second * 100.0:.1f}%"
@@ -1779,12 +1864,12 @@ def build_window(
             text += (
                 "    总处理时长 | "
                 f"L2 {elapsed('l2')} | L3 {elapsed('l3')} | "
-                f"L4 {elapsed('l4')} | L5 {elapsed('l5')}"
+                f"L4 {elapsed('l4')} | L5 {elapsed('l5')} | L6 {elapsed('l6')}"
             )
             self.performance_bar.setToolTip(
                 "左侧只统计实时L2/L3窗口性能；总处理时长中，L2、L3分别从首个20 ms"
                 "窗口入队至各自排空，L3包含长音频拼接；L4、L5在点击发送后按整批"
-                "顺序独立计时。模拟输入手动暂停期间不计实时阶段时长。"
+                "顺序独立计时，L6仅在手动点击后计时。模拟输入手动暂停期间不计实时阶段时长。"
             )
             self.performance_bar.setText(text)
 
@@ -1803,9 +1888,12 @@ def build_window(
                         self._l4_store.close()
                     finally:
                         try:
-                            runtime.close(delete_dev_test_ui_audio=True)
+                            self._l6_store.close()
                         finally:
-                            super().closeEvent(event)
+                            try:
+                                runtime.close(delete_dev_test_ui_audio=True)
+                            finally:
+                                super().closeEvent(event)
 
         def keyPressEvent(self, event):
             if event.key() == Qt.Key.Key_F11:

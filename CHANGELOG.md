@@ -7,6 +7,7 @@
 - Layer 3：方向波束形成、缓存及增强音频；
 - Layer 4：采集结束后的可选双人语音分离与主讲话人选择；
 - Layer 5：响度补偿、重采样、CNN与人声概率；
+- Layer 6：声纹聚类、音频质量评分、重叠择优与按人物时间线拼接；
 - Development Test UI；
 - 独立 Pipeline Log UI；
 - 正式音频录制、数据管理与Production UI；
@@ -20,6 +21,19 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前`1.3.3`开发架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，最终发布基线为`v1.3.2`，实际参数以`config/config.yaml`和代码为准。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
+
+---
+
+## 2026-08-24 — 新增手动离线L6声纹归类与质量择优拼接
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。
+- **L4/L5输入**：复用已提交的L4“保留双候选”模式；每个A/B候选分别经过现有L5并携带完整16 kHz波形、父L2 ID/角度、绝对时间范围和逐20 ms人声概率/bool。L4合并模式保持兼容，但不允许启动需要双候选的L6。
+- **L6声纹**：新增手动、CPU、离线`OfflineLayer6Pipeline`。L5有效人声片段使用16 kHz、80-bin Kaldi fbank与CAMPPlus生成192维归一化声纹；平均链接AHC按整次录音聚为0～3个会话内人物类别，按首次出现顺序稳定命名Speaker A/B/C。
+- **质量与拼接**：固定使用`30% L5人声概率 + 30%声纹中心相似度 + 20% DNSMOS + 10%分段SNR + 10%连续性`。相同人物在同一绝对时间的重复候选只保留质量较优者，输出16 kHz单声道长音频并保留来源L2 ID、片段和五项质量审计；有效段边缘使用2 ms淡入淡出。
+- **模型与依赖**：加入ModelScope中英CAMPPlus权重及Microsoft DNSMOS P.835 ONNX，均用manifest和SHA-256校验并由Git LFS管理；新增`kaldi-native-fbank==1.22.3`和`onnxruntime==1.29.0`及锁文件。
+- **Test UI**：下右原L5极坐标区域改为L6音频条。L4关闭“合并”并完成双候选L5后才启用“运行L6”；运行完成显示Speaker A/B/C、来源L2 ID、质量、时长、波形并支持逐条试听。L5逐20 ms结果继续在L4音频条标黄。
+- **测试与文档**：新增L6聚类、重叠质量择优和时间线输出测试，更新配置、运行时工厂、根README、目标架构、Test UI说明及独立L6契约文档。CAMPPlus真实权重成功输出192维单位声纹，DNSMOS真实ONNX成功输出SIG/BAK/OVRL；L4/L6/配置/Test UI聚焦回归`83 passed`，完整回归`546 passed`（仅既有TorchScript弃用警告），修改Python文件Ruff与`git diff --check`通过。未执行长时间负载或真实双人录音听感验收。
+- **未改变**：L1采集/IMCRA/CountNet、L2 MUSIC与ID、L3 BF与Hub、L4分离模型及1～4 kHz匹配算法、L5 NVIDIA Frame-VAD内部算法、正式录音/数据管理和Production UI均无其他行为变化。
 
 ---
 

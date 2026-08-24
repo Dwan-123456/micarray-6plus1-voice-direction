@@ -4,7 +4,7 @@
 
 > **开发状态：项目 `1.3.3`。** 当前代码从不可变`v1.3.2`基线开始，实时链与停机后L4/L5工作流暂保持一致；后续修改统一进入`codex/develop-v1.3.3`，自动化验收不替代真实双人录音和GPU质量门禁。
 
-> 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L5、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
+> 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L6、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
 > 面向首次接触项目的完整数据流、逐层输入/输出/内部处理单元和操作步骤，见[《完整架构与使用手册》](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)。
 
@@ -26,6 +26,7 @@ IMCRA当前噪声频谱及手动频谱抓拍。详细契约见 [`gui/l1_spectrum
 4. 对每个候选方向增强音频；
 5. 判断该方向的增强音频是否为人声；
 6. 将原始音频、方向、增强音频、模型结果和时间信息按同一时间轴保存。
+7. 在用户手动触发时，把L4双候选按声纹归为最多三人，并按质量择优拼成Speaker A/B/C长音频。
 
 当前系统输出的是“相对麦克风阵列的水平角方向”和“该方向为人声的概率”。方向轨迹ID只用于跨窗口对齐同一空间方向，不代表人物身份；系统不输出距离、俯仰角、声压级、说话内容或说话人身份。
 
@@ -172,6 +173,11 @@ WindowWorkItem
     每320样本输出一个20 ms概率和Voice/Non-Voice；默认阈值0.70
     整轨摘要=完整概率序列中连续3帧均值的最大值
     ↓ 按原track_id回写L4音频条；Voice区间标黄，失败保留L4试听音频
+    ↓ L4关闭“合并”且用户手动点击“运行L6”
+【已完成】Layer 6：整次录音人物归类与重复音频择优
+    L5有效片段 → CAMPPlus 192维声纹 → 平均链接AHC聚为0～3人
+    同一人物按绝对时间线归并；重叠候选按Voice/声纹/DNSMOS/SNR/连续性综合评分
+    → Speaker A/B/C 16 kHz长音频，保留来源L2 ID并在Test UI逐条试听
 
 【已完成】独立L1 Spectrum UI（平行工具，不接入上述Runtime）
     自建L1-only采集链：设备自动扫描、校准、IMCRA、可选预降噪、电平与频谱抓拍
@@ -366,13 +372,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
   中频强LCMV及高频防混叠loaded MVDR；第一版用自由场steering作为RTF代理；
 - 切换L3模式会清空旧模式的方向试听缓存；
 
-#### 下中与下右：离线Layer 4 / Layer 5
+#### 下中与下右：离线Layer 4 / Layer 5 / Layer 6
 
 - L4只在采集停止、实时队列排空且Hub完成封存后可提交；可选择MossFormer2或TIGER；
 - L4输出是原生16 kHz单声道WAV，保留原`track_id`和角度，可直接试听；
 - L4整批完成后自动且仅一次运行L5，不再提供单独“发送到L5”按钮；
 - L5为每个20 ms hop输出概率和Voice / Non-Voice，Voice区间在对应L4音频条标黄；
 - L5阈值只重新判断缓存概率并重绘黄色区间，不改变L2 Gate，也不重跑模型；
+- 下右L6只在L4关闭“合并”、A/B候选均完成L5后允许手动运行；结果以Speaker A/B/C音频条显示，并标出来源L2 ID和质量分。
 
 
 ### 4. 参数调整建议
@@ -517,6 +524,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 - [Layer 3说明](layer3_direction_signal/README.md)
 - [离线Layer 4双人分离契约](layer4_speech_separation/README.md)
 - [Layer 5说明](layer5_voice_classifier/README.md)
+- [Layer 6说明](layer6_speaker_consolidation/README.md)
 - [ApplicationRuntime说明](app/README.md)
 - [Development Test UI说明](gui/dev_test_ui/README.md)
 - [Audio Data Manager说明](data_management/README.md)

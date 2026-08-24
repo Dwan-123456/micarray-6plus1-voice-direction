@@ -374,6 +374,33 @@ class Layer4Config(StrictModel):
         return self
 
 
+class Layer6Config(StrictModel):
+    enabled: bool = True
+    campplus_artifact: str
+    dnsmos_artifact: str
+    maximum_speakers: int = Field(default=3, ge=1, le=3)
+    speaker_similarity_threshold: float = Field(default=0.62, ge=0.0, le=1.0)
+    minimum_embedding_speech_ms: int = Field(default=1_500, ge=500)
+    minimum_voice_fragment_ms: int = Field(default=200, ge=100)
+    merge_voice_gap_ms: int = Field(default=200, ge=0)
+    quality_context_ms: int = Field(default=1_000, ge=200)
+    selection_hop_ms: int = Field(default=200, ge=20)
+    selection_switch_margin: float = Field(default=0.05, ge=0.0, le=1.0)
+    crossfade_ms: int = Field(default=2, ge=0, le=20)
+
+    @model_validator(mode="after")
+    def validate_layer6(self) -> "Layer6Config":
+        if not self.campplus_artifact.strip() or not self.dnsmos_artifact.strip():
+            raise ValueError("Layer6 model artifact paths must be non-empty")
+        for name in (
+            "minimum_embedding_speech_ms", "minimum_voice_fragment_ms", "merge_voice_gap_ms", "quality_context_ms",
+            "selection_hop_ms", "crossfade_ms",
+        ):
+            if getattr(self, name) % 20 and name != "crossfade_ms":
+                raise ValueError(f"Layer6 {name} must align to 20 ms")
+        return self
+
+
 class RuntimeConfig(StrictModel):
     mode: Literal["development", "production"]
     # Legacy fallback retained for old launch profiles. New profiles select
@@ -506,6 +533,7 @@ class ProjectConfig(StrictModel):
     layer4: Layer4Config
     feature: FeatureConfig
     layer5: Layer5Config
+    layer6: Layer6Config
     runtime: RuntimeConfig
     dev_test_ui: DevUiConfig
     recording: RecordingConfig

@@ -58,6 +58,7 @@ from layer5_voice_classifier import (
     Layer5Engine,
     NvidiaMarbleNetPlugin,
 )
+from layer6_speaker_consolidation import CampPlusEmbedder, DnsMosScorer, OfflineLayer6Pipeline
 from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoiceAnnotation
 from windowing import WindowAssembler
 
@@ -3880,6 +3881,21 @@ class ApplicationRuntime:
             backends={selected: backend},
             layer5=self._layer5,
             default_backend=selected,
+        )
+
+    def build_offline_l6_pipeline(self) -> OfflineLayer6Pipeline:
+        """Load the CPU-only models for a manually triggered L6 job."""
+
+        if not self.config.layer6.enabled:
+            raise RuntimeError("Layer6 is disabled in project config")
+        campplus = Path(self.config.layer6.campplus_artifact)
+        dnsmos = Path(self.config.layer6.dnsmos_artifact)
+        if not campplus.is_absolute():
+            campplus = self.project_root / campplus
+        if not dnsmos.is_absolute():
+            dnsmos = self.project_root / dnsmos
+        return OfflineLayer6Pipeline(
+            CampPlusEmbedder(campplus), DnsMosScorer(dnsmos), self.config.layer6,
         )
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:
