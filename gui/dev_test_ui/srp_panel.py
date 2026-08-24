@@ -11,11 +11,21 @@ from common.data_types import CandidateDirection, SpatialResponse, TrackedDirect
 
 
 _TRACK_COLOURS = ("#ff3b30", "#2ecc71", "#ffb000", "#af7ac5", "#00bcd4", "#ff7f50")
+_TENTATIVE_TRACK_COLOUR = "#aab2bb"
 
 
 def track_colour_hex(track_id: int) -> str:
     """Return the stable UI colour assigned to one authoritative L2 ID."""
     return _TRACK_COLOURS[(int(track_id) - 1) % len(_TRACK_COLOURS)]
+
+
+def _track_marker_style(track: TrackedDirection) -> tuple[str, float]:
+    """Keep tentative IDs neutral; reserve stable colours for formal IDs."""
+
+    if track.track_state == "tentative":
+        return _TENTATIVE_TRACK_COLOUR, 10.0
+    diameter = 24.0 if track.is_observed else 10.0
+    return track_colour_hex(track.track_id), diameter
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,9 +129,6 @@ if QWidget is not None:
         def _response_radius(outer_radius: float, score: float) -> float:
             return outer_radius * (0.035 + 0.93 * float(np.clip(score, 0.0, 1.0)))
 
-        def _track_colour(self, track_id: int) -> QColor:
-            return QColor(track_colour_hex(track_id))
-
         def paintEvent(self, _event) -> None:  # noqa: N802
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -158,8 +165,8 @@ if QWidget is not None:
             if snapshot.direction_id_tracking_enabled:
                 for track in snapshot.active_tracks:
                     point = self._point(center, radius, track.theta_deg)
-                    diameter = 24.0 if track.is_observed and track.track_state != "coasting" else 10.0
-                    painter.setBrush(self._track_colour(track.track_id))
+                    colour, diameter = _track_marker_style(track)
+                    painter.setBrush(QColor(colour))
                     painter.setPen(QPen(QColor("white") if track.track_id == self._selected_track_id else QColor("#11161d"), 2.5))
                     painter.drawEllipse(point, diameter / 2.0, diameter / 2.0)
             else:

@@ -1515,6 +1515,18 @@ def test_music_response_radius_maps_zero_near_center_and_one_near_rim(monkeypatc
     assert MusicPolarPanel._response_radius(outer, 2.0) == pytest.approx(193.0)
 
 
+def test_music_track_markers_only_assign_colours_to_formal_ids():
+    from gui.dev_test_ui.srp_panel import _track_marker_style, track_colour_hex
+
+    tentative = SimpleNamespace(track_state="tentative", is_observed=True, track_id=1)
+    confirmed = SimpleNamespace(track_state="confirmed", is_observed=True, track_id=2)
+    coasting = SimpleNamespace(track_state="coasting", is_observed=False, track_id=2)
+
+    assert _track_marker_style(tentative) == ("#aab2bb", 10.0)
+    assert _track_marker_style(confirmed) == (track_colour_hex(2), 24.0)
+    assert _track_marker_style(coasting) == (track_colour_hex(2), 10.0)
+
+
 def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
