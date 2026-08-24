@@ -505,6 +505,10 @@ class ImcraSpatialSeparationBeamformer:
                 backends = tuple("das" for _item in candidates)
                 fallback_reasons = tuple(fallback_reason for _item in candidates)
 
+        # Publish only the configured output band.  Loaded/adaptive solvers now
+        # skip all other bins, and this early mask keeps the device-resident
+        # batch identical to the waveform synthesizer's existing passband.
+        output = output * prepared.passband_f[None, :, None]
         if output.shape != (len(candidates), 513, prepared.stft.frame_count) or not torch.isfinite(output).all():
             raise Layer3Error("方向分离频谱输出无效")
         self.last_diagnostics = diagnostics
@@ -666,6 +670,11 @@ class ImcraSpatialSeparationBeamformer:
                 for _item in candidates
             )
 
+        speech_band = (
+            (frequencies >= config.frequency_min_hz)
+            & (frequencies <= config.frequency_max_hz)
+        )
+        output = output * speech_band[None, :, None]
         if output.shape != (len(candidates), 513, stft.frame_count) or not torch.isfinite(output).all():
             raise Layer3Error("方向分离频谱输出无效")
         signals = tuple(

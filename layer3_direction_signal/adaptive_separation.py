@@ -212,66 +212,90 @@ def adaptive_separation_weights(
     uncertainty = 1.0 + (1.0 - noise_confidence_f) * config.uncertainty_loading_multiplier
     loading_multiplier = uncertainty * static.alias_multiplier_f
 
-    retry_factors = torch.as_tensor(
-        config.loading_retry_factors, dtype=scale.dtype, device=scale.device,
+    # The public waveform is zero outside ``speech_band``.  Keep the existing
+    # DAS weights there for API compatibility, but never construct or factor a
+    # loaded covariance for bins that the synthesizer will discard.
+    active_indices = torch.nonzero(speech_band, as_tuple=False).flatten()
+    valid_active = torch.zeros(
+        (candidate_count, len(active_indices)), dtype=torch.bool, device=steering_mfc.device,
     )
-    loading = retry_factors[:, None] * loading_multiplier[None, :] * scale[None, :]
-    loaded_rfcc = covariance_fcc[None] + loading[..., None, None] * eye
-    covariance_factor, covariance_ok = _factorize(
-        loaded_rfcc, config.condition_number_limit,
-    )
-    steering_fcm = steering_mfc.permute(1, 2, 0).contiguous()
-    solved_rfcm = torch.cholesky_solve(
-        steering_fcm[None].expand(len(retry_factors), -1, -1, -1), covariance_factor,
-    )
-    mvdr_weights, mvdr_valid = _mvdr_from_solved(
-        solved_rfcm, steering_fcm, covariance_ok, config.constraint_tolerance,
-    )
-
-    if candidate_count == 2:
-        lcmv_weights, lcmv_valid = _dual_lcmv_from_solved(
-            solved_rfcm,
-            steering_fcm,
-            covariance_ok,
-            config.condition_number_limit,
+    for retry_factor in config.loading_retry_factors:
+        # Retry only frequencies for which at least one target still has no
+        # numerically valid solution.  This preserves the former "first valid
+        # loading wins" rule without eagerly solving every loading level.
+        pending_active = torch.nonzero(~valid_active.all(dim=0), as_tuple=False).flatten()
+        if pending_active.numel() == 0:
+            break
+        frequency_indices = active_indices.index_select(0, pending_active)
+        covariance = covariance_fcc.index_select(0, frequency_indices)
+        loading = (
+            float(retry_factor)
+            * loading_multiplier.index_select(0, frequency_indices)
+            * scale.index_select(0, frequency_indices)
+        )
+        loaded_fcc = covariance + loading[:, None, None] * eye
+        covariance_factor, covariance_ok = _factorize(
+            loaded_fcc, config.condition_number_limit,
+        )
+        steering_mpc = steering_mfc.index_select(1, frequency_indices)
+        steering_pcm = steering_mpc.permute(1, 2, 0).contiguous()
+        solved_pcm = torch.cholesky_solve(steering_pcm, covariance_factor)
+        mvdr_weights, mvdr_valid = _mvdr_from_solved(
+            solved_pcm[None],
+            steering_pcm,
+            covariance_ok[None],
             config.constraint_tolerance,
         )
-        soft_weights, soft_valid = _soft_null_mvdr_batched(
-            loaded_rfcc,
-            steering_mfc,
-            config.soft_null_strength,
-            config.condition_number_limit,
-            config.constraint_tolerance,
-        )
-        routed_weights = torch.where(
-            lcmv_mask[None, None, :, None],
-            lcmv_weights,
-            torch.where(soft_mask[None, None, :, None], soft_weights, mvdr_weights),
-        )
-        routed_valid = torch.where(
-            lcmv_mask[None, None, :],
-            lcmv_valid,
-            torch.where(soft_mask[None, None, :], soft_valid, mvdr_valid),
-        )
-    else:
-        routed_weights = mvdr_weights
-        routed_valid = mvdr_valid
 
-    routed_valid &= speech_band[None, None, :]
-    valid = routed_valid.any(dim=0)
-    first_valid_retry = routed_valid.to(torch.int8).argmax(dim=0)
-    selected = torch.gather(
-        routed_weights,
-        0,
-        first_valid_retry[None, ..., None].expand(1, -1, -1, channel_count),
-    )[0]
-    output = torch.where(valid[..., None], selected, output)
-    fallback = speech_band[None, :] & ~valid
-    output = torch.where(fallback[..., None], das, output)
+        if candidate_count == 2:
+            lcmv_weights, lcmv_valid = _dual_lcmv_from_solved(
+                solved_pcm[None],
+                steering_pcm,
+                covariance_ok[None],
+                config.condition_number_limit,
+                config.constraint_tolerance,
+            )
+            soft_weights, soft_valid = _soft_null_mvdr_batched(
+                loaded_fcc[None],
+                steering_mpc,
+                config.soft_null_strength,
+                config.condition_number_limit,
+                config.constraint_tolerance,
+            )
+            local_lcmv = lcmv_mask.index_select(0, frequency_indices)
+            local_soft = soft_mask.index_select(0, frequency_indices)
+            routed_weights = torch.where(
+                local_lcmv[None, None, :, None],
+                lcmv_weights,
+                torch.where(local_soft[None, None, :, None], soft_weights, mvdr_weights),
+            )[0]
+            routed_valid = torch.where(
+                local_lcmv[None, None, :],
+                lcmv_valid,
+                torch.where(local_soft[None, None, :], soft_valid, mvdr_valid),
+            )[0]
+        else:
+            routed_weights = mvdr_weights[0]
+            routed_valid = mvdr_valid[0]
+
+        previously_valid = valid_active.index_select(1, pending_active)
+        accepted = routed_valid & ~previously_valid
+        current = output.index_select(1, frequency_indices)
+        output[:, frequency_indices] = torch.where(
+            accepted[..., None], routed_weights, current,
+        )
+        valid_active[:, pending_active] = previously_valid | routed_valid
+
+    fallback_active = ~valid_active
+    if len(active_indices):
+        output[:, active_indices] = torch.where(
+            fallback_active[..., None], das.index_select(1, active_indices),
+            output.index_select(1, active_indices),
+        )
     diagnostic_values = torch.cat(
         (
             torch.stack((lcmv_mask.sum(), soft_mask.sum(), mvdr_mask.sum())),
-            fallback.sum(dim=1),
+            fallback_active.sum(dim=1),
             torch.isfinite(output).all().reshape(1),
         )
     ).tolist()
@@ -314,47 +338,59 @@ def loaded_mvdr_weights(
 
     das = das_weights(steering_mfc)
     output = das.clone()
-    valid = torch.zeros(
-        (candidate_count, frequency_count), dtype=torch.bool, device=steering_mfc.device,
+    active_indices = torch.nonzero(static.speech_band_f, as_tuple=False).flatten()
+    valid_active = torch.zeros(
+        (candidate_count, len(active_indices)), dtype=torch.bool, device=steering_mfc.device,
     )
-    valid[:, ~static.speech_band_f] = True
     scale = torch.diagonal(covariance_fcc, dim1=-2, dim2=-1).real.mean(dim=-1).clamp_min(1e-8)
     uncertainty = 1.0 + (1.0 - noise_confidence_f) * config.uncertainty_loading_multiplier
     loading_multiplier = uncertainty * static.alias_multiplier_f
 
-    retry_factors = torch.as_tensor(
-        config.loading_retry_factors, dtype=scale.dtype, device=scale.device,
-    )
-    loading = retry_factors[:, None] * loading_multiplier[None, :] * scale[None, :]
-    loaded_rfcc = covariance_fcc[None] + loading[..., None, None] * static.identity_cc
-    covariance_factor, covariance_ok = _factorize(
-        loaded_rfcc, config.condition_number_limit,
-    )
-    steering_fcm = steering_mfc.permute(1, 2, 0).contiguous()
-    solved_rfcm = torch.cholesky_solve(
-        steering_fcm[None].expand(len(retry_factors), -1, -1, -1), covariance_factor,
-    )
-    retry_weights, retry_valid = _mvdr_from_solved(
-        solved_rfcm, steering_fcm, covariance_ok, config.constraint_tolerance,
-    )
-    retry_valid &= static.speech_band_f[None, None, :]
-    solved_valid = retry_valid.any(dim=0)
-    first_valid_retry = retry_valid.to(torch.int8).argmax(dim=0)
-    selected = torch.gather(
-        retry_weights,
-        0,
-        first_valid_retry[None, ..., None].expand(1, -1, -1, channel_count),
-    )[0]
-    output = torch.where(solved_valid[..., None], selected, output)
-    valid |= solved_valid
+    for retry_factor in config.loading_retry_factors:
+        pending_active = torch.nonzero(~valid_active.all(dim=0), as_tuple=False).flatten()
+        if pending_active.numel() == 0:
+            break
+        frequency_indices = active_indices.index_select(0, pending_active)
+        covariance = covariance_fcc.index_select(0, frequency_indices)
+        loading = (
+            float(retry_factor)
+            * loading_multiplier.index_select(0, frequency_indices)
+            * scale.index_select(0, frequency_indices)
+        )
+        loaded_fcc = covariance + loading[:, None, None] * static.identity_cc
+        covariance_factor, covariance_ok = _factorize(
+            loaded_fcc, config.condition_number_limit,
+        )
+        steering_mpc = steering_mfc.index_select(1, frequency_indices)
+        steering_pcm = steering_mpc.permute(1, 2, 0).contiguous()
+        solved_pcm = torch.cholesky_solve(steering_pcm, covariance_factor)
+        retry_weights, retry_valid = _mvdr_from_solved(
+            solved_pcm[None],
+            steering_pcm,
+            covariance_ok[None],
+            config.constraint_tolerance,
+        )
+        retry_weights = retry_weights[0]
+        retry_valid = retry_valid[0]
+        previously_valid = valid_active.index_select(1, pending_active)
+        accepted = retry_valid & ~previously_valid
+        current = output.index_select(1, frequency_indices)
+        output[:, frequency_indices] = torch.where(
+            accepted[..., None], retry_weights, current,
+        )
+        valid_active[:, pending_active] = previously_valid | retry_valid
 
-    fallback = static.speech_band_f[None, :] & ~valid
-    output = torch.where(fallback[..., None], das, output)
+    fallback_active = ~valid_active
+    if len(active_indices):
+        output[:, active_indices] = torch.where(
+            fallback_active[..., None], das.index_select(1, active_indices),
+            output.index_select(1, active_indices),
+        )
     if not torch.isfinite(output).all():
         output = das
-        fallback = static.speech_band_f[None, :].expand(candidate_count, -1)
+        fallback_active = torch.ones_like(valid_active)
     return LoadedMvdrWeightResult(
         output,
         int(static.speech_band_f.sum().item()),
-        tuple(int(item) for item in fallback.sum(dim=1).tolist()),
+        tuple(int(item) for item in fallback_active.sum(dim=1).tolist()),
     )

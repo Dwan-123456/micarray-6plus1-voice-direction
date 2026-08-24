@@ -12,6 +12,8 @@ from common.data_types import CandidateDirection, DecisionWindow, ImcraHopSnapsh
 from common.geometry import physical_6plus1_geometry
 from layer3_direction_signal import (
     L3_MODE_DS_BASELINE,
+    L3_MODE_LOADED_MVDR,
+    L3_MODE_OPTIMIZED,
     L3_MODE_SUBBAND_ROBUST,
     Layer3Processor,
 )
@@ -183,6 +185,20 @@ def test_single_candidate_uses_imcra_loaded_mvdr():
     ).enhanced_audio[0]
     assert item.algorithm == "imcra_spatial_separation"
     assert any("loaded_mvdr=" in message for message in item.diagnostics)
+
+
+@pytest.mark.parametrize("mode", (L3_MODE_LOADED_MVDR, L3_MODE_OPTIMIZED))
+def test_adaptive_device_batch_is_zero_outside_the_output_passband(mode: str):
+    rng = np.random.default_rng(78)
+    processor = Layer3Processor(load_config(CONFIG, environ={}))
+    window = _window(rng.normal(0, 0.02, (7_680, 8)).astype(np.float32))
+    prepared = processor.prepare(window, mode=mode)
+    batch = processor.beamformer.process_prepared_batch(
+        prepared, (_candidate(20.0),), physical_6plus1_geometry(),
+    )
+
+    assert torch.count_nonzero(batch.spectra_mft[:, ~prepared.passband_f]).item() == 0
+    assert torch.count_nonzero(batch.spectra_mft[:, prepared.passband_f]).item() > 0
 
 
 def test_ds_baseline_uses_seven_channel_delay_and_sum_without_imcra_or_spatial_p():
