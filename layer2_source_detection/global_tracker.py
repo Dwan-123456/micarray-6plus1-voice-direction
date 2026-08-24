@@ -390,6 +390,61 @@ class GlobalDirectionTracker:
                 false_probability[column] += posterior * self.config.probability_false / denominator
         return association, new_probability, false_probability, len(hypotheses), model_likelihoods
 
+    def _rescue_nearby_associations(
+        self,
+        tracks: tuple[_Track, ...],
+        candidates: tuple[CandidateDirection, ...],
+        association: np.ndarray,
+        observed_track_by_candidate: dict[int, int],
+        observed_candidate_by_track: dict[int, int],
+    ) -> None:
+        """Keep a nearby observation on an existing ID when JPDA is uncertain.
+
+        The probabilistic gate is intentionally allowed to reject an abrupt
+        observation.  That rejection must not create a second ID inside the
+        physical 50-degree association region, though.  Rescue assignments are
+        one-to-one and still enter the IMM measurement update, so the published
+        angle is the filtered posterior rather than the raw candidate angle.
+        """
+
+        available_rows = [
+            row for row, track in enumerate(tracks)
+            if track.track_id not in observed_candidate_by_track
+        ]
+        available_columns = [
+            column for column in range(len(candidates))
+            if column not in observed_track_by_candidate
+        ]
+        if not available_rows or not available_columns:
+            return
+
+        invalid_cost = self.config.association_gate_deg + 1.0
+        costs = np.full(
+            (len(available_rows), len(available_columns)), invalid_cost, dtype=np.float64
+        )
+        for local_row, row in enumerate(available_rows):
+            predicted_theta = self._combined(tracks[row])[0][0]
+            for local_column, column in enumerate(available_columns):
+                distance = abs(_delta(candidates[column].theta_deg, predicted_theta))
+                if distance <= self.config.association_gate_deg:
+                    costs[local_row, local_column] = distance
+
+        rescue_rows, rescue_columns = linear_sum_assignment(costs)
+        for local_row, local_column in zip(rescue_rows, rescue_columns, strict=True):
+            if costs[local_row, local_column] > self.config.association_gate_deg:
+                continue
+            row = available_rows[int(local_row)]
+            column = available_columns[int(local_column)]
+            track_id = tracks[row].track_id
+            # Replace the weak JPDA row/column with a deterministic measurement
+            # association. _update_track below applies the ordinary IMM/Kalman
+            # gain; it never copies this raw candidate directly to theta_deg.
+            association[row, :] = 0.0
+            association[:, column] = 0.0
+            association[row, column] = 1.0
+            observed_track_by_candidate[column] = track_id
+            observed_candidate_by_track[track_id] = column
+
     def _update_track(
         self,
         track: _Track,
@@ -598,6 +653,13 @@ class GlobalDirectionTracker:
                 if probability >= self.config.minimum_association_probability:
                     observed_track_by_candidate[int(column)] = tracks[int(row)].track_id
                     observed_candidate_by_track[tracks[int(row)].track_id] = int(column)
+        self._rescue_nearby_associations(
+            tracks,
+            candidates,
+            association,
+            observed_track_by_candidate,
+            observed_candidate_by_track,
+        )
 
         for row, track in enumerate(tracks):
             observed = track.track_id in observed_candidate_by_track
@@ -624,9 +686,13 @@ class GlobalDirectionTracker:
                 ),
                 default=float("inf"),
             )
+            birth_exclusion_deg = max(
+                self.config.duplicate_birth_guard_deg,
+                self.config.association_gate_deg,
+            )
             if (
                 p_new[column] < self.config.minimum_birth_probability
-                or nearest <= self.config.duplicate_birth_guard_deg
+                or nearest <= birth_exclusion_deg
             ):
                 continue
             if len(self._tracks) >= self.config.max_active_tracks:
