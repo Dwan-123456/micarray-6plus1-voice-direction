@@ -710,7 +710,7 @@ def test_gate_blocked_frame_clears_previous_polar_snapshot(monkeypatch, tmp_path
         app.processEvents()
 
 
-def test_simulation_l2_frame_does_not_submit_doa_polar_snapshot(monkeypatch, tmp_path):
+def test_simulation_l2_frame_renders_doa_polar_snapshot(monkeypatch, tmp_path):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from gui.dev_test_ui.app import build_window
@@ -737,7 +737,8 @@ def test_simulation_l2_frame_does_not_submit_doa_polar_snapshot(monkeypatch, tmp
         window._render_l2_frame(frame)
         app.processEvents()
 
-        assert window.srp_polar._snapshot is None
+        assert window.srp_polar._snapshot is not None
+        assert window.srp_polar._snapshot.response is response
         assert "DOA UNAVAILABLE" not in window.srp_header.text()
     finally:
         window.close()

@@ -1584,7 +1584,7 @@ def build_window(
                     frame.spatial_response.stream_epoch,
                     frame.spatial_response.window_id,
                 )
-                if live_microphone_mode and window_key != self._last_rendered_window:
+                if window_key != self._last_rendered_window:
                     self.srp_polar.set_snapshot(snapshot, live=True)
                     self._last_rendered_window = window_key
                 model = frame.spatial_response.model_order
@@ -1632,13 +1632,11 @@ def build_window(
                 )
             elif "srp" in frame.missing_reasons:
                 self.srp_header.setText(frame.missing_reasons["srp"])
-                if live_microphone_mode:
-                    self.srp_polar.set_snapshot(None)
+                self.srp_polar.set_snapshot(None)
                 self.music_status.setText(
                     "MUSIC order=—  output=—  valid=—  status=UNAVAILABLE"
                 )
-                if live_microphone_mode:
-                    self._last_rendered_window = None
+                self._last_rendered_window = None
 
         def _render_frame(self, frame, *, render_l2=True, render_l5=True):
             self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
