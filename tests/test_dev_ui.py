@@ -1196,6 +1196,10 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
             app.processEvents()
             time.sleep(0.01)
         assert window._runtime.active
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window._pending_command is None
         assert window._runtime.pipeline.source.status().state == "playing"
     finally:
         window.close()

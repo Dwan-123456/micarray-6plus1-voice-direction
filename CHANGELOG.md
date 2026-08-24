@@ -44,6 +44,16 @@
 
 ---
 
+## 2026-08-24 — L2 Test UI刷新与L3/Join解耦
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。
+- **Runtime/L2 UI旁路**：新增容量1、latest-only的`latest_l2_dev_ui`。L2 worker完成每个窗口后立即发布包含Gate、DOA/MUSIC、方向ID、实际配置revision和精确窗口身份的不可变快照，不再等待同窗L3/L5终态或有序Commit；邮箱覆盖次数纳入只读Runtime诊断。
+- **Development Test UI**：L2面板只消费独立L2快照，按当前Runtime `session/epoch`过滤旧流，并要求`window_id/decision_sample`单调前进；现有有序`latest_dev_ui`不再回写L2面板，只继续更新L1/L3、性能、录音和正式审计。因此L3积压时L2面板追随L2完成窗口，不再重放较旧的Join窗口。
+- **兼容性与未改变**：L2算法、Gate/MUSIC/ID Tracking、L3、离线L4/L5、ResultJoiner、DecisionRecord、水位、队列容量、20 ms正式时间轴、模拟重播清队列、`stopped`运行时长和Production UI均无变化；无配置、模型、音频或Git LFS资产变化。
+- **验证**：增加L3首窗阻塞且Commit为0时L2独立邮箱仍推进到最新完成窗口的回归，并覆盖旧session/epoch、同流倒序窗口过滤及Test UI/Runtime/契约测试；聚焦回归`96 passed`，完整pytest为`526 passed`，完整Ruff与差异检查通过。
+
+---
+
 ## 2026-08-24 — 模拟播放途中重播立即丢弃旧处理队列
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。

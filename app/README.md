@@ -8,6 +8,8 @@ Runtime负责唯一L1→Ingest→Window装配，以及L2、L3与Hub长音频封�
 
 Runtime保留L2、L3、L5三个有界阶段队列和有序审计结构；当前实时计算只执行L2与L3，L5 worker为每个成功L3窗口提交`offline_after_l4`的`SKIPPED`终态。L2 worker独占滚动MUSIC/方向轨迹状态和预计算导向缓存；连续窗口增量推进，sample跳跃或revision变化时安全重建并发布诊断。L4与真正的L5推理不占用实时队列，只消费停机排空后的Hub封存包。
 
+Development Test UI的L2面板使用容量1的`latest_l2_dev_ui`旁路：L2 worker完成即发布不可变L2快照，不等待同窗L3/L5终态或有序Commit。正式`latest_dev_ui`仍只发布完整Join帧并服务L3显示、录音与审计；L2旁路只影响可视化，UI按`session/epoch/window/decision_sample`过滤旧流和倒序迟到快照。
+
 `ResultJoiner`接收乱序完成的L2/L3/L5终态，只在同一WindowKey完整后生成一个`JoinedWindowResult`。L2与L3完成结果携带有序公共`(track_id, theta_deg)`并逐项校验；当前实时L5是没有检测输出的`offline_after_l4`跳过终态。commit阶段按全局window ID有序调用RecordingStore的原子`append_result_with_watermark`，之后再做Test UI投影；stage worker不得绕过Joiner直接发布正式结果。Gate阻断产生L3/L5 `SKIPPED`；任一阶段`FAILED/TIMED_OUT/DROPPED/CANCELLED`都产生唯一`error` DecisionRecord v5；仅完整成功但使用声明回退的结果为`degraded`。旧DecisionRecord v3仅支持只读，不原地改写。
 
 `latest_l5_dev_ui` side channel为兼容性保留；全离线L5架构下实时链不会向其发布CNN结果。Development Test UI已经提供L3/L4/L5三栏和唯一的“发送到L4”入口；整批L4完成后由同一后台任务自动运行L5并直接更新离线面板。

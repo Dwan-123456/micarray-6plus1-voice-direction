@@ -1011,6 +1011,38 @@ def test_replay_restart_discards_waiting_l3_and_old_commit_state(tmp_path: Path)
     runtime.stop()
 
 
+def test_latest_l2_ui_advances_while_l3_and_ordered_commit_are_blocked(
+    tmp_path: Path,
+) -> None:
+    probe = _StageProbe()
+    l3_started = threading.Event()
+    release_l3 = threading.Event()
+    runtime, _, _ = _runtime(
+        tmp_path,
+        config=_config(l2_queue_windows=8, l3_queue_windows=8),
+        l3=_FirstBlockingL3(probe, started=l3_started, release=release_l3),
+    )
+    runtime.start()
+    runtime._ui_aggregator = _StubUiAggregator()
+    try:
+        for window_id in range(4):
+            assert runtime._admit_window(_window(window_id))
+        assert l3_started.wait(5.0)
+        _wait_until(lambda: runtime.processing_status["completed_counts"]["l2"] == 4)
+
+        latest = runtime.latest_l2_dev_ui.get_nowait()
+        assert latest.window_id == 3
+        assert latest.decision_sample == _window(3).decision_sample
+        assert latest.spatial_response is not None
+        assert runtime.processing_queue_depths["l2"] == 0
+        assert runtime.processing_status["l2_ui_mailbox_overwrites"] >= 3
+        assert runtime.processing_status["completed_counts"]["commit"] == 0
+        assert runtime.latest_dev_ui.empty()
+    finally:
+        release_l3.set()
+        runtime.stop()
+
+
 def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_runtime(
     tmp_path: Path,
 ) -> None:

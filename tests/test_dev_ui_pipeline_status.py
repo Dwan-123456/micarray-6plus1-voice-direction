@@ -1,9 +1,37 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from gui.dev_test_ui.app import (
+    _is_current_monotonic_l2_snapshot,
     _format_processing_pipeline_status,
     _format_processing_pipeline_tooltip,
 )
+
+
+def test_l2_ui_snapshot_filter_rejects_old_epoch_and_non_monotonic_windows() -> None:
+    current = ("session-new", 2)
+    latest = SimpleNamespace(
+        session_id="session-new", stream_epoch=2, window_id=11, decision_sample=18_240,
+    )
+    previous = ("session-new", 2, 10, 17_280)
+    assert _is_current_monotonic_l2_snapshot(latest, current, previous)
+    assert not _is_current_monotonic_l2_snapshot(
+        SimpleNamespace(
+            session_id="session-old", stream_epoch=1,
+            window_id=999, decision_sample=999_000,
+        ),
+        current,
+        previous,
+    )
+    assert not _is_current_monotonic_l2_snapshot(
+        SimpleNamespace(
+            session_id="session-new", stream_epoch=2,
+            window_id=10, decision_sample=17_280,
+        ),
+        current,
+        previous,
+    )
 
 
 class _ParallelRuntime:

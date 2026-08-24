@@ -36,6 +36,26 @@ def _runtime_processing_status(runtime: object) -> Mapping[str, Any] | None:
     return status if isinstance(status, Mapping) else None
 
 
+def _is_current_monotonic_l2_snapshot(
+    snapshot: object,
+    current_stream: tuple[str, int],
+    previous_identity: tuple[str, int, int, int] | None,
+) -> bool:
+    identity = (
+        str(getattr(snapshot, "session_id", "")),
+        int(getattr(snapshot, "stream_epoch", -1)),
+        int(getattr(snapshot, "window_id", -1)),
+        int(getattr(snapshot, "decision_sample", -1)),
+    )
+    if identity[:2] != current_stream or min(identity[1:]) < 0:
+        return False
+    return not (
+        previous_identity is not None
+        and identity[:2] == previous_identity[:2]
+        and identity[2:] <= previous_identity[2:]
+    )
+
+
 def _format_processing_pipeline_status(runtime: object) -> str:
     status = _runtime_processing_status(runtime)
     if status is None:
@@ -244,6 +264,8 @@ def build_window(
                 self.setWindowTitle("6+1 Microphone Array — Development Test UI")
             self.setMinimumSize(1200, 700)
             self._frame = None
+            self._l2_frame = None
+            self._last_l2_identity = None
             self._last_l5_frame = None
             self._last_l5_seen = 0.0
             self._l5_is_stale = False
@@ -752,6 +774,8 @@ def build_window(
 
         def _enter_starting_state(self):
             self._frame = None
+            self._l2_frame = None
+            self._last_l2_identity = None
             self._last_l5_frame = None
             self._last_l5_seen = 0.0
             self._l5_is_stale = False
@@ -777,7 +801,7 @@ def build_window(
             self._l5_is_stale = False
             self.srp_polar.set_live(False)
             self.gate_readout.set_unavailable("STOPPED")
-            if self._frame is None or self._frame.spatial_response is None:
+            if self._l2_frame is None or self._l2_frame.spatial_response is None:
                 self.music_status.setText("MUSIC order=—  output=—  valid=—  status=STOPPED")
             else:
                 status = self.music_status.text()
@@ -792,8 +816,8 @@ def build_window(
             except RuntimeError:
                 self.bf_panel.set_send_enabled(False)
             self.l1_header.setText("STOPPED | capture closed | age —")
-            if self._frame is not None and self._frame.spatial_response is not None:
-                response = self._frame.spatial_response
+            if self._l2_frame is not None and self._l2_frame.spatial_response is not None:
+                response = self._l2_frame.spatial_response
                 self.srp_header.setText(
                     f"STOPPED | session {response.session_id[:8]} | epoch {response.stream_epoch:03d} | "
                     f"window {response.window_id:08d} | sample {response.decision_sample:012d} | age —"
@@ -867,7 +891,11 @@ def build_window(
             else:
                 self._replay_previous_stream = None
             self._replay_reset_pending = True
-            for mailbox in (runtime.latest_dev_ui, getattr(runtime, "latest_l5_dev_ui", None)):
+            for mailbox in (
+                runtime.latest_dev_ui,
+                getattr(runtime, "latest_l2_dev_ui", None),
+                getattr(runtime, "latest_l5_dev_ui", None),
+            ):
                 if mailbox is None:
                     continue
                 while True:
@@ -880,6 +908,8 @@ def build_window(
             audio_id_tracker.reset()
             self.bf_panel.clear_tracks()
             self._frame = None
+            self._l2_frame = None
+            self._last_l2_identity = None
             self._last_l5_frame = None
             self._last_l5_seen = 0.0
             self._l5_is_stale = False
@@ -1207,6 +1237,14 @@ def build_window(
                     latest = runtime.latest_dev_ui.get_nowait()
                 except queue.Empty:
                     break
+            latest_l2 = None
+            l2_mailbox = getattr(runtime, "latest_l2_dev_ui", None)
+            if l2_mailbox is not None:
+                while True:
+                    try:
+                        latest_l2 = l2_mailbox.get_nowait()
+                    except queue.Empty:
+                        break
             latest_l5 = None
             l5_mailbox = getattr(runtime, "latest_l5_dev_ui", None)
             if l5_mailbox is not None:
@@ -1229,14 +1267,35 @@ def build_window(
             # never repaint that residual frame as LIVE after Runtime is idle.
             if not runtime.active:
                 latest = None
+                latest_l2 = None
                 latest_l5 = None
+            if latest_l2 is not None:
+                identity = (
+                    latest_l2.session_id,
+                    latest_l2.stream_epoch,
+                    latest_l2.window_id,
+                    latest_l2.decision_sample,
+                )
+                current_stream = (
+                    runtime.coordinator.session_id,
+                    runtime.coordinator.stream_epoch,
+                )
+                previous = self._last_l2_identity
+                if not _is_current_monotonic_l2_snapshot(
+                    latest_l2, current_stream, previous
+                ):
+                    latest_l2 = None
+                else:
+                    self._l2_frame = latest_l2
+                    self._last_l2_identity = identity
+                    self._render_l2_frame(latest_l2)
             if latest is not None:
                 self._frame = latest
                 self._last_l1_seen = monotonic()
                 # Render the ordered formal frame without allowing a terminal
                 # DROPPED/SKIPPED frame to erase the independent latest
                 # completed L5 result below.
-                self._render_frame(latest, render_l5=False)
+                self._render_frame(latest, render_l2=False, render_l5=False)
             elif runtime.last_error:
                 self._set_text(self.l1_header, f"ERROR | {runtime.last_error}")
             if latest_l5 is not None and self._frame is not None and self._frame.l1 is not None:
@@ -1377,18 +1436,7 @@ def build_window(
                     f"STALE: no completed L5 result for {config.dev_test_ui.stale_after_ms} ms"
                 )
 
-        def _render_frame(self, frame, *, render_l5=True):
-            self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
-            self.bf_panel.set_previews(
-                frame.previews if runtime.downstream_processing_enabled else (),
-                missing_reason=(
-                    frame.missing_reasons.get("beamforming")
-                    if runtime.downstream_processing_enabled
-                    else "STOPPED BY TEST UI; L2 remains active"
-                ),
-            )
-            if render_l5:
-                self._update_l5_panel(frame)
+        def _render_l2_frame(self, frame):
             if frame.gate_decision is None:
                 self.gate_readout.set_unavailable()
             else:
@@ -1398,7 +1446,8 @@ def build_window(
                     runtime.gate_probability_threshold,
                     pending=(
                         getattr(frame, "gate_config_revision", None) is not None
-                        and getattr(frame, "gate_config_revision", None) != runtime.gate_config_revision
+                        and getattr(frame, "gate_config_revision", None)
+                        != runtime.gate_config_revision
                     ),
                 )
             applied_revision = getattr(frame, "scan_config_revision", None)
@@ -1427,10 +1476,108 @@ def build_window(
                     runtime.direction_id_tracking_enabled,
                     pending=revision_pending or (
                         applied_id_tracking is not None
-                        and applied_id_tracking
-                        != runtime.direction_id_tracking_enabled
+                        and applied_id_tracking != runtime.direction_id_tracking_enabled
                     ),
                 )
+            if (
+                frame.spatial_response is not None
+                and frame.spatial_published_monotonic is not None
+            ):
+                l5_result = getattr(frame, "l5_result", None)
+                probabilities = {
+                    detection.track_id: detection.probability
+                    for detection in (() if l5_result is None else l5_result.detections)
+                    if getattr(detection, "track_id", None) is not None
+                }
+                snapshot = MusicPanelSnapshot(
+                    frame.spatial_response,
+                    getattr(frame, "directions", ()),
+                    getattr(frame, "active_tracks", ()),
+                    frame.spatial_published_monotonic,
+                    probabilities,
+                    effective_order=(
+                        None if frame.search_diagnostics is None
+                        else frame.search_diagnostics.effective_model_order
+                    ),
+                    raw_peaks=frame.candidates,
+                    direction_id_tracking_enabled=(
+                        True if frame.direction_id_tracking_enabled is None
+                        else frame.direction_id_tracking_enabled
+                    ),
+                )
+                window_key = (
+                    frame.spatial_response.session_id,
+                    frame.spatial_response.stream_epoch,
+                    frame.spatial_response.window_id,
+                )
+                if window_key != self._last_rendered_window:
+                    self.srp_polar.set_snapshot(snapshot, live=True)
+                    self._last_rendered_window = window_key
+                model = frame.spatial_response.model_order
+                panel_state = (
+                    "STALE"
+                    if snapshot.age_ms > config.dev_test_ui.stale_after_ms
+                    else "LIVE"
+                )
+                backend_name = (
+                    "NN" if frame.search_diagnostics.mode == "gi_doaenet" else "MUSIC"
+                )
+                self._set_text(
+                    self.music_status,
+                    f"{backend_name} order={model.estimated_sources}  "
+                    f"output={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
+                    f"valid={frame.spatial_response.valid_frequency_bins}  "
+                    f"status={frame.spatial_response.numerical_status}  {panel_state}",
+                )
+                diagnostics = frame.search_diagnostics
+                search_suffix = ""
+                if diagnostics is not None:
+                    search_suffix = (
+                        f" | {diagnostics.mode.upper()} {diagnostics.model_order.estimated_sources}"
+                        f" / output {diagnostics.effective_model_order}"
+                        f" | valid bins {diagnostics.valid_frequency_bins}"
+                        f" | DPD {'ON' if diagnostics.dpd_rank1_enabled else 'OFF'}"
+                        f" {diagnostics.selected_frequency_bins} bins"
+                        f" | WHITE {diagnostics.whitening_status.upper()}"
+                        f" | {diagnostics.covariance_quality.upper()}"
+                        f" | ASSOC {'LMB/JPDA' if diagnostics.mode == 'gi_doaenet' else 'HUNGARIAN'}"
+                    )
+                dropped_reason = frame.missing_reasons.get("srp")
+                state_prefix = (
+                    f"STALE | {dropped_reason} | last completed"
+                    if dropped_reason is not None
+                    else "LIVE"
+                )
+                self._set_text(
+                    self.srp_header,
+                    f"{state_prefix} | session {frame.spatial_response.session_id[:8]} | "
+                    f"epoch {frame.spatial_response.stream_epoch} | "
+                    f"window {frame.spatial_response.window_id:08d} | "
+                    f"sample {frame.spatial_response.decision_sample:012d} | "
+                    f"age {snapshot.age_ms:03.0f} ms{search_suffix}",
+                )
+            elif "srp" in frame.missing_reasons:
+                self.srp_header.setText(frame.missing_reasons["srp"])
+                self.srp_polar.set_snapshot(None)
+                self.music_status.setText(
+                    "MUSIC order=—  output=—  valid=—  status=UNAVAILABLE"
+                )
+                self._last_rendered_window = None
+
+        def _render_frame(self, frame, *, render_l2=True, render_l5=True):
+            self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
+            self.bf_panel.set_previews(
+                frame.previews if runtime.downstream_processing_enabled else (),
+                missing_reason=(
+                    frame.missing_reasons.get("beamforming")
+                    if runtime.downstream_processing_enabled
+                    else "STOPPED BY TEST UI; L2 remains active"
+                ),
+            )
+            if render_l5:
+                self._update_l5_panel(frame)
+            if render_l2:
+                self._render_l2_frame(frame)
             l1 = frame.l1
             if l1 is not None:
                 with QSignalBlocker(self.pre_denoise_switch):
@@ -1506,82 +1653,6 @@ def build_window(
                         )
                     )
                     self._set_text(self.imcra_label, f"IMCRA: {hop.state.upper()} | {levels}")
-            if frame.spatial_response is not None and frame.spatial_published_monotonic is not None:
-                probabilities = {
-                    detection.track_id: detection.probability
-                    for detection in (() if frame.l5_result is None else frame.l5_result.detections)
-                    if getattr(detection, "track_id", None) is not None
-                }
-                snapshot = MusicPanelSnapshot(
-                    frame.spatial_response,
-                    getattr(frame, "directions", ()),
-                    getattr(frame, "active_tracks", ()),
-                    frame.spatial_published_monotonic,
-                    probabilities,
-                    effective_order=(
-                        None if frame.search_diagnostics is None
-                        else frame.search_diagnostics.effective_model_order
-                    ),
-                    raw_peaks=frame.candidates,
-                    direction_id_tracking_enabled=(
-                        True if frame.direction_id_tracking_enabled is None
-                        else frame.direction_id_tracking_enabled
-                    ),
-                )
-                window_key = (
-                    frame.spatial_response.session_id,
-                    frame.spatial_response.stream_epoch,
-                    frame.spatial_response.window_id,
-                )
-                if window_key != self._last_rendered_window:
-                    self.srp_polar.set_snapshot(snapshot, live=True)
-                    self._last_rendered_window = window_key
-                model = frame.spatial_response.model_order
-                panel_state = (
-                    "STALE"
-                    if snapshot.age_ms > config.dev_test_ui.stale_after_ms
-                    else "LIVE"
-                )
-                backend_name = "NN" if frame.search_diagnostics.mode == "gi_doaenet" else "MUSIC"
-                self._set_text(
-                    self.music_status,
-                    f"{backend_name} order={model.estimated_sources}  "
-                    f"output={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
-                    f"valid={frame.spatial_response.valid_frequency_bins}  "
-                    f"status={frame.spatial_response.numerical_status}  {panel_state}",
-                )
-                search_suffix = ""
-                diagnostics = frame.search_diagnostics
-                if diagnostics is not None:
-                    search_suffix = (
-                        f" | {diagnostics.mode.upper()} {diagnostics.model_order.estimated_sources}"
-                        f" / output {diagnostics.effective_model_order}"
-                        f" | valid bins {diagnostics.valid_frequency_bins}"
-                        f" | DPD {'ON' if diagnostics.dpd_rank1_enabled else 'OFF'}"
-                        f" {diagnostics.selected_frequency_bins} bins"
-                        f" | WHITE {diagnostics.whitening_status.upper()}"
-                        f" | {diagnostics.covariance_quality.upper()}"
-                        f" | ASSOC {'LMB/JPDA' if diagnostics.mode == 'gi_doaenet' else 'HUNGARIAN'}"
-                    )
-                dropped_reason = frame.missing_reasons.get("srp")
-                state_prefix = (
-                    f"STALE | {dropped_reason} | last completed"
-                    if dropped_reason is not None
-                    else "LIVE"
-                )
-                self._set_text(self.srp_header,
-                    f"{state_prefix} | session {frame.spatial_response.session_id[:8]} | epoch {frame.spatial_response.stream_epoch} | "
-                    f"window {frame.spatial_response.window_id:08d} | sample {frame.spatial_response.decision_sample:012d} | "
-                    f"age {snapshot.age_ms:03.0f} ms"
-                    f"{search_suffix}"
-                )
-            elif "srp" in frame.missing_reasons:
-                self.srp_header.setText(frame.missing_reasons["srp"])
-                self.srp_polar.set_snapshot(None)
-                self.music_status.setText(
-                    "MUSIC order=—  output=—  valid=—  status=UNAVAILABLE"
-                )
-                self._last_rendered_window = None
             now = monotonic()
             if now - self._last_performance_refresh >= 1.0 / config.dev_test_ui.performance_refresh_hz:
                 self._set_performance(frame.performance)

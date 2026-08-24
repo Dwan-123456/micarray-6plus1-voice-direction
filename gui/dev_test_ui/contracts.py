@@ -231,6 +231,81 @@ class AlgorithmPerformanceSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class L2DevUiSnapshot:
+    """Latest-only L2 projection, independent from ordered L3/commit frames."""
+
+    session_id: str
+    stream_epoch: int
+    window_id: int
+    decision_sample: int
+    spatial_response: SpatialResponse | None
+    candidates: tuple[CandidateDirection, ...]
+    gate_decision: ProbabilityGateDecision | None
+    gate_threshold: float
+    gate_config_revision: int
+    direction_threshold: float
+    direction_kalman_enabled: bool
+    direction_id_tracking_enabled: bool
+    direction_kalman_q_scale: float
+    direction_kalman_r_scale: float
+    scan_config_revision: int
+    search_diagnostics: MusicDiagnostics | None
+    directions: tuple[TrackedDirection, ...]
+    active_tracks: tuple[TrackedDirection, ...]
+    published_monotonic: float
+    missing_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        identity = (
+            self.session_id, self.stream_epoch, self.window_id, self.decision_sample,
+        )
+        if not self.session_id or min(identity[1:]) < 0:
+            raise ValueError("L2 UI snapshot identity is invalid")
+        if not np.isfinite(self.published_monotonic):
+            raise ValueError("L2 UI publish time must be finite")
+        if not 0.0 <= self.gate_threshold <= 1.0 or self.gate_config_revision < 0:
+            raise ValueError("L2 UI Gate settings are invalid")
+        if not 0.0 <= self.direction_threshold <= 1.0 or self.scan_config_revision < 0:
+            raise ValueError("L2 UI scan settings are invalid")
+        if type(self.direction_kalman_enabled) is not bool:
+            raise ValueError("L2 UI Kalman setting must be bool")
+        if type(self.direction_id_tracking_enabled) is not bool:
+            raise ValueError("L2 UI ID tracking setting must be bool")
+        items = (
+            *self.candidates, *self.directions,
+            *((self.spatial_response,) if self.spatial_response is not None else ()),
+            *((self.gate_decision,) if self.gate_decision is not None else ()),
+        )
+        if any(
+            (item.session_id, item.stream_epoch, item.window_id, item.decision_sample)
+            != identity
+            for item in items
+            if hasattr(item, "window_id")
+        ):
+            raise ValueError("L2 UI snapshot cannot mix window identities")
+        if any(
+            (item.session_id, item.stream_epoch) != identity[:2]
+            for item in self.active_tracks
+        ):
+            raise ValueError("L2 UI active tracks must match the current stream")
+        if self.spatial_response is None and self.candidates:
+            raise ValueError("L2 UI candidates require a spatial response")
+        if self.spatial_response is not None and self.search_diagnostics is None:
+            raise ValueError("L2 UI spatial response requires search diagnostics")
+        object.__setattr__(self, "candidates", tuple(self.candidates))
+        object.__setattr__(self, "directions", tuple(self.directions))
+        object.__setattr__(self, "active_tracks", tuple(self.active_tracks))
+
+    @property
+    def spatial_published_monotonic(self) -> float | None:
+        return self.published_monotonic if self.spatial_response is not None else None
+
+    @property
+    def missing_reasons(self) -> Mapping[str, str]:
+        return {} if self.missing_reason is None else {"srp": self.missing_reason}
+
+
+@dataclass(frozen=True, slots=True)
 class DevUiFrame:
     l1: L1MeterSnapshot | None
     spatial_response: SpatialResponse | None

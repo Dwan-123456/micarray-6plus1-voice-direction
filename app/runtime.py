@@ -22,7 +22,9 @@ from common.data_types import DecisionWindow, PipelineStatus
 from common.geometry import physical_6plus1_geometry
 from data_management import DecisionRecord, RecordingStore, ResultWatermark, SessionMetadata
 from gui.dev_test_ui.aggregator import DevUiAggregator, PerformanceTracker
-from gui.dev_test_ui.contracts import AlgorithmPerformanceSnapshot, BeamformPreview, DevUiFrame
+from gui.dev_test_ui.contracts import (
+    AlgorithmPerformanceSnapshot, BeamformPreview, DevUiFrame, L2DevUiSnapshot,
+)
 from gui.dev_test_ui.meter import L1Meter
 from gui.dev_test_ui.scratch_recorder import ScratchRecorder
 from ingest import BlockFanout, IngestCoordinator
@@ -182,6 +184,11 @@ class ApplicationRuntime:
         self.latest_l1: queue.Queue[object] = queue.Queue(maxsize=1)
         self.latest_windows: queue.Queue[object] = queue.Queue(maxsize=1)
         self.latest_dev_ui: queue.Queue[object] = queue.Queue(maxsize=config.dev_test_ui.snapshot_mailbox_capacity)
+        # L2 visualization must follow the L2 worker, not the slower ordered
+        # L2/L3/L5 commit path. This latest-only side channel never changes
+        # formal recording or cross-layer ordering.
+        self.latest_l2_dev_ui: queue.Queue[object] = queue.Queue(maxsize=1)
+        self._l2_ui_overwrites = 0
         # Formal commits are deliberately ordered, so a burst of terminal
         # DROPPED/SKIPPED frames may follow one expensive completed L5 window.
         # Keep completed L5 UI frames on an independent latest-only mailbox so
@@ -1059,6 +1066,9 @@ class ApplicationRuntime:
             "l5_ui_mailbox_depth": self.latest_l5_dev_ui.qsize(),
             "l5_ui_mailbox_capacity": self.latest_l5_dev_ui.maxsize,
             "l5_ui_mailbox_overwrites": l5_diagnostics["ui_mailbox_overwrites"],
+            "l2_ui_mailbox_depth": self.latest_l2_dev_ui.qsize(),
+            "l2_ui_mailbox_capacity": self.latest_l2_dev_ui.maxsize,
+            "l2_ui_mailbox_overwrites": self._l2_ui_overwrites,
             "downstream_processing_enabled": self.downstream_processing_enabled,
         }
 
@@ -1447,6 +1457,57 @@ class ApplicationRuntime:
                 self._l5_ui_overwrites += 1
             self.latest_l5_dev_ui.put_nowait(frame)
 
+    def _publish_latest_l2_ui(
+        self, item: WindowWorkItem, stage: L2StageResult,
+    ) -> None:
+        """Publish L2 immediately without waiting for L3/L5/ordered commit."""
+
+        values = item.config.values
+        scan = DirectionScanConfig(**dict(values["scan_config"]))
+        output = stage.output if stage.state is StageState.COMPLETED else None
+        response = None if output is None else output.spatial_response
+        candidates = () if output is None or response is None else tuple(
+            getattr(output, "directions", ()) or output.candidates
+        )
+        missing_reason = None
+        if output is None:
+            missing_reason = (
+                f"L2 {stage.state.value.upper()}: {stage.error or stage.reason}"
+            )
+        elif response is None:
+            missing_reason = f"UNAVAILABLE: {output.gate_decision.reason}"
+        snapshot = L2DevUiSnapshot(
+            item.key.session_id,
+            item.key.stream_epoch,
+            item.key.window_id,
+            item.key.decision_sample,
+            response,
+            candidates,
+            None if output is None else output.gate_decision,
+            float(values["gate_threshold"]),
+            int(values["gate_config_revision"]),
+            scan.direction_threshold,
+            bool(values["direction_kalman_enabled"]),
+            bool(values["direction_id_tracking_enabled"]),
+            float(values["direction_kalman_q_scale"]),
+            float(values["direction_kalman_r_scale"]),
+            int(values["scan_config_revision"]),
+            None if output is None else output.search_diagnostics,
+            () if output is None else tuple(getattr(output, "directions", ())),
+            () if output is None else tuple(getattr(output, "active_tracks", ())),
+            monotonic(),
+            missing_reason,
+        )
+        try:
+            self.latest_l2_dev_ui.put_nowait(snapshot)
+        except queue.Full:
+            try:
+                self.latest_l2_dev_ui.get_nowait()
+            except queue.Empty:
+                pass
+            self._l2_ui_overwrites += 1
+            self.latest_l2_dev_ui.put_nowait(snapshot)
+
     @staticmethod
     def _track_voice_annotations(
         inputs: tuple[Layer5AudioSegment, ...],
@@ -1577,6 +1638,7 @@ class ApplicationRuntime:
             self.dev_ui_error = None
             self.recording_result_error = None
             self.processing_drops = 0
+            self._l2_ui_overwrites = 0
             with self._l5_diagnostics_lock:
                 self._l5_actual_completed = 0
                 self._l5_dropped = 0
@@ -1633,6 +1695,7 @@ class ApplicationRuntime:
                 self.latest_l1,
                 self.latest_windows,
                 self.latest_dev_ui,
+                self.latest_l2_dev_ui,
                 self.latest_l5_dev_ui,
             ):
                 while True:
@@ -2068,6 +2131,13 @@ class ApplicationRuntime:
                     )
                 self._stage_completed_counts["l2"] += 1
                 self._cache_publish("l2", item.key, "stage_result", stage)
+                try:
+                    self._publish_latest_l2_ui(item, stage)
+                except Exception as exc:
+                    # This mailbox is visualization-only. A rejected UI
+                    # projection must not turn a valid formal L2 result into
+                    # an algorithm or recording failure.
+                    self.dev_ui_error = f"latest L2 UI: {exc}"
                 self._joiner_submit(lambda: self._result_joiner.submit_l2(stage))
                 if (
                     stage.state is StageState.COMPLETED
@@ -3416,7 +3486,7 @@ class ApplicationRuntime:
             # Drop bounded formal previews and UI snapshot references.
             for mailbox in (
                 self.latest_l1, self.latest_windows, self.latest_dev_ui,
-                self.latest_l5_dev_ui,
+                self.latest_l2_dev_ui, self.latest_l5_dev_ui,
                 self._l2_windows, self._l3_windows, self._l5_windows,
                 self._completion_results,
             ):
