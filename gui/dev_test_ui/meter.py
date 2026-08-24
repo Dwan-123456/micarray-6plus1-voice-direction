@@ -5,6 +5,7 @@ from collections import deque
 import numpy as np
 
 from common.data_types import IngestedAudioBlock
+from layer1_input.interface import SpeakerCountAnnotation
 from .contracts import L1MeterSnapshot
 
 
@@ -22,6 +23,7 @@ class L1Meter:
     def add(
         self, block: IngestedAudioBlock, *, light_state: str = "unknown", recording_state: str = "idle",
         pre_denoise_enabled: bool = False, pre_denoise_mean_gain_db: float = 0.0,
+        speaker_count_annotation: SpeakerCountAnnotation | None = None,
     ) -> L1MeterSnapshot:
         key = (block.session_id, block.stream_epoch)
         if key != self._epoch_key:
@@ -66,4 +68,5 @@ class L1Meter:
             block.calibration.status,
             block.calibration.version,
             block.calibration.calibration_hash,
+            speaker_count_annotation,
         )

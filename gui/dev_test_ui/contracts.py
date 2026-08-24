@@ -12,6 +12,7 @@ from common.data_types import (
     TrackedDirection,
 )
 from layer2_source_detection.music import MusicDiagnostics
+from layer1_input.interface import SpeakerCountAnnotation
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
 from layer5_voice_classifier.contracts import Layer5Result
 from track_audio_stream import TrackVoiceAnnotation
@@ -41,6 +42,7 @@ class L1MeterSnapshot:
     calibration_status: str = "unverified"
     calibration_version: str = "unversioned"
     calibration_hash: str = "0" * 64
+    speaker_count_annotation: SpeakerCountAnnotation | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or min(self.stream_epoch, self.end_sample, self.sequence_id) < 0:
@@ -69,6 +71,13 @@ class L1MeterSnapshot:
             or self.imcra_hop.end_sample != self.end_sample
         ):
             raise ValueError("L1 meter IMCRA snapshot must align with the meter block")
+        annotation = self.speaker_count_annotation
+        if annotation is not None and (
+            annotation.session_id != self.session_id
+            or annotation.stream_epoch != self.stream_epoch
+            or annotation.end_sample > self.end_sample
+        ):
+            raise ValueError("L1 speaker-count annotation must not lead the meter block")
 
 
 @dataclass(frozen=True, slots=True)

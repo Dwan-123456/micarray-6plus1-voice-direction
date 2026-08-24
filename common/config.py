@@ -138,6 +138,19 @@ class Layer1PreDenoiseConfig(StrictModel):
     gain_smoothing: float = Field(ge=0.0, lt=1.0)
 
 
+class Layer1SpeakerCountConfig(StrictModel):
+    enabled: bool = False
+    algorithm_version: Literal["countnet_crnn_5s_100ms_v1"]
+    model_id: str = Field(min_length=1)
+    model_artifact: str = Field(min_length=1)
+    model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    input_sample_rate: Literal[16000]
+    context_seconds: Literal[5]
+    inference_hop_ms: Literal[100]
+    output_classes: Literal[3]
+    queue_blocks: int = Field(default=25, ge=5)
+
+
 class Layer2ProbabilityGateConfig(StrictModel):
     backend: Literal["mean_2x20ms_v1"]
     threshold: float = Field(default=0.60, ge=0, le=1)
@@ -471,6 +484,7 @@ class ProjectConfig(StrictModel):
     timing: TimingConfig
     layer1_imcra: Layer1ImcraConfig
     layer1_pre_denoise: Layer1PreDenoiseConfig
+    layer1_speaker_count: Layer1SpeakerCountConfig
     layer2: Layer2Config
     stft: StftConfig
     layer3: Layer3Config

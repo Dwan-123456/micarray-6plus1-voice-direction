@@ -242,6 +242,19 @@ def test_runtime_l1_pre_denoise_switch_is_live_and_strict(tmp_path):
         runtime.set_l1_pre_denoise_enabled(1)
 
 
+def test_runtime_l1_speaker_count_switch_is_live_and_strict(tmp_path):
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+    assert runtime.l1_speaker_count_enabled is False
+    assert runtime.set_l1_speaker_count_enabled(True) is True
+    assert runtime.l1_speaker_count_enabled is True
+    assert runtime.set_l1_speaker_count_enabled(False) is False
+    with pytest.raises(ValueError, match="must be bool"):
+        runtime.set_l1_speaker_count_enabled(1)
+
+
 def test_runtime_l1_pre_denoise_live_switch_never_duplicates_sample_ranges(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,

@@ -9,8 +9,8 @@ import tempfile
 class DevUiSettings:
     """Atomic persistent store for operator-tuned Development Test UI values."""
 
-    SCHEMA_VERSION = "dev_test_ui_settings_v13"
-    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v12"
+    SCHEMA_VERSION = "dev_test_ui_settings_v14"
+    PREVIOUS_SCHEMA_VERSION = "dev_test_ui_settings_v13"
     OLDER_SCHEMA_VERSION = "dev_test_ui_settings_v2"
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
     OBSOLETE_KEYS = {
@@ -27,6 +27,7 @@ class DevUiSettings:
             if payload.get("schema_version") not in {
                 self.SCHEMA_VERSION,
                 self.PREVIOUS_SCHEMA_VERSION,
+                "dev_test_ui_settings_v12",
                 "dev_test_ui_settings_v11",
                 "dev_test_ui_settings_v10",
                 "dev_test_ui_settings_v9",
@@ -207,6 +208,18 @@ class DevUiSettings:
     def save_l1_pre_denoise_enabled(self, value: bool) -> bool:
         enabled = self._validate_bool(value)
         self._save_update(layer1_pre_denoise_enabled=enabled)
+        return enabled
+
+    def load_l1_speaker_count_enabled(self, default: bool = False) -> bool:
+        fallback = self._validate_bool(default)
+        try:
+            return self._validate_bool(self._load_payload()["layer1_speaker_count_enabled"])
+        except (KeyError, TypeError, ValueError):
+            return fallback
+
+    def save_l1_speaker_count_enabled(self, value: bool) -> bool:
+        enabled = self._validate_bool(value)
+        self._save_update(layer1_speaker_count_enabled=enabled)
         return enabled
 
     def load_l5_input_gain_compensation_enabled(self, default: bool = True) -> bool:

@@ -63,9 +63,27 @@ PSD/SPP状态保留0～10000 Hz目标频带；概率证据仍仅从500～4000 Hz
 
 断流、sequence/timestamp/rate异常或epoch切换时必须清空IMCRA状态并重新预热。预热期间发布明确状态，不能把缺失概率写成0。单纯静音或概率下降不改变epoch，也不会让IMCRA重新进入`warming_up`。
 
+## Test UI专用CountNet人数支路
+
+L1另有一条默认关闭、只供Development Test UI诊断的异步支路：固定读取校准后逻辑CH6 Center Mic，
+使用状态化8阶低通后按3:1从48 kHz降到16 kHz，保留恰好5秒/80000 sample滚动上下文，每收到
+5个连续20 ms块运行一次CountNet。输出`SpeakerCountAnnotation`覆盖刚结束的100 ms/4800个48 kHz
+sample，并包含0/1/2、`P0/P1/P2`、模型身份和`warming_up/ready/invalid`状态；`P2`严格表示
+“2人或以上”，不是恰好2人。没有时间平滑，相邻100 ms结果直接采用各次模型输出。
+
+CountNet使用Stöter等人官方CRNN的固定权重和标准化器，经确定性PyTorch/TorchScript移植后读取16 kHz、
+5秒单声道波形。模型原生0～10人后验映射为`P0、P1、sum(P2..P10)`。模型由模拟LibriCount
+数据训练，尚未构成当前办公室/阵列环境的实机准确率验收。
+
+`AsyncSpeakerCounter.submit()`只执行有界队列`put_nowait`；状态化重采样、5秒缓存、模型加载和CPU
+推理全部由独立`l1-countnet-worker`负责。队列满时宁可把CountNet结果置为无效并重新预热，也不能
+阻塞或减慢L1采集。epoch、sequence、sample或timestamp不连续均清空支路状态；关闭再开启同样从
+5秒预热重新开始。第一阶段结果仅进入L1 meter/UI，不进入`IngestedAudioBlock`、WindowAssembler、
+DecisionWindow、L2～L5、正式录音或manifest，也不会增加主链100 ms join延迟。
+
 ## 边界
 
-L1不计算DOA、不执行波束形成、不判断人声，也不分配权威绝对sample。IngestCoordinator仍是唯一时间轴权威；预降噪关闭时向WindowAssembler和RecordingStore分发原始LogicalAudio，开启时分发sample边界相同、前7路已替换的降噪LogicalAudio，同时保留原始`native_samples`。
+L1不计算DOA、不执行波束形成、不执行逐方向人声分类，也不分配权威绝对sample。IngestCoordinator仍是唯一时间轴权威；预降噪关闭时向WindowAssembler和RecordingStore分发原始LogicalAudio，开启时分发sample边界相同、前7路已替换的降噪LogicalAudio，同时保留原始`native_samples`。
 
 ## 已实现门禁测试
 
@@ -77,5 +95,7 @@ L1不计算DOA、不执行波束形成、不判断人声，也不分配权威绝
 - 40 ms/20 ms WOLA连续重建、每麦独立增益、HardwareMix直通、预热旁路和运行时开关；
 - 设备、WAV、实时handoff和Ingest时间轴一致性。
 - PortAudio回调不执行RMS、连续handoff溢出事件合并、交接队列高水位与输入健康诊断。
+- CountNet 5秒预热、48→16 kHz精确长度、每5块/100 ms对齐、无平滑、epoch/gap重置、非阻塞队列、
+  模型SHA-256与稳定CPU推理耗时门禁。
 
 Development Test UI左上象限需显示8路电平、IMCRA状态、每麦噪声摘要及20 ms概率；灯控和scratch录音仍复用同一L1输入，不能重开设备。

@@ -65,6 +65,11 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer1_pre_denoise.hop_samples == 960
     assert config.layer1_pre_denoise.frequency_max_hz == 10_000.0
     assert config.layer1_pre_denoise.minimum_gain_db == -18.0
+    assert config.layer1_speaker_count.enabled is False
+    assert config.layer1_speaker_count.input_sample_rate == 16_000
+    assert config.layer1_speaker_count.context_seconds == 5
+    assert config.layer1_speaker_count.inference_hop_ms == 100
+    assert config.layer1_speaker_count.model_sha256 == "7c8b22c1545fba2d84eba995b5911c0ea3b26b8ad07c011588a3bde8a8d799f5"
     assert config.recording.runtime.record_imcra is True
     assert config.recording.runtime.record_noise_spectrum is True
     gain = config.layer5.input_gain_compensation

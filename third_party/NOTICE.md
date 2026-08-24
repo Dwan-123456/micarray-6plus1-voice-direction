@@ -19,6 +19,16 @@
 - Publications index: https://israelcohen.com/publications/all-publications/
 - Use: noise-estimation and robustness background only. No Cohen MUSIC open-source implementation was found, claimed, or copied.
 
+## CountNet speaker-count CRNN
+
+- Repository: https://github.com/faroit/CountNet
+- Vendored revision: `ae15e1ac096862667a7bfdedf0b67a70a7543edd`
+- Upstream assets: `models/CRNN.h5` and `models/scaler.npz`, with hashes pinned in the local model manifest.
+- License: MIT.
+- Use: optional Test-UI-only L1 estimate of zero, one, or two-or-more concurrent speakers from a rolling
+  five-second Center Mic context. The old Keras 1.2.2/Theano inference graph is deterministically ported to
+  TorchScript; the upstream HDF5 files are not redistributed.
+
 ## Voice-Separation-and-Enhancement
 
 - Repository: https://github.com/KyleZhang1118/Voice-Separation-and-Enhancement

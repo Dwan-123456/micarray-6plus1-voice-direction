@@ -33,6 +33,27 @@
 
 ---
 
+## 2026-08-24 — L1增加异步CountNet讲话人数诊断支路
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。
+- **L1**：新增不可变`SpeakerCountAnnotation`和`AsyncSpeakerCounter`。支路只读取校准后Center Mic，
+  以状态化抗混叠滤波完成48→16 kHz，每5个连续20 ms块产生一次100 ms标注；前5秒预热，不做
+  时间平滑，epoch/sequence/sample/timestamp gap或队列溢出均清空5秒缓存并重新预热。
+- **并发边界**：L1线程只用`put_nowait`投递到独立有界`l1-countnet-worker`；重采样、缓存、模型加载
+  与推理均不占用采集回调。第一阶段不增加Windowing join或主链延迟，CountNet结果不写入
+  `IngestedAudioBlock/DecisionWindow`，也不传播到L2～L5、长音频、正式存储或其他UI。
+- **模型与依赖**：引入MIT许可的Stöter等人官方CountNet CRNN，经脚本从固定上游revision的Keras
+  1.2.2模型与scaler转换为TorchScript；输入为16 kHz/5秒，原生0～10人输出折叠为P0、P1和
+  P2+。模型和配置以SHA-256固定，许可证与第三方NOTICE已同步；`h5py`仅作为可复现转换脚本的
+  开发依赖，实时推理仍只使用既有PyTorch。当前自动测试不代表真实办公室准确率验收。
+- **Development Test UI**：L1区增加持久化手动开关和`warming_up/ready/invalid`只读状态，READY
+  显示人数、P0/P1/P2及模型ID；关闭后清空私有状态，再开启重新预热。
+- **未改变**：WindowAssembler、DecisionWindow、L2 Gate/MUSIC/MDL/ID、L3、离线L4、L5、
+  Recording/Data Manager、Production UI、Log UI及现有录音格式均无变化。
+- **验证与Git LFS**：覆盖DTO、5秒预热、精确降采样长度、5窗对齐、无平滑、连续性重置、非阻塞
+  投递、模型hash/输出、稳定CPU推理门禁、Runtime/UI开关与旧配置读取；完整pytest和静态检查在提交前执行。
+  新增TorchScript模型由Git LFS管理；不提交上游HDF5、测试音频或本地运行数据。
+
 ## 2026-08-24 — L2方向ID追踪重构为Circular IMM-JPDA
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。

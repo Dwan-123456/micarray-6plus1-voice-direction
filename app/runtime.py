@@ -30,6 +30,7 @@ from layer1_input.calibration import ChannelCalibrator
 from layer1_input.configuration import AudioConfig, CalibrationConfig, CdcConfig
 from layer1_input.imcra import Layer1Imcra
 from layer1_input.pre_denoise import ImcraWienerPreDenoiser
+from layer1_input.speaker_count import AsyncSpeakerCounter
 from layer1_input.pipeline import InputPipeline
 from layer1_input.protocols import led_command
 from layer1_input.serial_device import SerialDevice
@@ -130,6 +131,7 @@ class ApplicationRuntime:
         source_probability_provider: Callable[
             [DecisionWindow], tuple[SourceProbability20ms, ...]
         ] | None = None,
+        speaker_count_model: object | None = None,
     ) -> None:
         self.config = config
         self.project_root = Path(project_root).resolve()
@@ -156,6 +158,12 @@ class ApplicationRuntime:
         self._pre_denoise_lock = threading.Lock()
         self._pre_denoise_enabled = config.layer1_pre_denoise.enabled
         self._pre_denoise_latency_active = config.layer1_pre_denoise.enabled
+        self.speaker_counter = AsyncSpeakerCounter(
+            config.layer1_speaker_count,
+            project_root=self.project_root,
+            model=speaker_count_model,
+            timestamp_tolerance_ms=config.timing.timestamp_tolerance_ms,
+        )
         self.fanout = BlockFanout()
         self.window_blocks = self.fanout.subscribe(2)
         self.recording_blocks = self.fanout.subscribe(2)
@@ -1239,6 +1247,17 @@ class ApplicationRuntime:
         return value
 
     @property
+    def l1_speaker_count_enabled(self) -> bool:
+        return self.speaker_counter.enabled
+
+    def set_l1_speaker_count_enabled(self, value: bool) -> bool:
+        return self.speaker_counter.set_enabled(value)
+
+    @property
+    def l1_speaker_count_model_error(self) -> str | None:
+        return self.speaker_counter.model_error
+
+    @property
     def direction_id_tracking_enabled(self) -> bool:
         with self._scan_config_lock:
             return self._direction_id_tracking_enabled
@@ -1748,6 +1767,16 @@ class ApplicationRuntime:
             recording_state=self.scratch.state,
             pre_denoise_enabled=enabled,
             pre_denoise_mean_gain_db=self.pre_denoiser.last_mean_gain_db if enabled else 0.0,
+            speaker_count_annotation=(
+                annotation
+                if (
+                    (annotation := self.speaker_counter.latest()) is not None
+                    and (annotation.session_id, annotation.stream_epoch)
+                    == (block.session_id, block.stream_epoch)
+                    and annotation.end_sample <= block.end_sample
+                )
+                else None
+            ),
         )
         self._latest(self.latest_l1, snapshot)
         with self._ui_lock:
@@ -1908,6 +1937,9 @@ class ApplicationRuntime:
                     and imcra_hops[0].source_sequence_ids == (block.sequence_id,)
                 ):
                     block = replace(block, imcra_hop=imcra_hops[0])
+                # Non-blocking enqueue only. CountNet owns resampling, buffering,
+                # model loading and inference on its independent L1 worker.
+                self.speaker_counter.submit(block)
                 if self.dev_audio_tracker is not None:
                     try:
                         # Raw logical channel 6 is the Center microphone.  It

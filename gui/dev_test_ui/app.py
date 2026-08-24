@@ -223,6 +223,9 @@ def build_window(
     runtime.set_l1_pre_denoise_enabled(ui_settings.load_l1_pre_denoise_enabled(
         config.layer1_pre_denoise.enabled
     ))
+    runtime.set_l1_speaker_count_enabled(ui_settings.load_l1_speaker_count_enabled(
+        config.layer1_speaker_count.enabled
+    ))
     runtime.set_l5_input_gain_compensation_enabled(
         ui_settings.load_l5_input_gain_compensation_enabled(
             config.layer5.input_gain_compensation.enabled
@@ -426,6 +429,19 @@ def build_window(
             denoise.addWidget(self.pre_denoise_label)
             denoise.addStretch()
             layout.addLayout(denoise)
+            countnet = QHBoxLayout()
+            self.countnet_switch = QCheckBox("CountNet人数估计")
+            self.countnet_switch.setChecked(runtime.l1_speaker_count_enabled)
+            self.countnet_switch.setToolTip(
+                "校准后Center Mic · 48→16 kHz · 5秒上下文 · 每100 ms异步推理"
+            )
+            self.countnet_switch.toggled.connect(self._set_l1_speaker_count)
+            self.countnet_label = QLabel("Speech count: OFF")
+            self.countnet_label.setStyleSheet("font-family:Consolas")
+            countnet.addWidget(self.countnet_switch)
+            countnet.addWidget(self.countnet_label)
+            countnet.addStretch()
+            layout.addLayout(countnet)
             self.imcra_label = QLabel("IMCRA: WAITING | noise MIC0— MIC1— MIC2— MIC3— MIC4— MIC5— Center—")
             self.imcra_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.imcra_label.setStyleSheet("font-family:Consolas")
@@ -585,6 +601,25 @@ def build_window(
                 with QSignalBlocker(self.pre_denoise_switch):
                     self.pre_denoise_switch.setChecked(previous)
                 self.statusBar().showMessage(f"L1预降噪切换失败: {exc}", 8000)
+
+        def _set_l1_speaker_count(self, enabled: bool):
+            previous = runtime.l1_speaker_count_enabled
+            try:
+                enabled = ui_settings.save_l1_speaker_count_enabled(bool(enabled))
+                runtime.set_l1_speaker_count_enabled(enabled)
+                self._set_text(
+                    self.countnet_label,
+                    "Speech count: WARMING_UP | 需要5秒连续Center音频"
+                    if enabled else "Speech count: OFF",
+                )
+                self.statusBar().showMessage(
+                    f"L1 CountNet人数估计{'开启' if enabled else '关闭'}", 3500
+                )
+            except Exception as exc:
+                runtime.set_l1_speaker_count_enabled(previous)
+                with QSignalBlocker(self.countnet_switch):
+                    self.countnet_switch.setChecked(previous)
+                self.statusBar().showMessage(f"L1 CountNet切换失败: {exc}", 8000)
 
         def _set_l5_input_gain_compensation(self, enabled: bool):
             previous = runtime.l5_input_gain_compensation_enabled
@@ -1381,6 +1416,30 @@ def build_window(
                     )
                 else:
                     self._set_text(self.pre_denoise_label, "预降噪: OFF | 原始音频直通")
+                with QSignalBlocker(self.countnet_switch):
+                    self.countnet_switch.setChecked(runtime.l1_speaker_count_enabled)
+                annotation = l1.speaker_count_annotation
+                if not runtime.l1_speaker_count_enabled:
+                    self._set_text(self.countnet_label, "Speech count: OFF")
+                elif annotation is None:
+                    self._set_text(
+                        self.countnet_label,
+                        "Speech count: WARMING_UP | 等待首个100 ms结果",
+                    )
+                elif annotation.status == "ready":
+                    p = annotation.probabilities
+                    self._set_text(
+                        self.countnet_label,
+                        f"Speech count={annotation.speaker_count}  "
+                        f"P=[{float(p[0]):.2f},{float(p[1]):.2f},{float(p[2]):.2f}]  "
+                        f"model={annotation.model_id}",
+                    )
+                else:
+                    suffix = "" if annotation.reason is None else f" | {annotation.reason}"
+                    self._set_text(
+                        self.countnet_label,
+                        f"Speech count: {annotation.status.upper()}{suffix}",
+                    )
                 self._set_text(self.l1_header,
                     f"{frame.pipeline_status.state.upper()} | session {l1.session_id[:8]} | epoch {l1.stream_epoch} | "
                     f"sample {l1.end_sample:012d} | seq {l1.sequence_id:08d} | age 000 ms"
