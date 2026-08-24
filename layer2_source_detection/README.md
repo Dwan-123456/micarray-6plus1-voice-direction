@@ -1,6 +1,6 @@
 # Layer 2 1.1：Rolling NormMUSIC 与公共方向轨迹
 
-本目录是项目`1.3.1`正式组成部分，L2公开版本为`1.1`。Development Test UI可在运行中选择两套完整L2：现有Rolling NormMUSIC + Hungarian轨迹链，或GI-DOAEnet PM + LMB/JPDA轨迹链。两者共用公共方向DTO和后续L3边界。
+本目录是项目`1.3.2`正式组成部分，L2公开版本为`1.1`。Development Test UI可在运行中选择两套完整L2：现有Rolling NormMUSIC + Hungarian轨迹链，或GI-DOAEnet PM + LMB/JPDA轨迹链。两者共用公共方向DTO和后续L3边界。
 
 GI-DOAEnet链读取同一`DecisionWindow float32[7680,8]`，只取前7路物理麦，将48 kHz 160 ms上下文同相重采样为16 kHz，并补零高度坐标形成`[7,3]`阵列位置。网络最后一层最近5个时间帧平均为360点方向概率；候选继续使用UI门限、prominence、50°圆周NMS及1～3输出上限。候选进入独立的LMB存在概率与有界JPDA联合假设关联，再沿用圆周角度/角速度Kalman和公共`TrackedDirection`输出。运行中切换从下一完整窗口生效，并重置目标链的活动轨迹，防止MUSIC与NN状态混用。
 
@@ -31,9 +31,9 @@ DecisionWindow + 两个对齐的20 ms概率
     → TrackedDirection[0..3] + active_tracks
 ```
 
-`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.1运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；tentative轨迹不进入L3。ID使用2秒绝对sample TTL；预热、缺失或无效概率不会被伪造成有效概率。tentative固定使用20°关联门限；confirmed从最后一次真实观测起按`min(50°, 20° + 15°/s × 漏检时长)`扩张。未匹配峰位于任一现存非噪声ID预测位置±20°内时禁止birth，避免单一峰分裂成两个ID；噪声干扰ID不参与该排他判断。短漏检保留同一内部ID，超过TTL后再次观察会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
+`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.2运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；tentative轨迹不进入L3。ID使用2秒绝对sample TTL；预热、缺失或无效概率不会被伪造成有效概率。tentative固定使用20°关联门限；confirmed从最后一次真实观测起按`min(50°, 20° + 15°/s × 漏检时长)`扩张。未匹配峰位于任一现存非噪声ID预测位置±20°内时禁止birth，避免单一峰分裂成两个ID；噪声干扰ID不参与该排他判断。短漏检保留同一内部ID，超过TTL后再次观察会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
 
-为兼容旧在线分类实验，`Layer2Pipeline.submit_voice_feedback()`与`GlobalDirectionTracker.apply_voice_feedback()`仍保留精确`track_id`接口和专项测试：外部若显式提供至少2次正向结果，可使符合条件的confirmed轨在低Gate概率下强制放行；长期无正向结果还可触发噪声干扰标记。该接口当前没有Runtime调用方，不属于1.3.1普通主链，也不得用离线L5结果回写已经结束的实时轨迹。
+为兼容旧在线分类实验，`Layer2Pipeline.submit_voice_feedback()`与`GlobalDirectionTracker.apply_voice_feedback()`仍保留精确`track_id`接口和专项测试：外部若显式提供至少2次正向结果，可使符合条件的confirmed轨在低Gate概率下强制放行；长期无正向结果还可触发噪声干扰标记。该接口当前没有Runtime调用方，不属于1.3.2普通主链，也不得用离线L5结果回写已经结束的实时轨迹。
 
 内部活动ID硬上限为4，公共方向仍最多3个。新观测需要建立ID但内部已满时，优先淘汰未被本窗关联的噪声轨、无人声证据轨、tentative轨及最久未观测/低分轨；本窗已成功关联的轨迹受保护。该上限只控制ID内存与UI/试听扇出，不把Gate改成`WARMING_UP`。
 

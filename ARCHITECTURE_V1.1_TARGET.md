@@ -1,12 +1,12 @@
-# 6+1 麦克风阵列项目 1.3.1：MUSIC 与公开方向 ID 架构
+# 6+1 麦克风阵列项目 1.3.2：MUSIC 与公开方向 ID 架构
 
-状态：**项目`1.3.1`已发布；最终发布基线为`v1.3.1`。真实阵列、诊室声场与长时间运行验收仍按本文门禁继续执行，不以自动测试替代。**
+状态：**项目`1.3.2`已发布；最终发布基线为`v1.3.2`。真实阵列、诊室声场与长时间运行验收仍按本文门禁继续执行，不以自动测试替代。**
 
-发布版本：项目`1.3.1`，不可变发布标签为`v1.3.1`。不得移动、覆盖或重写已经发布的`v1.0.1`、`v1.1.1`、`v1.1.2`、`v1.2.1`、`v1.2.2`、`v1.2.3`、`v1.2.4`、`v1.3.1`及其他历史标签。
+发布版本：项目`1.3.2`，不可变发布标签为`v1.3.2`。不得移动、覆盖或重写已经发布的`v1.0.1`、`v1.1.1`、`v1.1.2`、`v1.2.1`、`v1.2.2`、`v1.2.3`、`v1.2.4`、`v1.3.1`、`v1.3.2`及其他历史标签。
 
 适用范围：Layer 1～Layer 5、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore、数据管理、独立 Pipeline Log UI、测试与资产。
 
-面向首次接触项目的可视化总图、逐层输入/输出/内部处理单元和操作流程见[`docs/COMPLETE_ARCHITECTURE_AND_USAGE.md`](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)。本文继续作为1.3.1详细契约，使用手册不建立第二份配置来源。
+面向首次接触项目的可视化总图、逐层输入/输出/内部处理单元和操作流程见[`docs/COMPLETE_ARCHITECTURE_AND_USAGE.md`](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)。本文继续作为1.3.2详细契约，使用手册不建立第二份配置来源。
 
 覆盖规则：本文件是 **1.1系列架构** 的权威契约；各目录README必须明确区分“代码已实现”“自动验收已完成”和“尚待实机验收”，不得把自动测试写成真实环境已通过。
 
@@ -163,7 +163,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `DecisionWindow [7680,8]` 每20 ms发布一次并始终保留160 ms上游上下文。L3和Development Test UI读取`timing.downstream_audio_window_ms`派生的末尾40/80/160 ms；当前为40 ms。离线L5只读取L4原生16 kHz长音频，不使用该实时窗口参数。L2的MUSIC历史独立配置为240 ms并由跨窗口状态维护，不受该下游参数影响。
 - L2维护按session/epoch/sample连续的滚动STFT与协方差状态。每个新DecisionWindow原则上只加入最近20 ms产生的新帧并移出超出MUSIC历史长度的旧帧；禁止每20 ms从头重算320 ms STFT和全部协方差。
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
-- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率，达到阈值才运行MUSIC。L2保留按精确ID接收在线语义反馈后强制放行的兼容接口，但当前L5仅在停机后的离线链执行，ApplicationRuntime不把结果回传L2，因此1.3.1普通运行不会触发语义强制放行。ID继续按2秒绝对sample TTL推进到coasting/超时；所有仍在有效TTL内的正式coasting ID都可在数量与角距限制内作为公共方向送入L3。预热、缺失和无效概率保持阻断，epoch变化不得继承旧状态。
+- Gate 仍消费与窗口末端对齐的两个 20 ms IMCRA 概率，达到阈值才运行MUSIC。L2保留按精确ID接收在线语义反馈后强制放行的兼容接口，但当前L5仅在停机后的离线链执行，ApplicationRuntime不把结果回传L2，因此1.3.2普通运行不会触发语义强制放行。ID继续按2秒绝对sample TTL推进到coasting/超时；所有仍在有效TTL内的正式coasting ID都可在数量与角距限制内作为公共方向送入L3。预热、缺失和无效概率保持阻断，epoch变化不得继承旧状态。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
 
 本分支的Windowing直接提供`DecisionWindow.physical_samples`和`physical_history(160)`，只含7个物理麦，`HardwareMix`只能通过独立属性访问；请求超出当前窗口的240/320 ms历史会被拒绝。`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2跨窗口维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/240/320三档之一、比较集合固定为三档且滚动历史上限为320 ms。WindowAssembler仍只组装160 ms窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
@@ -195,7 +195,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 普通MUSIC路径的Test UI阶数上限1/2/3同时是实际信号子空间阶数和峰搜索上限，MDL只保留为0～6阶诊断，不再减少实际搜索数。候选搜索每轮从当前未屏蔽区域选择符合Test UI候选门限与prominence的最强圆周局部极大值，再屏蔽与已选峰距离小于50°的区域；恰好50°允许共存。下一轮无达标峰时提前停止，因此最终输出0～阶数上限个备选方向。
 - 峰值选择必须原生处理数组首尾相邻，`359°` 和 `0°` 属于相邻角度。
 - 无足够有效频点、协方差退化或模型阶数不可信时，返回可诊断的 blocked/degraded/failed 状态，不得静默复用上一窗伪谱冒充新观测。
-- 原 SRP-PHAT、iterative multiple peak 与相关回退不再进入正式1.3.1主链；删除配置、运行时setter、UI开关和专属测试。若保留历史实现用于回归，只能放在明确的非运行时归档边界，不能被新pipeline导入。
+- 原 SRP-PHAT、iterative multiple peak 与相关回退不再进入正式1.3.2主链；删除配置、运行时setter、UI开关和专属测试。若保留历史实现用于回归，只能放在明确的非运行时归档边界，不能被新pipeline导入。
 
 ## 8. Layer 2：永久 ID 与可选 Kalman
 
@@ -215,7 +215,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 状态为 `tentative → confirmed → coasting → deleted`。
 - 首次无匹配观测立即分配新 ID；当前正式参数要求滚动200 ms窗口内累计至少3次匹配观测后确认。匹配不要求占满每个20 ms窗口；窗口内不足3次时保持tentative并继续滚动重试。tentative固定使用20°关联角距；confirmed按距离该ID最后一次真实MUSIC观测的时间使用`min(50°, 20° + 15°/s × 漏检时长)`，不得用相邻处理窗口的时间替代。未匹配峰若位于任一现存非噪声ID预测位置±20°内，必须抑制birth；噪声干扰轨继续保持非排他。ID 一经分配，在同一 session 内不得给其他轨迹复用。
 - 短时漏检或 Gate 关闭进入内部 coasting；在 TTL 内重新落入关联门限应恢复原 ID。有效TTL内的confirmed/coasting轨迹均可发布为公共L3方向，准入与排序只依赖L2状态。
-- GlobalDirectionTracker保留精确`track_id`在线语义反馈与噪声干扰标记接口，供兼容测试或未来实时分类器使用；当前离线L5不调用该接口，因此普通1.3.1运行不会产生语义续租、噪声标记或恢复。
+- GlobalDirectionTracker保留精确`track_id`在线语义反馈与噪声干扰标记接口，供兼容测试或未来实时分类器使用；当前离线L5不调用该接口，因此普通1.3.2运行不会产生语义续租、噪声标记或恢复。
 - 超过 TTL 删除轨迹；之后出现的方向即使相近也必须获得新 ID。
 - 所有确认、miss、coast 和 TTL 使用 48 kHz 绝对 sample 计算，不依赖“处理了多少窗”，从而正确应对 latest-wins 丢窗和 sample 跳跃。
 - 离线L5不拥有ID确认权、语音租约或几何生命周期；它只继承完整track key并返回离线语义，不能按角度猜测ID，也不能延长或缩短ID的2秒几何TTL。
@@ -315,7 +315,7 @@ v4 至少保存：
 - 第一版以完成/封存 session 的公开记录为权威来源，按 `WindowKey` 展示各阶段终态、compute/queue wait/端到端延迟、实际完成频率、丢窗与异常；按 `(session_id, stream_epoch, track_id)` 展示方向、L3资产和L5结果。
 - 只使用版本化公共查询接口。接口未提供的字段显示 `N/A`，不得读取私有对象、直接解析内部缓存，或消费 `latest_dev_ui`、`latest_l5_dev_ui` 等读取即移除的实时邮箱。
 - Log UI 只统计、展示和回放，不启动/停止 Runtime，不改参数，不标注、导出、迁移、重建 Catalog 或写入项目数据目录。
-- 1.3.1提供封存session的公共只读查询与Log UI；未由公开接口提供的数据仍必须明确显示不可用，不能绕过边界伪造。
+- 1.3.2提供封存session的公共只读查询与Log UI；未由公开接口提供的数据仍必须明确显示不可用，不能绕过边界伪造。
 - 可选同进程 Live 只轮询公开 `processing_status` 聚合状态；独立进程逐窗 Live 需等待未来正式公共只读流。
 - Log UI 的完整数据模式、页面、统计口径、兼容规则和只读验收以[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)为权威契约。
 
@@ -366,6 +366,6 @@ v4 至少保存：
 6. **Development Test UI**：删除旧开关，展示 MUSIC/ID，并按权威 ID 拼接试听。
 7. **Recording/Data + Production UI**：保存、查询和试听逐 ID 资产，兼容 v3 只读。
 8. **Pipeline Log UI**：公共只读查询契约冻结后，完成离线统计/回看与可选聚合 Live；不修改实时处理链。
-9. **整合验收**：全量自动测试、性能记录、实机边界、CHANGELOG、语义版本与当前`v1.3.1`发布。
+9. **整合验收**：全量自动测试、性能记录、实机边界、CHANGELOG、语义版本与当前`v1.3.2`发布。
 
 并行分支可以分别修改，但公共 DTO、字段命名、WindowKey/ID 对齐和 DecisionRecord v5 schema 必须先冻结；合并时以本文件为共同契约，禁止每个分支自行发明不同 ID 语义。

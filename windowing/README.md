@@ -1,4 +1,4 @@
-# WindowAssembler：1.3.1滚动输入契约
+# WindowAssembler：1.3.2滚动输入契约
 
 > Windowing按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#6-windowing-改动)实现。直接窗口为160 ms，20 ms发布节拍不变；L2所需的240/320 ms历史由其滚动STFT、协方差与MUSIC状态跨窗口维护。
 

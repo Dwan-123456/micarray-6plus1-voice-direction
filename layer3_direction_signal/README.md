@@ -1,6 +1,6 @@
 # Layer 3：逐方向音频增强
 
-> 项目1.3.1中，L3消费L2权威`TrackedDirection`，所有方向输入、增强批次和音频输出按`(WindowKey, track_id)`精确对齐，且不自行创建或修补ID。
+> 项目1.3.2中，L3消费L2权威`TrackedDirection`，所有方向输入、增强批次和音频输出按`(WindowKey, track_id)`精确对齐，且不自行创建或修补ID。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。本目录现已实现L3音频中心公共契约；内部复数STFT仅用于波束形成，不再跨层输出。
 
