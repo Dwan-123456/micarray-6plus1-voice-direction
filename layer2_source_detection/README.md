@@ -35,7 +35,7 @@ DecisionWindow + 两个对齐的20 ms概率
     → TrackedDirection[0..3] + active_tracks
 ```
 
-`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.3开发线运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；tentative轨迹不进入L3。tentative依然需在200 ms内累计5次观测才能确认，并可因低存在概率提前删除。confirmed漏检后则固定保留2秒绝对sample TTL，存在概率按真实时间约每20 ms保留0.97地平滑衰减，不再因低于0.05而在TTL前提前死亡。在TTL内重新匹配会恢复原ID和`confirmed`状态；连续2秒无匹配才删除。关联角度使用固定50°硬上限和卡方门限20，不按漏检时长额外扩大。未匹配候选与现存轨迹的预测位置相差不超过15°时禁止birth，避免近邻重复ID。超过TTL后再次观测会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
+`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.3开发线运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；tentative轨迹不进入L3。tentative依然需在200 ms内累计5次观测且存在概率达标才能确认，并可因低存在概率提前删除。confirmed漏检后固定保留2秒绝对sample TTL，存在概率按真实时间约每20 ms保留0.97地平滑衰减，不再因低于0.05而在TTL前提前死亡。在TTL内重新匹配会恢复原ID和`confirmed`状态；连续2秒无匹配才删除。关联角度使用固定50°硬上限和卡方门限20，不按漏检时长额外扩大。补救关联与新生保护同时比较轨迹的IMM预测角和最后真实观测角，候选距任一个不超过50°即恢复原ID并禁止重复birth。两轨后来进入50°以内时，只有近期观测至少两次交替且没有同窗双峰才归并；保留更正式、更早、存在概率更高的ID并吸收较新状态。超过TTL后再次观测会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
 
 为兼容旧在线分类实验，`Layer2Pipeline.submit_voice_feedback()`与`GlobalDirectionTracker.apply_voice_feedback()`仍保留精确`track_id`接口和专项测试：外部若显式提供至少2次正向结果，可使符合条件的confirmed轨在低Gate概率下强制放行；长期无正向结果还可触发噪声干扰标记。该接口当前没有Runtime调用方，不属于1.3.2普通主链，也不得用离线L5结果回写已经结束的实时轨迹。
 
@@ -52,7 +52,7 @@ DecisionWindow + 两个对齐的20 ms概率
 ## 兼容和删除边界
 
 - 原SRP-PHAT与iterative multiple peak正式实现、配置、setter、UI开关和专属测试已删除；包不再导出旧扫描器。
-- 正式主链默认启用ID追踪；Development Test UI可用持久化诊断开关临时关闭。开启后，JPDA把每个观测在已有轨迹、新生和伪报之间做联合概率分配；每条轨迹的IMM同时维护静止与慢速移动模型。滚动200 ms内5次观测确认，confirmed漏检后最多预测2秒，内部最多4条轨迹、公共最多3条。关闭时L2只返回无ID原始峰值，L3/L5跳过；不再存在独立Kalman开关或Q/R运行时调节。
+- 正式主链默认启用ID追踪；Development Test UI可用持久化诊断开关临时关闭。开启后，JPDA把每个观测在已有轨迹、新生和伪报之间做联合概率分配；每条轨迹的IMM同时维护静止与慢速移动模型。滚动200 ms内5次观测确认，恢复匹配同时参考预测角与最后真实观测角，交替出现且无同窗双峰的50°内重复轨会归并；confirmed漏检后最多预测2秒，内部最多4条轨迹、公共最多3条。关闭时L2只返回无ID原始峰值，L3/L5跳过；不再存在独立Kalman开关或Q/R运行时调节。
 - `CandidateDirection`仅作为尚未迁移消费者的同角度兼容投影；公共权威输出是`TrackedDirection`与`active_tracks`。
 - 第8路HardwareMix只用于接口、显示和录音，不进入MUSIC协方差或导向计算。
 

@@ -128,6 +128,7 @@ DecisionWindow + IMCRA p20
        → 局部峰 + prominence + 50°圆周NMS
        → 最多3个观测方向
        → Circular IMM-JPDA概率关联
+       → 预测角/最后真实观测角双参考恢复 + 交替重复轨归并
        → tentative / confirmed / coasting / deleted
        → 静止/慢速移动双模型IMM融合与预测
        → 0..3个公共TrackedDirection

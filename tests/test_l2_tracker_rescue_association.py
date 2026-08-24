@@ -91,3 +91,60 @@ def test_rescue_association_uses_circular_distance_across_zero() -> None:
 
     assert observed[0].track_id == first[0].track_id
     assert {item.track_id for item in active} == {first[0].track_id}
+
+
+def test_last_observed_angle_recovers_id_when_prediction_has_drifted() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (10.0,))
+    track = tracker._tracks[first[0].track_id]
+    for model in track.models:
+        model.mean[0] = 100.0
+        model.mean[1] = 0.0
+
+    observed, active = _update(tracker, 16_320, (20.0,))
+
+    assert observed[0].track_id == first[0].track_id
+    assert {item.track_id for item in active} == {first[0].track_id}
+
+
+def test_alternating_nearby_tracks_merge_into_older_confirmed_id() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (10.0, 100.0))
+    _update(tracker, 16_320, (10.0, 100.0))
+    confirmed, _ = _update(tracker, 17_280, (10.0, 100.0))
+    older_id = first[0].track_id
+    duplicate_id = next(item.track_id for item in confirmed if item.track_id != older_id)
+
+    _update(tracker, 27_840, ())
+    for model in tracker._tracks[older_id].models:
+        model.mean[:] = (20.0, 0.0)
+    for model in tracker._tracks[duplicate_id].models:
+        model.mean[:] = (30.0, 0.0)
+
+    _update(tracker, 28_800, (20.0,))
+    _update(tracker, 29_760, (30.0,))
+    observed, active = _update(tracker, 30_720, (20.0,))
+
+    assert {item.track_id for item in active} == {older_id}
+    assert observed[0].track_id == older_id
+    assert tracker.last_diagnostics.merged_track_ids == ((duplicate_id, older_id),)
+
+
+def test_simultaneously_observed_nearby_tracks_are_not_merged() -> None:
+    tracker = _tracker()
+    first, _ = _update(tracker, 15_360, (10.0, 100.0))
+    _update(tracker, 16_320, (10.0, 100.0))
+    confirmed, _ = _update(tracker, 17_280, (10.0, 100.0))
+    track_ids = {item.track_id for item in confirmed}
+
+    _update(tracker, 27_840, ())
+    for theta, track_id in zip((20.0, 30.0), sorted(track_ids), strict=True):
+        for model in tracker._tracks[track_id].models:
+            model.mean[:] = (theta, 0.0)
+
+    _update(tracker, 28_800, (20.0, 30.0))
+    _update(tracker, 29_760, (20.0, 30.0))
+    _, active = _update(tracker, 30_720, (20.0, 30.0))
+
+    assert {item.track_id for item in active} == track_ids
+    assert tracker.last_diagnostics.merged_track_ids == ()

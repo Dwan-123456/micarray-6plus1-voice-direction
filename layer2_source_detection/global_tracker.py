@@ -123,6 +123,7 @@ class _Track:
     confirmed: bool = False
     observations: int = 1
     last_output_theta: float = 0.0
+    last_observed_theta: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +135,7 @@ class TrackerDiagnostics:
     false_probabilities: tuple[float, ...]
     existence_probabilities: tuple[tuple[int, float], ...]
     model_probabilities: tuple[tuple[int, float, float], ...]
+    merged_track_ids: tuple[tuple[int, int], ...] = ()
 
 
 class GlobalDirectionTracker:
@@ -156,7 +158,7 @@ class GlobalDirectionTracker:
         self.last_assignments: tuple[int, ...] = ()
         self.last_assignment_is_new: tuple[bool, ...] = ()
         self.last_association_probabilities: tuple[float, ...] = ()
-        self.last_diagnostics = TrackerDiagnostics(self.backend, 0, (), (), (), (), ())
+        self.last_diagnostics = TrackerDiagnostics(self.backend, 0, (), (), (), (), (), ())
         self._feedback_audit: list[tuple[str, int, int, int, float, bool]] = []
 
     @property
@@ -175,7 +177,7 @@ class GlobalDirectionTracker:
         self.last_assignments = ()
         self.last_assignment_is_new = ()
         self.last_association_probabilities = ()
-        self.last_diagnostics = TrackerDiagnostics(self.backend, 0, (), (), (), (), ())
+        self.last_diagnostics = TrackerDiagnostics(self.backend, 0, (), (), (), (), (), ())
         self._feedback_audit.clear()
         if not preserve_session_counters:
             self._next_by_session.clear()
@@ -425,7 +427,10 @@ class GlobalDirectionTracker:
         for local_row, row in enumerate(available_rows):
             predicted_theta = self._combined(tracks[row])[0][0]
             for local_column, column in enumerate(available_columns):
-                distance = abs(_delta(candidates[column].theta_deg, predicted_theta))
+                distance = min(
+                    abs(_delta(candidates[column].theta_deg, predicted_theta)),
+                    abs(_delta(candidates[column].theta_deg, tracks[row].last_observed_theta)),
+                )
                 if distance <= self.config.association_gate_deg:
                     costs[local_row, local_column] = distance
 
@@ -525,6 +530,7 @@ class GlobalDirectionTracker:
             for model in track.models:
                 model.mean[0] -= offset
             track.last_output_theta -= offset
+            track.last_observed_theta -= offset
 
     def _birth(self, session_id: str, decision_sample: int, candidate: CandidateDirection) -> _Track:
         theta = float(candidate.theta_deg)
@@ -544,6 +550,7 @@ class GlobalDirectionTracker:
             [decision_sample],
             False,
             1,
+            theta,
             theta,
         )
 
@@ -572,6 +579,103 @@ class GlobalDirectionTracker:
             and track.existence_probability >= self.config.confirmation_existence_probability
         ):
             track.confirmed = True
+
+    def _duplicate_pair_is_mergeable(
+        self,
+        first: _Track,
+        second: _Track,
+        decision_sample: int,
+    ) -> bool:
+        """Recognize one source split into alternating nearby direction tracks."""
+
+        first_theta = self._combined(first)[0][0]
+        second_theta = self._combined(second)[0][0]
+        if abs(_delta(first_theta, second_theta)) >= self.config.association_gate_deg:
+            return False
+        cutoff = decision_sample - self.config.confirmation_window_samples
+        first_samples = {sample for sample in first.confirmation_samples if sample >= cutoff}
+        second_samples = {sample for sample in second.confirmation_samples if sample >= cutoff}
+        if not first_samples or not second_samples or first_samples & second_samples:
+            return False
+        ownership = sorted(
+            [(sample, first.track_id) for sample in first_samples]
+            + [(sample, second.track_id) for sample in second_samples]
+        )
+        switches = sum(
+            owner != previous_owner
+            for (_, previous_owner), (_, owner) in zip(ownership, ownership[1:], strict=False)
+        )
+        return len(ownership) >= 3 and switches >= 2
+
+    @staticmethod
+    def _merge_priority(track: _Track) -> tuple[int, int, float, int]:
+        return (-int(track.confirmed), track.first_seen, -track.existence_probability, track.track_id)
+
+    def _absorb_duplicate(self, survivor: _Track, duplicate: _Track) -> None:
+        """Keep the authoritative ID while adopting the duplicate's newer evidence."""
+
+        if duplicate.last_observed > survivor.last_observed:
+            survivor.models = [
+                _ModelState(model.mean.copy(), model.covariance.copy()) for model in duplicate.models
+            ]
+            survivor.model_probabilities = duplicate.model_probabilities.copy()
+            survivor.raw_score = duplicate.raw_score
+            survivor.normalized_score = duplicate.normalized_score
+            survivor.last_output_theta = _nearest_unwrapped(
+                duplicate.last_output_theta, survivor.last_output_theta
+            )
+            survivor.last_observed_theta = _nearest_unwrapped(
+                duplicate.last_observed_theta, survivor.last_observed_theta
+            )
+        survivor.first_seen = min(survivor.first_seen, duplicate.first_seen)
+        survivor.last_observed = max(survivor.last_observed, duplicate.last_observed)
+        survivor.existence_probability = max(
+            survivor.existence_probability, duplicate.existence_probability
+        )
+        survivor.confirmed = survivor.confirmed or duplicate.confirmed
+        survivor.observations += duplicate.observations
+        survivor.confirmation_samples[:] = sorted(
+            set(survivor.confirmation_samples) | set(duplicate.confirmation_samples)
+        )
+        self._rebase(survivor)
+
+    def _merge_duplicate_tracks(
+        self,
+        decision_sample: int,
+        observed_track_by_candidate: dict[int, int],
+        observed_candidate_by_track: dict[int, int],
+        new_track_ids: set[int],
+    ) -> tuple[tuple[int, int], ...]:
+        """Merge alternating tracks only; simultaneous independent peaks remain separate."""
+
+        merged: list[tuple[int, int]] = []
+        while True:
+            pair: tuple[_Track, _Track] | None = None
+            tracks = tuple(self._tracks[track_id] for track_id in sorted(self._tracks))
+            for index, first in enumerate(tracks):
+                for second in tracks[index + 1 :]:
+                    if self._duplicate_pair_is_mergeable(first, second, decision_sample):
+                        pair = (first, second)
+                        break
+                if pair is not None:
+                    break
+            if pair is None:
+                break
+            survivor = min(pair, key=self._merge_priority)
+            duplicate = pair[1] if survivor is pair[0] else pair[0]
+            self._absorb_duplicate(survivor, duplicate)
+            duplicate_column = observed_candidate_by_track.pop(duplicate.track_id, None)
+            survivor_column = observed_candidate_by_track.get(survivor.track_id)
+            if duplicate_column is not None and survivor_column is None:
+                observed_candidate_by_track[survivor.track_id] = duplicate_column
+                observed_track_by_candidate[duplicate_column] = survivor.track_id
+            for column, track_id in tuple(observed_track_by_candidate.items()):
+                if track_id == duplicate.track_id:
+                    observed_track_by_candidate[column] = survivor.track_id
+            new_track_ids.discard(duplicate.track_id)
+            del self._tracks[duplicate.track_id]
+            merged.append((duplicate.track_id, survivor.track_id))
+        return tuple(merged)
 
     def _make_direction(
         self,
@@ -672,6 +776,11 @@ class GlobalDirectionTracker:
                 observed,
             )
             if observed:
+                column = observed_candidate_by_track[track.track_id]
+                track.last_observed_theta = _nearest_unwrapped(
+                    candidates[column].theta_deg,
+                    self._combined(track)[0][0],
+                )
                 track.last_observed = decision_sample
             self._confirm(track, decision_sample, observed)
 
@@ -681,7 +790,10 @@ class GlobalDirectionTracker:
                 continue
             nearest = min(
                 (
-                    abs(_delta(candidate.theta_deg, self._combined(track)[0][0]))
+                    min(
+                        abs(_delta(candidate.theta_deg, self._combined(track)[0][0])),
+                        abs(_delta(candidate.theta_deg, track.last_observed_theta)),
+                    )
                     for track in self._tracks.values()
                 ),
                 default=float("inf"),
@@ -708,6 +820,13 @@ class GlobalDirectionTracker:
             new_track_ids.add(track.track_id)
             observed_track_by_candidate[column] = track.track_id
             observed_candidate_by_track[track.track_id] = column
+
+        merged_track_ids = self._merge_duplicate_tracks(
+            decision_sample,
+            observed_track_by_candidate,
+            observed_candidate_by_track,
+            new_track_ids,
+        )
 
         self._expire_tracks(decision_sample)
         active_items: list[TrackedDirection] = []
@@ -755,6 +874,7 @@ class GlobalDirectionTracker:
                 (track.track_id, float(track.model_probabilities[0]), float(track.model_probabilities[1]))
                 for track in ordered_tracks
             ),
+            merged_track_ids,
         )
         self._last_sample = decision_sample
         return tuple(observed_items), tuple(active_items)
