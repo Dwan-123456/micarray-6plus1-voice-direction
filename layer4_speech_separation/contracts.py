@@ -193,14 +193,20 @@ class Layer4ProcessedAudio:
     output_sha256: str
     waveform_16k: NDArray[np.float32]
     metadata: Mapping[str, object]
+    output_kind: Literal["merged", "candidate_0", "candidate_1"] = "merged"
 
     def __post_init__(self) -> None:
         if not self.request_id or not self.output_asset_id:
             raise ValueError("processed L4 audio requires request and asset identities")
         if self.speaker_count.asset_id != self.source.asset_id:
             raise ValueError("processed L4 speaker count must describe its source")
-        if (self.path == "single_speaker_bypass") != (self.selected is None):
-            raise ValueError("only single-speaker L4 audio may omit a selection")
+        if self.output_kind not in {"merged", "candidate_0", "candidate_1"}:
+            raise ValueError("processed L4 output kind is invalid")
+        if self.output_kind == "merged":
+            if (self.path == "single_speaker_bypass") != (self.selected is None):
+                raise ValueError("only merged single-speaker L4 audio may omit a selection")
+        elif self.path != "two_speaker_separation" or self.selected is not None:
+            raise ValueError("unmerged L4 candidates require two-speaker audio without a selection")
         if len(self.output_sha256) != 64 or any(
             char not in "0123456789abcdef" for char in self.output_sha256
         ):
@@ -229,14 +235,20 @@ class Layer4OfflineResult:
     output_asset_id: str
     output_sha256: str
     metadata: Mapping[str, object]
+    output_kind: Literal["merged", "candidate_0", "candidate_1"] = "merged"
 
     def __post_init__(self) -> None:
         if not self.request_id or not self.output_asset_id or not self.l5_model_id:
             raise ValueError("offline L4 result requires request, asset and L5 identities")
         if self.speaker_count.asset_id != self.source.asset_id:
             raise ValueError("offline L4 speaker count must describe its source")
-        if (self.path == "single_speaker_bypass") != (self.selected is None):
-            raise ValueError("only the single-speaker path may omit an L4 selection")
+        if self.output_kind not in {"merged", "candidate_0", "candidate_1"}:
+            raise ValueError("offline L4 output kind is invalid")
+        if self.output_kind == "merged":
+            if (self.path == "single_speaker_bypass") != (self.selected is None):
+                raise ValueError("only merged single-speaker results may omit a selection")
+        elif self.path != "two_speaker_separation" or self.selected is not None:
+            raise ValueError("unmerged L4 results require two-speaker audio without a selection")
         if self.path == "single_speaker_bypass" and self.speaker_count.speaker_count != 1:
             raise ValueError("single-speaker bypass requires a one-speaker decision")
         if self.path == "two_speaker_separation" and self.speaker_count.speaker_count != 2:

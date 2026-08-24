@@ -633,6 +633,7 @@ class Layer4AudioPanel(QGroupBox):
     track_play_requested = Signal(int)
     track_stop_requested = Signal()
     backend_changed = Signal(str)
+    merge_changed = Signal(bool)
 
     BACKEND_LABELS = {
         "mossformer2_ss_16k": "MossFormer2",
@@ -661,7 +662,16 @@ class Layer4AudioPanel(QGroupBox):
             )
             self.backend_group.addButton(button)
             self.backend_buttons[backend] = button
+        self.merge_button = QPushButton("合并")
+        self.merge_button.setCheckable(True)
+        self.merge_button.setChecked(True)
+        self.merge_button.setToolTip(
+            "开启：按1–4 kHz匹配度从每组双输出中保留高分音频；"
+            "关闭：不匹配，显示两条匿名候选。"
+        )
+        self.merge_button.clicked.connect(self._set_merge_from_button)
         header.addWidget(self.summary, 1)
+        header.addWidget(self.merge_button)
         for button in self.backend_buttons.values():
             header.addWidget(button)
         layout.addLayout(header)
@@ -683,6 +693,10 @@ class Layer4AudioPanel(QGroupBox):
         self._playing_track_id: int | None = None
         self._voice_threshold = 0.7
         self.set_backend(backend_id)
+        self._refresh_merge_style()
+        self.merge_button.setFixedSize(
+            self.backend_buttons["mossformer2_ss_16k"].sizeHint()
+        )
 
     @property
     def backend_id(self) -> str:
@@ -696,6 +710,24 @@ class Layer4AudioPanel(QGroupBox):
             raise ValueError("unsupported Layer 4 backend")
         self.backend_buttons[backend_id].setChecked(True)
         self._refresh_backend_styles()
+
+    @property
+    def merge_enabled(self) -> bool:
+        return self.merge_button.isChecked()
+
+    def set_merge_enabled(self, enabled: bool) -> None:
+        self.merge_button.setChecked(bool(enabled))
+        self._refresh_merge_style()
+
+    def _set_merge_from_button(self, checked: bool) -> None:
+        self.set_merge_enabled(checked)
+        self.merge_changed.emit(self.merge_enabled)
+
+    def _refresh_merge_style(self) -> None:
+        color = "#16794b" if self.merge_enabled else "#5b6570"
+        self.merge_button.setStyleSheet(
+            f"QPushButton {{ background:{color}; color:white; font-weight:600; }}"
+        )
 
     def _select_backend(self, backend_id: str) -> None:
         self.set_backend(backend_id)
@@ -720,7 +752,9 @@ class Layer4AudioPanel(QGroupBox):
     def set_processing(self, text: str) -> None:
         self.summary.setText(text)
 
-    def set_tracks(self, tracks, *, l5_complete: bool = False) -> None:
+    def set_tracks(
+        self, tracks, *, l5_complete: bool = False, unmerged: bool = False,
+    ) -> None:
         tracks = tuple(tracks)
         incoming = {item.track_id for item in tracks}
         for track_id in set(self._rows) - incoming:
@@ -737,10 +771,16 @@ class Layer4AudioPanel(QGroupBox):
                 self._rows[track.track_id] = row
                 self.track_layout.insertWidget(self.track_layout.count() - 1, row)
             row.set_snapshot(track, playing=track.track_id == self._playing_track_id)
-        self.summary.setText(
-            f"L4完成：{len(tracks)}条；L5完成" if l5_complete
-            else f"L4完成：{len(tracks)}条；L5自动处理中…"
-        )
+        if unmerged:
+            self.summary.setText(
+                f"L4完成：{len(tracks)}条未合并候选；L5完成" if l5_complete
+                else f"L4完成：{len(tracks)}条未合并候选；L5自动处理中…"
+            )
+        else:
+            self.summary.setText(
+                f"L4完成：{len(tracks)}条；L5完成" if l5_complete
+                else f"L4完成：{len(tracks)}条；L5自动处理中…"
+            )
 
     def set_l5_error(self, text: str) -> None:
         self.summary.setText(f"L4完成；L5失败：{text}")
@@ -896,8 +936,9 @@ class AudioTrackRow(QWidget):
             text = "Center Mic IMCRA"
             label_style = "font-family:Consolas"
         else:
-            text = f"{snapshot.track_id} · {snapshot.theta_deg:.1f}°"
-            label_style = f"font-family:Consolas;color:{track_colour_hex(snapshot.track_id)}"
+            text = snapshot.display_label or f"{snapshot.track_id} · {snapshot.theta_deg:.1f}°"
+            colour_id = snapshot.parent_track_id or snapshot.track_id
+            label_style = f"font-family:Consolas;color:{track_colour_hex(colour_id)}"
         if text != self._rendered_text:
             self.label.setText(text)
             self._rendered_text = text

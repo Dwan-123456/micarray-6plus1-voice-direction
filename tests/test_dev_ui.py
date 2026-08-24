@@ -263,10 +263,20 @@ def test_layer4_model_buttons_are_exclusive_and_colour_coded(monkeypatch):
     app = QApplication.instance() or QApplication([])
     panel = Layer4AudioPanel("mossformer2_ss_16k")
     selected = []
+    merge_states = []
     panel.backend_changed.connect(selected.append)
+    panel.merge_changed.connect(merge_states.append)
     assert panel.backend_id == "mossformer2_ss_16k"
+    assert panel.merge_enabled is True
+    assert "#16794b" in panel.merge_button.styleSheet()
+    assert panel.merge_button.size() == panel.backend_buttons["mossformer2_ss_16k"].sizeHint()
     assert "#16794b" in panel.backend_buttons["mossformer2_ss_16k"].styleSheet()
     assert "#5b6570" in panel.backend_buttons["tiger_speech_16k"].styleSheet()
+
+    panel.merge_button.click()
+    assert panel.merge_enabled is False
+    assert merge_states == [False]
+    assert "#5b6570" in panel.merge_button.styleSheet()
 
     panel.backend_buttons["tiger_speech_16k"].click()
     assert panel.backend_id == "tiger_speech_16k"
@@ -1377,8 +1387,13 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
 
     app, window = build_window(CONFIG)
     events: list[str] = []
-    clock = iter((10.0, 12.5, 20.0, 24.0, 30.0, 31.0, 40.0, 42.0))
+    clock = iter((
+        10.0, 12.5, 20.0, 24.0,
+        30.0, 31.0, 40.0, 42.0,
+        50.0, 53.0, 60.0, 65.0,
+    ))
     monkeypatch.setattr("gui.dev_test_ui.app.perf_counter", lambda: next(clock))
+    merge_modes: list[bool] = []
 
     class FakeStore:
         def clear(self):
@@ -1403,8 +1418,9 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
     class FakePipeline:
         layer5 = SimpleNamespace(threshold=0.7)
 
-        def process_l4_sealed(self, sources):
+        def process_l4_sealed(self, sources, *, merge_candidates=True):
             del sources
+            merge_modes.append(merge_candidates)
             events.append("process")
             return ()
 
@@ -1443,6 +1459,15 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
         ]
         assert window._offline_stage_durations_seconds == {"l4": 1.0, "l5": 2.0}
         assert "L4 1.00 s | L5 2.00 s" in window.performance_bar.text()
+        assert window.bf_panel.send.isEnabled()
+
+        window.l4_panel.set_merge_enabled(False)
+        window._send_l3_to_l4()
+        assert events[-5:] == ["clear", "process", "l5-process", "write", "l5-write"]
+        assert merge_modes == [True, True, False]
+        assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0}
+        assert "未合并候选" in window.l4_panel.summary.text()
+        assert "L5完成" in window.l4_panel.summary.text()
         assert window.bf_panel.send.isEnabled()
     finally:
         window.close()

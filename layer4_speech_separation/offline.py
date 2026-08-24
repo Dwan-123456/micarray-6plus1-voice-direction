@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from time import perf_counter
-from typing import Mapping
+from typing import Literal, Mapping
 from uuid import uuid4
 import wave
 
@@ -24,6 +24,7 @@ from .contracts import (
     Layer4ProcessedAudio,
     Layer4PrimarySelection,
     Layer4SeparationRequest,
+    SpeakerCountDecision,
 )
 from .interfaces import Layer4SeparationBackend, SpeakerCountClassifier
 from .matching import BandMagnitudeMatcher
@@ -193,6 +194,77 @@ class OfflineLayer4Pipeline:
                 "used_reference_fallback": selected.used_reference_fallback,
                 "fallback_reason": selected.fallback_reason,
             }
+        return self._build_processed(
+            source=source,
+            request_id=request_id,
+            speaker_count=count,
+            path=path,
+            selected=selected,
+            output_16k=output_16k,
+            model_metadata=model_metadata,
+            started=started,
+        )
+
+    def process_l4_unmerged(
+        self, source: Layer4LongAudioInput, *, request_id: str | None = None,
+    ) -> tuple[Layer4ProcessedAudio, ...]:
+        """Return both anonymous separator outputs without running the matcher."""
+
+        request_id = request_id or str(uuid4())
+        started = perf_counter()
+        reference_16k = self.resampler.to_16k(source.waveform)
+        count = self.speaker_counter.classify(source)
+        if count.speaker_count == 1:
+            return (self._build_processed(
+                source=source,
+                request_id=request_id,
+                speaker_count=count,
+                path="single_speaker_bypass",
+                selected=None,
+                output_16k=reference_16k,
+                model_metadata={},
+                started=started,
+            ),)
+
+        request = Layer4SeparationRequest(
+            request_id, source, count, self.default_backend  # type: ignore[arg-type]
+        )
+        backend = self.backends[request.backend]
+        candidates = backend.separate(request_id, reference_16k)
+        return tuple(
+            self._build_processed(
+                source=source,
+                request_id=request_id,
+                speaker_count=count,
+                path="two_speaker_separation",
+                selected=None,
+                output_16k=waveform,
+                model_metadata={
+                    "backend": request.backend,
+                    "model_id": candidates.model_id,
+                    "model_revision": candidates.model_revision,
+                    "candidate_index": index,
+                    "merge_candidates": False,
+                },
+                started=started,
+                output_kind=("candidate_0", "candidate_1")[index],
+            )
+            for index, waveform in enumerate(candidates.sources)
+        )
+
+    def _build_processed(
+        self,
+        *,
+        source: Layer4LongAudioInput,
+        request_id: str,
+        speaker_count: SpeakerCountDecision,
+        path: Literal["single_speaker_bypass", "two_speaker_separation"],
+        selected: Layer4PrimarySelection | None,
+        output_16k: np.ndarray,
+        model_metadata: Mapping[str, object],
+        started: float,
+        output_kind: Literal["merged", "candidate_0", "candidate_1"] = "merged",
+    ) -> Layer4ProcessedAudio:
         expected = len(source.waveform) // 3
         if len(output_16k) < expected:
             output_16k = np.pad(output_16k, (0, expected - len(output_16k)))
@@ -209,10 +281,14 @@ class OfflineLayer4Pipeline:
         return Layer4ProcessedAudio(
             request_id=request_id,
             source=source,
-            speaker_count=count,
-            path=path,  # type: ignore[arg-type]
+            speaker_count=speaker_count,
+            path=path,
             selected=selected,
-            output_asset_id=f"{source.asset_id}:l4:{request_id}",
+            output_asset_id=(
+                f"{source.asset_id}:l4:{request_id}"
+                if output_kind == "merged"
+                else f"{source.asset_id}:l4:{request_id}:{output_kind}"
+            ),
             output_sha256=output_hash,
             waveform_16k=output_16k,
             metadata={
@@ -222,6 +298,7 @@ class OfflineLayer4Pipeline:
                 "pcm16_peak_safety_gain": peak_safety_gain,
                 "l4_elapsed_ms": (perf_counter() - started) * 1_000.0,
             },
+            output_kind=output_kind,
         )
 
     def process_l5(self, processed: Layer4ProcessedAudio) -> Layer4OfflineResult:
@@ -281,16 +358,28 @@ class OfflineLayer4Pipeline:
                 "l5_model_metadata": dict(l5.metadata),
                 "output_waveform_16k": output_16k,
             },
+            output_kind=processed.output_kind,
         )
 
     def process(self, source: Layer4LongAudioInput, *, request_id: str | None = None) -> Layer4OfflineResult:
         return self.process_l5(self.process_l4(source, request_id=request_id))
 
     def process_l4_sealed(
-        self, sources: tuple[Layer4LongAudioInput, ...],
+        self,
+        sources: tuple[Layer4LongAudioInput, ...],
+        *,
+        merge_candidates: bool = True,
     ) -> tuple[Layer4ProcessedAudio, ...]:
         sources = self._validate_sources(sources)
-        return tuple(self.process_l4(source) for source in sources)
+        if type(merge_candidates) is not bool:
+            raise ValueError("merge_candidates must be bool")
+        if merge_candidates:
+            return tuple(self.process_l4(source) for source in sources)
+        return tuple(
+            output
+            for source in sources
+            for output in self.process_l4_unmerged(source)
+        )
 
     def process_l5_sealed(
         self, processed: tuple[Layer4ProcessedAudio, ...],
@@ -337,7 +426,11 @@ def persist_offline_results(
     rows: list[dict[str, object]] = []
     for result in results:
         waveform = np.asarray(result.metadata["output_waveform_16k"], dtype=np.float32)
-        name = f"epoch{result.source.stream_epoch:03d}_track{result.source.track_id:06d}.wav"
+        candidate_suffix = "" if result.output_kind == "merged" else f"_{result.output_kind}"
+        name = (
+            f"epoch{result.source.stream_epoch:03d}_track{result.source.track_id:06d}"
+            f"{candidate_suffix}.wav"
+        )
         final = output_root / name
         partial = final.with_suffix(".wav.partial")
         with wave.open(str(partial), "wb") as writer:
@@ -357,6 +450,7 @@ def persist_offline_results(
             "theta_deg": result.source.theta_deg,
             "speaker_count": asdict(result.speaker_count),
             "path": result.path,
+            "output_kind": result.output_kind,
             "selection": None if result.selected is None else {
                 "selected_source_index": result.selected.selected_source_index,
                 "candidate_scores": result.selected.candidate_scores,

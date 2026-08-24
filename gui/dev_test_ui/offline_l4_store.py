@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 import tempfile
@@ -18,6 +19,8 @@ class _StoredTrack:
     processed: Layer4ProcessedAudio
     path: Path
     annotations: tuple[TrackVoiceAnnotation | None, ...]
+    preview_id: int
+    display_label: str | None
 
 
 class OfflineLayer4UiStore:
@@ -41,25 +44,53 @@ class OfflineLayer4UiStore:
 
     def set_processed(self, values: tuple[Layer4ProcessedAudio, ...]) -> None:
         self.clear()
+        values = tuple(values)
+        parent_counts = Counter(item.source.track_id for item in values)
+        for parent_track_id, count in parent_counts.items():
+            if count <= 1:
+                continue
+            kinds = {
+                item.output_kind
+                for item in values
+                if item.source.track_id == parent_track_id
+            }
+            if count != 2 or kinds != {"candidate_0", "candidate_1"}:
+                raise ValueError("duplicate L4 parent IDs require one A/B candidate pair")
+        next_preview_id = max((item.source.track_id for item in values), default=0) + 1
         for item in values:
-            track_id = item.source.track_id
-            if track_id in self._tracks:
-                raise ValueError("L4 UI output track IDs must be unique")
-            path = Path(self._temporary.name) / f"l4_track_{track_id:06d}.wav"
+            parent_track_id = item.source.track_id
+            if parent_counts[parent_track_id] == 1:
+                preview_id = parent_track_id
+                display_label = None
+            else:
+                preview_id = next_preview_id
+                next_preview_id += 1
+                suffix = "A" if item.output_kind == "candidate_0" else "B"
+                display_label = f"{parent_track_id}{suffix} · {item.source.theta_deg:.1f}°"
+            path = Path(self._temporary.name) / (
+                f"l4_track_{parent_track_id:06d}_{item.output_kind}.wav"
+            )
             with wave.open(str(path), "wb") as writer:
                 writer.setnchannels(1)
                 writer.setsampwidth(2)
                 writer.setframerate(16_000)
                 writer.writeframes(self._pcm16(item.waveform_16k))
             hops = len(item.waveform_16k) // 320
-            self._tracks[track_id] = _StoredTrack(item, path, (None,) * hops)
+            self._tracks[preview_id] = _StoredTrack(
+                item, path, (None,) * hops, preview_id, display_label,
+            )
 
     def apply_l5(self, results: tuple[Layer4OfflineResult, ...]) -> None:
         for result in results:
-            track_id = result.source.track_id
-            stored = self._tracks.get(track_id)
-            if stored is None or stored.processed.output_asset_id != result.output_asset_id:
+            matches = tuple(
+                stored
+                for stored in self._tracks.values()
+                if stored.processed.output_asset_id == result.output_asset_id
+            )
+            if len(matches) != 1:
                 raise ValueError("L5 result does not match the displayed L4 audio")
+            stored = matches[0]
+            track_id = stored.preview_id
             annotations = tuple(
                 TrackVoiceAnnotation(
                     result.source.session_id,
@@ -106,5 +137,7 @@ class OfflineLayer4UiStore:
                 len(item.waveform_16k) * 3,
                 waveform_envelope=envelope,
                 voice_annotations_20ms=stored.annotations,
+                display_label=stored.display_label,
+                parent_track_id=item.source.track_id,
             ))
         return tuple(sorted(outputs, key=lambda item: item.track_id))

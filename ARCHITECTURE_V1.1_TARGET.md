@@ -72,8 +72,9 @@ ResultJoiner：按WindowKey有序合并L2/L3/L5审计终态
 L4：Test UI手动提交，统一48→16 kHz并完成一/二人路由、分离和匹配
     → 人数=min(2, 整轨L2方向数最大值)
     → 一人旁路；二人使用MossFormer2或TIGER
-    → 1～4 kHz复频谱相干匹配或低可信回退L3参考
-    → 输出保留原ID/角度的原生16 kHz音频，直接保存和试听
+    → 合并开启：1～4 kHz复频谱相干匹配或低可信回退L3参考
+      → 输出保留原ID/角度的单条原生16 kHz音频，直接保存和试听
+    → 合并关闭：不匹配，输出带原ID/角度及A/B后缀的两条16 kHz候选
     ↓ 整批L4完成后自动且仅一次运行
 L5：NVIDIA Frame-VAD输出逐20 ms概率序列
     → 与每个320样本hop严格对齐；整轨摘要取完整序列连续3帧最大均值
@@ -260,7 +261,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - `Layer4LongAudioInput`固定接收带SHA-256、`session_id/stream_epoch/track_id/theta_deg/start_sample`的48 kHz单声道完整20 ms hop音频；后端输入固定16 kHz并必须返回恰好两条匿名、等长、finite `float32`候选。
 - 每条L3输入的两候选最多发布一个。原L3 BF参考经相同重采样后，以512点Hann STFT、160点hop在1～4 kHz计算逐帧复频谱相干度并按参考频带能量加权；复内积保留相位和时序身份，同时以绝对值容忍全局极性翻转。可靠高分候选继承原ID和角度。音轨短于2秒、最高相干度低于0.50或两分数差小于0.025时，不发布不可靠模型候选，改用同一条L3参考音频并记录回退原因；其他平分仍固定候选索引0。
 - 官方MossFormer2/TIGER源码和权重作为可选对比模型，以manifest固定revision、SHA-256与许可证。模型适配器用重叠分块稳定匿名输出排列；匹配器只对两条完整候选做一次整段选择。
-- Runtime同时提供一键离线接口和分离的`process_l4_sealed/process_l5_sealed`接口。Test UI只保留“发送到L4”：L3全部封存后才能进入L4，整批L4完成后由同一后台作业自动且仅一次进入L5。
+- Runtime同时提供一键离线接口和分离的`process_l4_sealed/process_l5_sealed`接口。`process_l4_sealed(..., merge_candidates=True)`保持每父轨一条输出；传入`False`时双人轨返回A/B两条`candidate_0/candidate_1`。Test UI只保留“发送到L4”：L3全部封存后才能进入L4，整批L4输出完成后由同一后台作业自动进入L5；关闭合并时A/B候选分别进入L5，并把逐20 ms判断返回各自波形。
 
 ## 11. Runtime、时间线与并行管理
 

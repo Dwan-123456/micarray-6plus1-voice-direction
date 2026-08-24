@@ -1184,15 +1184,20 @@ def build_window(
             self.cnn_panel.set_unavailable("等待L4完成后自动处理")
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
+            merge_candidates = self.l4_panel.merge_enabled
+            merge_label = "合并" if merge_candidates else "保留双候选"
             self.l4_panel.set_processing(
-                f"正在加载{backend_label}并处理全部L3长音频…"
+                f"正在加载{backend_label}并处理全部L3长音频（{merge_label}）…"
             )
 
             def process_l4_and_l5():
                 pipeline = runtime.build_offline_l4_pipeline(backend_id)
                 l4_started = perf_counter()
                 processed = tuple(
-                    pipeline.process_l4_sealed(runtime.offline_l4_sources)
+                    pipeline.process_l4_sealed(
+                        runtime.offline_l4_sources,
+                        merge_candidates=merge_candidates,
+                    )
                 )
                 l4_elapsed = perf_counter() - l4_started
                 l5_started = perf_counter()
@@ -1201,17 +1206,17 @@ def build_window(
                 except Exception as exc:
                     return (
                         pipeline, processed, (), exc, l4_elapsed,
-                        perf_counter() - l5_started,
+                        perf_counter() - l5_started, merge_candidates,
                     )
                 return (
                     pipeline, processed, l5_results, None, l4_elapsed,
-                    perf_counter() - l5_started,
+                    perf_counter() - l5_started, merge_candidates,
                 )
 
             def completed(value):
                 (
                     pipeline, processed, l5_results, l5_error,
-                    l4_elapsed, l5_elapsed,
+                    l4_elapsed, l5_elapsed, merged,
                 ) = value
                 self._offline_l4_pipeline = pipeline
                 self._l4_processed = processed
@@ -1222,13 +1227,17 @@ def build_window(
                 self._refresh_total_duration_text()
                 self._l4_store.set_processed(self._l4_processed)
                 if l5_error is not None:
-                    self.l4_panel.set_tracks(self._l4_store.snapshots())
+                    self.l4_panel.set_tracks(
+                        self._l4_store.snapshots(), unmerged=not merged,
+                    )
                     self.l4_panel.set_l5_error(str(l5_error))
                     self.cnn_panel.set_unavailable(f"L5失败：{l5_error}")
                     self.bf_panel.set_send_enabled(True)
                     return
                 self._l4_store.apply_l5(l5_results)
-                self.l4_panel.set_tracks(self._l4_store.snapshots(), l5_complete=True)
+                self.l4_panel.set_tracks(
+                    self._l4_store.snapshots(), l5_complete=True, unmerged=not merged,
+                )
                 detections = tuple(SimpleNamespace(
                     theta_deg=item.source.theta_deg,
                     probability=item.l5_probability,

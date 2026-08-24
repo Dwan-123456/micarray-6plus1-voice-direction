@@ -126,6 +126,8 @@ class TrackedAudioSnapshot:
     sample_rate: int = 48_000
     waveform_envelope: tuple[float, ...] = ()
     voice_annotations_20ms: tuple[TrackVoiceAnnotation | None, ...] = ()
+    display_label: str | None = None
+    parent_track_id: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -137,6 +139,10 @@ class TrackedAudioSnapshot:
             raise ValueError("tracked audio identity is invalid")
         if self.state not in {"active", "coasting", "ended"}:
             raise ValueError("tracked audio state is invalid")
+        if self.display_label is not None and not self.display_label.strip():
+            raise ValueError("tracked audio display label must be non-empty")
+        if self.parent_track_id is not None and self.parent_track_id <= 0:
+            raise ValueError("tracked audio parent track ID must be positive")
         if self.sample_rate != 48_000 or not 0.0 <= self.theta_deg < 360.0:
             raise ValueError("tracked audio angle/sample rate is invalid")
         if not np.isfinite(self.score) or not 0.0 <= self.score <= 1.0:

@@ -178,6 +178,55 @@ def test_l4_sealed_selects_each_track_independently_by_its_1_4khz_scores() -> No
     assert all("cross_track_penalty" not in item.metadata for item in processed)
 
 
+def test_l4_unmerged_mode_keeps_both_anonymous_16khz_candidates_for_preview() -> None:
+    backend = _Backend()
+    layer5 = _L5()
+    pipeline = OfflineLayer4Pipeline(
+        speaker_counter=DirectionCountSpeakerClassifier(),
+        backends={"mossformer2_ss_16k": backend},
+        layer5=layer5,
+        default_backend="mossformer2_ss_16k",
+    )
+
+    processed = pipeline.process_l4_sealed(
+        (_source((1, 2, 2)),), merge_candidates=False,
+    )
+
+    assert backend.calls == 1
+    assert tuple(item.output_kind for item in processed) == ("candidate_0", "candidate_1")
+    assert tuple(item.metadata["candidate_index"] for item in processed) == (0, 1)
+    assert all(item.selected is None for item in processed)
+    assert all(item.metadata["matching_algorithm"] is None for item in processed)
+    assert processed[0].output_sha256 != processed[1].output_sha256
+    results = pipeline.process_l5_sealed(processed)
+    assert layer5.calls == 2
+    assert tuple(item.output_kind for item in results) == ("candidate_0", "candidate_1")
+
+    store = OfflineLayer4UiStore()
+    try:
+        store.set_processed(processed)
+        store.apply_l5(results)
+        snapshots = store.snapshots()
+        assert len(snapshots) == 2
+        assert len({item.track_id for item in snapshots}) == 2
+        assert tuple(item.parent_track_id for item in snapshots) == (9, 9)
+        assert tuple(item.display_label for item in snapshots) == (
+            "9A · 120.0°", "9B · 120.0°",
+        )
+        assert all(
+            all(annotation is not None for annotation in item.voice_annotations_20ms)
+            for item in snapshots
+        )
+        for snapshot in snapshots:
+            path = store.audio_path(snapshot.track_id)
+            assert path is not None and path.is_file()
+            with wave.open(str(path), "rb") as preview:
+                assert preview.getframerate() == 16_000
+                assert preview.getnframes() == len(processed[0].waveform_16k)
+    finally:
+        store.close()
+
+
 def test_long_audio_adapter_repairs_swapped_chunk_outputs_before_crossfade() -> None:
     backend = _OfficialModelBackend.__new__(_OfficialModelBackend)
     backend.chunk_samples = 100
