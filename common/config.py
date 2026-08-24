@@ -376,7 +376,12 @@ class Layer4Config(StrictModel):
 
 class RuntimeConfig(StrictModel):
     mode: Literal["development", "production"]
+    # Legacy fallback retained for old launch profiles. New profiles select
+    # the compute device independently for each accelerated layer.
     preferred_device: str
+    l3_device: Literal["cpu", "cuda"] | None = None
+    l4_device: Literal["cpu", "cuda"] | None = None
+    l5_device: Literal["cpu", "cuda"] | None = None
     allow_cpu_fallback: bool
     max_candidate_batch: Literal[3]
     capture_handoff_blocks: int = Field(gt=0)

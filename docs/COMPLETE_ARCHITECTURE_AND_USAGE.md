@@ -201,7 +201,9 @@ L3输出保留80–8000 Hz，但80–1500 Hz受4 cm阵列孔径限制，不能�
 
 - Windows；已验证Python 3.12；
 - Sipeed R6+1、MA-USB8，设备采样率48 kHz、8通道；
-- NVIDIA GPU用于当前模型和性能目标；项目配置允许CPU回退，但离线模型会明显变慢；
+- 默认设备拓扑为`L1 CPU → L2 CPU → L3 CPU → 离线L4 CUDA → L5 CPU`；
+- `runtime.l3_device/l4_device/l5_device`相互独立，旧配置缺少这些字段时才回退到`preferred_device`；
+- L4配置CUDA但设备不可用时，在`allow_cpu_fallback: true`下自动回退CPU；离线分离会明显变慢；
 - 麦克风面朝向与坐标定义保持一致，MIC0方向作为0°。
 
 ### 5.2 创建环境并自检

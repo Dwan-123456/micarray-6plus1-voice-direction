@@ -261,7 +261,14 @@ layer5:
 
 runtime:
   mode: development
+  # Legacy fallback for older profiles which do not define per-layer devices.
   preferred_device: cuda
+  # L1/IMCRA and L2/MUSIC+ID are intrinsically CPU stages. The accelerated
+  # downstream layers are independent: realtime L3 and lightweight L5 stay
+  # on CPU, while stopped/offline L4 MossFormer2 owns the GPU.
+  l3_device: cpu
+  l4_device: cuda
+  l5_device: cpu
   allow_cpu_fallback: true
   max_candidate_batch: 3
   # Ten seconds absorbs transient Windows/GPU/UI stalls without hiding a

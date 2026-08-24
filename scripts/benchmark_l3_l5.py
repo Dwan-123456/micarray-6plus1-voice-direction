@@ -52,8 +52,16 @@ def _summary(values_ms: list[float]) -> dict[str, float | int]:
     }
 
 
-def _resolve_device(requested: str, config: ProjectConfig) -> str:
-    value = config.runtime.preferred_device if requested == "auto" else requested
+def _resolve_device(
+    requested: str, config: ProjectConfig, *, layer: str = "l3",
+) -> str:
+    if layer not in {"l3", "l5"}:
+        raise ValueError(f"unsupported benchmark layer: {layer}")
+    value = (
+        getattr(config.runtime, f"{layer}_device") or config.runtime.preferred_device
+        if requested == "auto"
+        else requested
+    )
     value = value.casefold()
     if value == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
@@ -365,7 +373,8 @@ def main() -> int:
     args = _parse_args()
     config_path = args.config.resolve()
     config = load_config(config_path, environ={})
-    device = _resolve_device(args.device, config)
+    l3_device = _resolve_device(args.device, config, layer="l3")
+    l5_device = _resolve_device(args.device, config, layer="l5")
     root = config_path.parent.parent
     geometry = physical_6plus1_geometry(
         config.hardware.speed_of_sound_mps,
@@ -374,8 +383,11 @@ def main() -> int:
     )
     report: dict[str, object] = {
         "schema_version": "l3_l5_benchmark_v2",
-        "device": device,
-        "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
+        # Legacy fields continue to describe L3. New consumers should use the
+        # explicit per-layer mapping below.
+        "device": l3_device,
+        "gpu": torch.cuda.get_device_name(0) if l3_device == "cuda" else None,
+        "devices": {"l3": l3_device, "l5": l5_device},
         "torch": torch.__version__,
         "config": str(config_path),
         "method": {
@@ -384,12 +396,16 @@ def main() -> int:
             "repeats": args.repeats,
             "continuous_hop_samples": 960,
             "input_generation_excluded": True,
-            "cuda_stream_synchronized_per_window": device == "cuda",
+            "cuda_stream_synchronized_per_window": l3_device == "cuda",
+            "cuda_stream_synchronized_per_layer": {
+                "l3": l3_device == "cuda",
+                "l5": l5_device == "cuda",
+            },
         },
         "l3_single_candidate": _benchmark_l3(
             config,
             geometry,
-            device,
+            l3_device,
             1,
             args.warmup,
             args.iterations,
@@ -399,7 +415,7 @@ def main() -> int:
         "l3_double_candidate": _benchmark_l3(
             config,
             geometry,
-            device,
+            l3_device,
             2,
             args.warmup,
             args.iterations,
@@ -409,7 +425,7 @@ def main() -> int:
         "l3_triple_candidate": _benchmark_l3(
             config,
             geometry,
-            device,
+            l3_device,
             3,
             args.warmup,
             args.iterations,
@@ -417,10 +433,10 @@ def main() -> int:
             args.seed + 2_000,
         ),
     }
-    engine = _primary_l5_engine(config, root, device)
+    engine = _primary_l5_engine(config, root, l5_device)
     report["l5_single_candidate"] = _benchmark_l5(
         engine,
-        device,
+        l5_device,
         1,
         args.warmup,
         args.iterations,
@@ -429,7 +445,7 @@ def main() -> int:
     )
     report["l5_double_candidate"] = _benchmark_l5(
         engine,
-        device,
+        l5_device,
         2,
         args.warmup,
         args.iterations,
@@ -438,7 +454,7 @@ def main() -> int:
     )
     report["l5_triple_candidate"] = _benchmark_l5(
         engine,
-        device,
+        l5_device,
         3,
         args.warmup,
         args.iterations,

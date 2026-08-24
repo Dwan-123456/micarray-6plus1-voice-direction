@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import json
 import pytest
+import torch
 
 from app.runtime import ApplicationRuntime
 from common.config import load_config
@@ -52,6 +53,46 @@ class StubPipeline:
         return ()
 
 
+def test_runtime_uses_independent_l3_l4_l5_devices(tmp_path):
+    config = load_config(CONFIG, environ={})
+    runtime = ApplicationRuntime(
+        config, project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+
+    assert runtime.l3_device == "cpu"
+    assert runtime.l4_device == ("cuda" if torch.cuda.is_available() else "cpu")
+    assert runtime.l5_device == "cpu"
+    assert runtime.processing_device == runtime.l3_device
+    assert runtime.processing_status["devices"] == {
+        "l1": "cpu", "l2": "cpu", "l3": "cpu",
+        "l4": runtime.l4_device, "l5": "cpu",
+    }
+    runtime.close()
+
+
+def test_legacy_runtime_device_falls_back_for_each_layer():
+    config = load_config(CONFIG, environ={})
+    legacy_runtime = config.runtime.model_copy(update={
+        "preferred_device": "CPU",
+        "l3_device": None,
+        "l4_device": None,
+        "l5_device": None,
+    })
+    legacy = config.model_copy(update={"runtime": legacy_runtime})
+
+    assert ApplicationRuntime._resolve_layer_device(legacy, "l3_device") == "cpu"
+    assert ApplicationRuntime._resolve_layer_device(legacy, "l4_device") == "cpu"
+    assert ApplicationRuntime._resolve_layer_device(legacy, "l5_device") == "cpu"
+
+
+def test_l4_cuda_policy_honors_cpu_fallback(monkeypatch):
+    config = load_config(CONFIG, environ={})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    assert ApplicationRuntime._resolve_layer_device(config, "l4_device") == "cpu"
+
+
 class RestartablePipeline(StubPipeline):
     def __init__(self, frames):
         self.template = tuple(frames)
@@ -93,6 +134,26 @@ class StubSerial:
     def write(self, packet):
         self.packets.append(packet)
         return len(packet)
+
+
+def test_offline_l4_builder_uses_its_independent_device(tmp_path, monkeypatch):
+    captured = {}
+
+    def build_backend(artifact, *, device):
+        captured.update(artifact=artifact, device=device)
+        return SimpleNamespace(backend_id="mossformer2_ss_16k")
+
+    monkeypatch.setattr("app.runtime.MossFormer2Backend", build_backend)
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+
+    pipeline = runtime.build_offline_l4_pipeline("mossformer2_ss_16k")
+
+    assert captured["device"] == runtime.l4_device
+    assert pipeline.backends["mossformer2_ss_16k"].backend_id == "mossformer2_ss_16k"
+    runtime.close()
 
 
 def test_runtime_direction_threshold_is_live_and_validated(tmp_path):

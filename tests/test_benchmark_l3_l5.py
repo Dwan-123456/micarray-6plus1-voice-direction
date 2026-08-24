@@ -6,10 +6,11 @@ import pytest
 from scripts.benchmark_l3_l5 import PROJECT_ROOT, _candidates, _l3_windows, _resolve_device
 
 
-def test_benchmark_auto_device_follows_the_single_runtime_config() -> None:
+def test_benchmark_auto_device_follows_the_l3_runtime_config() -> None:
     config = load_config(PROJECT_ROOT / "config/config.yaml", environ={})
 
-    assert _resolve_device("auto", config) == config.runtime.preferred_device.casefold()
+    assert _resolve_device("auto", config, layer="l3") == config.runtime.l3_device
+    assert _resolve_device("auto", config, layer="l5") == config.runtime.l5_device
 
 
 def test_benchmark_builds_a_real_three_candidate_batch() -> None:

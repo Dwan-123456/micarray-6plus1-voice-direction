@@ -256,11 +256,18 @@ class ApplicationRuntime:
             config.hardware.geometry_version,
             config.hardware.ring_radius_m,
         )
-        # The CPU path is the deterministic development integration. The same processor accepts CUDA tensors later.
-        self.processing_device = self._resolve_processing_device(config)
-        self._l3_cuda_stream = torch.cuda.Stream() if self.processing_device == "cuda" else None
-        self._l5_cuda_stream = torch.cuda.Stream() if self.processing_device == "cuda" else None
-        self._layer3 = Layer3Processor(config, device=self.processing_device)
+        # L1 and L2 remain CPU stages. L3, stopped/offline L4 and lightweight
+        # L5 have independent device policies so the separator can own CUDA
+        # without forcing every realtime stage onto the GPU.
+        self.l3_device = self._resolve_layer_device(config, "l3_device")
+        self.l4_device = self._resolve_layer_device(config, "l4_device")
+        self.l5_device = self._resolve_layer_device(config, "l5_device")
+        # Compatibility alias consumed by existing Test UI/status clients. It
+        # has always described the realtime L3 device in user-facing text.
+        self.processing_device = self.l3_device
+        self._l3_cuda_stream = torch.cuda.Stream() if self.l3_device == "cuda" else None
+        self._l5_cuda_stream = torch.cuda.Stream() if self.l5_device == "cuda" else None
+        self._layer3 = Layer3Processor(config, device=self.l3_device)
         self.downstream_window_spec = config.downstream_audio_window
         self._l3_cache_snapshot: object | None = None
         if layer5_engine is None:
@@ -279,7 +286,7 @@ class ApplicationRuntime:
                 plugins.append(NvidiaMarbleNetPlugin(
                     item.model_id,
                     artifact,
-                    device=self.processing_device,
+                    device=self.l5_device,
                     window_spec=config.downstream_audio_window,
                 ))
             primary = next(plugin for plugin in plugins if plugin.model_id == config.layer5.primary_model_id)
@@ -351,17 +358,20 @@ class ApplicationRuntime:
         self._lifecycle_lock = threading.RLock()
 
     @staticmethod
-    def _resolve_processing_device(config: ProjectConfig) -> str:
-        preferred = config.runtime.preferred_device.casefold()
+    def _resolve_layer_device(config: ProjectConfig, field_name: str) -> str:
+        configured = getattr(config.runtime, field_name)
+        preferred = (configured or config.runtime.preferred_device).casefold()
         if preferred == "cuda":
             if torch.cuda.is_available():
                 return "cuda"
             if config.runtime.allow_cpu_fallback:
                 return "cpu"
-            raise RuntimeError("配置要求CUDA处理，但当前torch.cuda不可用且禁止CPU fallback")
+            raise RuntimeError(
+                f"配置runtime.{field_name}=cuda，但当前torch.cuda不可用且禁止CPU fallback"
+            )
         if preferred == "cpu":
             return "cpu"
-        raise ValueError(f"未知runtime.preferred_device: {config.runtime.preferred_device}")
+        raise ValueError(f"未知runtime.{field_name}: {preferred}")
 
     def _reset_processing_graph(self) -> None:
         """Create a fresh bounded graph for one capture session.
@@ -992,6 +1002,13 @@ class ApplicationRuntime:
         joiner = self._result_joiner.snapshot()
         l5_diagnostics = self._l5_diagnostic_snapshot()
         return {
+            "devices": {
+                "l1": "cpu",
+                "l2": "cpu",
+                "l3": self.l3_device,
+                "l4": self.l4_device,
+                "l5": self.l5_device,
+            },
             "queue_depths": self.processing_queue_depths,
             "queue_capacities": {
                 "l2": self._l2_windows.maxsize,
@@ -1630,6 +1647,13 @@ class ApplicationRuntime:
             geometry_version=self.config.hardware.geometry_version,
             runtime={
                 "processing_device": self.processing_device,
+                "devices": {
+                    "l1": "cpu",
+                    "l2": "cpu",
+                    "l3": self.l3_device,
+                    "l4": self.l4_device,
+                    "l5": self.l5_device,
+                },
                 "processing_architecture": "staged_window_pipeline_v1",
                 "window_key": "session_id,stream_epoch,window_id,decision_sample",
                 "queue_capacities": {
@@ -3240,9 +3264,9 @@ class ApplicationRuntime:
         if not artifact.is_absolute():
             artifact = self.project_root / artifact
         backend = (
-            MossFormer2Backend(artifact, device=self.processing_device)
+            MossFormer2Backend(artifact, device=self.l4_device)
             if selected == "mossformer2_ss_16k"
-            else TigerBackend(artifact, device=self.processing_device)
+            else TigerBackend(artifact, device=self.l4_device)
         )
         return OfflineLayer4Pipeline(
             speaker_counter=DirectionCountSpeakerClassifier(),

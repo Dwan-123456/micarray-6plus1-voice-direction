@@ -23,6 +23,17 @@
 
 ---
 
+## 2026-08-24 — L3/L4/L5独立设备分配
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。
+- **默认设备拓扑**：Runtime由原先一个`preferred_device`统一控制L3/L4/L5，改为`L1 CPU → L2 CPU → L3 CPU → 离线L4 CUDA → L5 CPU`；L3实时BF和轻量L5不再占用L4分离所需GPU。
+- **配置兼容**：新增`runtime.l3_device/l4_device/l5_device`；旧配置未提供独立字段时仍回退到`preferred_device`，任一CUDA层在`allow_cpu_fallback: true`且CUDA不可用时独立回退CPU。
+- **Runtime与记录**：L3处理器/CUDA流、L4 MossFormer2或TIGER、L5 MarbleNet分别读取自己的设备；`processing_device`保留为L3兼容别名，运行状态及session metadata新增L1～L5完整设备映射。
+- **未改变**：L1采集/IMCRA/预降噪/CountNet、L2 Gate/MUSIC/ID追踪、L3 BF算法与输出、离线L4分离/2～4 kHz匹配、L5概率算法、各UI交互、队列调度、正式录音和数据管理语义均无变化。
+- **验证与资产**：增加独立设备、旧配置fallback、CUDA不可用回退及离线L4设备消费测试；无模型、音频或Git LFS对象变化。
+
+---
+
 ## 2026-08-24 — L3有效频带求解与按需加载重试优化
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。
