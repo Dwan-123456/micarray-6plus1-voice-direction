@@ -645,7 +645,7 @@ class Layer4AudioPanel(QGroupBox):
         backend_id: str = "mossformer2_ss_16k",
         parent: QWidget | None = None,
     ):
-        super().__init__("L4 · Separated Audio Preview", parent)
+        super().__init__("L4 / L5 · Separated Audio Preview", parent)
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         self.summary = QLabel("等待L3长音频")
@@ -675,8 +675,6 @@ class Layer4AudioPanel(QGroupBox):
         for button in self.backend_buttons.values():
             header.addWidget(button)
         layout.addLayout(header)
-        self.help = QLabel("L4输出保留原ID和角度；L5判为人声后仅本栏对应波形变黄。")
-        layout.addWidget(self.help)
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
         self.track_scroll.setHorizontalScrollBarPolicy(
@@ -773,17 +771,17 @@ class Layer4AudioPanel(QGroupBox):
             row.set_snapshot(track, playing=track.track_id == self._playing_track_id)
         if unmerged:
             self.summary.setText(
-                f"L4完成：{len(tracks)}条未合并候选；L5完成" if l5_complete
-                else f"L4完成：{len(tracks)}条未合并候选；L5自动处理中…"
+                f"完成：{len(tracks)}条未合并候选" if l5_complete
+                else f"已分离：{len(tracks)}条未合并候选；正在标注…"
             )
         else:
             self.summary.setText(
-                f"L4完成：{len(tracks)}条；L5完成" if l5_complete
-                else f"L4完成：{len(tracks)}条；L5自动处理中…"
+                f"完成：{len(tracks)}条" if l5_complete
+                else f"已分离：{len(tracks)}条；正在标注…"
             )
 
     def set_l5_error(self, text: str) -> None:
-        self.summary.setText(f"L4完成；L5失败：{text}")
+        self.summary.setText(f"标注失败：{text}")
 
     def _toggle_track(self, track_id: int) -> None:
         if self._playing_track_id == track_id:
@@ -823,7 +821,7 @@ class Layer6AudioPanel(QGroupBox):
         super().__init__("L6 · Speaker Audio Preview", parent)
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
-        self.summary = QLabel("等待L4双候选与L5完成")
+        self.summary = QLabel("等待L4双候选标注完成")
         self.run = QPushButton("运行L6")
         self.run.setEnabled(False)
         self.run.clicked.connect(self.run_requested.emit)
@@ -843,7 +841,7 @@ class Layer6AudioPanel(QGroupBox):
         self._rows: dict[int, AudioTrackRow] = {}
         self._playing_track_id: int | None = None
 
-    def clear_tracks(self, text: str = "等待L4双候选与L5完成") -> None:
+    def clear_tracks(self, text: str = "等待L4双候选标注完成") -> None:
         for row in self._rows.values():
             self.track_layout.removeWidget(row)
             row.deleteLater()

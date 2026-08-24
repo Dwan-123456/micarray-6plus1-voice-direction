@@ -1252,7 +1252,7 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
         app.processEvents()
 
 
-def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeypatch):
+def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import Qt
@@ -1268,9 +1268,12 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         assert layout.rowStretch(0) == layout.rowStretch(1) == 1
         assert all(layout.columnStretch(index) == 1 for index in range(6))
         assert "L3" in window.bf_panel.title()
-        assert "L4" in window.l4_panel.title()
+        assert "L4 / L5" in window.l4_panel.title()
         assert "L5" in window.cnn_panel.title()
         assert "L6" in window.l6_panel.title()
+        assert layout.indexOf(window.cnn_panel) == -1
+        assert layout.indexOf(window.l6_panel) >= 0
+        assert not hasattr(window.l4_panel, "help")
         assert window.bf_panel.send.text() == "发送到L4"
         assert not hasattr(window.l4_panel, "send")
         assert set(window.l4_panel.backend_buttons) == {
@@ -1451,7 +1454,7 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
         assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0, "l6": None}
         assert "L4 2.50 s | L5 4.00 s" in window.performance_bar.text()
         assert window.bf_panel.send.isEnabled()
-        assert "L5完成" in window.l4_panel.summary.text()
+        assert window.l4_panel.summary.text() == "完成：0条"
 
         window._send_l3_to_l4()
         assert events == [
@@ -1468,7 +1471,7 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
         assert merge_modes == [True, True, False]
         assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0, "l6": None}
         assert "未合并候选" in window.l4_panel.summary.text()
-        assert "L5完成" in window.l4_panel.summary.text()
+        assert window.l4_panel.summary.text() == "完成：0条未合并候选"
         assert window.bf_panel.send.isEnabled()
     finally:
         window.close()

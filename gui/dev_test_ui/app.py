@@ -1297,7 +1297,7 @@ def build_window(
                 ))
                 self.l6_panel.clear_tracks(
                     "L4已合并；关闭“合并”并重新发送后才能运行L6"
-                    if merged else "L4双候选与L5已完成；可手动运行L6"
+                    if merged else "L4双候选标注完成；可手动运行L6"
                 )
                 self.l6_panel.set_run_enabled(not merged and bool(l5_results))
                 self.bf_panel.set_send_enabled(True)
@@ -1306,7 +1306,7 @@ def build_window(
 
         def _run_l6(self):
             if not self._l5_results:
-                self.l6_panel.set_error("没有可用的L4/L5双候选")
+                self.l6_panel.set_error("没有可用的L4双候选标注")
                 return
             self.preview_player.close()
             self._audio_source_key = None
