@@ -577,7 +577,9 @@ def test_runtime_can_stop_and_start_a_new_capture_session(tmp_path):
     runtime.close()
 
 
-def test_live_test_ui_capture_warms_l1_l2_then_starts_temporary_l3(tmp_path):
+def test_live_test_ui_capture_keeps_imcra_but_resets_l2_before_temporary_l3(
+    tmp_path, monkeypatch,
+):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}),
         project_root=tmp_path,
@@ -588,6 +590,15 @@ def test_live_test_ui_capture_warms_l1_l2_then_starts_temporary_l3(tmp_path):
     runtime.start()
     warmed_imcra = runtime.imcra
     warmed_l2 = runtime._layer2
+    reset_calls = 0
+    original_reset = warmed_l2.reset
+
+    def recording_reset():
+        nonlocal reset_calls
+        reset_calls += 1
+        original_reset()
+
+    monkeypatch.setattr(warmed_l2, "reset", recording_reset)
 
     assert runtime.runtime_recording_mode == "temporary"
     assert runtime.runtime_recording_active is False
@@ -601,6 +612,7 @@ def test_live_test_ui_capture_warms_l1_l2_then_starts_temporary_l3(tmp_path):
     assert runtime.downstream_processing_enabled is True
     assert runtime.imcra is warmed_imcra
     assert runtime._layer2 is warmed_l2
+    assert reset_calls == 1
     assert runtime._recording_session_started is False
 
     runtime.pause_runtime_recording()

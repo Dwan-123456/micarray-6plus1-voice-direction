@@ -254,6 +254,7 @@ class ApplicationRuntime:
         )
         self._ui_lock = threading.Lock()
         self._layer2 = Layer2Pipeline.from_project(config, project_root=self.project_root)
+        self._layer2_state_lock = threading.RLock()
         self._source_probability_provider = source_probability_provider or self._imcra_probabilities
         self._gate_config_lock = threading.Lock()
         self._gate_probability_threshold = config.layer2.probability_gate.threshold
@@ -1682,7 +1683,8 @@ class ApplicationRuntime:
             if self._ephemeral_live_capture:
                 self._ephemeral_recording_active = False
                 self._downstream_processing_enabled.clear()
-            self._layer2.reset()
+            with self._layer2_state_lock:
+                self._layer2.reset()
             self._stop.clear()
             self._processing_abort.clear()
             self._discard_processing.clear()
@@ -2172,21 +2174,22 @@ class ApplicationRuntime:
                     probabilities = tuple(self._source_probability_provider(item.window))
                     self._cache_publish("l2", item.key, "source_probabilities", probabilities)
                     scan_config = DirectionScanConfig(**dict(values["scan_config"]))
-                    output = self._layer2.process(
-                        item.window,
-                        probabilities,
-                        self._geometry,
-                        scan_config,
-                        gate_threshold=float(values["gate_threshold"]),
-                        gate_config_revision=int(values["gate_config_revision"]),
-                        scan_config_revision=int(values["scan_config_revision"]),
-                        direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
-                        direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
-                        direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
-                        direction_id_tracking_enabled=bool(
-                            values["direction_id_tracking_enabled"]
-                        ),
-                    )
+                    with self._layer2_state_lock:
+                        output = self._layer2.process(
+                            item.window,
+                            probabilities,
+                            self._geometry,
+                            scan_config,
+                            gate_threshold=float(values["gate_threshold"]),
+                            gate_config_revision=int(values["gate_config_revision"]),
+                            scan_config_revision=int(values["scan_config_revision"]),
+                            direction_kalman_enabled=bool(values["direction_kalman_enabled"]),
+                            direction_kalman_q_scale=float(values["direction_kalman_q_scale"]),
+                            direction_kalman_r_scale=float(values["direction_kalman_r_scale"]),
+                            direction_id_tracking_enabled=bool(
+                                values["direction_id_tracking_enabled"]
+                            ),
+                        )
                     if len(output.candidates) > 3:
                         raise RuntimeError("Layer 2 contract violation: more than 3 candidates")
                     diagnostics = self._l2_diagnostics(output, values)
@@ -3326,9 +3329,11 @@ class ApplicationRuntime:
         with self._ephemeral_transition_lock:
             if self._ephemeral_recording_active:
                 return
-            # Preserve the already-warmed IMCRA estimator and the complete L2
-            # tracker. Only the listening/BF caches begin a fresh timeline.
+            # Preserve only the already-warmed IMCRA estimator. MUSIC rolling
+            # state and every L2 ID/tracker lifecycle restart at this boundary.
             self._ephemeral_recording_active = True
+            with self._layer2_state_lock:
+                self._layer2.reset()
             self.track_audio_stream.reset()
             if self.dev_audio_tracker is not None:
                 self.dev_audio_tracker.reset()

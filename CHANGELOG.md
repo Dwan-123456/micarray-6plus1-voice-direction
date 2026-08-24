@@ -36,10 +36,10 @@
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。
 - **启动采集阶段**：真实麦克风Test UI每次启动默认仅运行L1/IMCRA和L2 MUSIC/ID，`L3/4/5`保持关闭且不能被手动提前开启；L3试听区在此阶段只缓存Center RAW及实际启用时的Center IMCRA参考音频。
-- **开始正式录音阶段**：Test UI中的“正式录音开始”改为本轮临时BF阶段开关。切换时保留已经预热的IMCRA实例、噪声统计和完整L2/ID状态，只清空Center试听及下游连续音轨缓存，随后自动开启L3并从后续L2结果执行BF和按ID拼接；暂停会再次切断L2到L3/L5，但不重置L1/L2。
+- **开始正式录音阶段**：Test UI中的“正式录音开始”改为本轮临时BF阶段开关。切换时只保留已经预热的IMCRA实例及噪声统计；MUSIC滚动状态和全部L2 DOA/ID追踪生命周期在互斥边界内清零，Center试听及下游连续音轨缓存同步清空，随后自动开启L3并由新L2结果重新建立ID、执行BF和按ID拼接。暂停会再次切断L2到L3/L5。
 - **存储边界**：真实麦克风Test UI不再创建RecordingStore session，不写入正式音频、DecisionRecord、watermark或事件触发资产；scratch试听录制和Test UI分段缓存仍为临时文件。关闭UI或重新启动采集继续清除本轮临时缓存。模拟WAV/完整录音回放、Production录音及普通ApplicationRuntime仍保留原正式RecordingStore语义。
 - **未改变**：IMCRA、预降噪、MUSIC、ID追踪、L3 BF算法、离线L4、L5模型、Production/Log UI、正式录音schema和数据管理接口均无算法变化。
-- **验证与资产**：增加真实麦克风临时模式的L1/L2预热、下游门禁、IMCRA/L2状态连续、无正式session及暂停回退测试；完整自动测试`531 passed`。未进行真实麦克风长时间实机验收；无模型、音频或Git LFS资产变化。
+- **验证与资产**：增加真实麦克风临时模式的下游门禁、仅IMCRA连续、L2完整重置、无正式session及暂停回退测试。未进行真实麦克风长时间实机验收；无模型、音频或Git LFS资产变化。
 
 ---
 
