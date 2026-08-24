@@ -1151,6 +1151,26 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
         assert window._eof_stop_submitted
         assert not window._runtime.active
         assert window._last_runtime_state == "stopped"
+        deadline = time.monotonic() + 2.0
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        frozen_durations = window._runtime.pipeline_total_durations_seconds
+        assert all(frozen_durations[stage] is not None for stage in ("l2", "l3", "l5"))
+        window._refresh_replay_controls()
+        assert window._pending_command is None
+        assert window._runtime.pipeline.source.status().state == "stopped"
+        assert window.replay_restart.isEnabled()
+        app.processEvents()
+        assert window._runtime.pipeline_total_durations_seconds == frozen_durations
+
+        window.replay_restart.click()
+        deadline = time.monotonic() + 10.0
+        while not window._runtime.active and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window._runtime.active
+        assert window._runtime.pipeline.source.status().state == "playing"
     finally:
         window.close()
         app.processEvents()

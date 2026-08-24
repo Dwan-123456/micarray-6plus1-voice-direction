@@ -965,7 +965,7 @@ def build_window(
             busy = self._pending_command is not None
             self.replay_start.setEnabled(not busy and status.state in {"ready", "paused"})
             self.replay_pause.setEnabled(not busy and status.state == "playing")
-            self.replay_restart.setEnabled(not busy and status.state not in {"ready", "stopped", "error"})
+            self.replay_restart.setEnabled(not busy and status.state not in {"ready", "error"})
 
         def _begin_recording(self):
             def started(_result):
