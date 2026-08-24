@@ -1149,6 +1149,21 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
             time.sleep(0.01)
         assert window._runtime.active
 
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window._pending_command is None
+        previous_session = window._runtime.coordinator.session_id
+        window._restart_replay()
+        assert window._pending_command is not None
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window._pending_command is None
+        assert window._runtime.active
+        assert window._runtime.coordinator.session_id != previous_session
+        assert window._runtime.pipeline.source.status().state == "playing"
+
         while (
             not window._eof_stop_submitted or window._runtime.active
         ) and time.monotonic() < deadline:

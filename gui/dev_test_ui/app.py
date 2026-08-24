@@ -727,7 +727,7 @@ def build_window(
                 result = future.result()
                 if on_success is not None:
                     on_success(result)
-                if name == "启动采集":
+                if name in {"启动采集", "从头重播"}:
                     self._enter_starting_state()
                 elif name in {"停止采集", "模拟输入已播放完成"}:
                     if runtime.active:
@@ -902,10 +902,20 @@ def build_window(
             # disabled indefinitely.
             self._eof_stop_submitted = False
             runtime.reset_pipeline_total_durations()
-            replay_source.replay()
-            runtime.set_pipeline_timing_paused("simulation_input_paused", False)
-            if not runtime.active:
-                self._start_capture()
+            # Stop new L1 admission before the background command discards all
+            # queued work. The one L3 item already executing is allowed to
+            # return, but its late result is thrown away with the old graph.
+            replay_source.pause()
+            runtime.set_pipeline_timing_paused("simulation_input_paused", True)
+
+            def discard_and_restart():
+                if runtime.active:
+                    runtime.discard_pending_for_replay()
+                replay_source.replay()
+                runtime.set_pipeline_timing_paused("simulation_input_paused", False)
+                runtime.start()
+
+            self._submit_command("从头重播", discard_and_restart)
 
         @staticmethod
         def _format_replay_time(seconds: float) -> str:

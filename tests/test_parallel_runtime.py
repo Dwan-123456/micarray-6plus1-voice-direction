@@ -964,6 +964,53 @@ def test_bounded_shutdown_reports_cancelled_processing_as_incomplete(tmp_path: P
     )
 
 
+def test_replay_restart_discards_waiting_l3_and_old_commit_state(tmp_path: Path) -> None:
+    probe = _StageProbe()
+    l3_started = threading.Event()
+    release_l3 = threading.Event()
+    runtime, store, _ = _runtime(
+        tmp_path,
+        config=_config(l2_queue_windows=8, l3_queue_windows=8),
+        l3=_FirstBlockingL3(probe, started=l3_started, release=release_l3),
+    )
+    runtime.start()
+    runtime._ui_aggregator = _StubUiAggregator()
+    for window_id in range(6):
+        assert runtime._admit_window(_window(window_id))
+    assert l3_started.wait(5.0)
+    _wait_until(lambda: runtime.processing_queue_depths["l3"] >= 1)
+
+    result: dict[str, int] = {}
+    failure: list[BaseException] = []
+
+    def discard() -> None:
+        try:
+            result.update(runtime.discard_pending_for_replay())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failure.append(exc)
+
+    command = threading.Thread(target=discard, name="test-replay-discard")
+    command.start()
+    _wait_until(lambda: runtime._discard_processing.is_set())
+    release_l3.set()
+    command.join(timeout=5.0)
+
+    assert not command.is_alive()
+    assert failure == []
+    assert result["l3"] >= 1
+    assert probe.count("l3") == 1
+    assert store.record_snapshot() == ()
+    assert store.stop_reasons[-1] == "replay_restarted_discarded"
+    assert runtime.processing_queue_depths == {
+        "l2": 0, "l3": 0, "l5": 0, "completion": 0,
+    }
+    assert not runtime.active
+
+    runtime.start()
+    assert runtime.active
+    runtime.stop()
+
+
 def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_runtime(
     tmp_path: Path,
 ) -> None:

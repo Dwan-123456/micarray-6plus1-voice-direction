@@ -28,7 +28,7 @@ Development Test UI可实时关闭下游处理。关闭后，L2继续正常处�
 
 Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Output(())`，不执行prepare/STFT/协方差；实时L5不调用空batch模型，仍以`offline_after_l4`的`SKIPPED`终态收束。增强音频和Voice方向为空。
 
-启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。完整模拟输入EOF不设有限排空期限，Test UI在此期间显示`FINALIZING`；实时/手动停止继续使用配置的安全期限。有限期限超时的已注册窗口显式转为`CANCELLED/error`并以`runtime_error`结束session；仍有worker存活时拒绝假关闭。
+启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。完整模拟输入EOF不设有限排空期限，Test UI在此期间显示`FINALIZING`；实时/手动停止继续使用配置的安全期限。有限期限超时的已注册窗口显式转为`CANCELLED/error`并以`runtime_error`结束session；仍有worker存活时拒绝假关闭。操作者在模拟播放中点击“从头重播”属于独立的硬换代路径：立即暂停L1并清空所有尚未执行的L2/L3/L5/Commit工作，当前正在执行且不能安全抢占的单个kernel返回后也丢弃其结果，再用全新处理图从sample 0开始；该行为不改变正常EOF的完整排空和`stopped`计时封存。
 
 Development Test UI只通过公开只读`processing_status`获取每阶段队列深度/容量、worker存活、在途窗口、缓存字节、完成数和错误数；其中`input_health`公开当前epoch、连续性中断次数/最后原因、input overflow、handoff drop及交接队列深度/容量/高水位，L5诊断包括`l5_actual_completed/l5_dropped/l5_skipped/l5_actual_hz`及显示邮箱深度、容量、覆盖数。Gate因新epoch重新预热时，UI错误文案附带`epoch_reset:<reason>`，可直接区分静音、处理丢窗与真实输入中断。UI不得读取Runtime私有队列或据此修改调度。
 

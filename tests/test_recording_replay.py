@@ -126,6 +126,24 @@ def test_replay_does_not_open_or_validate_recorded_hotmap_asset(tmp_path: Path):
     replay.stop()
 
 
+def test_replay_after_runtime_stop_reopens_from_sample_zero(tmp_path: Path):
+    replay = source(recording(tmp_path, blocks=2), autoplay=True)
+    replay.start()
+    assert replay.read(timeout=0.1) is not None
+    generation = replay.status().generation
+    replay.stop()
+
+    replay.replay()
+    assert replay.status().state == "ready"
+    assert replay.status().current_sample == 0
+    assert replay.status().generation == generation + 1
+    replay.start()
+    restarted = replay.read(timeout=0.1)
+    assert restarted is not None
+    assert restarted.sequence_id == 0 and restarted.timestamp == 0.0
+    replay.stop()
+
+
 def test_replay_rejects_modified_audio_asset(tmp_path: Path):
     manifest = recording(tmp_path)
     (manifest.parent / "native_8ch.wav").write_bytes(b"tampered")

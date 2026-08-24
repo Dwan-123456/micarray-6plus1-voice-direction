@@ -322,6 +322,7 @@ class ApplicationRuntime:
         self.light_state = "unknown"
         self._stop = threading.Event()
         self._processing_abort = threading.Event()
+        self._discard_processing = threading.Event()
         self._input_worker_done = threading.Event()
         self._input_exhausted = False
         self._thread: threading.Thread | None = None
@@ -1586,6 +1587,7 @@ class ApplicationRuntime:
             self._layer2.reset()
             self._stop.clear()
             self._processing_abort.clear()
+            self._discard_processing.clear()
             self._input_worker_done.clear()
             self.coordinator = IngestCoordinator(
                 sample_rate=self.config.device.sample_rate,
@@ -2419,6 +2421,10 @@ class ApplicationRuntime:
 
         try:
             while True:
+                if self._discard_processing.is_set():
+                    pending.clear()
+                    update_pending_pressure()
+                    break
                 found = drain_fallbacks()
                 if len(pending) < hard_pending_limit:
                     try:
@@ -3228,6 +3234,108 @@ class ApplicationRuntime:
                 self.last_error = f"runtime recording finalize failed: {exc}"
             else:
                 self._recording_session_started = False
+
+    def discard_pending_for_replay(self) -> dict[str, int]:
+        """Abort the current replay pass and discard every uncommitted item.
+
+        This is intentionally separate from :meth:`stop`: normal/EOF stop
+        drains admitted work so its duration and offline audio remain
+        authoritative, while an operator-requested replay is a hard epoch
+        boundary.  A currently executing kernel cannot be pre-empted safely,
+        but all waiting queues are emptied immediately and its late result is
+        discarded before a fresh Runtime graph may start.
+        """
+
+        with self._lifecycle_lock:
+            self._stop.set()
+            self._discard_processing.set()
+            self._processing_abort.set()
+            self._input_worker_done.set()
+            thread = self._thread
+            workers = dict(self._processing_threads)
+
+        discarded = {
+            "l2": 0,
+            "l3": 0,
+            "l5": 0,
+            "completion": 0,
+            "completion_backlog": 0,
+            "joiner_pending": len(self._result_joiner.pending_keys()),
+        }
+
+        def clear_waiting_queues() -> None:
+            for name, mailbox in (
+                ("l2", self._l2_windows),
+                ("l3", self._l3_windows),
+                ("l5", self._l5_windows),
+                ("completion", self._completion_results),
+            ):
+                while True:
+                    try:
+                        mailbox.get_nowait()
+                        discarded[name] += 1
+                    except queue.Empty:
+                        break
+            with self._completion_backlog_lock:
+                discarded["completion_backlog"] += len(self._completion_backlog)
+                self._completion_backlog.clear()
+
+        # Drop queued L3 work before waiting for the one item that may already
+        # be inside a CPU/CUDA kernel. Pausing the source in the UI prevents
+        # new capture, and pipeline.stop wakes the input thread immediately.
+        clear_waiting_queues()
+        try:
+            self.pipeline.stop()
+        except Exception as exc:
+            self.last_error = f"replay discard input stop failed: {exc}"
+        self._wake_processing_workers()
+
+        timeout = float(self.config.runtime.graceful_shutdown_timeout_seconds)
+        deadline = monotonic() + timeout
+
+        def join_until(worker: threading.Thread | None) -> None:
+            if worker is None or worker is threading.current_thread():
+                return
+            worker.join(timeout=max(0.0, deadline - monotonic()))
+
+        join_until(thread)
+        for name in ("l2", "l3", "l5", "commit"):
+            join_until(workers.get(name))
+        alive = {
+            name: worker for name, worker in workers.items() if worker.is_alive()
+        }
+        input_alive = thread is not None and thread.is_alive()
+        if input_alive or alive:
+            names = (["input"] if input_alive else []) + sorted(alive)
+            self.last_error = (
+                f"replay discard did not stop workers within {timeout:.1f} seconds: "
+                f"{','.join(names)}"
+            )
+            raise RuntimeError(self.last_error)
+
+        # A just-finished in-flight worker may have published after the first
+        # clear. Remove that late result as well before start() replaces the
+        # graph, Hub, caches and per-run timing generation.
+        clear_waiting_queues()
+        with self._lifecycle_lock:
+            self._thread = None
+            self._processing_threads = {}
+            self._processing_thread = None
+        self._compute_cache.clear("replay_restart_discard")
+        self._layer3.clear_cache()
+        self.track_audio_stream.reset()
+        if self.dev_audio_tracker is not None:
+            self.dev_audio_tracker.reset()
+        if self._recording_session_started:
+            try:
+                self.recording_store.stop_session("replay_restarted_discarded")
+            except Exception as exc:
+                self.last_error = f"replay discard recording finalize failed: {exc}"
+                raise RuntimeError(self.last_error) from exc
+            self._recording_session_started = False
+        self.last_error = None
+        self.processing_error = None
+        return discarded
 
     @property
     def offline_l4_sources(self):

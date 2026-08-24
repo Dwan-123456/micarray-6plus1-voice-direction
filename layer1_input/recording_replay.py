@@ -181,6 +181,9 @@ class RecordingReplaySource(AudioSource):
         with self._condition:
             if self._wav is None:
                 self._autoplay = True
+                self._sample_position = 0
+                self._sequence = 0
+                self._generation += 1
                 self._state = "ready"
                 return
             self._wav.rewind()
