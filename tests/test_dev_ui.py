@@ -710,6 +710,41 @@ def test_gate_blocked_frame_clears_previous_polar_snapshot(monkeypatch, tmp_path
         app.processEvents()
 
 
+def test_simulation_l2_frame_renders_doa_polar_snapshot(monkeypatch, tmp_path):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    wav_path = tmp_path / "simulation.wav"
+    _write_test_wav(wav_path, np.zeros((18 * 960, 7), np.float32))
+    app, window = build_window(CONFIG, input_wav=wav_path)
+    response, candidates, gate, diagnostics = _open_l2_result()
+    response = replace(response, model_order=diagnostics.model_order)
+    frame = SimpleNamespace(
+        gate_decision=gate,
+        gate_config_revision=window._runtime.gate_config_revision,
+        scan_config_revision=window._runtime.direction_scan_config_revision,
+        direction_id_tracking_enabled=True,
+        spatial_response=response,
+        spatial_published_monotonic=time.monotonic(),
+        directions=(),
+        active_tracks=(),
+        search_diagnostics=diagnostics,
+        candidates=candidates,
+        missing_reasons={},
+    )
+    try:
+        window._render_l2_frame(frame)
+        app.processEvents()
+
+        assert window.srp_polar._snapshot is not None
+        assert window.srp_polar._snapshot.response is response
+        assert "DOA UNAVAILABLE" not in window.srp_header.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_test_ui_sends_led_off_only_after_microphone_start_succeeds(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
