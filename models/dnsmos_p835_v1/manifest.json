@@ -1,0 +1,9 @@
+{
+  "schema_version": "audio_quality_artifact_v1",
+  "model_id": "dnsmos_p835_v1",
+  "sample_rate": 16000,
+  "weights_file": "sig_bak_ovr.onnx",
+  "weights_sha256": "269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd",
+  "source_url": "https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS",
+  "license": "MIT"
+}

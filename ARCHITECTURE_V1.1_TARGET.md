@@ -4,7 +4,7 @@
 
 开发版本：项目`1.3.3`，尚未创建发布标签；最终基线`v1.3.2`固定指向本次发布提交。不得移动、覆盖或重写已经发布的`v1.0.1`、`v1.1.1`、`v1.1.2`、`v1.2.1`、`v1.2.2`、`v1.2.3`、`v1.2.4`、`v1.3.1`、`v1.3.2`及其他历史标签。
 
-适用范围：Layer 1～Layer 5、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore、数据管理、独立 Pipeline Log UI、测试与资产。
+适用范围：Layer 1～Layer 6、Windowing、Application Runtime、Development Test UI、Production UI、RecordingStore、数据管理、独立 Pipeline Log UI、测试与资产。
 
 面向首次接触项目的可视化总图、逐层输入/输出/内部处理单元和操作流程见[`docs/COMPLETE_ARCHITECTURE_AND_USAGE.md`](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)。本文继续作为1.3.3开发契约，使用手册不建立第二份配置来源。
 
@@ -20,6 +20,7 @@
 6. Test UI 根据 L2 的权威 ID 拼接 L3 音频；删除 UI 自己的二次角度关联、别名合并和贪心补救。
 7. 录音管理和 Production UI 能按会话与 ID 查询方向时间线、L5 判断及增强音频，并提供逐 ID 试听。
 8. 新增与 L1～L5、Test UI、录音存储系统平行的独立 Pipeline Log UI，只通过公开只读接口统计和回看会话，不进入、控制或反压实时处理链。
+9. 新增手动离线L6：消费L4保留的双候选及L5逐20 ms标注，使用CAMPPlus声纹把整次录音归为0～3人，再以L5、声纹、DNSMOS、SNR和连续性综合质量在重叠时间选择较优音频。
 
 这里的 `track_id` 是**阵列方向轨迹 ID**，不是人的生物身份或说话人身份。在两个声源处于同一方向、近距离交叉或空间证据不足时，系统不能承诺保持真实人物身份不交换。
 
@@ -79,6 +80,11 @@ L4：Test UI手动提交，统一48→16 kHz并完成一/二人路由、分离�
 L5：NVIDIA Frame-VAD输出逐20 ms概率序列
     → 与每个320样本hop严格对齐；整轨摘要取完整序列连续3帧最大均值
     → 结果按精确ID回写L4预览条（概率 + Voice/Non-Voice）
+    ↓ 用户手动点击，且L4采用“保留双候选”模式
+L6：有效人声切分 → CAMPPlus声纹 → AHC聚为0～3人
+    → 同一讲话人按绝对时间线归并
+    → 重叠重复音频按综合质量评分保留较优者
+    → Speaker A/B/C 16 kHz长音频；保留来源L2 ID审计信息
 
 Recording/Data公共只读查询边界
     └── Pipeline Log UI / 性能统计、阶段时间线、单窗详情与逐ID回看

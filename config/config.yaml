@@ -259,6 +259,20 @@ layer5:
     silence_floor_dbfs: -100.0
     time_interpolation: linear_db
 
+layer6:
+  enabled: true
+  campplus_artifact: models/campplus_zh_en_16k_v1
+  dnsmos_artifact: models/dnsmos_p835_v1
+  maximum_speakers: 3
+  speaker_similarity_threshold: 0.62
+  minimum_embedding_speech_ms: 1500
+  minimum_voice_fragment_ms: 200
+  merge_voice_gap_ms: 200
+  quality_context_ms: 1000
+  selection_hop_ms: 200
+  selection_switch_margin: 0.05
+  crossfade_ms: 2
+
 runtime:
   mode: development
   # Legacy fallback for older profiles which do not define per-layer devices.

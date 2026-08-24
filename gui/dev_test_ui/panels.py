@@ -814,6 +814,90 @@ class Layer4AudioPanel(QGroupBox):
             row.set_voice_threshold(self._voice_threshold)
 
 
+class Layer6AudioPanel(QGroupBox):
+    run_requested = Signal()
+    track_play_requested = Signal(int)
+    track_stop_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__("L6 · Speaker Audio Preview", parent)
+        layout = QVBoxLayout(self)
+        header = QHBoxLayout()
+        self.summary = QLabel("等待L4双候选与L5完成")
+        self.run = QPushButton("运行L6")
+        self.run.setEnabled(False)
+        self.run.clicked.connect(self.run_requested.emit)
+        header.addWidget(self.summary, 1)
+        header.addWidget(self.run)
+        layout.addLayout(header)
+        layout.addWidget(QLabel("手动执行声纹聚类、质量择优，并按绝对时间线输出Speaker A/B/C。"))
+        self.track_scroll = QScrollArea()
+        self.track_scroll.setWidgetResizable(True)
+        self.track_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.track_container = QWidget()
+        self.track_layout = QVBoxLayout(self.track_container)
+        self.track_layout.setContentsMargins(4, 4, 4, 4)
+        self.track_layout.addStretch(1)
+        self.track_scroll.setWidget(self.track_container)
+        layout.addWidget(self.track_scroll, 1)
+        self._rows: dict[int, AudioTrackRow] = {}
+        self._playing_track_id: int | None = None
+
+    def clear_tracks(self, text: str = "等待L4双候选与L5完成") -> None:
+        for row in self._rows.values():
+            self.track_layout.removeWidget(row)
+            row.deleteLater()
+        self._rows.clear()
+        self._playing_track_id = None
+        self.summary.setText(text)
+
+    def set_run_enabled(self, enabled: bool) -> None:
+        self.run.setEnabled(bool(enabled))
+
+    def set_processing(self) -> None:
+        self.run.setEnabled(False)
+        self.summary.setText("L6处理中：声纹、聚类、质量评分与拼接…")
+
+    def set_error(self, text: str) -> None:
+        self.summary.setText(f"L6失败：{text}")
+        self.run.setEnabled(True)
+
+    def set_tracks(self, tracks) -> None:
+        self.clear_tracks()
+        for track in tracks:
+            row = AudioTrackRow(track.track_id, show_voice_highlights=False)
+            row.label.setFixedWidth(210)
+            row.toggle_requested.connect(self._toggle_track)
+            row.set_snapshot(track, playing=False)
+            self._rows[track.track_id] = row
+            self.track_layout.insertWidget(self.track_layout.count() - 1, row)
+        self.summary.setText(f"L6完成：{len(self._rows)}名讲话人")
+        self.run.setEnabled(True)
+
+    def _toggle_track(self, track_id: int) -> None:
+        if self._playing_track_id == track_id:
+            self._playing_track_id = None
+            self.track_stop_requested.emit()
+        else:
+            self._playing_track_id = track_id
+            self.track_play_requested.emit(track_id)
+        for item_id, row in self._rows.items():
+            row.set_playing(item_id == self._playing_track_id)
+
+    def sync_track_playback_stopped(self) -> None:
+        self._playing_track_id = None
+        for row in self._rows.values():
+            row.set_playing(False)
+
+    def set_track_playback_progress(self, track_id: int, progress: float) -> None:
+        for item_id, row in self._rows.items():
+            row.set_playback_progress(progress if item_id == int(track_id) else None)
+
+    def clear_track_playback_progress(self) -> None:
+        for row in self._rows.values():
+            row.set_playback_progress(None)
+
+
 class AudioWaveformThumbnail(QWidget):
     """Compact fixed-scale dBFS envelope; no audio-file rescans on UI refresh."""
 
