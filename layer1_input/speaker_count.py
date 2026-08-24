@@ -162,6 +162,26 @@ class AsyncSpeakerCounter:
         except Exception as exc:
             self.model_error = str(exc)
 
+    def _adapt_input_level(self, context: np.ndarray) -> tuple[np.ndarray, float, float]:
+        """Match quiet calibrated-array audio to the pretrained model's level domain."""
+
+        centered = np.asarray(context, dtype=np.float32) - np.float32(np.mean(context))
+        rms = float(np.sqrt(np.mean(np.square(centered, dtype=np.float64))))
+        rms_dbfs = float(20.0 * np.log10(max(rms, np.finfo(np.float32).tiny)))
+        gain_db = 0.0
+        if rms_dbfs >= self.config.input_level_floor_dbfs:
+            gain_db = float(min(
+                self.config.maximum_input_gain_db,
+                max(0.0, self.config.input_level_target_dbfs - rms_dbfs),
+            ))
+        adapted = centered * np.float32(10.0 ** (gain_db / 20.0))
+        peak = float(np.max(np.abs(adapted)))
+        if peak > 1.0:
+            limiter = 1.0 / peak
+            adapted *= np.float32(limiter)
+            gain_db += float(20.0 * np.log10(limiter))
+        return np.ascontiguousarray(adapted, dtype=np.float32), rms_dbfs, gain_db
+
     def _run(self) -> None:
         sos = signal.butter(8, 7_200.0, btype="lowpass", fs=self.input_rate, output="sos")
         zi_template = np.zeros((sos.shape[0], 2), dtype=np.float64)
@@ -230,6 +250,7 @@ class AsyncSpeakerCounter:
             start_sample, end_sample = group_start, block.end_sample
             group_start, group_blocks = None, 0
             status, count, probabilities, reason = "warming_up", None, None, None
+            input_rms_dbfs, input_gain_db = None, None
             if reset_invalid:
                 status, reason, reset_invalid = "invalid", "stream continuity reset", False
             elif buffered >= limit:
@@ -239,6 +260,7 @@ class AsyncSpeakerCounter:
                 else:
                     try:
                         context = np.concatenate(tuple(chunks))[-limit:]
+                        context, input_rms_dbfs, input_gain_db = self._adapt_input_level(context)
                         probabilities = np.asarray(self._model.predict(context), dtype=np.float32)
                         if probabilities.shape != (3,) or not np.isfinite(probabilities).all() or np.any(probabilities < 0):
                             raise ValueError("model probabilities must be finite non-negative [3]")
@@ -250,5 +272,5 @@ class AsyncSpeakerCounter:
                 block.session_id, block.stream_epoch, start_sample, end_sample,
                 count, probabilities, self.config.model_id,
                 None if self._model is None else self._model.model_hash,
-                status, reason,
+                status, reason, input_rms_dbfs, input_gain_db,
             ), generation)

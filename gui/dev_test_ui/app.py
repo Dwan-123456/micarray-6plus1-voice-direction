@@ -1428,10 +1428,21 @@ def build_window(
                     )
                 elif annotation.status == "ready":
                     p = annotation.probabilities
+                    level = (
+                        ""
+                        if annotation.input_rms_dbfs is None
+                        else f"  input={annotation.input_rms_dbfs:.1f}dBFS"
+                    )
+                    gain = (
+                        ""
+                        if annotation.input_gain_db is None
+                        else f" gain={annotation.input_gain_db:+.1f}dB"
+                    )
                     self._set_text(
                         self.countnet_label,
                         f"Speech count={annotation.speaker_count}  "
-                        f"P=[{float(p[0]):.2f},{float(p[1]):.2f},{float(p[2]):.2f}]  "
+                        f"P=[{float(p[0]):.3f},{float(p[1]):.3f},{float(p[2]):.3f}]"
+                        f"{level}{gain}  end={annotation.end_sample}  "
                         f"model={annotation.model_id}",
                     )
                 else:

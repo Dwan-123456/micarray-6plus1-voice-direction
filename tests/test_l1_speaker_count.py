@@ -77,7 +77,11 @@ def test_five_second_warmup_exact_resampling_and_five_block_alignment():
     counter = _counter(model)
     try:
         for index in range(245):
-            assert counter.submit(_block(index))
+            block = _block(index)
+            samples = np.array(block.samples, copy=True)
+            phase = np.arange(960, dtype=np.float32) + index * 960
+            samples[:, 6] = 0.25 * np.sin(2.0 * np.pi * 440.0 * phase / 48_000.0)
+            assert counter.submit(__import__("dataclasses").replace(block, samples=samples))
         warm = _wait(counter, lambda item: item.end_sample >= 235_200)
         assert warm.status == "warming_up"
         for index in range(245, 250):
@@ -86,8 +90,8 @@ def test_five_second_warmup_exact_resampling_and_five_block_alignment():
         assert (ready.start_sample, ready.end_sample) == (235_200, 240_000)
         assert ready.speaker_count == 2
         assert len(model.inputs) == 1 and model.inputs[0].shape == (80_000,)
-        # HardwareMix was 0.95, while the selected calibrated Center was 0.25.
-        assert float(np.mean(model.inputs[0][-16_000:])) == __import__("pytest").approx(0.25, abs=0.01)
+        # The Center carried a tone while HardwareMix stayed constant.
+        assert float(np.std(model.inputs[0][-16_000:])) > 0.15
     finally:
         counter.close()
 
@@ -166,3 +170,39 @@ def test_bundled_countnet_asset_hash_output_and_steady_cpu_gate():
     assert result.shape == (3,) and float(result.sum()) == __import__("pytest").approx(1.0)
     assert int(np.argmax(result)) == 0
     assert float(np.median(durations)) < 0.10
+
+
+def test_quiet_microphone_level_is_adapted_before_inference_and_reported():
+    model = _Model(((0.2, 0.7, 0.1),))
+    counter = _counter(model)
+    try:
+        for index in range(250):
+            block = _block(index)
+            samples = np.array(block.samples, copy=True)
+            phase = np.arange(960, dtype=np.float32) + index * 960
+            samples[:, 6] = 0.003 * np.sin(2.0 * np.pi * 440.0 * phase / 48_000.0)
+            counter.submit(__import__("dataclasses").replace(block, samples=samples))
+        ready = _wait(counter, lambda item: item.status == "ready")
+        assert ready.speaker_count == 1
+        assert ready.input_rms_dbfs == __import__("pytest").approx(-53.47, abs=0.3)
+        assert ready.input_gain_db == __import__("pytest").approx(30.0, abs=0.1)
+        assert float(np.sqrt(np.mean(model.inputs[0] ** 2))) > 0.06
+    finally:
+        counter.close()
+
+
+def test_digital_silence_is_not_amplified_into_a_false_signal():
+    model = _Model(((0.9, 0.05, 0.05),))
+    counter = _counter(model)
+    try:
+        for index in range(250):
+            block = _block(index)
+            samples = np.array(block.samples, copy=True)
+            samples[:, 6] = 0.0
+            counter.submit(__import__("dataclasses").replace(block, samples=samples))
+        ready = _wait(counter, lambda item: item.status == "ready")
+        # The constant test signal becomes zero after DC removal and remains zero.
+        assert ready.input_gain_db == 0.0
+        assert np.count_nonzero(model.inputs[0]) == 0
+    finally:
+        counter.close()

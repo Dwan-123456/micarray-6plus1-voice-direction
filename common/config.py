@@ -140,7 +140,7 @@ class Layer1PreDenoiseConfig(StrictModel):
 
 class Layer1SpeakerCountConfig(StrictModel):
     enabled: bool = False
-    algorithm_version: Literal["countnet_crnn_5s_100ms_v1"]
+    algorithm_version: Literal["countnet_crnn_5s_100ms_v2"]
     model_id: str = Field(min_length=1)
     model_artifact: str = Field(min_length=1)
     model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -149,6 +149,15 @@ class Layer1SpeakerCountConfig(StrictModel):
     inference_hop_ms: Literal[100]
     output_classes: Literal[3]
     queue_blocks: int = Field(default=25, ge=5)
+    input_level_target_dbfs: float = Field(default=-20.0, ge=-30.0, le=-12.0)
+    input_level_floor_dbfs: float = Field(default=-70.0, ge=-100.0, le=-40.0)
+    maximum_input_gain_db: float = Field(default=30.0, ge=0.0, le=40.0)
+
+    @model_validator(mode="after")
+    def validate_input_level_adapter(self) -> "Layer1SpeakerCountConfig":
+        if self.input_level_floor_dbfs >= self.input_level_target_dbfs:
+            raise ValueError("CountNet input level floor must be below its target")
+        return self
 
 
 class Layer2ProbabilityGateConfig(StrictModel):

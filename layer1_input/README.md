@@ -75,6 +75,12 @@ CountNet使用Stöter等人官方CRNN的固定权重和标准化器，经确定�
 5秒单声道波形。模型原生0～10人后验映射为`P0、P1、sum(P2..P10)`。模型由模拟LibriCount
 数据训练，尚未构成当前办公室/阵列环境的实机准确率验收。
 
+`countnet_crnn_5s_100ms_v2`在推理前对5秒Center上下文去除直流，并把高于`-70 dBFS`但低于
+`-20 dBFS`的输入向上适配，增益最多30 dB；正常响度不衰减，峰值超过0 dBFS时再作等比例限幅。
+这是因为官方LibriCount样本通常显著高于阵列实测约`-50 dBFS`的Center输入，未适配时模型会退化为
+近似恒定`P0=1`。UI同时显示适配前RMS、实际增益、三位概率和标注end sample，便于确认100 ms结果
+确实在更新。低于门限的数字静音不放大。
+
 `AsyncSpeakerCounter.submit()`只执行有界队列`put_nowait`；状态化重采样、5秒缓存、模型加载和CPU
 推理全部由独立`l1-countnet-worker`负责。队列满时宁可把CountNet结果置为无效并重新预热，也不能
 阻塞或减慢L1采集。epoch、sequence、sample或timestamp不连续均清空支路状态；关闭再开启同样从

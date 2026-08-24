@@ -88,7 +88,7 @@ layer1_pre_denoise:
 layer1_speaker_count:
   # Test-UI-only L1 sidecar. It never delays or changes the L1→Windowing path.
   enabled: false
-  algorithm_version: countnet_crnn_5s_100ms_v1
+  algorithm_version: countnet_crnn_5s_100ms_v2
   model_id: countnet_crnn_16k_5s_v1
   model_artifact: models/countnet_crnn_16k_5s_v1/model.pt
   model_sha256: 7c8b22c1545fba2d84eba995b5911c0ea3b26b8ad07c011588a3bde8a8d799f5
@@ -97,6 +97,11 @@ layer1_speaker_count:
   inference_hop_ms: 100
   output_classes: 3
   queue_blocks: 25
+  # Official LibriCount audio is much louder than the calibrated array input.
+  # Raise low-level, non-silent 5 s contexts without attenuating normal inputs.
+  input_level_target_dbfs: -20.0
+  input_level_floor_dbfs: -70.0
+  maximum_input_gain_db: 30.0
 
 layer2:
   # Average two aligned upstream 20 ms probabilities; `>=` opens the Gate.

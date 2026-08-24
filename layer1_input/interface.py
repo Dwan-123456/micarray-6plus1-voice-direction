@@ -25,6 +25,8 @@ class SpeakerCountAnnotation:
     model_hash: str | None
     status: str
     reason: str | None = None
+    input_rms_dbfs: float | None = None
+    input_gain_db: float | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -56,6 +58,10 @@ class SpeakerCountAnnotation:
             object.__setattr__(self, "probabilities", immutable)
         elif self.speaker_count is not None or self.probabilities is not None:
             raise ValueError("non-ready speaker-count result cannot invent a count or probabilities")
+        for name in ("input_rms_dbfs", "input_gain_db"):
+            value = getattr(self, name)
+            if value is not None and not np.isfinite(value):
+                raise ValueError(f"speaker-count {name} must be finite or None")
 
 
 @dataclass(slots=True, frozen=True, eq=False)
