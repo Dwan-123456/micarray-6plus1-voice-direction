@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 
 
 L4_MODEL_SAMPLE_RATE = 16_000
-L4_MATCH_FREQUENCY_MIN_HZ = 2_000.0
+L4_MATCH_FREQUENCY_MIN_HZ = 1_000.0
 L4_MATCH_FREQUENCY_MAX_HZ = 4_000.0
 L3_SAMPLE_RATE = 48_000
 L3_HOP_SAMPLES = 960
@@ -152,7 +152,7 @@ class Layer4PrimarySelection:
     selected_source_index: Literal[0, 1]
     candidate_scores: tuple[float, float]
     score_margin: float
-    matching_algorithm: Literal["l3_bf_2_4khz_complex_coherence_v2"]
+    matching_algorithm: Literal["l3_bf_1_4khz_complex_coherence_v3"]
     waveform: NDArray[np.float32]
     used_reference_fallback: bool = False
     fallback_reason: str | None = None
