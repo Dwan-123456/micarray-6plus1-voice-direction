@@ -22,13 +22,13 @@ Runtime还负责L1预降噪选择：IMCRA始终先读取原始音频；`ImcraWie
 
 L2的`TrackedDirection`是唯一权威方向身份。Runtime把同一`track_id`、角度和原始顺序传给L3、DecisionRecord v5、Development Test UI与Production数据服务；停机封存后的L4/L5继续继承该ID。任何下游都不得按角度、rank或试听状态创建、合并、续租或修补ID。同一session切换epoch时L2清空运动状态，但ID计数器继续单调递增。Gate关闭、latest-wins丢窗和sample跳跃都按绝对sample推进coasting/TTL，不重置整个tracker。
 
-Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`拼接，保留20 ms hop、真实音频补洞、过旧缺口等时静音、交叉淡化、Center Mic参考、有界分段和L3模式隔离。UI不再维护私有ID投影、角度贪心关联或别名合并。当前离线L5只继承公共ID并返回该ID的人声语义结果，不向L2反馈，也不拥有方向轨迹生命周期。
+Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`拼接。Runtime在每个L2完成窗口先登记confirmed/coasting权威20 ms绝对时间槽，L3只填入BF波形；首尾或中间没有BF结果的槽保留等时静音，因此轨长只由L2首尾sample决定。其余仍保留真实音频补洞、交叉淡化、Center Mic参考、有界分段和L3模式隔离。UI不再维护私有ID投影、角度贪心关联或别名合并。当前离线L5只继承公共ID并返回该ID的人声语义结果，不向L2反馈，也不拥有方向轨迹生命周期。
 
 Development Test UI可实时关闭下游处理。关闭后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L5 `SKIPPED`终态，已经排队但尚未开始的L3/L5工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner、DecisionRecord或watermark顺序；重新开启后从下一条L2结果恢复L3/L5。
 
 Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Output(())`，不执行prepare/STFT/协方差；实时L5不调用空batch模型，仍以`offline_after_l4`的`SKIPPED`终态收束。增强音频和Voice方向为空。
 
-启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。超时的已注册窗口显式转为`CANCELLED/error`；仍有worker存活时拒绝假关闭。
+启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。完整模拟输入EOF不设有限排空期限，Test UI在此期间显示`FINALIZING`；实时/手动停止继续使用配置的安全期限。有限期限超时的已注册窗口显式转为`CANCELLED/error`并以`runtime_error`结束session；仍有worker存活时拒绝假关闭。
 
 Development Test UI只通过公开只读`processing_status`获取每阶段队列深度/容量、worker存活、在途窗口、缓存字节、完成数和错误数；其中`input_health`公开当前epoch、连续性中断次数/最后原因、input overflow、handoff drop及交接队列深度/容量/高水位，L5诊断包括`l5_actual_completed/l5_dropped/l5_skipped/l5_actual_hz`及显示邮箱深度、容量、覆盖数。Gate因新epoch重新预热时，UI错误文案附带`epoch_reset:<reason>`，可直接区分静音、处理丢窗与真实输入中断。UI不得读取Runtime私有队列或据此修改调度。
 

@@ -1156,6 +1156,11 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
             time.sleep(0.01)
         assert window._eof_stop_submitted
         assert not window._runtime.active
+        deadline = time.monotonic() + 2.0
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window._pending_command is None
         assert window._last_runtime_state == "stopped"
         deadline = time.monotonic() + 2.0
         while window._pending_command is not None and time.monotonic() < deadline:

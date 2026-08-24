@@ -74,6 +74,7 @@ from .result_joiner import JoinerCapacityError, ResultDeliveryError, ResultJoine
 
 
 _PIPELINE_EOS = object()
+_CONFIGURED_DRAIN_TIMEOUT = object()
 
 
 @dataclass(frozen=True)
@@ -2042,6 +2043,30 @@ class ApplicationRuntime:
                 self._stage_completed_counts["l2"] += 1
                 self._cache_publish("l2", item.key, "stage_result", stage)
                 self._joiner_submit(lambda: self._result_joiner.submit_l2(stage))
+                if (
+                    stage.state is StageState.COMPLETED
+                    and bool(values["direction_id_tracking_enabled"])
+                ):
+                    l2_directions = tuple(
+                        getattr(stage.output, "directions", ())
+                        or stage.output.candidates
+                    )
+                    try:
+                        self.track_audio_stream.observe_l2(
+                            identity=(
+                                item.key.session_id,
+                                item.key.stream_epoch,
+                                item.key.window_id,
+                                item.key.decision_sample,
+                            ),
+                            active_tracks=tuple(
+                                getattr(stage.output, "active_tracks", ())
+                            ),
+                            processing_mode=str(values["l3_mode"]),
+                            l2_direction_count=len(l2_directions),
+                        )
+                    except Exception as exc:
+                        self.dev_audio_tracking_error = f"L2 timeline: {exc}"
                 if stage.state is not StageState.COMPLETED:
                     self._record_l5_terminal(StageState.SKIPPED)
                     self._joiner_submit(
@@ -3029,7 +3054,18 @@ class ApplicationRuntime:
     def pause_runtime_recording(self) -> None:
         self.recording_store.pause_recording()
 
-    def stop(self) -> None:
+    def stop(
+        self,
+        *,
+        drain_timeout_seconds: float | None | object = _CONFIGURED_DRAIN_TIMEOUT,
+    ) -> None:
+        """Stop input and drain staged work.
+
+        ``None`` is reserved for finite replay input whose complete admitted
+        timeline must be processed before sealing. Live/manual shutdown keeps
+        the configured bounded deadline so a failed device or worker cannot
+        hang the application indefinitely.
+        """
         with self._lifecycle_lock:
             self._stop.set()
             thread = self._thread
@@ -3041,13 +3077,23 @@ class ApplicationRuntime:
             self.pipeline.stop()
         except Exception as exc:
             self.last_error = f"input stop failed: {exc}"
-        timeout = self.config.runtime.graceful_shutdown_timeout_seconds
-        deadline = monotonic() + timeout
+        timeout = (
+            self.config.runtime.graceful_shutdown_timeout_seconds
+            if drain_timeout_seconds is _CONFIGURED_DRAIN_TIMEOUT
+            else drain_timeout_seconds
+        )
+        if timeout is not None:
+            timeout = float(timeout)
+            if timeout <= 0.0:
+                raise ValueError("drain timeout must be positive or None")
+        deadline = None if timeout is None else monotonic() + timeout
 
         def join_until(worker: threading.Thread | None) -> None:
             if worker is None or worker is threading.current_thread():
                 return
-            worker.join(timeout=max(0.0, deadline - monotonic()))
+            worker.join(
+                timeout=None if deadline is None else max(0.0, deadline - monotonic())
+            )
 
         join_until(thread)
         for name in ("l2", "l3", "l5", "commit"):
@@ -3056,7 +3102,9 @@ class ApplicationRuntime:
             name: worker for name, worker in workers.items() if worker.is_alive()
         }
         if alive:
+            assert timeout is not None
             self._processing_abort.set()
+            pending_before_cancel = len(self._result_joiner.pending_keys())
             # Convert every registered queued/in-flight window into an
             # explicit terminal record before asking the commit worker to
             # finish.  A late stage result will be rejected by the joiner and
@@ -3083,6 +3131,11 @@ class ApplicationRuntime:
             alive = {
                 name: worker for name, worker in workers.items() if worker.is_alive()
             }
+            if pending_before_cancel:
+                self.last_error = (
+                    f"processing drain timed out after {timeout:.1f} seconds; "
+                    f"cancelled {pending_before_cancel} pending windows"
+                )
             if alive:
                 self.last_error = (
                     "processing workers did not stop after graceful drain and forced cancellation: "
@@ -3091,7 +3144,11 @@ class ApplicationRuntime:
         input_alive = thread is not None and thread.is_alive()
         with self._lifecycle_lock:
             if input_alive:
-                self.last_error = f"runtime input worker did not stop within {timeout:.1f} seconds"
+                self.last_error = (
+                    "runtime input worker did not stop during complete replay drain"
+                    if timeout is None
+                    else f"runtime input worker did not stop within {timeout:.1f} seconds"
+                )
             else:
                 self._thread = None
             if not alive:
@@ -3126,6 +3183,9 @@ class ApplicationRuntime:
                 # let an invisible Hub-only track leak into offline L4.
                 allowed_l4_track_keys = set()
                 try:
+                    self.dev_audio_tracker.append_terminal_hops(
+                        self.track_audio_stream.finalize_missing_hops()
+                    )
                     retained = self.dev_audio_tracker.finalize_capture()
                     allowed_l4_track_keys = {
                         (item.session_id, item.stream_epoch, item.track_id)

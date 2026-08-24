@@ -1187,7 +1187,10 @@ def build_window(
                 # for processing_running to become false here deadlocks a
                 # completed replay in RUNNING and prevents Hub sealing.
                 self._eof_stop_submitted = True
-                self._submit_command("模拟输入已播放完成", runtime.stop)
+                self._submit_command(
+                    "模拟输入已播放完成",
+                    lambda: runtime.stop(drain_timeout_seconds=None),
+                )
             latest = None
             while True:
                 try:
@@ -1251,7 +1254,20 @@ def build_window(
                     "当前文件: scratch/current"
                 )
                 self.recording_label.setToolTip(str(runtime.scratch.current_root))
-            state = "ERROR" if runtime.last_error else ("RUNNING" if runtime.running else "STOPPED")
+            finalizing_replay = (
+                self._pending_command is not None
+                and self._pending_command[0] == "模拟输入已播放完成"
+                and runtime.active
+            )
+            state = (
+                "ERROR"
+                if runtime.last_error
+                else "FINALIZING"
+                if finalizing_replay
+                else "RUNNING"
+                if runtime.running
+                else "STOPPED"
+            )
             formal_active = runtime.recording_store.manual_active
             self._set_text(self.runtime_recording_label,
                 f"Runtime Recording: {runtime.recording_store.mode} / "

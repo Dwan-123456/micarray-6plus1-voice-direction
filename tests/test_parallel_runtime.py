@@ -901,6 +901,69 @@ def test_graceful_stop_drains_every_admitted_window(tmp_path: Path) -> None:
     assert 0.0 < final_durations["l2"] <= final_durations["l3"] <= final_durations["l5"]
 
 
+def test_complete_replay_drain_ignores_live_shutdown_timeout(tmp_path: Path) -> None:
+    config = _config(
+        graceful_shutdown_timeout_seconds=0.02,
+        l2_queue_windows=4,
+        l3_queue_windows=4,
+        l5_queue_windows=4,
+        max_inflight_windows=15,
+    )
+    runtime, store, _ = _start_with_stubs(
+        tmp_path,
+        config=config,
+        l3_factory=lambda value: _StubL3(value, delay=0.05),
+    )
+    for window_id in range(4):
+        assert runtime._admit_window(_window(window_id))
+
+    runtime.stop(drain_timeout_seconds=None)
+
+    assert [item.window_id for item in store.record_snapshot()] == [0, 1, 2, 3]
+    assert all(
+        item.stage_statuses["l3"] == "completed"
+        for item in store.record_snapshot()
+    )
+    assert runtime.last_error is None
+    assert store.stop_reasons == ["normal"]
+    assert all(
+        runtime.pipeline_total_durations_seconds[stage] is not None
+        for stage in ("l2", "l3", "l5")
+    )
+
+
+def test_bounded_shutdown_reports_cancelled_processing_as_incomplete(tmp_path: Path) -> None:
+    config = _config(
+        graceful_shutdown_timeout_seconds=0.02,
+        l2_queue_windows=4,
+        l3_queue_windows=4,
+        l5_queue_windows=4,
+        max_inflight_windows=15,
+    )
+    runtime, store, _ = _start_with_stubs(
+        tmp_path,
+        config=config,
+        l3_factory=lambda value: _StubL3(value, delay=0.03),
+    )
+    for window_id in range(4):
+        assert runtime._admit_window(_window(window_id))
+
+    runtime.stop()
+
+    assert (
+        "processing drain timed out" in str(runtime.last_error)
+        or "processing workers did not stop" in str(runtime.last_error)
+    )
+    if runtime.processing_running:
+        _wait_until(lambda: not runtime.processing_running)
+        runtime.stop()
+    assert store.stop_reasons == ["runtime_error"]
+    assert any(
+        item.terminal_reason == "graceful_shutdown_timeout"
+        for item in store.record_snapshot()
+    )
+
+
 def test_interactive_replay_barrier_freezes_stage_durations_without_stopping_runtime(
     tmp_path: Path,
 ) -> None:

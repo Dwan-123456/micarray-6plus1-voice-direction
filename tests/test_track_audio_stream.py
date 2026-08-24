@@ -49,6 +49,22 @@ def _active(track_id: int = 7):
     )
 
 
+def _observe_l2(
+    hub: TrackAudioStreamHub,
+    decisions: tuple[int, ...],
+    *,
+    track_id: int = 7,
+    processing_mode: str = "optimized",
+) -> None:
+    for decision in decisions:
+        hub.observe_l2(
+            identity=_identity(decision),
+            active_tracks=(_active(track_id),),
+            processing_mode=processing_mode,
+            l2_direction_count=1,
+        )
+
+
 def test_hub_appends_one_aligned_compensated_hop_per_id_and_grows_context():
     hub = TrackAudioStreamHub(InputGainCompensationSettings(), context_ms=160)
     first = hub.process((_window(7_680),), active_track_ids=(7,), identity=_identity(7_680))
@@ -77,6 +93,62 @@ def test_hub_seals_complete_long_audio_with_aligned_l2_direction_counts() -> Non
         (6_720, 1), (7_680, 1), (8_640, 2), (9_600, 2),
     )
     assert not sealed[0].waveform.flags.writeable
+
+
+def test_l2_authoritative_timeline_fixes_length_independent_of_bf_throughput() -> None:
+    decisions = tuple(7_680 + index * 960 for index in range(8))
+    fast = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+    )
+    slow = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+    )
+    _observe_l2(fast, decisions)
+    _observe_l2(slow, decisions)
+
+    for decision in decisions:
+        fast.process(
+            (_window(decision),), active_track_ids=(7,), identity=_identity(decision),
+        )
+    for decision in decisions[2:6:3]:
+        slow.process(
+            (_window(decision),), active_track_ids=(7,), identity=_identity(decision),
+        )
+
+    terminal = slow.finalize_missing_hops()
+    fast_sealed = fast.seal()[0]
+    slow_sealed = slow.seal()[0]
+
+    assert terminal[-1].end_sample == decisions[-1] - 960
+    assert len(fast_sealed.waveform) == len(slow_sealed.waveform) == len(decisions) * 960
+    assert fast_sealed.start_sample == slow_sealed.start_sample == decisions[0] - 1_920
+    assert fast_sealed.end_sample == slow_sealed.end_sample == decisions[-1] - 960
+    assert np.count_nonzero(slow_sealed.waveform == 0.0) > 0
+
+
+def test_test_ui_terminal_hops_extend_playback_to_l2_authoritative_end(tmp_path) -> None:
+    decisions = tuple(7_680 + index * 960 for index in range(6))
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+    )
+    _observe_l2(hub, decisions)
+    batch = hub.process(
+        (_window(decisions[1], level=0.01),),
+        active_track_ids=(7,),
+        identity=_identity(decisions[1]),
+    )
+    tracker = AudioIdTracker(
+        "cache", project_root=tmp_path, downstream_window_samples=3_840,
+    )
+    tracker.consume_stream_batch(batch, active_tracks=(_active(),))
+
+    tracker.append_terminal_hops(hub.finalize_missing_hops())
+    rows = tracker.finalize_capture()
+
+    assert rows[0].audio_sample_count == len(decisions) * 960
+    playback = np.asarray(np.memmap(tracker.audio_cache_path(7), dtype=np.float32, mode="r"))
+    assert len(playback) == len(decisions) * 960
+    np.testing.assert_array_equal(playback[-2 * 960:], 0.0)
 
 
 def test_hub_seals_discontinuous_runs_as_one_unique_id_with_silent_gap() -> None:

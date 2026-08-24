@@ -23,6 +23,17 @@
 
 ---
 
+## 2026-08-24 — 模拟输入长音频长度改由L2权威时间轴确定
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。
+- **类型与涉及文件**：修复Application Runtime模拟EOF排空、L2→TrackAudioStreamHub时间轴、Development Test UI试听封存及相邻测试；同步Runtime说明和本日志。
+- **Runtime/监控**：完整模拟输入EOF使用数据完整排空，不再套用实时设备的10秒强制停机期限；排空期间Test UI显示`FINALIZING`，全部L2/L3/L5/Commit完成后才进入`stopped`，各层总运行时长继续封存并保持可读。实时或手动有限停机若取消窗口会明确写入Runtime错误并以`runtime_error`结束录音session，不再伪装为正常完成。
+- **L2/L3/连续音轨**：每个L2完成窗口先按`(session_id, stream_epoch, track_id)`登记confirmed/coasting权威20 ms绝对时间槽；L3仅向对应槽写入BF波形。首个BF结果之前、处理中间缺口及最后一个BF结果之后的缺失槽均保留等时静音和未观测语义，Hub与Test UI最终长度由L2首尾sample决定，不再随BF算法吞吐速度改变。
+- **离线L4/L5及兼容性**：离线L4继续读取同一Hub封存48 kHz长轨，缺失BF槽的方向数量沿L2时间轴保存；L4/L5算法、模型、阈值、公开音频DTO、录音格式、L1、L2定位/追踪算法及Production UI均无变化。
+- **验证与资产**：增加不同BF处理覆盖率仍保持相同sample数、试听缓存尾部补齐、模拟回放越过实时停机期限仍完整排空、有限超时明确失败等回归；相关Runtime/Hub/Test UI定向回归`63 passed`，基于最新开发基线的完整pytest为`511 passed`，相关Ruff与差异检查通过。无模型、音频、配置资产或Git LFS对象变化；自动测试不替代真实GPU长回放试听验收。
+
+---
+
 ## 2026-08-24 — 修复L1 CountNet低电平输入概率冻结
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。

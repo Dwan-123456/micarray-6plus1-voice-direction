@@ -8,7 +8,7 @@ import threading
 
 import numpy as np
 
-from track_audio_stream import TrackAudioBatch, TrackVoiceAnnotation
+from track_audio_stream import TrackAudioBatch, TrackAudioHop, TrackVoiceAnnotation
 
 from .contracts import BeamformPreview, TrackedAudioSnapshot
 
@@ -774,6 +774,34 @@ class AudioIdTracker:
                     self._flush_pending(track, fade_out=True)
                     track.state = "ended"
             self._remove_filtered_ended_tracks()
+            return self.snapshots()
+
+    def append_terminal_hops(
+        self,
+        hops: tuple[TrackAudioHop, ...],
+    ) -> tuple[TrackedAudioSnapshot, ...]:
+        """Append Hub-provided missing tail slots before final capture sealing."""
+
+        with self._lock:
+            for hop in hops:
+                stream = (str(hop.session_id), int(hop.stream_epoch))
+                if self._stream != stream:
+                    continue
+                track = self._tracks.get(int(hop.track_id))
+                if track is None:
+                    continue
+                previous = track.last_emitted_decision_sample
+                if previous is not None and int(hop.end_sample) <= previous:
+                    continue
+                if previous is not None and int(hop.start_sample) != previous:
+                    raise ValueError("terminal track hops must continue the cached timeline")
+                audio = (
+                    np.zeros(_HOP_SAMPLES, np.float32)
+                    if hop.waveform is None
+                    else np.asarray(hop.waveform, dtype=np.float32)
+                )
+                self._append_audio(track, audio, observed_hops=(bool(hop.observed),))
+                track.last_emitted_decision_sample = int(hop.end_sample)
             return self.snapshots()
 
     def snapshots(self) -> tuple[TrackedAudioSnapshot, ...]:
