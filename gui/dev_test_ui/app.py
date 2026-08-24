@@ -7,7 +7,7 @@ import sys
 import wave
 from collections.abc import Mapping
 from pathlib import Path
-from time import monotonic
+from time import monotonic, perf_counter
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -172,7 +172,6 @@ def build_window(
         raise ValueError("input_wav和replay_recording不能同时使用")
     replay_path = None if input_wav is None else Path(input_wav).resolve()
     recording_manifest = None if replay_recording is None else Path(replay_recording).resolve()
-    simulation_mode = replay_path is not None or recording_manifest is not None
     replay_source = None
     pipeline = None
     if recording_manifest is not None:
@@ -283,6 +282,7 @@ def build_window(
             self._audio_source_key = None
             self._offline_l4_pipeline = None
             self._l4_processed = ()
+            self._offline_stage_durations_seconds = {"l4": None, "l5": None}
             self._l4_store = OfflineLayer4UiStore()
             self._replay_previous_stream = None
             self._replay_reset_pending = False
@@ -790,6 +790,7 @@ def build_window(
             self._l4_store.clear()
             self._offline_l4_pipeline = None
             self._l4_processed = ()
+            self._offline_stage_durations_seconds = {"l4": None, "l5": None}
             self.srp_header.setText("WARMING | session — | epoch 0 | window — | sample — | age —")
             self.l1_header.setText("WARMING | waiting for the first audio block")
 
@@ -1135,6 +1136,8 @@ def build_window(
             self._l4_store.clear()
             self._offline_l4_pipeline = None
             self._l4_processed = ()
+            self._offline_stage_durations_seconds = {"l4": None, "l5": None}
+            self._refresh_total_duration_text()
             self.cnn_panel.set_unavailable("等待L4完成后自动处理")
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
@@ -1144,19 +1147,36 @@ def build_window(
 
             def process_l4_and_l5():
                 pipeline = runtime.build_offline_l4_pipeline(backend_id)
+                l4_started = perf_counter()
                 processed = tuple(
                     pipeline.process_l4_sealed(runtime.offline_l4_sources)
                 )
+                l4_elapsed = perf_counter() - l4_started
+                l5_started = perf_counter()
                 try:
                     l5_results = tuple(pipeline.process_l5_sealed(processed))
                 except Exception as exc:
-                    return pipeline, processed, (), exc
-                return pipeline, processed, l5_results, None
+                    return (
+                        pipeline, processed, (), exc, l4_elapsed,
+                        perf_counter() - l5_started,
+                    )
+                return (
+                    pipeline, processed, l5_results, None, l4_elapsed,
+                    perf_counter() - l5_started,
+                )
 
             def completed(value):
-                pipeline, processed, l5_results, l5_error = value
+                (
+                    pipeline, processed, l5_results, l5_error,
+                    l4_elapsed, l5_elapsed,
+                ) = value
                 self._offline_l4_pipeline = pipeline
                 self._l4_processed = processed
+                self._offline_stage_durations_seconds = {
+                    "l4": l4_elapsed,
+                    "l5": l5_elapsed,
+                }
+                self._refresh_total_duration_text()
                 self._l4_store.set_processed(self._l4_processed)
                 if l5_error is not None:
                     self.l4_panel.set_tracks(self._l4_store.snapshots())
@@ -1661,7 +1681,7 @@ def build_window(
         def _set_performance(self, perf):
             if perf is None:
                 text = (
-                    "上一秒性能 | L2 N/A | L3 N/A | L5 N/A / 0.0 Hz | "
+                    "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | "
                     "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
                 )
             else:
@@ -1669,37 +1689,38 @@ def build_window(
                     "上一秒性能 | "
                     f"L2 {_time(perf.l2_time_ms_last_second_avg)} | "
                     f"L3 {_time(perf.l3_time_ms_last_second_avg)} | "
-                    f"L5 {_time(perf.l5_time_ms_last_second_avg)} / "
-                    f"{perf.l5_refresh_hz_last_second:.1f} Hz | "
+                    "L4 离线 | L5 离线 | "
                     f"20ms窗口 {perf.processed_windows_last_second} | "
                     f"丢窗 {perf.dropped_windows_last_second} | "
                     f"丢窗率 {perf.drop_rate_last_second * 100.0:.1f}%"
                 )
                 self.performance_bar.setToolTip(
-                    "每1秒刷新；显示上一秒内各层平均耗时、L5后的统一输出刷新率、"
-                    "完整处理的20 ms窗口数、丢窗数及丢窗率。"
+                    "每1秒刷新；L2、L3显示实时20 ms窗口平均耗时；L4、L5在L3长音频"
+                    "拼接完成后离线运行，不伪装成实时窗口性能。"
                 )
             self._performance_base_text = text
             self._refresh_total_duration_text()
 
         def _refresh_total_duration_text(self):
             text = getattr(self, "_performance_base_text", "")
-            if simulation_mode:
-                durations = runtime.pipeline_total_durations_seconds
+            durations = runtime.pipeline_total_durations_seconds
+            offline_durations = self._offline_stage_durations_seconds
 
-                def elapsed(stage: str) -> str:
-                    value = durations.get(stage)
-                    return "N/A" if value is None else f"{value:.2f} s"
+            def elapsed(stage: str) -> str:
+                source = durations if stage in {"l2", "l3"} else offline_durations
+                value = source.get(stage)
+                return "N/A" if value is None else f"{value:.2f} s"
 
-                text += (
-                    "    总处理时长 | "
-                    f"L2 {elapsed('l2')} | L3 {elapsed('l3')} | L5 {elapsed('l5')}"
-                )
-                self.performance_bar.setToolTip(
-                    "左侧每1秒刷新上一秒性能；总处理时长从首个20 ms窗口开始入队计时，"
-                    "各层在处理完最后一个输入并排空后分别停止；模拟输入手动暂停期间不计时，"
-                    "手动关闭L3/L5期间只累计L2。"
-                )
+            text += (
+                "    总处理时长 | "
+                f"L2 {elapsed('l2')} | L3 {elapsed('l3')} | "
+                f"L4 {elapsed('l4')} | L5 {elapsed('l5')}"
+            )
+            self.performance_bar.setToolTip(
+                "左侧只统计实时L2/L3窗口性能；总处理时长中，L2、L3分别从首个20 ms"
+                "窗口入队至各自排空，L3包含长音频拼接；L4、L5在点击发送后按整批"
+                "顺序独立计时。模拟输入手动暂停期间不计实时阶段时长。"
+            )
             self.performance_bar.setText(text)
 
         def closeEvent(self, event):

@@ -1083,7 +1083,8 @@ def test_test_ui_accepts_backend_injected_wav_and_keeps_default_ui_input_hidden(
         total_duration_text = window.performance_bar.text().split("总处理时长", 1)[1]
         assert "L2 N/A" not in total_duration_text
         assert "L3 N/A" not in total_duration_text
-        assert "L5 N/A" not in total_duration_text
+        assert "L4 N/A" in total_duration_text
+        assert "L5 N/A" in total_duration_text
     finally:
         window.close()
         app.processEvents()
@@ -1245,8 +1246,9 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         )
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A | L3 N/A | L5 N/A / 0.0 Hz | "
-            "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
+            "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | "
+            "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%    "
+            "总处理时长 | L2 N/A | L3 N/A | L4 N/A | L5 N/A"
         )
         assert window.start_button.text() == "启动采集"
         assert window.stop_button.text() == "停止采集"
@@ -1340,6 +1342,8 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
 
     app, window = build_window(CONFIG)
     events: list[str] = []
+    clock = iter((10.0, 12.5, 20.0, 24.0, 30.0, 31.0, 40.0, 42.0))
+    monkeypatch.setattr("gui.dev_test_ui.app.perf_counter", lambda: next(clock))
 
     class FakeStore:
         def clear(self):
@@ -1392,6 +1396,8 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
 
         window._send_l3_to_l4()
         assert events == ["clear", "process", "l5-process", "write", "l5-write"]
+        assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0}
+        assert "L4 2.50 s | L5 4.00 s" in window.performance_bar.text()
         assert window.bf_panel.send.isEnabled()
         assert "L5完成" in window.l4_panel.summary.text()
 
@@ -1400,6 +1406,8 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
             "clear", "process", "l5-process", "write", "l5-write",
             "clear", "process", "l5-process", "write", "l5-write",
         ]
+        assert window._offline_stage_durations_seconds == {"l4": 1.0, "l5": 2.0}
+        assert "L4 1.00 s | L5 2.00 s" in window.performance_bar.text()
         assert window.bf_panel.send.isEnabled()
     finally:
         window.close()
