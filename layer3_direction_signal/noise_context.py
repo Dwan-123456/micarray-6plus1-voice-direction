@@ -12,9 +12,6 @@ from .interface import Layer3Error
 
 
 _HOP_SAMPLES = 960
-_STFT_FRAMES_PER_HOP = 2
-
-
 @dataclass(frozen=True, slots=True)
 class BeamformerNoiseContext:
     session_id: str
@@ -24,6 +21,7 @@ class BeamformerNoiseContext:
     algorithm_version: str
     frequencies_hz: np.ndarray
     noise_psd: np.ndarray
+    noise_covariance: np.ndarray
     posterior_noise_probability: np.ndarray
     prior_snr: np.ndarray
     posterior_snr: np.ndarray
@@ -62,6 +60,22 @@ class BeamformerNoiseContext:
                 np.ascontiguousarray(raw, dtype=np.float32).tobytes(), dtype=np.float32,
             ).reshape(shape)
             object.__setattr__(self, name, immutable)
+        covariance_shape = (context_hops, len(frequencies), 7, 7)
+        covariance = np.asarray(self.noise_covariance)
+        if covariance.shape != covariance_shape or not np.isfinite(covariance).all():
+            raise ValueError("BF噪声上下文noise_covariance形状或数值无效")
+        if not np.allclose(
+            covariance,
+            covariance.conj().transpose(0, 1, 3, 2),
+            rtol=2.0e-5,
+            atol=1.0e-7,
+        ):
+            raise ValueError("BF噪声上下文noise_covariance必须为Hermitian")
+        immutable_covariance = np.frombuffer(
+            np.ascontiguousarray(covariance, dtype=np.complex64).tobytes(),
+            dtype=np.complex64,
+        ).reshape(covariance_shape)
+        object.__setattr__(self, "noise_covariance", immutable_covariance)
         if np.any(self.posterior_noise_probability > 1):
             raise ValueError("BF后验噪声概率必须位于[0,1]")
 
@@ -80,6 +94,7 @@ class BeamformerNoiseContext:
             algorithm_version,
             hops[0].frequencies_hz,
             np.stack([item.noise_psd for item in hops]),
+            np.stack([item.noise_covariance for item in hops]),
             np.stack([1.0 - item.spp for item in hops]).astype(np.float32),
             np.stack([item.prior_snr for item in hops]),
             np.stack([item.posterior_snr for item in hops]),
@@ -103,6 +118,8 @@ def _validated_window_hops(
         )
     if any(item.state != "ready" for item in hops):
         raise Layer3Error("IMCRA噪声上下文尚未ready")
+    if any(item.noise_covariance is None for item in hops):
+        raise Layer3Error("IMCRA空间噪声协方差不可用")
     versions = {item.algorithm_version for item in hops}
     if len(versions) != 1:
         raise Layer3Error("IMCRA噪声上下文算法版本不一致")
@@ -130,6 +147,7 @@ class NoiseCacheSnapshot:
 @dataclass(frozen=True, slots=True)
 class _InterpolatedNoiseContext:
     noise_psd_hmf: torch.Tensor
+    noise_covariance_hfcc: torch.Tensor
     noise_probability_hmf: torch.Tensor
     prior_snr_hmf: torch.Tensor
     posterior_snr_hmf: torch.Tensor
@@ -167,6 +185,14 @@ def _interpolate_last_axis(
     )
 
 
+def _interpolate_covariance(
+    values: torch.Tensor,
+    plan: _InterpolationPlan,
+) -> torch.Tensor:
+    frequency_last = values.movedim(-3, -1)
+    return _interpolate_last_axis(frequency_last, plan).movedim(-1, -3)
+
+
 def _full_interpolated_context(
     context: BeamformerNoiseContext,
     frequencies_hz: torch.Tensor,
@@ -178,6 +204,9 @@ def _full_interpolated_context(
     return _InterpolatedNoiseContext(
         _interpolate_last_axis(
             torch.as_tensor(context.noise_psd.copy(), device=device), plan,
+        ),
+        _interpolate_covariance(
+            torch.as_tensor(context.noise_covariance.copy(), device=device), plan,
         ),
         _interpolate_last_axis(
             torch.as_tensor(context.posterior_noise_probability.copy(), device=device),
@@ -214,6 +243,15 @@ def _append_interpolated_hops(
 
     return _InterpolatedNoiseContext(
         append(previous.noise_psd_hmf, context.noise_psd),
+        torch.cat((
+            previous.noise_covariance_hfcc[hop_gap:],
+            _interpolate_covariance(
+                torch.as_tensor(
+                    context.noise_covariance[-hop_gap:].copy(), device=device,
+                ),
+                plan,
+            ),
+        ), dim=0),
         append(
             previous.noise_probability_hmf,
             context.posterior_noise_probability,
@@ -245,6 +283,14 @@ def _full_interpolated_hops(
 
     return _InterpolatedNoiseContext(
         _interpolate_last_axis(stacked("noise_psd"), plan).clamp_min(0.0),
+        _interpolate_covariance(
+            torch.as_tensor(
+                np.stack([item.noise_covariance for item in hops]),
+                dtype=torch.complex64,
+                device=device,
+            ),
+            plan,
+        ),
         _interpolate_last_axis(1.0 - stacked("spp"), plan).clamp(0.0, 1.0),
         _interpolate_last_axis(stacked("prior_snr"), plan).clamp_min(0.0),
         _interpolate_last_axis(stacked("posterior_snr"), plan).clamp_min(0.0),
@@ -284,6 +330,17 @@ def _append_interpolated_snapshots(
 
     return _InterpolatedNoiseContext(
         append(previous.noise_psd_hmf, "noise_psd"),
+        torch.cat((
+            previous.noise_covariance_hfcc[hop_gap:],
+            _interpolate_covariance(
+                torch.as_tensor(
+                    np.stack([item.noise_covariance for item in hops[-hop_gap:]]),
+                    dtype=torch.complex64,
+                    device=device,
+                ),
+                plan,
+            ),
+        ), dim=0),
         append(previous.noise_probability_hmf, "spp", probability=True),
         append(previous.prior_snr_hmf, "prior_snr"),
         append(previous.posterior_snr_hmf, "posterior_snr"),
@@ -298,37 +355,10 @@ def _append_interpolated_snapshots(
     )
 
 
-def _frame_weights(
-    interpolated: _InterpolatedNoiseContext,
-    spectrum_fct: torch.Tensor,
-    stft: StftSettings,
-    hop_indices: torch.Tensor | None = None,
-) -> torch.Tensor:
-    noise_probability_hf = interpolated.noise_probability_hmf.median(dim=1).values
-    if hop_indices is None:
-        frame_centres = torch.arange(spectrum_fct.shape[-1], device=spectrum_fct.device) * stft.hop_length
-        hop_indices = torch.div(frame_centres, 960, rounding_mode="floor").clamp(
-            0, stft.window_hops - 1,
-        )
-    return noise_probability_hf[hop_indices].transpose(0, 1).contiguous()
-
-
-def _covariance_numerator(
-    spectrum_fct: torch.Tensor,
-    frame_weights_ft: torch.Tensor,
-) -> torch.Tensor:
-    # One batched GEMM is materially cheaper than launching the equivalent
-    # three-operand einsum for the four-frame rolling update on CUDA.
-    return (spectrum_fct * frame_weights_ft[:, None, :]) @ spectrum_fct.mH
-
-
 def _finalize_noise_statistics(
     interpolated: _InterpolatedNoiseContext,
-    covariance_numerator_fcc: torch.Tensor,
-    denominator_f: torch.Tensor,
     frequencies_hz: torch.Tensor,
     config: SpatialSeparationConfig,
-    frame_count: int,
     *,
     frequency_indices: torch.Tensor | None = None,
     validate_values: bool = True,
@@ -338,7 +368,9 @@ def _finalize_noise_statistics(
         frequency_indices = torch.arange(
             frequency_count, dtype=torch.long, device=frequencies_hz.device,
         )
-    covariance = covariance_numerator_fcc / denominator_f[:, None, None].clamp_min(1e-6)
+    covariance = interpolated.noise_covariance_hfcc.mean(dim=0).index_select(
+        0, frequency_indices,
+    )
     covariance = 0.5 * (covariance + covariance.mH)
 
     psd_fc = (
@@ -347,17 +379,15 @@ def _finalize_noise_statistics(
         .index_select(0, frequency_indices)
         .clamp_min(1e-12)
     )
-    level_c = torch.pow(10.0, interpolated.noise_level_db.mean(dim=0) / 10.0).clamp_min(1e-12)
-    level_relative = level_c / level_c.mean()
-    psd_relative = psd_fc / psd_fc.mean(dim=-1, keepdim=True)
-    diagonal_relative = 0.8 * psd_relative + 0.2 * level_relative[None, :]
-    covariance_scale = torch.diagonal(covariance, dim1=-2, dim2=-1).real.mean(dim=-1).clamp_min(1e-8)
-    diagonal_anchor = torch.diag_embed((diagonal_relative * covariance_scale[:, None]).to(torch.complex64))
-    shrinkage = config.noise_covariance_shrinkage
-    covariance = (1.0 - shrinkage) * covariance + shrinkage * diagonal_anchor
+    diagonal_indices = torch.arange(7, device=covariance.device)
+    covariance[:, diagonal_indices, diagonal_indices] = psd_fc.to(covariance.dtype)
     covariance = 0.5 * (covariance + covariance.mH)
 
-    confidence_active = (denominator_f / float(frame_count)).clamp(0.0, 1.0)
+    confidence_active = (
+        interpolated.noise_probability_hmf.median(dim=1).values.mean(dim=0)
+        .index_select(0, frequency_indices)
+        .clamp(0.0, 1.0)
+    )
     prior = interpolated.prior_snr_hmf.median(dim=0).values.median(dim=0).values
     posterior = interpolated.posterior_snr_hmf.median(dim=0).values.median(dim=0).values
     prior_gain = prior / (1.0 + prior)
@@ -403,26 +433,15 @@ class RollingNoiseStatisticsCache:
         self._config: SpatialSeparationConfig | None = None
         self._stft: StftSettings | None = None
         self._interpolated: _InterpolatedNoiseContext | None = None
-        self._numerator: torch.Tensor | None = None
-        self._denominator: torch.Tensor | None = None
-        self._previous_spectrum: torch.Tensor | None = None
-        self._previous_weights: torch.Tensor | None = None
         self._interpolation_plan_key: tuple[bytes, str, int, int] | None = None
         self._interpolation_plan: _InterpolationPlan | None = None
-        self._current_indices: torch.Tensor | None = None
-        self._previous_indices: torch.Tensor | None = None
-        self._rolling_index_key: tuple[int, int] | None = None
-        self._frame_hop_indices_key: tuple[int, int, str, int] | None = None
-        self._frame_hop_indices: torch.Tensor | None = None
         self._last_rolled = False
 
     def _plans(
         self,
         source_frequencies_np: np.ndarray,
         frequencies_hz: torch.Tensor,
-        spectrum_fct: torch.Tensor,
-        stft: StftSettings,
-    ) -> tuple[_InterpolationPlan, torch.Tensor]:
+    ) -> _InterpolationPlan:
         device = frequencies_hz.device
         device_key = (device.type, -1 if device.index is None else int(device.index))
         interpolation_key = (
@@ -435,21 +454,7 @@ class RollingNoiseStatisticsCache:
             source = torch.as_tensor(source_frequencies_np.copy(), device=device)
             self._interpolation_plan_key = interpolation_key
             self._interpolation_plan = _build_interpolation_plan(source, frequencies_hz)
-        frame_key = (
-            spectrum_fct.shape[-1],
-            stft.hop_length,
-            device_key[0],
-            device_key[1],
-        )
-        if self._frame_hop_indices_key != frame_key or self._frame_hop_indices is None:
-            centres = torch.arange(spectrum_fct.shape[-1], device=device) * stft.hop_length
-            self._frame_hop_indices_key = frame_key
-            self._frame_hop_indices = torch.div(
-                centres,
-                _HOP_SAMPLES,
-                rounding_mode="floor",
-            ).clamp(0, stft.window_hops - 1)
-        return self._interpolation_plan, self._frame_hop_indices
+        return self._interpolation_plan
 
     @staticmethod
     def _active_frequency_indices(
@@ -461,41 +466,6 @@ class RollingNoiseStatisticsCache:
             & (frequencies_hz <= config.frequency_max_hz),
             as_tuple=False,
         ).flatten()
-
-    def _rolling_indices(
-        self,
-        hop_gap: int,
-        frame_count: int,
-        *,
-        device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if (
-            self._rolling_index_key != (hop_gap, frame_count)
-            or self._current_indices is None
-            or self._current_indices.device != device
-        ):
-            # These complements match RollingStftCache's aligned interior:
-            # remove the previous left edge/right reflected frame, then add
-            # the current left reflected frame/right edge and all new frames.
-            last_frame = frame_count - 1
-            previous_expired = (*range(0, _STFT_FRAMES_PER_HOP * hop_gap + 1), last_frame)
-            current_added = (
-                0,
-                *range(last_frame - _STFT_FRAMES_PER_HOP * hop_gap, frame_count),
-            )
-            self._current_indices = torch.tensor(
-                current_added,
-                dtype=torch.long,
-                device=device,
-            )
-            self._previous_indices = torch.tensor(
-                previous_expired,
-                dtype=torch.long,
-                device=device,
-            )
-            self._rolling_index_key = (hop_gap, frame_count)
-        assert self._previous_indices is not None
-        return self._current_indices, self._previous_indices
 
     def estimate(
         self,
@@ -514,9 +484,7 @@ class RollingNoiseStatisticsCache:
             context.context_end_sample,
         )
         context_key = (context.algorithm_version, context.frequencies_hz.tobytes())
-        interpolation_plan, frame_hop_indices = self._plans(
-            context.frequencies_hz, frequencies_hz, spectrum_fct, stft,
-        )
+        interpolation_plan = self._plans(context.frequencies_hz, frequencies_hz)
         frequency_indices = self._active_frequency_indices(frequencies_hz, config)
         previous = self._identity
         sample_delta = 0 if previous is None else identity[2] - previous[2]
@@ -532,10 +500,6 @@ class RollingNoiseStatisticsCache:
             and config == self._config
             and stft == self._stft
             and self._interpolated is not None
-            and self._numerator is not None
-            and self._denominator is not None
-            and self._previous_spectrum is not None
-            and self._previous_weights is not None
         )
         interpolated = (
             _append_interpolated_hops(
@@ -548,39 +512,10 @@ class RollingNoiseStatisticsCache:
             if can_roll
             else _full_interpolated_context(context, frequencies_hz, interpolation_plan)
         )
-        weights = _frame_weights(interpolated, spectrum_fct, stft, frame_hop_indices)
-        active_spectrum = spectrum_fct.index_select(0, frequency_indices)
-        active_weights = weights.index_select(0, frequency_indices)
-        if can_roll:
-            current_indices, previous_indices = self._rolling_indices(
-                hop_gap,
-                stft.frame_count,
-                device=spectrum_fct.device,
-            )
-            current_edge_spectrum = active_spectrum.index_select(-1, current_indices)
-            current_edge_weights = active_weights.index_select(-1, current_indices)
-            previous_edge_spectrum = self._previous_spectrum.index_select(-1, previous_indices)
-            previous_edge_weights = self._previous_weights.index_select(-1, previous_indices)
-            numerator = (
-                self._numerator
-                - _covariance_numerator(previous_edge_spectrum, previous_edge_weights)
-                + _covariance_numerator(current_edge_spectrum, current_edge_weights)
-            )
-            denominator = (
-                self._denominator
-                - previous_edge_weights.sum(dim=-1)
-                + current_edge_weights.sum(dim=-1)
-            )
-        else:
-            numerator = _covariance_numerator(active_spectrum, active_weights)
-            denominator = active_weights.sum(dim=-1)
         result = _finalize_noise_statistics(
             interpolated,
-            numerator,
-            denominator,
             frequencies_hz,
             config,
-            stft.frame_count,
             frequency_indices=frequency_indices,
         )
 
@@ -589,10 +524,6 @@ class RollingNoiseStatisticsCache:
         self._config = config
         self._stft = stft
         self._interpolated = interpolated
-        self._numerator = numerator
-        self._denominator = denominator
-        self._previous_spectrum = active_spectrum.clone()
-        self._previous_weights = active_weights.clone()
         self._last_rolled = can_roll
         return result
 
@@ -623,9 +554,7 @@ class RollingNoiseStatisticsCache:
             window.context_end_sample,
         )
         context_key = (algorithm_version, source_frequencies.tobytes())
-        interpolation_plan, frame_hop_indices = self._plans(
-            source_frequencies, frequencies_hz, spectrum_fct, stft,
-        )
+        interpolation_plan = self._plans(source_frequencies, frequencies_hz)
         frequency_indices = self._active_frequency_indices(frequencies_hz, config)
         previous = self._identity
         sample_delta = 0 if previous is None else identity[2] - previous[2]
@@ -641,10 +570,6 @@ class RollingNoiseStatisticsCache:
             and config == self._config
             and stft == self._stft
             and self._interpolated is not None
-            and self._numerator is not None
-            and self._denominator is not None
-            and self._previous_spectrum is not None
-            and self._previous_weights is not None
         )
         interpolated = (
             _append_interpolated_snapshots(
@@ -661,39 +586,10 @@ class RollingNoiseStatisticsCache:
                 device=frequencies_hz.device,
             )
         )
-        weights = _frame_weights(interpolated, spectrum_fct, stft, frame_hop_indices)
-        active_spectrum = spectrum_fct.index_select(0, frequency_indices)
-        active_weights = weights.index_select(0, frequency_indices)
-        if can_roll:
-            current_indices, previous_indices = self._rolling_indices(
-                hop_gap,
-                stft.frame_count,
-                device=spectrum_fct.device,
-            )
-            current_edge_spectrum = active_spectrum.index_select(-1, current_indices)
-            current_edge_weights = active_weights.index_select(-1, current_indices)
-            previous_edge_spectrum = self._previous_spectrum.index_select(-1, previous_indices)
-            previous_edge_weights = self._previous_weights.index_select(-1, previous_indices)
-            numerator = (
-                self._numerator
-                - _covariance_numerator(previous_edge_spectrum, previous_edge_weights)
-                + _covariance_numerator(current_edge_spectrum, current_edge_weights)
-            )
-            denominator = (
-                self._denominator
-                - previous_edge_weights.sum(dim=-1)
-                + current_edge_weights.sum(dim=-1)
-            )
-        else:
-            numerator = _covariance_numerator(active_spectrum, active_weights)
-            denominator = active_weights.sum(dim=-1)
         result = _finalize_noise_statistics(
             interpolated,
-            numerator,
-            denominator,
             frequencies_hz,
             config,
-            stft.frame_count,
             frequency_indices=frequency_indices,
             validate_values=validate_values,
         )
@@ -703,10 +599,6 @@ class RollingNoiseStatisticsCache:
         self._config = config
         self._stft = stft
         self._interpolated = interpolated
-        self._numerator = numerator
-        self._denominator = denominator
-        self._previous_spectrum = active_spectrum.clone()
-        self._previous_weights = active_weights.clone()
         self._last_rolled = can_roll
         return result, algorithm_version
 
@@ -715,18 +607,12 @@ class RollingNoiseStatisticsCache:
         if self._interpolated is not None:
             tensors.extend((
                 self._interpolated.noise_psd_hmf,
+                self._interpolated.noise_covariance_hfcc,
                 self._interpolated.noise_probability_hmf,
                 self._interpolated.prior_snr_hmf,
                 self._interpolated.posterior_snr_hmf,
                 self._interpolated.noise_level_db,
             ))
-        tensors.extend(
-            item for item in (
-                self._numerator, self._denominator,
-                self._previous_spectrum, self._previous_weights,
-                self._current_indices, self._previous_indices, self._frame_hop_indices,
-            ) if item is not None
-        )
         if self._interpolation_plan is not None:
             tensors.extend((
                 self._interpolation_plan.left_indices,
@@ -748,13 +634,11 @@ def estimate_noise_statistics(
     config: SpatialSeparationConfig,
     stft: StftSettings,
 ) -> NoiseStatistics:
-    """Build IMCRA-controlled 7x7 spatial noise covariance for every BF bin."""
+    """Read L1's persistent 7x7 spatial noise covariance for every BF bin."""
+    del spectrum_fct, stft
     interpolated = _full_interpolated_context(context, frequencies_hz)
-    weights = _frame_weights(interpolated, spectrum_fct, stft)
     return _finalize_noise_statistics(
         interpolated,
-        _covariance_numerator(spectrum_fct, weights),
-        weights.sum(dim=-1),
         frequencies_hz,
         config,
     )

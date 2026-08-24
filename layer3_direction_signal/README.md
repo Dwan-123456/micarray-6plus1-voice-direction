@@ -17,7 +17,7 @@ session/epoch/window/decision_sample
 algorithm/fallback diagnostics
 ```
 
-BF用`1-SPP`加权当前7麦STFT外积得到完整空间噪声协方差，并用IMCRA `noise_psd`收缩其对角线。逐频点计算两个导向矢量的空间相关度：`rho<0.3`使用Dual LCMV，`0.3<=rho<0.7`使用soft-null loaded MVDR，`rho>=0.7`使用loaded MVDR；单候选和三候选使用loaded MVDR。三档diagonal loading按固定retry维批量执行；同一加载协方差的Cholesky分解由LCMV/MVDR多右端复用，两个soft-null目标也批量求解。Hermitian正定矩阵的条件数使用特征值范围校验，分支阈值、首个有效retry和DAS回退语义不变。矩阵病态、求解失败或结果非有限的频点回退DAS。IMCRA缺失、未ready或时间不连续时整窗回退DAS。
+BF直接读取L1 IMCRA持续维护的完整空间噪声协方差，不再用L3当前窗的`1-SPP`加权STFT外积重复估计；L3只做目标频率插值、连续hop读取和数值校验。逐频点计算两个导向矢量的空间相关度：`rho<0.3`使用Dual LCMV，`0.3<=rho<0.7`使用soft-null loaded MVDR，`rho>=0.7`使用loaded MVDR；单候选和三候选使用loaded MVDR。三档diagonal loading按固定retry维批量执行；同一加载协方差的Cholesky分解由LCMV/MVDR多右端复用，两个soft-null目标也批量求解。Hermitian正定矩阵的条件数使用特征值范围校验，分支阈值、首个有效retry和DAS回退语义不变。矩阵病态、求解失败或结果非有限的频点回退DAS。IMCRA缺失、未ready、空间协方差缺失或时间不连续时整窗回退DAS。
 
 IMCRA的先验/后验SNR形成有下限的频点软增益；噪声置信度和4.3 kHz以上混叠保护共同提高diagonal loading。所有阈值均来自唯一配置文件。
 

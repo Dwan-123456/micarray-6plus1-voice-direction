@@ -118,7 +118,9 @@ class MusicDiagnostics:
             self.birth_required_active_frames,
         ) < 0:
             raise ValueError("MUSIC DPD/noise counts must be non-negative")
-        if self.whitening_status not in {"disabled", "imcra_psd", "unavailable"}:
+        if self.whitening_status not in {
+            "disabled", "imcra_spatial_covariance", "unavailable",
+        }:
             raise ValueError("invalid MUSIC whitening status")
         timings = (self.covariance_update_ms, self.eigensolve_ms, self.spectrum_ms, self.total_ms)
         if not all(np.isfinite(value) and value >= 0.0 for value in timings):
@@ -236,7 +238,10 @@ class RollingNormMusicScanner:
     def _interpolate_imcra(
         source_frequencies: np.ndarray, values: np.ndarray, target_frequencies: np.ndarray
     ) -> np.ndarray:
-        values = np.asarray(values, dtype=np.float64)
+        values = np.asarray(
+            values,
+            dtype=np.complex128 if np.iscomplexobj(values) else np.float64,
+        )
         upper = np.searchsorted(source_frequencies, target_frequencies, side="left")
         upper = np.clip(upper, 1, len(source_frequencies) - 1)
         lower = upper - 1
@@ -269,12 +274,23 @@ class RollingNormMusicScanner:
             np.stack([hop.prior_snr for hop in ready]),
             frequencies,
         ), axis=(0, 1))
-        noise_psd = np.mean(self._interpolate_imcra(
-            source_frequencies,
-            np.stack([hop.noise_psd for hop in ready]),
-            frequencies,
-        ), axis=0)
-        return np.clip(spp, 0.0, 1.0), np.maximum(prior_snr, 0.0), noise_psd
+        if any(hop.noise_covariance is None for hop in ready):
+            noise_covariance = None
+        else:
+            stacked_covariance = np.stack([hop.noise_covariance for hop in ready])
+            covariance_frequency_last = np.moveaxis(stacked_covariance, 1, -1)
+            interpolated_covariance = self._interpolate_imcra(
+                source_frequencies,
+                covariance_frequency_last,
+                frequencies,
+            )
+            noise_covariance = np.moveaxis(
+                np.mean(interpolated_covariance, axis=0), -1, 0,
+            )
+            noise_covariance = 0.5 * (
+                noise_covariance + noise_covariance.conj().transpose(0, 2, 1)
+            )
+        return np.clip(spp, 0.0, 1.0), np.maximum(prior_snr, 0.0), noise_covariance
 
     def _whiten(
         self,
@@ -286,39 +302,38 @@ class RollingNormMusicScanner:
     ) -> tuple[np.ndarray, np.ndarray, str]:
         if not config.noise_whitening_enabled:
             return covariance, steering, "disabled"
-        _, _, noise_psd = (
+        _, _, noise_covariance = (
             self._imcra_metrics(window, config)
             if imcra_metrics is None
             else imcra_metrics
         )
-        if noise_psd is None:
+        if noise_covariance is None:
             return covariance, steering, "unavailable"
-        diagonal = np.maximum(noise_psd.T, config.eigenvalue_floor)
-        status = "imcra_psd"
-        trace = np.mean(diagonal, axis=1)
-        # IMCRA publishes one PSD per microphone, so the L2 noise model is
-        # diagonal. Shrinkage toward the identity and diagonal loading keep it
-        # diagonal as well. Applying D^(-1/2) elementwise is therefore exactly
-        # equivalent to a batched Cholesky plus two generic matrix solves, but
-        # avoids dozens of 7x7 factorizations on every 20 ms decision window.
-        effective_diagonal = (
-            (1.0 - config.noise_covariance_shrinkage) * diagonal
-            + config.noise_covariance_shrinkage * trace[:, None]
-            + config.diagonal_loading
-            * np.maximum(trace, config.eigenvalue_floor)[:, None]
+        status = "imcra_spatial_covariance"
+        trace = np.real(np.trace(noise_covariance, axis1=1, axis2=2)) / 7.0
+        trace = np.maximum(trace, config.eigenvalue_floor)
+        identity = np.eye(7, dtype=np.complex128)[None, :, :]
+        effective_covariance = (
+            (1.0 - config.noise_covariance_shrinkage) * noise_covariance
+            + config.noise_covariance_shrinkage * trace[:, None, None] * identity
+            + config.diagonal_loading * trace[:, None, None] * identity
         )
-        if (
-            not np.isfinite(effective_diagonal).all()
-            or np.any(effective_diagonal <= 0.0)
-        ):
+        effective_covariance = 0.5 * (
+            effective_covariance + effective_covariance.conj().transpose(0, 2, 1)
+        )
+        if not np.isfinite(effective_covariance).all():
             return covariance, steering, "unavailable"
-        inverse_sqrt = 1.0 / np.sqrt(effective_diagonal)
-        whitened_covariance = (
-            covariance
-            * inverse_sqrt[:, :, None]
-            * inverse_sqrt[:, None, :]
-        )
-        whitened_steering = steering * inverse_sqrt[:, None, :]
+        try:
+            factor = np.linalg.cholesky(effective_covariance)
+            left = np.linalg.solve(factor, covariance)
+            whitened_covariance = np.linalg.solve(
+                factor, left.conj().transpose(0, 2, 1),
+            ).conj().transpose(0, 2, 1)
+            whitened_steering = np.linalg.solve(
+                factor, steering.transpose(0, 2, 1),
+            ).transpose(0, 2, 1)
+        except np.linalg.LinAlgError:
+            return covariance, steering, "unavailable"
         whitened_covariance = 0.5 * (
             whitened_covariance + whitened_covariance.conj().transpose(0, 2, 1)
         )
@@ -747,7 +762,7 @@ class RollingNormMusicScanner:
             )
             limit = config.effective_order_limit
             fallback_reason = (
-                "imcra_noise_psd_unavailable"
+                "imcra_noise_covariance_unavailable"
                 if config.noise_whitening_enabled and whitening_status == "unavailable"
                 else None
             )
@@ -764,7 +779,7 @@ class RollingNormMusicScanner:
             raw = per_frequency.mean(axis=0)
             stop_reason = "manual_order_greedy_peak_search"
             fallback_reason = (
-                "imcra_noise_psd_unavailable"
+                "imcra_noise_covariance_unavailable"
                 if config.noise_whitening_enabled and whitening_status == "unavailable"
                 else None
             )

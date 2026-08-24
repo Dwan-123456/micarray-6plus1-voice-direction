@@ -17,7 +17,11 @@ from layer3_direction_signal import (
     L3_MODE_SUBBAND_ROBUST,
     Layer3Processor,
 )
-from layer3_direction_signal.configuration import SpatialSeparationConfig
+from layer3_direction_signal.configuration import SpatialSeparationConfig, StftSettings
+from layer3_direction_signal.noise_context import (
+    BeamformerNoiseContext,
+    estimate_noise_statistics,
+)
 from layer3_direction_signal.subband_robust import subband_robust_weights
 from layer3_direction_signal.steering import steering_vectors
 
@@ -39,12 +43,18 @@ def _imcra_hops(
     spectral = (7, len(frequencies))
     noise_by_mic = np.ones(7, np.float32) if noise_by_mic is None else np.asarray(noise_by_mic, np.float32)
     noise = np.broadcast_to(noise_by_mic[:, None], spectral).copy()
+    noise_covariance = np.zeros((len(frequencies), 7, 7), np.complex64)
+    diagonal = np.arange(7)
+    noise_covariance[:, diagonal, diagonal] = noise.T
+    cross_power = np.float32(0.2 * np.sqrt(noise_by_mic[0] * noise_by_mic[1]))
+    noise_covariance[:, 0, 1] = 1j * cross_power
+    noise_covariance[:, 1, 0] = -1j * cross_power
     ones = np.ones(spectral, np.float32)
     spp_by_hop = np.full(8, 0.2, np.float32) if spp_by_hop is None else np.asarray(spp_by_hop, np.float32)
     return tuple(
         ImcraHopSnapshot(
             "session", 0, index * 960, (index + 1) * 960, (index,),
-            "cohen_imcra_2003_l1_v3", "ready", frequencies,
+            "cohen_imcra_2003_l1_v4", "ready", frequencies,
             noise, ones * 2.0, ones * 1.5, ones * 0.5, ones * 0.4,
             np.full(spectral, spp_by_hop[index], np.float32),
             np.full(spectral, 1.0 - spp_by_hop[index], np.float32),
@@ -52,6 +62,7 @@ def _imcra_hops(
             np.ones((7, 4), np.float32),
             10.0 * np.log10(noise_by_mic),
             np.full(7, spp_by_hop[index], np.float32), float(spp_by_hop[index]),
+            noise_covariance,
         )
         for index in range(8)
     )
@@ -240,7 +251,7 @@ def test_subband_robust_baseline_uses_imcra_five_bands_without_spatial_p():
     for item in output.enhanced_audio:
         assert item.algorithm == "subband_robust_baseline"
         assert item.diagnostics[0] == "backend=subband_robust_baseline"
-        assert any(value.startswith("imcra=cohen_imcra_2003_l1_v3") for value in item.diagnostics)
+        assert any(value.startswith("imcra=cohen_imcra_2003_l1_v4") for value in item.diagnostics)
         assert "rtf_source=free_field_steering_proxy_v1" in item.diagnostics
         assert "source_scm=rank1_direction_fit_v1" in item.diagnostics
         assert any(value.startswith("bands:80-500=") for value in item.diagnostics)
@@ -352,21 +363,37 @@ def test_imcra_noise_psd_changes_the_adaptive_solution():
     assert not np.allclose(balanced, noisy_mic0, rtol=1e-5, atol=1e-7)
 
 
-def test_imcra_spp_controls_noise_covariance_updates():
+def test_l3_does_not_reestimate_noise_covariance_from_local_spp():
     rng = np.random.default_rng(99)
     samples = np.zeros((7_680, 8), np.float32)
     samples[:3_840, 0] = rng.normal(0, 0.08, 3_840)
     samples[3_840:, 1] = rng.normal(0, 0.08, 3_840)
     first_is_speech = np.asarray((0.95,) * 4 + (0.05,) * 4, np.float32)
     second_is_speech = first_is_speech[::-1].copy()
-    processor = Layer3Processor(load_config(CONFIG, environ={}))
-    geometry = physical_6plus1_geometry()
+    project = load_config(CONFIG, environ={})
+    stft = StftSettings.from_project(project)
+    config = SpatialSeparationConfig.from_project(project)
+    frequencies = torch.fft.rfftfreq(stft.n_fft, 1.0 / 48_000)
+    spectrum = torch.zeros(
+        (len(frequencies), 7, stft.frame_count), dtype=torch.complex64,
+    )
+    first = estimate_noise_statistics(
+        BeamformerNoiseContext.from_window(
+            _window(samples, spp_by_hop=first_is_speech), stft,
+        ),
+        spectrum,
+        frequencies,
+        config,
+        stft,
+    )
+    second = estimate_noise_statistics(
+        BeamformerNoiseContext.from_window(
+            _window(samples, spp_by_hop=second_is_speech), stft,
+        ),
+        spectrum,
+        frequencies,
+        config,
+        stft,
+    )
 
-    first = processor.process(
-        _window(samples, spp_by_hop=first_is_speech), (_candidate(40.0),), geometry,
-    ).enhanced_audio[0].enhanced_audio
-    second = processor.process(
-        _window(samples, spp_by_hop=second_is_speech), (_candidate(40.0),), geometry,
-    ).enhanced_audio[0].enhanced_audio
-
-    assert not np.allclose(first, second, rtol=1e-5, atol=1e-7)
+    torch.testing.assert_close(first.covariance_fcc, second.covariance_fcc)

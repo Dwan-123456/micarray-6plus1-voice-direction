@@ -25,6 +25,11 @@ def _hop(index: int) -> ImcraHopSnapshot:
     shape = (7, len(frequencies))
     scale = np.float32(1.0 + index * 0.01)
     noise = np.full(shape, scale, np.float32)
+    noise_covariance = np.zeros((len(frequencies), 7, 7), np.complex64)
+    diagonal = np.arange(7)
+    noise_covariance[:, diagonal, diagonal] = noise.T
+    noise_covariance[:, 0, 1] = 1j * np.float32(0.2 * scale)
+    noise_covariance[:, 1, 0] = -1j * np.float32(0.2 * scale)
     spp_value = np.float32(0.1 + (index % 8) * 0.05)
     spp = np.full(shape, spp_value, np.float32)
     ones = np.ones(shape, np.float32)
@@ -34,7 +39,7 @@ def _hop(index: int) -> ImcraHopSnapshot:
         index * 960,
         (index + 1) * 960,
         (index,),
-        "cohen_imcra_2003_l1_v3",
+        "cohen_imcra_2003_l1_v4",
         "ready",
         frequencies,
         noise,
@@ -50,6 +55,7 @@ def _hop(index: int) -> ImcraHopSnapshot:
         np.full(7, np.float32(index * 0.01), np.float32),
         np.full(7, spp_value, np.float32),
         float(spp_value),
+        noise_covariance,
     )
 
 

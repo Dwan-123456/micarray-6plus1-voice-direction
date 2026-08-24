@@ -34,7 +34,7 @@ PortAudio回调只复制驱动当前提供的PCM块、分配单调sequence并投
 
 ## IMCRA输出
 
-IMCRA已迁入L1，对校准后的7个物理麦按20 ms hop独立更新。实现遵循[Israel Cohen 2003论文](https://doi.org/10.1109/TSA.2003.811544)的双迭代流程：第一轮时频平滑与最小值跟踪产生粗VAD，第二轮排除强语音分量后再次平滑和跟踪最小值，再按论文式(29)、式(7)和式(10)～(12)依次计算先验语音缺失概率、后验SPP和噪声PSD。当前输出频带版本为`cohen_imcra_2003_l1_v3`。
+IMCRA已迁入L1，对校准后的7个物理麦按20 ms hop独立更新。实现遵循[Israel Cohen 2003论文](https://doi.org/10.1109/TSA.2003.811544)的双迭代流程：第一轮时频平滑与最小值跟踪产生粗VAD，第二轮排除强语音分量后再次平滑和跟踪最小值，再按论文式(29)、式(7)和式(10)～(12)依次计算先验语音缺失概率、后验SPP和噪声PSD。v4同时以每频点阵列最大SPP控制复数外积递归更新，并用合同缩放使7×7协方差对角线严格等于IMCRA PSD；当前输出频带版本为`cohen_imcra_2003_l1_v4`。
 
 论文表I参数固定为`w=1、αs=0.9、U=8、V=15、D=120、Bmin=1.66、γ0=4.6、γ1=3、ζ0=1.67、α=0.92、αd=0.85、β=1.47`。表I数值原本用于16 kHz实验；本版本把递归参数固定下来，同时适配项目的48 kHz输入、960-sample hop和2048点FFT。`Bmin`与窗、hop和FFT有关，未来若完成统计/实机重标定，必须升级算法版本，不能静默覆盖当前基线。
 
@@ -59,7 +59,7 @@ Test UI的L1区域提供“IMCRA预降噪”开关。OFF时输出原始LogicalAu
 
 PSD/SPP状态保留0～10000 Hz目标频带；概率证据仍仅从500～4000 Hz聚合，避免新增高频直接改变Gate判决。
 
-不可变`ImcraHopSnapshot`发布字段包括`frequencies_hz、noise_psd、smoothed_psd、conditional_smoothed_psd、minimum_psd、conditional_minimum_psd、spp、speech_absence_probability、posterior_snr、prior_snr、noise_features、noise_level_db、source_probability_per_mic、array_source_probability_20ms`。所有频谱状态形状为`[7,427]`，必须finite且只读；概率必须位于`[0,1]`。
+不可变`ImcraHopSnapshot`除既有逐麦频谱状态外，新增运行时`noise_covariance[427,7,7] complex64`；它必须finite、Hermitian、只读，且对角线严格等于`noise_psd.T`。该矩阵随20 ms窗口供L2/L3直接读取，但不写入正式录音资产；录音回放时由L1重新计算。
 
 断流、sequence/timestamp/rate异常或epoch切换时必须清空IMCRA状态并重新预热。预热期间发布明确状态，不能把缺失概率写成0。单纯静音或概率下降不改变epoch，也不会让IMCRA重新进入`warming_up`。
 

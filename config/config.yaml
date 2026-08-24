@@ -50,7 +50,7 @@ timing:
 layer1_imcra:
   enabled: true
   # Cohen 2003 IMCRA core; 48 kHz/20 ms/7-mic aggregation is the L1 adapter.
-  algorithm_version: cohen_imcra_2003_l1_v3
+  algorithm_version: cohen_imcra_2003_l1_v4
   hop_samples: 960
   n_fft: 2048
   window: hann_periodic
@@ -184,7 +184,7 @@ layer2:
   # Merge individually strong DPD peaks before the final 50-degree NMS.
   dpd_peak_fusion_distance_deg: 40.0
   dpd_peak_fusion_min_normalized_score: 0.70
-  noise_whitening_enabled: false
+  noise_whitening_enabled: true
   noise_covariance_shrinkage: 0.10
 
 stft:

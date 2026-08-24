@@ -102,7 +102,7 @@ WindowWorkItem
         240 ms滚动历史；20 ms增量STFT/协方差；0～359°逐度扫描
         Test UI手动选择MUSIC阶数1/2/3
         普通路径信号子空间阶数与最多搜峰数=该手动值
-        可选DPD逐频投票 + 圆周核聚类、可选IMCRA对角噪声白化（均默认关闭）
+        可选DPD逐频投票 + 圆周核聚类、L1完整空间噪声协方差白化（白化默认开启）
         圆周峰值 + 50° NMS → 最多3个方向
     永久在线Circular IMM-JPDA方向ID
         tentative → confirmed → coasting → deleted
@@ -232,7 +232,7 @@ Gate阈值与MUSIC候选阈值是两个不同参数：前者决定“是否启�
 
 MUSIC维护多帧STFT的逐频7×7协方差，只使用7个物理麦和2000～4000 Hz频率。每频点执行加载/收缩与Hermitian特征分解，普通路径直接使用Test UI手动选择的1/2/3阶信号子空间，NormMUSIC式逐频归一化后在0～359°逐度形成伪谱。该手动值同时决定最多搜索峰数。每轮取未屏蔽区域内符合当前Test UI候选门限与prominence的最强局部峰，屏蔽与已选峰圆周距离小于50°的区域后继续，恰好50°允许共存；无达标峰时提前停止，最终输出0～手动阶数个备选方向。
 
-Test UI另提供两个默认关闭、独立持久化的试验开关。`DPD + rank-1 MUSIC`按逐频主特征值间隙、平面波拟合度以及IMCRA的SPP/先验SNR筛选可靠频点，每个可靠频点按单源噪声子空间产生方向票，再执行跨359°/0°连续的圆周核聚类。当前每个合格簇至少需要4个支持频点、覆盖4个等宽子带中的2个、加权支持率不低于0.20、圆周集中度不低于0.85。归一化峰值均严格大于0.70且组内任意峰圆周距离不超过40°时，先按唯一支持频点权重融合为圆周平均角，再执行50°圆周NMS；蓝色投票谱不做二次归一化。合格簇数量决定0～手动上限个候选。`IMCRA噪声白化`只读取DecisionWindow已有的READY IMCRA `noise_psd`，构造逐频、逐麦的对角噪声协方差，同时白化观测协方差和steering；当前公开IMCRA不提供跨麦互谱，因此不宣称完整噪声CSM。对角模型以逐麦逆平方根直接缩放，等价于对角Cholesky但避免通用7×7分解；没有READY数据或有效对角项时本窗明确标记`unavailable`并安全退回未白化计算。L2队列丢窗是独立的Runtime过载状态，不代表Gate或L1 IMCRA不可用，Test UI会保留最近一次成功结果并标记`STALE | L2 DROPPED`。
+Test UI保留DPD与白化的独立持久化开关。`DPD + rank-1 MUSIC`按逐频主特征值间隙、平面波拟合度以及IMCRA的SPP/先验SNR筛选可靠频点，每个可靠频点按单源噪声子空间产生方向票，再执行跨359°/0°连续的圆周核聚类。当前每个合格簇至少需要4个支持频点、覆盖4个等宽子带中的2个、加权支持率不低于0.20、圆周集中度不低于0.85。归一化峰值均严格大于0.70且组内任意峰圆周距离不超过40°时，先按唯一支持频点权重融合为圆周平均角，再执行50°圆周NMS；蓝色投票谱不做二次归一化。合格簇数量决定0～手动上限个候选。`IMCRA噪声白化`直接读取DecisionWindow已有的READY L1 `noise_covariance[427,7,7]`，经频率插值、收缩和loading后，以批量Cholesky同时白化观测协方差和steering；不在L2重新估计噪声矩阵。没有READY数据或完整空间协方差时本窗明确标记`unavailable`并安全退回未白化计算。L2队列丢窗是独立的Runtime过载状态，不代表Gate或L1 IMCRA不可用，Test UI会保留最近一次成功结果并标记`STALE | L2 DROPPED`。
 
 达到L2 `confirmed`的方向ID在最后一次MUSIC观测后的2秒几何TTL内继续保留。新MUSIC峰用于更新角度；短时漏检时，公共投影可按该ID的保持/预测角继续每20 ms生成BF音频。当前离线L5不参与实时槽位准入、排序或续租；tentative轨迹不会进入L3。
 
@@ -347,7 +347,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - “L2声源Gate”阈值决定是否执行定位，默认0.60；
 - MUSIC候选阈值决定伪谱峰是否进入候选；
 - “MUSIC阶数”可设为1、2或3，直接设置普通路径的信号子空间阶数和最多搜峰数；
-- DPD rank-1 MUSIC和IMCRA噪声白化是默认关闭的独立试验开关；
+- DPD rank-1 MUSIC默认关闭；IMCRA空间噪声协方差白化默认开启，二者仍可独立切换；
 - 公共方向ID追踪默认开启；Test UI只保留`ID Tracking`总开关，不再提供独立Kalman或Q/R控件；
 - 开启ID Tracking即运行完整Circular IMM-JPDA，针对静止和慢速移动自动调整模型概率。
 

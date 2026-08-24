@@ -46,6 +46,8 @@ class Layer1Imcra:
         self._conditional_minimum_history: deque[np.ndarray] = deque(maxlen=config.minimum_history_subwindows)
         self._noise_bar: np.ndarray | None = None
         self._noise: np.ndarray | None = None
+        self._noise_covariance_bar: np.ndarray | None = None
+        self._noise_covariance: np.ndarray | None = None
         self._previous_gamma: np.ndarray | None = None
         self._previous_gain_h1: np.ndarray | None = None
         self._spp: np.ndarray | None = None
@@ -66,6 +68,7 @@ class Layer1Imcra:
         for name in (
             "_smoothed", "_conditional_smoothed", "_minimum", "_conditional_minimum",
             "_subwindow_minimum", "_conditional_subwindow_minimum", "_noise_bar", "_noise",
+            "_noise_covariance_bar", "_noise_covariance",
             "_previous_gamma", "_previous_gain_h1", "_spp", "_speech_absence_probability",
             "_posterior_snr", "_prior_snr",
         ):
@@ -124,20 +127,29 @@ class Layer1Imcra:
         self._conditional_subwindow_minimum = self._conditional_smoothed.copy()
         self._subwindow_frame = 0
 
-    def _initialize(self, power: np.ndarray, frequency_smoothed: np.ndarray) -> None:
+    def _initialize(
+        self, power: np.ndarray, frequency_smoothed: np.ndarray, spatial_outer: np.ndarray,
+    ) -> None:
         self._smoothed = self._conditional_smoothed = frequency_smoothed.copy()
         self._minimum = self._conditional_minimum = frequency_smoothed.copy()
         self._subwindow_minimum = self._conditional_subwindow_minimum = frequency_smoothed.copy()
         self._noise_bar = self._noise = power.copy()
+        self._noise_covariance_bar = spatial_outer.copy()
+        self._noise_covariance = spatial_outer.copy()
+        diagonal = np.arange(7)
+        self._noise_covariance[:, diagonal, diagonal] = self._noise.T
         self._previous_gamma = self._previous_gain_h1 = np.ones_like(power)
         self._spp = np.zeros_like(power)
         self._speech_absence_probability = np.ones_like(power)
         self._posterior_snr = np.ones_like(power)
         self._prior_snr = np.zeros_like(power)
 
-    def _cohen_update(self, power: np.ndarray, frequency_smoothed: np.ndarray) -> None:
+    def _cohen_update(
+        self, power: np.ndarray, frequency_smoothed: np.ndarray, spatial_outer: np.ndarray,
+    ) -> None:
         cfg = self.config
         assert self._noise is not None and self._noise_bar is not None
+        assert self._noise_covariance is not None and self._noise_covariance_bar is not None
         assert self._smoothed is not None and self._conditional_smoothed is not None
         assert self._minimum is not None and self._conditional_minimum is not None
         assert self._previous_gamma is not None and self._previous_gain_h1 is not None
@@ -194,6 +206,24 @@ class Layer1Imcra:
         alpha_tilde = cfg.noise_smoothing + (1.0 - cfg.noise_smoothing) * spp
         self._noise_bar = alpha_tilde * self._noise_bar + (1.0 - alpha_tilde) * power
         self._noise = cfg.bias_compensation * self._noise_bar
+        array_spp = np.max(spp, axis=0)
+        covariance_alpha = cfg.noise_smoothing + (1.0 - cfg.noise_smoothing) * array_spp
+        self._noise_covariance_bar = (
+            covariance_alpha[:, None, None] * self._noise_covariance_bar
+            + (1.0 - covariance_alpha)[:, None, None] * spatial_outer
+        )
+        self._noise_covariance = cfg.bias_compensation * self._noise_covariance_bar
+        covariance_diagonal = np.maximum(
+            np.real(np.diagonal(self._noise_covariance, axis1=1, axis2=2)),
+            cfg.eps,
+        )
+        diagonal_scale = np.sqrt(self._noise.T / covariance_diagonal)
+        self._noise_covariance *= (
+            diagonal_scale[:, :, None] * diagonal_scale[:, None, :]
+        )
+        self._noise_covariance = 0.5 * (
+            self._noise_covariance + self._noise_covariance.conj().transpose(0, 2, 1)
+        )
         self._previous_gamma, self._previous_gain_h1 = gamma, gain_h1
         self._spp = np.clip(spp, 0.0, 1.0)
         self._speech_absence_probability = np.clip(q_hat, 0.0, 1.0)
@@ -205,9 +235,16 @@ class Layer1Imcra:
         cfg = self.config
         centered = samples.astype(np.float64) - np.mean(samples, axis=0, keepdims=True)
         spectrum = np.fft.rfft(centered * self._window[:, None], n=cfg.n_fft, axis=0)
-        power = np.maximum((np.abs(spectrum) ** 2).T / np.sum(self._window**2), cfg.eps)
+        window_energy = np.sum(self._window**2)
+        normalized_spectrum = spectrum / np.sqrt(window_energy)
+        spatial_outer = np.einsum(
+            "fc,fd->fcd", normalized_spectrum, normalized_spectrum.conj(), optimize=True,
+        )
+        power = np.maximum((np.abs(spectrum) ** 2).T / window_energy, cfg.eps)
         frequency_smoothed = self._frequency_smooth(power)
-        self._initialize(power, frequency_smoothed) if self._smoothed is None else self._cohen_update(power, frequency_smoothed)
+        self._initialize(power, frequency_smoothed, spatial_outer) if self._smoothed is None else self._cohen_update(
+            power, frequency_smoothed, spatial_outer,
+        )
         self._frame_count += 1
         self._subwindow_frame += 1
         if self._subwindow_frame == cfg.minimum_subwindow_frames:
@@ -217,6 +254,7 @@ class Layer1Imcra:
         assert self._minimum is not None and self._conditional_minimum is not None and self._spp is not None
         assert self._speech_absence_probability is not None and self._posterior_snr is not None
         assert self._prior_snr is not None and self._identity is not None
+        assert self._noise_covariance is not None
         band_noise = np.mean(self._noise[:, self._output_band], axis=1)
         band_signal = np.mean(power[:, self._output_band], axis=1)
         noise_level_db = 10.0 * np.log10(np.maximum(band_noise, cfg.eps))
@@ -238,4 +276,5 @@ class Layer1Imcra:
             self._prior_snr[:, self._output_band].astype(np.float32),
             features.astype(np.float32), noise_level_db.astype(np.float32),
             probability_per_mic.astype(np.float32), array_probability,
+            self._noise_covariance[self._output_band].astype(np.complex64),
         )

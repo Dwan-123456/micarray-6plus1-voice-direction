@@ -108,7 +108,7 @@ HostAudio PCM16 [N,8]
   → 校准：gain + polarity + integer delay
   → Logical通道 MIC0..5, Center, HardwareMix
   ├─→ Native/Logical音频旁路录制
-  ├─→ 前7物理麦 → IMCRA → noise_psd / SPP / p20
+  ├─→ 前7物理麦 → IMCRA → noise_psd / 7×7 noise_covariance / SPP / p20
   └─→ 可选Wiener WOLA → 替换下游7物理麦；HardwareMix不变
 ```
 

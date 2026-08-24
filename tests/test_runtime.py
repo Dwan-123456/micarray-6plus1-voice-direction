@@ -287,21 +287,21 @@ def test_runtime_kalman_q_r_scales_are_live_validated_and_revisioned(tmp_path):
             runtime.set_direction_kalman_q_scale(invalid)
 
 
-def test_runtime_optional_music_filters_default_off_and_are_revisioned(tmp_path):
+def test_runtime_optional_music_filters_follow_config_and_are_revisioned(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
     )
     assert runtime.music_dpd_rank1_enabled is False
-    assert runtime.music_noise_whitening_enabled is False
+    assert runtime.music_noise_whitening_enabled is True
     revision = runtime.direction_scan_config_revision
     assert runtime.set_music_dpd_rank1_enabled(True) is True
-    assert runtime.set_music_noise_whitening_enabled(True) is True
+    assert runtime.set_music_noise_whitening_enabled(False) is False
     assert runtime.direction_scan_config_revision == revision + 2
-    runtime.set_music_noise_whitening_enabled(True)
+    runtime.set_music_noise_whitening_enabled(False)
     assert runtime.direction_scan_config_revision == revision + 2
     assert runtime.direction_scan_config.dpd_rank1_enabled is True
-    assert runtime.direction_scan_config.noise_whitening_enabled is True
+    assert runtime.direction_scan_config.noise_whitening_enabled is False
     with pytest.raises(ValueError):
         runtime.set_music_dpd_rank1_enabled(1)
     with pytest.raises(ValueError):

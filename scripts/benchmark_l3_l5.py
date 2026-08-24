@@ -92,6 +92,9 @@ def _hop(index: int, frequencies: np.ndarray) -> ImcraHopSnapshot:
     scale = np.float32(1.0 + index * 0.001)
     probability = np.float32(0.2 + (index % 8) * 0.05)
     noise = np.full(shape, scale, np.float32)
+    noise_covariance = np.zeros((len(frequencies), 7, 7), np.complex64)
+    diagonal = np.arange(7)
+    noise_covariance[:, diagonal, diagonal] = noise.T
     ones = np.ones(shape, np.float32)
     spp = np.full(shape, probability, np.float32)
     return ImcraHopSnapshot(
@@ -100,7 +103,7 @@ def _hop(index: int, frequencies: np.ndarray) -> ImcraHopSnapshot:
         index * 960,
         (index + 1) * 960,
         (index,),
-        "cohen_imcra_2003_l1_v3",
+        "cohen_imcra_2003_l1_v4",
         "ready",
         frequencies,
         noise,
@@ -116,6 +119,7 @@ def _hop(index: int, frequencies: np.ndarray) -> ImcraHopSnapshot:
         np.full(7, np.float32(index * 0.001), np.float32),
         np.full(7, probability, np.float32),
         float(probability),
+        noise_covariance,
     )
 
 

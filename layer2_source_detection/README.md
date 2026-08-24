@@ -6,7 +6,7 @@ GI-DOAEnet链读取同一`DecisionWindow float32[7680,8]`，只取前7路物理�
 
 上游GI-DOAEnet固定为提交`af865978c783f309fc929f0f2499769a1c5499d5`和PM权重SHA-256 `d465...9fe8`。因该提交没有LICENSE文件，源码和权重不进入本仓库；运行`scripts/install_gi_doaenet.py --acknowledge-upstream-terms`下载安装到Git忽略目录。模型懒加载，默认仍为MUSIC；本机CUDA稳态实测适配器约5.8～11.8 ms/窗，首次加载约2.7秒。
 
-IMCRA白化严格只读DecisionWindow携带的L1不可变快照，不拥有、更新或重置IMCRA状态。逐麦PSD形成的噪声模型为对角矩阵，收缩和diagonal loading后仍保持对角，因此实现使用逐麦逆平方根直接缩放协方差与steering，不执行逐频通用7×7 Cholesky/solve。16个hop的固定频率映射按批量向量化处理；缺少READY快照或有效对角项时明确退回未白化MUSIC。
+IMCRA白化严格只读DecisionWindow携带的L1不可变快照，不拥有、更新或重置IMCRA状态。L1在低SPP频点持续维护完整7×7复数空间噪声协方差，L2对其做频率插值、收缩、loading及批量Cholesky白化，同时变换观测协方差和steering。缺少READY快照或空间噪声协方差不可用时，本窗明确退回未白化MUSIC。
 
 ## 默认MUSIC主链
 

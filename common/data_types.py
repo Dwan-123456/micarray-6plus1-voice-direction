@@ -79,6 +79,21 @@ def _readonly_float32(value: object, shape: tuple[int | None, ...], name: str) -
     return np.frombuffer(np.ascontiguousarray(raw, dtype=np.float32).tobytes(), dtype=np.float32).reshape(raw.shape)
 
 
+def _readonly_complex64(
+    value: object, shape: tuple[int | None, ...], name: str,
+) -> NDArray[np.complex64]:
+    raw = np.asarray(value)
+    if raw.ndim != len(shape) or any(
+        expected is not None and raw.shape[index] != expected for index, expected in enumerate(shape)
+    ):
+        raise ValueError(f"{name} shape必须为 {shape}，实际为 {raw.shape}")
+    if raw.size == 0 or not np.isfinite(raw).all():
+        raise ValueError(f"{name}必须非空且全部为有限数值")
+    return np.frombuffer(
+        np.ascontiguousarray(raw, dtype=np.complex64).tobytes(), dtype=np.complex64,
+    ).reshape(raw.shape)
+
+
 @dataclass(frozen=True, slots=True)
 class ImcraHopSnapshot:
     """One L1 IMCRA result aligned to an exact 20 ms audio hop."""
@@ -104,6 +119,7 @@ class ImcraHopSnapshot:
     noise_level_db: NDArray[np.float32]
     source_probability_per_mic: NDArray[np.float32]
     array_source_probability_20ms: float | None
+    noise_covariance: NDArray[np.complex64] | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or min(
@@ -122,6 +138,27 @@ class ImcraHopSnapshot:
             raise ValueError("IMCRA frequency axis must be the 48 kHz/2048-point 0-10000 Hz bins")
         spectral_shape = (7, _IMCRA_BIN_COUNT)
         noise_psd = _readonly_float32(self.noise_psd, spectral_shape, "noise_psd")
+        noise_covariance = None
+        if self.noise_covariance is not None:
+            noise_covariance = _readonly_complex64(
+                self.noise_covariance,
+                (_IMCRA_BIN_COUNT, 7, 7),
+                "noise_covariance",
+            )
+            if not np.allclose(
+                noise_covariance,
+                noise_covariance.conj().transpose(0, 2, 1),
+                rtol=2.0e-5,
+                atol=1.0e-7,
+            ):
+                raise ValueError("IMCRA noise_covariance必须为Hermitian")
+            if not np.allclose(
+                np.real(np.diagonal(noise_covariance, axis1=1, axis2=2)),
+                noise_psd.T,
+                rtol=2.0e-5,
+                atol=1.0e-7,
+            ):
+                raise ValueError("IMCRA noise_covariance对角线必须与noise_psd一致")
         smoothed_psd = _readonly_float32(self.smoothed_psd, spectral_shape, "smoothed_psd")
         conditional_smoothed_psd = _readonly_float32(
             self.conditional_smoothed_psd, spectral_shape, "conditional_smoothed_psd"
@@ -162,6 +199,7 @@ class ImcraHopSnapshot:
         object.__setattr__(self, "source_sequence_ids", sequence_ids)
         object.__setattr__(self, "frequencies_hz", frequencies)
         object.__setattr__(self, "noise_psd", noise_psd)
+        object.__setattr__(self, "noise_covariance", noise_covariance)
         object.__setattr__(self, "smoothed_psd", smoothed_psd)
         object.__setattr__(self, "conditional_smoothed_psd", conditional_smoothed_psd)
         object.__setattr__(self, "minimum_psd", minimum_psd)

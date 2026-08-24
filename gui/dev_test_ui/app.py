@@ -534,7 +534,7 @@ def build_window(
                 "仅使用通过直达声主导检验的频点，以rank-1 MUSIC逐频投票并执行圆周聚类；默认关闭。"
             )
             self.music_noise_whitening.setToolTip(
-                "用IMCRA每麦noise_psd构造对角噪声协方差，同时白化协方差和steering；默认关闭。"
+                "直接读取L1 IMCRA长期维护的完整7×7空间噪声协方差，同时白化观测协方差和steering。"
             )
             self.srp_id_tracking = DirectionIdTrackingControl(
                 runtime.direction_id_tracking_enabled

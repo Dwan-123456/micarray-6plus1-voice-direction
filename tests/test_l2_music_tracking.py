@@ -59,18 +59,24 @@ def _imcra_hops(
         else np.asarray(noise_by_mic, dtype=np.float32)
     )
     noise = np.broadcast_to(noise_by_mic[:, None], shape).copy()
+    noise_covariance = np.zeros((frequencies.size, 7, 7), dtype=np.complex64)
+    diagonal_indices = np.arange(7)
+    noise_covariance[:, diagonal_indices, diagonal_indices] = noise.T
+    cross_power = np.float32(0.2 * np.sqrt(noise_by_mic[0] * noise_by_mic[1]))
+    noise_covariance[:, 0, 1] = 1j * cross_power
+    noise_covariance[:, 1, 0] = -1j * cross_power
     ones = np.ones(shape, dtype=np.float32)
     spp_values = np.full(shape, spp, dtype=np.float32)
     start = index * 960
     return tuple(
         ImcraHopSnapshot(
             "music", 0, start + hop * 960, start + (hop + 1) * 960, (index * 8 + hop,),
-            "cohen_imcra_2003_l1_v3", "ready", frequencies,
+            "cohen_imcra_2003_l1_v4", "ready", frequencies,
             noise, ones * 2.0, ones * 1.5, ones * 0.5, ones * 0.4,
             spp_values, 1.0 - spp_values, ones * (prior_snr + 1.0), ones * prior_snr,
             np.ones((7, 4), dtype=np.float32),
             10.0 * np.log10(np.maximum(noise_by_mic, 1.0e-12)),
-            np.full(7, spp, dtype=np.float32), spp,
+            np.full(7, spp, dtype=np.float32), spp, noise_covariance,
         )
         for hop in range(8)
     )
@@ -127,7 +133,7 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     assert (scan.frequency_min_hz, scan.frequency_max_hz) == (2_000.0, 4_000.0)
     assert scan.max_candidates == 3 and scan.min_peak_distance_deg == 50.0
     assert not scan.dpd_rank1_enabled
-    assert not scan.noise_whitening_enabled
+    assert scan.noise_whitening_enabled
 
 
 @pytest.mark.parametrize("context_ms, expected_frames", ((160, 15), (240, 23), (320, 31)))
@@ -255,6 +261,7 @@ def test_optional_dpd_rank1_separates_two_sources_across_zero_boundary() -> None
     config = replace(
         DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
         dpd_rank1_enabled=True,
+        noise_whitening_enabled=False,
         direction_threshold=0.15,
         effective_order_limit=2,
     )
@@ -407,7 +414,7 @@ def test_dpd_peak_fusion_wraps_zero_degrees() -> None:
     assert fused[0].angle_index == 0
 
 
-def test_optional_imcra_noise_psd_whitening_is_independent_and_safe() -> None:
+def test_optional_imcra_spatial_covariance_whitening_is_independent_and_safe() -> None:
     base = DirectionScanConfig.from_project(load_config(CONFIG, environ={}))
     config = replace(base, noise_whitening_enabled=True)
     hops = _imcra_hops(noise_by_mic=np.asarray((1, 2, 3, 4, 5, 6, 7), np.float32))
@@ -416,13 +423,30 @@ def test_optional_imcra_noise_psd_whitening_is_independent_and_safe() -> None:
         physical_6plus1_geometry(), config,
     )
     assert diagnostics.noise_whitening_enabled
-    assert diagnostics.whitening_status == "imcra_psd"
+    assert diagnostics.whitening_status == "imcra_spatial_covariance"
     assert diagnostics.imcra_noise_hops == 8
     assert np.isfinite(response.raw_scores).all()
     assert candidates
 
 
-def test_diagonal_imcra_whitening_matches_generic_cholesky_reference() -> None:
+def test_imcra_complex_cross_spectrum_survives_l2_frequency_interpolation() -> None:
+    config = DirectionScanConfig.from_project(load_config(CONFIG, environ={}))
+    scanner = RollingNormMusicScanner()
+    window = _window(_audio((35.0,), seed=158), imcra_hops=_imcra_hops())
+
+    _, _, covariance = scanner._imcra_metrics(window, config)
+
+    assert covariance is not None
+    assert np.max(np.abs(np.imag(covariance[:, 0, 1]))) > 0.0
+    np.testing.assert_allclose(
+        covariance,
+        covariance.conj().transpose(0, 2, 1),
+        rtol=2e-5,
+        atol=1e-7,
+    )
+
+
+def test_imcra_spatial_covariance_whitening_matches_cholesky_reference() -> None:
     base = DirectionScanConfig.from_project(load_config(CONFIG, environ={}))
     config = replace(base, noise_whitening_enabled=True)
     scanner = RollingNormMusicScanner()
@@ -444,20 +468,19 @@ def test_diagonal_imcra_whitening_matches_generic_cholesky_reference() -> None:
     actual_covariance, actual_steering, status = scanner._whiten(
         covariance, steering, window, config
     )
-    _, _, noise_psd = scanner._imcra_metrics(window, config)
-    assert noise_psd is not None
-    diagonal = np.maximum(noise_psd.T, config.eigenvalue_floor)
-    trace = np.mean(diagonal, axis=1)
-    effective = (
-        (1.0 - config.noise_covariance_shrinkage) * diagonal
-        + config.noise_covariance_shrinkage * trace[:, None]
-        + config.diagonal_loading
-        * np.maximum(trace, config.eigenvalue_floor)[:, None]
+    _, _, noise_covariance = scanner._imcra_metrics(window, config)
+    assert noise_covariance is not None
+    trace = np.maximum(
+        np.real(np.trace(noise_covariance, axis1=1, axis2=2)) / 7.0,
+        config.eigenvalue_floor,
     )
-    noise = np.zeros_like(covariance)
-    indices = np.arange(7)
-    noise[:, indices, indices] = effective
-    factor = np.linalg.cholesky(noise)
+    identity = np.eye(7, dtype=np.complex128)[None, :, :]
+    effective = (
+        (1.0 - config.noise_covariance_shrinkage) * noise_covariance
+        + config.noise_covariance_shrinkage * trace[:, None, None] * identity
+        + config.diagonal_loading * trace[:, None, None] * identity
+    )
+    factor = np.linalg.cholesky(effective)
     left = np.linalg.solve(factor, covariance)
     expected_covariance = np.linalg.solve(
         factor, left.conj().transpose(0, 2, 1)
@@ -472,7 +495,7 @@ def test_diagonal_imcra_whitening_matches_generic_cholesky_reference() -> None:
         np.linalg.norm(expected_steering, axis=2, keepdims=True), 1.0e-12
     )
 
-    assert status == "imcra_psd"
+    assert status == "imcra_spatial_covariance"
     np.testing.assert_allclose(actual_covariance, expected_covariance, rtol=1e-11, atol=1e-11)
     np.testing.assert_allclose(actual_steering, expected_steering, rtol=1e-11, atol=1e-11)
 
@@ -487,7 +510,7 @@ def test_optional_whitening_without_ready_imcra_falls_back_without_failure() -> 
     )
     assert diagnostics.whitening_status == "unavailable"
     assert diagnostics.covariance_quality == "degraded"
-    assert diagnostics.fallback_reason == "imcra_noise_psd_unavailable"
+    assert diagnostics.fallback_reason == "imcra_noise_covariance_unavailable"
     assert np.isfinite(response.raw_scores).all()
     assert candidates
 
