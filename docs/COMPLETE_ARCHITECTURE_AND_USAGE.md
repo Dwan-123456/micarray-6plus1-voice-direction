@@ -62,7 +62,7 @@ flowchart TB
       SEAL[Hub.seal<br/>完整48 kHz方向长轨<br/>Layer4LongAudioInput]
       ROUTE[Layer 4人数路由<br/>min(2, 整轨L2最大方向数)]
       SEP[双人分离<br/>MossFormer2或TIGER<br/>30 s块 / 1 s重叠]
-      MATCH[候选匹配与回退<br/>1–4 kHz初筛<br/>决定时间对齐·交叉轨惩罚]
+      MATCH[候选匹配与回退<br/>1–4 kHz复相干度<br/>排列修复·交叉淡化]
       L4OUT[L4输出<br/>16 kHz mono PCM16 WAV<br/>保留track_id与theta_deg]
       L5[Layer 5 NVIDIA MarbleNet<br/>每320样本输出20 ms概率<br/>阈值0.70]
       OFFOUT[Layer4OfflineResult<br/>逐帧Voice + 整轨摘要<br/>Test UI显示或显式持久化]
@@ -96,7 +96,7 @@ flowchart TB
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
 | ResultJoiner | 同一`WindowKey`的L2/L3/L5阶段终态 | 校验ID与角度对齐；等待完整终态；按全局window顺序提交；保留失败/丢弃/取消原因 | `JoinedWindowResult`、`DecisionRecord v5`、`ResultWatermark`、UI快照 | 有序逐窗提交 |
 | RecordingStore | 原生/逻辑音频、IMCRA、Joined结果、Hub hop | 异步有界写盘；60秒切块；逐ID hop合并；SHA-256；journal事务；崩溃恢复；Catalog投影 | WAV/NPZ/JSONL/manifest/Catalog；逐ID连续48 kHz增强WAV | 不反压采集 |
-| Layer 4 | Hub封存的`Layer4LongAudioInput`：完整48 kHz mono、ID、角度、决定起止sample、L2方向数历史 | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；30秒分块/1秒重叠；排列修复；交叉淡化；1–4 kHz初筛；按决定时间对齐其他ID并惩罚串轨；低可信回退 | `Layer4ProcessedAudio`及16 kHz mono波形；保留父`track_id/theta` | 初筛整轨；交叉轨比较至少2秒真实重叠 |
+| Layer 4 | Hub封存的`Layer4LongAudioInput`：完整48 kHz mono、ID、角度、L2方向数历史 | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；30秒分块/1秒重叠；排列修复；交叉淡化；1–4 kHz复相干匹配；低可信回退 | `Layer4ProcessedAudio`及16 kHz mono波形；保留父`track_id/theta` | 最短2秒；离线整轨处理 |
 | Layer 5 | L4原生16 kHz完整波形 | NVIDIA MarbleNet Frame-VAD；每320 sample直接推理；阈值比较；连续3帧均值取整轨最大值 | `Layer5LongAudioResult`：每20 ms概率/布尔值、摘要概率/判断、模型与耗时；并入`Layer4OfflineResult` | 16 kHz；20 ms一帧；默认阈值0.70 |
 
 ### 3.1 Layer 1内部图
@@ -172,8 +172,7 @@ L3输出保留80–8000 Hz，但80–1500 Hz受4 cm阵列孔径限制，不能�
        1人 → 直接旁路
        2人 → MossFormer2/TIGER两候选
              → 分块排列修复与淡化
-             → 1–4 kHz复相干初筛父L3轨
-             → 按决定时间裁取其他L3方向轨重叠区并执行交叉轨惩罚
+             → 1–4 kHz复相干匹配父L3轨
              → 低可信时回退父轨
   → L4 16 kHz WAV
   → MarbleNet逐20 ms概率

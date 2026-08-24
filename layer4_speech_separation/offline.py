@@ -19,7 +19,6 @@ from layer5_voice_classifier.gain_compensation import (
 )
 
 from .contracts import (
-    Layer4CandidatePair,
     Layer4LongAudioInput,
     Layer4OfflineResult,
     Layer4ProcessedAudio,
@@ -33,22 +32,6 @@ from .resampling import Layer4Resampler
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
-
-
-class _PreparedLayer4:
-    """Private batch context retained only until cross-track selection ends."""
-
-    __slots__ = ("processed", "reference_16k", "candidates")
-
-    def __init__(
-        self,
-        processed: Layer4ProcessedAudio,
-        reference_16k: np.ndarray,
-        candidates: Layer4CandidatePair | None,
-    ) -> None:
-        self.processed = processed
-        self.reference_16k = reference_16k
-        self.candidates = candidates
 
 
 def _read_mono_pcm16(path: Path) -> np.ndarray:
@@ -181,39 +164,11 @@ class OfflineLayer4Pipeline:
     ) -> Layer4ProcessedAudio:
         """Run resampling, speaker routing, separation and matching, but not L5."""
 
-        return self._prepare_l4(source, request_id=request_id).processed
-
-    @staticmethod
-    def _safe_output(
-        source: Layer4LongAudioInput, waveform_16k: np.ndarray,
-    ) -> tuple[np.ndarray, float, str]:
-        """Fit one chosen candidate to the source duration and PCM16 ceiling."""
-
-        expected = len(source.waveform) // 3
-        if len(waveform_16k) < expected:
-            waveform_16k = np.pad(waveform_16k, (0, expected - len(waveform_16k)))
-        output_16k = np.ascontiguousarray(waveform_16k[:expected], dtype=np.float32)
-        peak = float(np.max(np.abs(output_16k)))
-        pcm16_ceiling = 32767.0 / 32768.0
-        peak_safety_gain = 1.0
-        if peak > pcm16_ceiling:
-            peak_safety_gain = pcm16_ceiling / peak
-            output_16k = np.ascontiguousarray(
-                output_16k * np.float32(peak_safety_gain), dtype=np.float32,
-            )
-        return output_16k, peak_safety_gain, _sha256_bytes(output_16k.tobytes())
-
-    def _prepare_l4(
-        self, source: Layer4LongAudioInput, *, request_id: str | None = None,
-    ) -> _PreparedLayer4:
-        """Keep anonymous candidates alive for the sealed-batch identity pass."""
-
         request_id = request_id or str(uuid4())
         started = perf_counter()
         reference_16k = self.resampler.to_16k(source.waveform)
         count = self.speaker_counter.classify(source)
         selected: Layer4PrimarySelection | None = None
-        candidates: Layer4CandidatePair | None = None
         if count.speaker_count == 1:
             output_16k = reference_16k
             path = "single_speaker_bypass"
@@ -238,8 +193,20 @@ class OfflineLayer4Pipeline:
                 "used_reference_fallback": selected.used_reference_fallback,
                 "fallback_reason": selected.fallback_reason,
             }
-        output_16k, peak_safety_gain, output_hash = self._safe_output(source, output_16k)
-        processed = Layer4ProcessedAudio(
+        expected = len(source.waveform) // 3
+        if len(output_16k) < expected:
+            output_16k = np.pad(output_16k, (0, expected - len(output_16k)))
+        output_16k = np.ascontiguousarray(output_16k[:expected], dtype=np.float32)
+        peak = float(np.max(np.abs(output_16k)))
+        pcm16_ceiling = 32767.0 / 32768.0
+        peak_safety_gain = 1.0
+        if peak > pcm16_ceiling:
+            peak_safety_gain = pcm16_ceiling / peak
+            output_16k = np.ascontiguousarray(
+                output_16k * np.float32(peak_safety_gain), dtype=np.float32,
+            )
+        output_hash = _sha256_bytes(output_16k.tobytes())
+        return Layer4ProcessedAudio(
             request_id=request_id,
             source=source,
             speaker_count=count,
@@ -254,128 +221,6 @@ class OfflineLayer4Pipeline:
                 "matching_algorithm": None if selected is None else selected.matching_algorithm,
                 "pcm16_peak_safety_gain": peak_safety_gain,
                 "l4_elapsed_ms": (perf_counter() - started) * 1_000.0,
-            },
-        )
-        return _PreparedLayer4(processed, reference_16k, candidates)
-
-    @staticmethod
-    def _aligned_overlap_slices(
-        source: Layer4LongAudioInput,
-        other: Layer4LongAudioInput,
-    ) -> tuple[slice, slice, int, int] | None:
-        """Map one absolute 48 kHz decision-time overlap onto both 16 kHz tracks."""
-
-        if source.stream_epoch != other.stream_epoch:
-            return None
-        overlap_start = max(source.start_sample, other.start_sample)
-        overlap_end = min(source.end_sample, other.end_sample)
-        if overlap_end <= overlap_start:
-            return None
-        offsets = (
-            overlap_start - source.start_sample,
-            overlap_end - source.start_sample,
-            overlap_start - other.start_sample,
-            overlap_end - other.start_sample,
-        )
-        if any(value % 3 for value in offsets):
-            raise ValueError("L4 cross-track decision times must align to the 48/16 kHz boundary")
-        return (
-            slice(offsets[0] // 3, offsets[1] // 3),
-            slice(offsets[2] // 3, offsets[3] // 3),
-            overlap_start,
-            overlap_end,
-        )
-
-    def _apply_cross_track_penalty(
-        self,
-        item: _PreparedLayer4,
-        batch: tuple[_PreparedLayer4, ...],
-    ) -> Layer4ProcessedAudio:
-        """Switch when the initial winner resembles another ID more than its sibling."""
-
-        processed = item.processed
-        selected = processed.selected
-        candidates = item.candidates
-        if selected is None or candidates is None or selected.used_reference_fallback:
-            return processed
-
-        initial_index = selected.selected_source_index
-        alternate_index = 1 - initial_index
-        comparisons: list[dict[str, object]] = []
-        for other in batch:
-            if other is item:
-                continue
-            aligned = self._aligned_overlap_slices(processed.source, other.processed.source)
-            if aligned is None:
-                continue
-            candidate_slice, other_slice, overlap_start, overlap_end = aligned
-            overlap_samples_16k = candidate_slice.stop - candidate_slice.start
-            if overlap_samples_16k < self.matcher.minimum_reliable_samples:
-                continue
-            other_reference = np.ascontiguousarray(
-                other.reference_16k[other_slice], dtype=np.float32,
-            )
-            scores = tuple(
-                self.matcher.score(
-                    other_reference,
-                    np.ascontiguousarray(candidate[candidate_slice], dtype=np.float32),
-                )
-                for candidate in candidates.sources
-            )
-            comparisons.append({
-                "other_track_id": other.processed.source.track_id,
-                "other_theta_deg": other.processed.source.theta_deg,
-                "overlap_start_sample_48k": overlap_start,
-                "overlap_end_sample_48k": overlap_end,
-                "overlap_samples_16k": overlap_samples_16k,
-                "candidate_scores": scores,
-            })
-
-        strongest = max(
-            comparisons,
-            key=lambda row: float(row["candidate_scores"][initial_index])
-            - float(row["candidate_scores"][alternate_index]),
-            default=None,
-        )
-        advantage = 0.0 if strongest is None else (
-            float(strongest["candidate_scores"][initial_index])
-            - float(strongest["candidate_scores"][alternate_index])
-        )
-        switched = strongest is not None and advantage >= self.matcher.minimum_score_margin
-        final_index = alternate_index if switched else initial_index
-        final_selection = replace(
-            selected,
-            selected_source_index=final_index,
-            matching_algorithm="l3_bf_1_4khz_cross_track_penalty_v4",
-            waveform=candidates.sources[final_index],
-        )
-        output_16k, peak_safety_gain, output_hash = self._safe_output(
-            processed.source, final_selection.waveform,
-        )
-        cross_track = {
-            "alignment": "absolute_decision_sample_overlap_v1",
-            "minimum_overlap_samples_16k": self.matcher.minimum_reliable_samples,
-            "minimum_switch_advantage": self.matcher.minimum_score_margin,
-            "initial_selected_source_index": initial_index,
-            "final_selected_source_index": final_index,
-            "switched": switched,
-            "strongest_conflicting_track_id": (
-                None if strongest is None else strongest["other_track_id"]
-            ),
-            "strongest_conflicting_advantage": advantage,
-            "comparisons": tuple(comparisons),
-        }
-        return replace(
-            processed,
-            selected=final_selection,
-            output_sha256=output_hash,
-            waveform_16k=output_16k,
-            metadata={
-                **dict(processed.metadata),
-                "selected_source_index": final_index,
-                "matching_algorithm": final_selection.matching_algorithm,
-                "pcm16_peak_safety_gain": peak_safety_gain,
-                "cross_track_penalty": cross_track,
             },
         )
 
@@ -445,8 +290,7 @@ class OfflineLayer4Pipeline:
         self, sources: tuple[Layer4LongAudioInput, ...],
     ) -> tuple[Layer4ProcessedAudio, ...]:
         sources = self._validate_sources(sources)
-        prepared = tuple(self._prepare_l4(source) for source in sources)
-        return tuple(self._apply_cross_track_penalty(item, prepared) for item in prepared)
+        return tuple(self.process_l4(source) for source in sources)
 
     def process_l5_sealed(
         self, processed: tuple[Layer4ProcessedAudio, ...],
