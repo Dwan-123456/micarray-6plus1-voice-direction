@@ -74,11 +74,11 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer1_speaker_count.input_sample_rate == 16_000
     assert config.layer1_speaker_count.context_seconds == 5
     assert config.layer1_speaker_count.inference_hop_ms == 100
-    assert config.layer1_speaker_count.algorithm_version == "countnet_crnn_5s_100ms_v2"
+    assert config.layer1_speaker_count.algorithm_version == "countnet_crnn_5s_100ms_v3"
     assert config.layer1_speaker_count.input_level_target_dbfs == -20.0
     assert config.layer1_speaker_count.input_level_floor_dbfs == -70.0
     assert config.layer1_speaker_count.maximum_input_gain_db == 30.0
-    assert config.layer1_speaker_count.model_sha256 == "7c8b22c1545fba2d84eba995b5911c0ea3b26b8ad07c011588a3bde8a8d799f5"
+    assert config.layer1_speaker_count.model_sha256 == "f655f168bbd9091efd18b950e63484825ba68052a911331cab1e845e27e505e4"
     assert config.recording.runtime.record_imcra is True
     assert config.recording.runtime.record_noise_spectrum is True
     gain = config.layer5.input_gain_compensation

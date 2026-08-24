@@ -72,10 +72,12 @@ sample，并包含0/1/2、`P0/P1/P2`、模型身份和`warming_up/ready/invalid`
 “2人或以上”，不是恰好2人。没有时间平滑，相邻100 ms结果直接采用各次模型输出。
 
 CountNet使用Stöter等人官方CRNN的固定权重和标准化器，经确定性PyTorch/TorchScript移植后读取16 kHz、
-5秒单声道波形。模型原生0～10人后验映射为`P0、P1、sum(P2..P10)`。模型由模拟LibriCount
-数据训练，尚未构成当前办公室/阵列环境的实机准确率验收。
+5秒单声道波形。活动模型`countnet_crnn_16k_5s_v2`在转换时翻转Theano数学卷积的两个空间轴，
+从而匹配PyTorch互相关语义；上游官方5人样例的原生11类概率相对旧Keras/Theano模型最大绝对误差
+为`4.77e-7`。旧v1因遗漏该翻转而从第一层卷积开始偏离，已停用。模型原生0～10人后验映射为
+`P0、P1、sum(P2..P10)`。模型由模拟LibriCount数据训练，尚未构成当前办公室/阵列环境的实机准确率验收。
 
-`countnet_crnn_5s_100ms_v2`在推理前对5秒Center上下文去除直流，并把高于`-70 dBFS`但低于
+`countnet_crnn_5s_100ms_v3`在推理前对5秒Center上下文去除直流，并把高于`-70 dBFS`但低于
 `-20 dBFS`的输入向上适配，增益最多30 dB；正常响度不衰减，峰值超过0 dBFS时再作等比例限幅。
 这是因为官方LibriCount样本通常显著高于阵列实测约`-50 dBFS`的Center输入，未适配时模型会退化为
 近似恒定`P0=1`。UI同时显示适配前RMS、实际增益、三位概率和标注end sample，便于确认100 ms结果
@@ -102,6 +104,6 @@ L1不计算DOA、不执行波束形成、不执行逐方向人声分类，也不
 - 设备、WAV、实时handoff和Ingest时间轴一致性。
 - PortAudio回调不执行RMS、连续handoff溢出事件合并、交接队列高水位与输入健康诊断。
 - CountNet 5秒预热、48→16 kHz精确长度、每5块/100 ms对齐、无平滑、epoch/gap重置、非阻塞队列、
-  模型SHA-256与稳定CPU推理耗时门禁。
+  Theano卷积核空间翻转、模型SHA-256与稳定CPU推理耗时门禁。
 
 Development Test UI左上象限需显示8路电平、IMCRA状态、每麦噪声摘要及20 ms概率；灯控和scratch录音仍复用同一L1输入，不能重开设备。

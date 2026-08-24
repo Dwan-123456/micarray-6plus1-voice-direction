@@ -16,6 +16,12 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def theano_convolution_weight(weight: np.ndarray) -> torch.Tensor:
+    """Convert a Theano mathematical-convolution kernel for torch Conv2d."""
+
+    return torch.flip(torch.from_numpy(np.asarray(weight)), dims=(-2, -1))
+
+
 def convert(upstream: Path, output: Path) -> str:
     source_model = upstream / "models" / "CRNN.h5"
     source_scaler = upstream / "models" / "scaler.npz"
@@ -24,7 +30,12 @@ def convert(upstream: Path, output: Path) -> str:
         weights = source["model_weights"]
         for name in ("conv1", "conv2", "conv3", "conv4"):
             layer = getattr(model, name)
-            layer.weight.copy_(torch.from_numpy(np.asarray(weights[name][f"{name}_W"])))
+            # Keras 1.2.2's Theano backend performs mathematical convolution
+            # (spatially flipped filters), while torch Conv2d performs cross-
+            # correlation.  Flip both kernel axes once during conversion so
+            # every PyTorch layer is numerically equivalent to the upstream
+            # model rather than silently mirroring its learned filters.
+            layer.weight.copy_(theano_convolution_weight(weights[name][f"{name}_W"]))
             layer.bias.copy_(torch.from_numpy(np.asarray(weights[name][f"{name}_b"])))
         for gate in ("i", "f", "c", "o"):
             getattr(model, f"lstm_w_{gate}").copy_(
@@ -45,7 +56,12 @@ def convert(upstream: Path, output: Path) -> str:
         model.scaler_scale.copy_(torch.from_numpy(np.asarray(scaler["arr_1"], np.float32)))
     output.parent.mkdir(parents=True, exist_ok=True)
     scripted = torch.jit.script(model)
-    scripted.save(str(output))
+    # torch.jit.save(path) cannot reliably open this repository's Unicode path
+    # on Windows.  Serialize in memory and let pathlib perform the filesystem
+    # write so conversion works regardless of the workspace directory name.
+    buffer = io.BytesIO()
+    torch.jit.save(scripted, buffer)
+    output.write_bytes(buffer.getvalue())
     loaded = torch.jit.load(io.BytesIO(output.read_bytes()), map_location="cpu").eval()
     with torch.inference_mode():
         smoke = loaded(torch.zeros((1, 80_000), dtype=torch.float32))

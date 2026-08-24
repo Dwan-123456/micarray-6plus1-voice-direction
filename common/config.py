@@ -140,7 +140,7 @@ class Layer1PreDenoiseConfig(StrictModel):
 
 class Layer1SpeakerCountConfig(StrictModel):
     enabled: bool = False
-    algorithm_version: Literal["countnet_crnn_5s_100ms_v2"]
+    algorithm_version: Literal["countnet_crnn_5s_100ms_v3"]
     model_id: str = Field(min_length=1)
     model_artifact: str = Field(min_length=1)
     model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

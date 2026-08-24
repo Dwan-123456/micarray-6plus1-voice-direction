@@ -1,0 +1,23 @@
+{
+  "model_id": "countnet_crnn_16k_5s_v2",
+  "runtime_format": "torchscript",
+  "artifact": "model.pt",
+  "artifact_sha256": "f655f168bbd9091efd18b950e63484825ba68052a911331cab1e845e27e505e4",
+  "input": "float32 mono waveform [batch,80000] at 16 kHz",
+  "native_output_classes": 11,
+  "project_output_mapping": "P0=native P0; P1=native P1; P2=sum(native P2..P10)",
+  "conversion": "Keras 1.2.2 Theano convolution kernels are spatially flipped for PyTorch cross-correlation",
+  "parity": {
+    "fixture": "upstream examples/5_speakers.wav",
+    "maximum_native_probability_absolute_error": 4.77e-7
+  },
+  "upstream": {
+    "repository": "https://github.com/faroit/CountNet",
+    "revision": "ae15e1ac096862667a7bfdedf0b67a70a7543edd",
+    "model": "models/CRNN.h5",
+    "model_sha256": "00f67eb2aa2749bae9d45f3642b9d031b16f372aff929f74699b5a04a266c98d",
+    "scaler": "models/scaler.npz",
+    "scaler_sha256": "90ec0061d27ef224687598e715562933a6ba0849dc9aab447cafad6f0259a7a7",
+    "license": "MIT"
+  }
+}

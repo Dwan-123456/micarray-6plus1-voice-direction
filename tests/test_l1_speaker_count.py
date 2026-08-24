@@ -8,6 +8,7 @@ from common.config import load_config
 from common.data_types import IngestedAudioBlock
 from layer1_input.interface import SpeakerCountAnnotation
 from layer1_input.speaker_count import AsyncSpeakerCounter, TorchScriptCountNet
+from scripts.import_countnet import theano_convolution_weight
 
 
 CONFIG = __import__("pathlib").Path(__file__).parents[1] / "config" / "config.yaml"
@@ -170,6 +171,12 @@ def test_bundled_countnet_asset_hash_output_and_steady_cpu_gate():
     assert result.shape == (3,) and float(result.sum()) == __import__("pytest").approx(1.0)
     assert int(np.argmax(result)) == 0
     assert float(np.median(durations)) < 0.10
+
+
+def test_theano_convolution_kernel_is_spatially_flipped_for_torch():
+    source = np.arange(2 * 3 * 2 * 3, dtype=np.float32).reshape(2, 3, 2, 3)
+    converted = theano_convolution_weight(source).numpy()
+    np.testing.assert_array_equal(converted, source[:, :, ::-1, ::-1])
 
 
 def test_quiet_microphone_level_is_adapted_before_inference_and_reported():
