@@ -152,7 +152,10 @@ class Layer4PrimarySelection:
     selected_source_index: Literal[0, 1]
     candidate_scores: tuple[float, float]
     score_margin: float
-    matching_algorithm: Literal["l3_bf_1_4khz_complex_coherence_v3"]
+    matching_algorithm: Literal[
+        "l3_bf_1_4khz_complex_coherence_v3",
+        "l3_bf_1_4khz_cross_track_penalty_v4",
+    ]
     waveform: NDArray[np.float32]
     used_reference_fallback: bool = False
     fallback_reason: str | None = None

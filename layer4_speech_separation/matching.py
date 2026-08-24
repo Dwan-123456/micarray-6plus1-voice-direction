@@ -44,7 +44,9 @@ class BandMagnitudeMatcher:
             : frame_count * self.hop_length : self.hop_length
         ]
 
-    def _score(self, reference: NDArray[np.float32], candidate: NDArray[np.float32]) -> float:
+    def score(self, reference: NDArray[np.float32], candidate: NDArray[np.float32]) -> float:
+        """Score two already decision-time-aligned 16 kHz spans."""
+
         if len(reference) != len(candidate):
             raise ValueError("matching reference and candidate must be time-aligned and equal length")
         left_frames = self._frames(reference)
@@ -97,7 +99,7 @@ class BandMagnitudeMatcher:
             raise ValueError("16 kHz L3 reference must be finite C-contiguous float32 mono audio")
         if len(reference) != len(candidates.sources[0]):
             raise ValueError("resampled L3 reference and separated candidates must have equal duration")
-        scores = tuple(self._score(reference, source) for source in candidates.sources)
+        scores = tuple(self.score(reference, source) for source in candidates.sources)
         selected = 0 if scores[0] >= scores[1] else 1
         fallback_reason = None
         if len(reference) < self.minimum_reliable_samples:

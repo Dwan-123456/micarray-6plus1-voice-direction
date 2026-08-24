@@ -50,6 +50,54 @@ class _Backend:
         )
 
 
+class _CrossTrackBackend:
+    """Make the first-stage winner reproduce a different L3 direction track."""
+
+    model_id = "cross-track-separator"
+    model_revision = "1"
+    sample_rate = 16_000
+    source_count = 2
+
+    def separate(self, request_id, waveform_16k):
+        time = np.arange(len(waveform_16k), dtype=np.float64) / 16_000
+        target = np.ascontiguousarray(
+            np.sin(2 * np.pi * (1_200 * time + 40 * time**2)), dtype=np.float32,
+        )
+        other = np.ascontiguousarray(
+            np.sin(2 * np.pi * (2_600 * time + 60 * time**2)), dtype=np.float32,
+        )
+        return Layer4CandidatePair(
+            request_id, self.model_id, self.model_revision, 16_000, (target, other),
+        )
+
+
+def _timeline_source(
+    *,
+    track_id: int,
+    start_seconds: float,
+    duration_seconds: float,
+    target_gain: float,
+    other_gain: float,
+    direction_count: int,
+) -> Layer4LongAudioInput:
+    sample_rate = 48_000
+    sample_count = int(round(duration_seconds * sample_rate))
+    time = (
+        int(round(start_seconds * sample_rate)) + np.arange(sample_count, dtype=np.float64)
+    ) / sample_rate
+    waveform = np.ascontiguousarray(
+        target_gain * np.sin(2 * np.pi * (1_200 * time + 40 * time**2))
+        + other_gain * np.sin(2 * np.pi * (2_600 * time + 60 * time**2)),
+        dtype=np.float32,
+    )
+    start_sample = int(round(start_seconds * sample_rate))
+    return Layer4LongAudioInput(
+        f"asset-{track_id}", hashlib.sha256(waveform.tobytes()).hexdigest(),
+        "session", 0, track_id, float(track_id * 30), start_sample, 48_000, waveform,
+        ((start_sample + 960, direction_count),),
+    )
+
+
 class _L5:
     def __init__(self):
         self.calls = 0
@@ -151,6 +199,65 @@ def test_l4_and_l5_pipeline_stages_share_the_same_16khz_waveform() -> None:
         assert any(item.is_voice for item in annotations if item is not None)
     finally:
         store.close()
+
+
+def test_cross_track_penalty_aligns_different_length_tracks_by_decision_time_and_switches() -> None:
+    pipeline = OfflineLayer4Pipeline(
+        speaker_counter=DirectionCountSpeakerClassifier(),
+        backends={"mossformer2_ss_16k": _CrossTrackBackend()},
+        layer5=_L5(),
+        default_backend="mossformer2_ss_16k",
+    )
+    current = _timeline_source(
+        track_id=1, start_seconds=0.0, duration_seconds=4.0,
+        target_gain=0.2, other_gain=1.0, direction_count=2,
+    )
+    other = _timeline_source(
+        track_id=2, start_seconds=1.0, duration_seconds=2.5,
+        target_gain=0.0, other_gain=1.0, direction_count=1,
+    )
+
+    processed = pipeline.process_l4_sealed((current, other))
+
+    selection = processed[0].selected
+    assert selection is not None
+    assert selection.candidate_scores[1] > selection.candidate_scores[0]
+    assert selection.selected_source_index == 0
+    assert selection.matching_algorithm == "l3_bf_1_4khz_cross_track_penalty_v4"
+    diagnostic = processed[0].metadata["cross_track_penalty"]
+    assert diagnostic["switched"] is True
+    assert diagnostic["strongest_conflicting_track_id"] == 2
+    comparison = diagnostic["comparisons"][0]
+    assert comparison["overlap_start_sample_48k"] == 48_000
+    assert comparison["overlap_end_sample_48k"] == 168_000
+    assert comparison["overlap_samples_16k"] == 40_000
+    assert comparison["candidate_scores"][1] > comparison["candidate_scores"][0]
+
+
+def test_cross_track_penalty_ignores_decision_time_overlap_shorter_than_two_seconds() -> None:
+    pipeline = OfflineLayer4Pipeline(
+        speaker_counter=DirectionCountSpeakerClassifier(),
+        backends={"mossformer2_ss_16k": _CrossTrackBackend()},
+        layer5=_L5(),
+        default_backend="mossformer2_ss_16k",
+    )
+    current = _timeline_source(
+        track_id=1, start_seconds=0.0, duration_seconds=4.0,
+        target_gain=0.2, other_gain=1.0, direction_count=2,
+    )
+    short_other = _timeline_source(
+        track_id=2, start_seconds=3.0, duration_seconds=1.0,
+        target_gain=0.0, other_gain=1.0, direction_count=1,
+    )
+
+    processed = pipeline.process_l4_sealed((current, short_other))
+
+    selection = processed[0].selected
+    assert selection is not None
+    assert selection.selected_source_index == 1
+    diagnostic = processed[0].metadata["cross_track_penalty"]
+    assert diagnostic["switched"] is False
+    assert diagnostic["comparisons"] == ()
 
 
 def test_long_audio_adapter_repairs_swapped_chunk_outputs_before_crossfade() -> None:
