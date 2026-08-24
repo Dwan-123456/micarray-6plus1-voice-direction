@@ -23,6 +23,16 @@
 
 ---
 
+## 2026-08-24 — Gate关闭时持续维护MUSIC空间协方差并增加80 ms新ID门禁
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改项目版本，不创建或移动发布标签。
+- **MUSIC空间协方差**：L2现在对每个连续20 ms `DecisionWindow`更新7路物理麦的滚动STFT空间协方差，与Probability Gate状态解耦。Gate关闭时不执行Hermitian特征分解、伪谱融合或峰值搜索；Gate开启首窗直接复用已预热的空间协方差，因此不再从仅160 ms的当前窗口冷启动240 ms历史。该矩阵是MUSIC多通道空间协方差，不是IMCRA噪声协方差；可选IMCRA白化仍只使用L1逐麦噪声PSD归一化它。
+- **方向ID稳定门禁**：最近240 ms的12个20 ms窗口记录`active_frame_count`；至少4个Gate有效帧、即累计80 ms有效声音后才允许创建新方向ID。Gate刚开启即可显示MUSIC谱，预热期内已有ID仍可接受匹配，confirmed ID继续按原2秒TTL coasting。session、epoch或sample gap会重建空间协方差并清空有效帧历史。
+- **诊断与测试**：`MusicDiagnostics`新增当前有效帧数和新ID所需帧数；新增Gate连续关闭仍填满23个240 ms STFT快照、首次开启立即出谱但禁止birth、累计80 ms后允许tentative ID的回归，并更新原先假设首帧立即birth的追踪测试。
+- **未改变与资产**：L1采集/校准/IMCRA/预降噪、Windowing、GI-DOAEnet推理、MUSIC频带/阶数/峰值数学、IMM-JPDA关联与ID寿命、L3～L5、各UI、录音和数据管理均无变化；无配置、模型、音频或Git LFS对象变化。
+
+---
+
 ## 2026-08-24 — L4加入按决定时间对齐的跨方向轨候选惩罚
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。

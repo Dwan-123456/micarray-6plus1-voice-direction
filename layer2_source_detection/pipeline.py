@@ -19,6 +19,10 @@ from .gi_doaenet import GiDoaEnetScanner, SwitchableDoaScanner
 from .probability_gate import ProbabilityGate, ProbabilityGateDecision, ProbabilityGateState, SourceProbability20ms
 
 
+_MUSIC_BIRTH_WARMUP_HOPS = 4
+_MUSIC_ACTIVITY_HISTORY_HOPS = 12
+
+
 class Layer2ExecutionState(str, Enum):
     BLOCKED = "blocked"
     PROCESSED = "processed"
@@ -177,6 +181,8 @@ class Layer2Pipeline:
         self._direction_id_tracking_enabled = True
         self._voice_feedback: deque[tuple[str, int, int, int, float, bool]] = deque(maxlen=4096)
         self._voice_feedback_lock = Lock()
+        self._gate_activity_key: tuple[str, int, int] | None = None
+        self._gate_activity: deque[int] = deque(maxlen=_MUSIC_ACTIVITY_HISTORY_HOPS)
 
     @classmethod
     def from_project(cls, config: ProjectConfig, *, scanner: DetailedDirectionScanner | None = None,
@@ -206,6 +212,27 @@ class Layer2Pipeline:
             self._voice_feedback.clear()
         self.last_id_tracking_error = None
         self._direction_id_tracking_enabled = True
+        self._gate_activity_key = None
+        self._gate_activity.clear()
+
+    def _update_gate_activity(
+        self, window: DecisionWindow, decision: ProbabilityGateDecision
+    ) -> int:
+        previous = self._gate_activity_key
+        continuous = (
+            previous is not None
+            and previous[:2] == (window.session_id, window.stream_epoch)
+            and window.decision_sample == previous[2] + 960
+        )
+        if not continuous:
+            self._gate_activity.clear()
+        self._gate_activity.append(int(decision.state is ProbabilityGateState.OPEN))
+        self._gate_activity_key = (
+            window.session_id,
+            window.stream_epoch,
+            window.decision_sample,
+        )
+        return sum(self._gate_activity)
 
     def submit_voice_feedback(
         self,
@@ -252,6 +279,8 @@ class Layer2Pipeline:
         if scan_config.scanner_backend != self._active_backend:
             self._active_backend = scan_config.scanner_backend
             self.id_tracker.reset(preserve_session_counters=True)
+            self._gate_activity_key = None
+            self._gate_activity.clear()
             with self._voice_feedback_lock:
                 self._voice_feedback.clear()
         if direction_id_tracking_enabled != self._direction_id_tracking_enabled:
@@ -262,6 +291,9 @@ class Layer2Pipeline:
             with self._voice_feedback_lock:
                 self._voice_feedback.clear()
             self._direction_id_tracking_enabled = direction_id_tracking_enabled
+        observe_covariance = getattr(self.scanner, "observe_covariance", None)
+        if callable(observe_covariance):
+            observe_covariance(window, scan_config)
         if direction_id_tracking_enabled:
             self._drain_voice_feedback()
             voice_confirmed_ids = self.id_tracker.voice_confirmed_track_ids(
@@ -282,12 +314,21 @@ class Layer2Pipeline:
                     "force_open_requires_l5_voice_confirmations=2",
                 ),
             )
+        active_frame_count = self._update_gate_activity(window, decision)
         response: SpatialResponse | None = None
         diagnostics: MusicDiagnostics | None = None
         observations: tuple[CandidateDirection, ...] = ()
         if decision.allow_srp:
             response, observations, diagnostics = self.scanner.scan_detailed(
                 window, geometry, scan_config, scan_config_revision)
+            if scan_config.scanner_backend == "frequency_normalized_music":
+                warm = active_frame_count >= _MUSIC_BIRTH_WARMUP_HOPS
+                diagnostics = replace(
+                    diagnostics,
+                    births_allowed=diagnostics.births_allowed and warm,
+                    active_frame_count=active_frame_count,
+                    birth_required_active_frames=_MUSIC_BIRTH_WARMUP_HOPS,
+                )
         if not direction_id_tracking_enabled:
             self.last_id_tracking_error = None
             return Layer2PipelineResult(

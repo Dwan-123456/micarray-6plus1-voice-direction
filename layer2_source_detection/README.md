@@ -12,7 +12,10 @@ IMCRA白化严格只读DecisionWindow携带的L1不可变快照，不拥有、�
 
 ```text
 DecisionWindow + 两个对齐的20 ms概率
+    → 始终维护Rolling MUSIC空间协方差（Gate关闭也每20 ms增量更新）
     → Probability Gate（两概率取平均，运行时门限）
+         关闭：不做特征分解、伪谱融合和峰值搜索
+         开启：立即用已预热的空间协方差计算MUSIC伪谱
     → Rolling frequency-normalized MUSIC
          7路物理麦 / 2～4 kHz / 0～359°逐度
          20 ms增量加入/移除STFT协方差帧
@@ -21,6 +24,8 @@ DecisionWindow + 两个对齐的20 ms概率
          NormMUSIC逐频归一化后跨频融合
          UI阶数上限1/2/3轮贪心选峰 + 50°圆周NMS
     → 默认开启的全局方向轨迹分配
+         最近240 ms至少4个Gate有效帧（80 ms）才允许创建新ID
+         预热期间已有ID仍可匹配；confirmed ID可正常coasting
          birth/miss dummy行列 + linear_sum_assignment
          tentative / confirmed / coasting / deleted
          滚动200 ms内至少5次匹配才进入confirmed
@@ -38,9 +43,9 @@ DecisionWindow + 两个对齐的20 ms概率
 
 ## 滚动计算
 
-比较历史固定包含160/240/320 ms，当前运行配置选择240 ms；`DecisionWindow`仍提供最多320 ms原始历史。连续窗口只计算新增的两个50%重叠STFT帧，并移出超出历史的两个旧帧；sample跳跃、epoch或session变化时从当前窗口重建。导向张量按阵列几何、频率轴和配置revision缓存，伪谱与轨迹每20 ms更新。
+比较历史固定包含160/240/320 ms，当前运行配置选择240 ms；`DecisionWindow`仍提供最多320 ms原始历史。无论Probability Gate是否开启，连续窗口都只计算新增的两个50%重叠STFT帧并移出超出历史的两个旧帧，持续维护7路物理麦的MUSIC空间协方差；这不是IMCRA噪声协方差。Gate关闭时到此停止，不执行Hermitian特征分解、伪谱融合或峰值搜索。Gate开启时立即显示使用已预热协方差得到的MUSIC谱，同时统计最近12个20 ms窗口中的Gate有效帧数；累计至少4帧（80 ms）才允许产生新方向ID。该限制不阻止已有ID与观测关联，也不改变confirmed ID的coasting。sample跳跃、epoch或session变化时从当前窗口重建空间协方差并清空有效帧计数。导向张量按阵列几何、频率轴和配置revision缓存，Gate开启时伪谱与轨迹每20 ms更新。
 
-`MusicDiagnostics`记录Test UI手动阶数、实际输出数、有效频点、协方差质量、增量状态和协方差更新/eigh/谱融合/总耗时。Test UI可把MUSIC阶数设为1、2或3，下一窗口生效；普通路径同时将该值作为信号子空间阶数和最多搜峰数。后台不再计算或缓存自动模型阶数；兼容DTO中的旧年龄字段恒为0。目标机门禁为稳态p95不高于15 ms，单窗硬门限20 ms。
+`MusicDiagnostics`记录Test UI手动阶数、实际输出数、有效频点、协方差质量、增量状态、最近240 ms有效帧数、新ID门限和协方差更新/eigh/谱融合/总耗时。Test UI可把MUSIC阶数设为1、2或3，下一窗口生效；普通路径同时将该值作为信号子空间阶数和最多搜峰数。后台不再计算或缓存自动模型阶数；兼容DTO中的旧年龄字段恒为0。目标机门禁为稳态p95不高于15 ms，单窗硬门限20 ms。
 
 默认关闭的`DPD + rank-1 MUSIC`开启后，可靠频点分别产生rank-1方向票，再进行跨359°/0°连续的圆周核聚类。每个方向簇必须至少有4个支持频点、覆盖4个等宽子带中的至少2个、获得至少0.20的可靠频点总权重且圆周集中度至少0.85。两个或多个归一化峰值均严格大于0.70、且组内任意两峰圆周距离不超过40°时，在50°NMS前按唯一支持频点并集的可靠性权重计算圆周平均角`theta_group`和`w_merge`；重复频点只计一次，禁止链式跨范围合并，融合证据重新通过原方向簇门禁且蓝色投票谱不重新归一化。合格簇数量决定0～手动上限个候选；逐候选诊断记录支持频点、支持率、子带数、集中度、平均平面波拟合度和簇权重。开关仍可由Test UI持久化并在运行中切换，默认值保持OFF。
 

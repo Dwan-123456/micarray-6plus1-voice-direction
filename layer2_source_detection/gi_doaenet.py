@@ -216,6 +216,14 @@ class SwitchableDoaScanner:
     def scan_detailed(self, window, geometry, config, config_revision=0):
         return self._scanner(config).scan_detailed(window, geometry, config, config_revision)
 
+    def observe_covariance(self, window, config):
+        """Keep MUSIC spatial covariance warm while its probability Gate is closed."""
+
+        if config.scanner_backend != "frequency_normalized_music":
+            return None
+        self._active = config.scanner_backend
+        return self.music.observe_covariance(window, config)
+
     @property
     def model_order(self):
         return self.neural.model_order if self._active == "gi_doaenet" else self.music.model_order

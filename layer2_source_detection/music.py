@@ -82,6 +82,8 @@ class MusicDiagnostics:
     candidate_limit_applied: bool = False
     effective_model_order: int | None = None
     births_allowed: bool = True
+    active_frame_count: int = 0
+    birth_required_active_frames: int = 0
     dpd_rank1_enabled: bool = False
     selected_frequency_bins: int = 0
     noise_whitening_enabled: bool = False
@@ -109,7 +111,12 @@ class MusicDiagnostics:
             raise TypeError("MUSIC birth flag must be bool")
         if type(self.dpd_rank1_enabled) is not bool or type(self.noise_whitening_enabled) is not bool:
             raise TypeError("MUSIC DPD/whitening flags must be bool")
-        if min(self.selected_frequency_bins, self.imcra_noise_hops) < 0:
+        if min(
+            self.selected_frequency_bins,
+            self.imcra_noise_hops,
+            self.active_frame_count,
+            self.birth_required_active_frames,
+        ) < 0:
             raise ValueError("MUSIC DPD/noise counts must be non-negative")
         if self.whitening_status not in {"disabled", "imcra_psd", "unavailable"}:
             raise ValueError("invalid MUSIC whitening status")
@@ -134,6 +141,7 @@ class RollingNormMusicScanner:
         self._frequencies_hz: np.ndarray | None = None
         self._steering: np.ndarray | None = None
         self._steering_key: tuple[object, ...] | None = None
+        self._last_covariance_update_ms = 0.0
         self.last_state_diagnostic: MusicStateDiagnostic | None = None
 
     def reset(self) -> None:
@@ -141,6 +149,7 @@ class RollingNormMusicScanner:
         self._last_sample = None
         self._frame_covariances.clear()
         self._covariance_sum = None
+        self._last_covariance_update_ms = 0.0
         self.last_state_diagnostic = None
 
     @staticmethod
@@ -636,6 +645,30 @@ class RollingNormMusicScanner:
             old_count, len(added), removed, False, "sample_continuous",
         )
 
+    def observe_covariance(
+        self, window: DecisionWindow, config: DirectionScanConfig
+    ) -> MusicStateDiagnostic:
+        """Maintain rolling MUSIC spatial covariance without eigensolve or peak search."""
+
+        stream_key = (window.session_id, window.stream_epoch)
+        if self._stream_key == stream_key and self._last_sample == window.decision_sample:
+            assert self.last_state_diagnostic is not None
+            return self.last_state_diagnostic
+        started = perf_counter()
+        continuous = self._stream_key == stream_key and self._last_sample is not None and (
+            window.decision_sample == self._last_sample + 960
+        )
+        if not continuous:
+            reason = "new_stream" if self._stream_key != stream_key else "sample_discontinuity"
+            self._rebuild(window, config, reason)
+        else:
+            self._advance(window, config)
+        self._stream_key = stream_key
+        self._last_sample = window.decision_sample
+        self._last_covariance_update_ms = (perf_counter() - started) * 1_000.0
+        assert self.last_state_diagnostic is not None
+        return self.last_state_diagnostic
+
     def _steering_tensor(
         self, geometry: MicGeometry, config: DirectionScanConfig, revision: int
     ) -> tuple[np.ndarray, bool]:
@@ -669,17 +702,7 @@ class RollingNormMusicScanner:
         config_revision: int = 0,
     ) -> tuple[SpatialResponse, tuple[CandidateDirection, ...], MusicDiagnostics]:
         started = perf_counter()
-        stream_key = (window.session_id, window.stream_epoch)
-        continuous = self._stream_key == stream_key and self._last_sample is not None and (
-            window.decision_sample == self._last_sample + 960
-        )
-        if not continuous:
-            reason = "new_stream" if self._stream_key != stream_key else "sample_discontinuity"
-            self._rebuild(window, config, reason)
-        else:
-            self._advance(window, config)
-        self._stream_key = stream_key
-        self._last_sample = window.decision_sample
+        self.observe_covariance(window, config)
         covariance_updated = perf_counter()
         assert self._covariance_sum is not None
         snapshots = len(self._frame_covariances)
@@ -880,7 +903,7 @@ class RollingNormMusicScanner:
             noise_whitening_enabled=config.noise_whitening_enabled,
             whitening_status=whitening_status,
             imcra_noise_hops=ready_imcra_hops if config.noise_whitening_enabled else 0,
-            covariance_update_ms=(covariance_updated - started) * 1_000.0,
+            covariance_update_ms=self._last_covariance_update_ms,
             eigensolve_ms=(eigensolved - covariance_updated) * 1_000.0,
             spectrum_ms=(spectrum_built - eigensolved) * 1_000.0,
             total_ms=(perf_counter() - started) * 1_000.0,
