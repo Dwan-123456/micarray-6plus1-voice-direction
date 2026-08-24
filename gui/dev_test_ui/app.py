@@ -214,9 +214,11 @@ def build_window(
         downstream_window_samples=config.downstream_audio_window.samples,
         minimum_listening_track_seconds=config.dev_test_ui.minimum_listening_track_seconds,
     )
+    live_microphone_mode = replay_source is None and replay_path is None
     runtime = ApplicationRuntime(
         config, project_root=project_root, pipeline=pipeline,
         dev_audio_tracker=audio_id_tracker,
+        ephemeral_live_capture=live_microphone_mode,
     )
     ui_settings = DevUiSettings(config_path.parent.parent)
     persisted_l4_backend = ui_settings.load_layer4_backend(
@@ -335,6 +337,10 @@ def build_window(
             self.bf_panel.set_downstream_processing_enabled(
                 runtime.downstream_processing_enabled
             )
+            if live_microphone_mode:
+                # The BF algorithm may be selected during L1/L2 warm-up even
+                # though no L3 window is admitted yet.
+                self.bf_panel.mode_switch.setEnabled(True)
             self.cnn_panel = CnnPanel(config.layer5.voice_probability_limit)
             self.l4_panel = Layer4AudioPanel(persisted_l4_backend)
             self.l4_panel.track_play_requested.connect(self._toggle_l4_audio)
@@ -433,12 +439,8 @@ def build_window(
             self.runtime_record = QPushButton("正式录音开始")
             self.runtime_pause = QPushButton("正式录音暂停")
             self.runtime_recording_label = QLabel("Runtime Recording: manual / paused")
-            self.runtime_record.clicked.connect(
-                lambda: self._submit_command("正式录音开始", runtime.begin_runtime_recording)
-            )
-            self.runtime_pause.clicked.connect(
-                lambda: self._submit_command("正式录音暂停", runtime.pause_runtime_recording)
-            )
+            self.runtime_record.clicked.connect(self._begin_runtime_recording)
+            self.runtime_pause.clicked.connect(self._pause_runtime_recording)
             for widget in (self.runtime_record, self.runtime_pause, self.runtime_recording_label):
                 runtime_recording.addWidget(widget)
             runtime_recording.addStretch()
@@ -1006,6 +1008,29 @@ def build_window(
 
             self._submit_command("结束临时录音", runtime.finish_scratch, finished)
 
+        def _begin_runtime_recording(self):
+            if live_microphone_mode:
+                # AudioIdTracker.reset() removes the Center preview files.
+                # Release a possibly mapped playback snapshot first on Windows.
+                self.preview_player.close()
+                self._audio_source_key = None
+                self.bf_panel.clear_tracks()
+
+            def started(_result):
+                self.bf_panel.set_downstream_processing_enabled(
+                    runtime.downstream_processing_enabled
+                )
+
+            self._submit_command("正式录音开始", runtime.begin_runtime_recording, started)
+
+        def _pause_runtime_recording(self):
+            def paused(_result):
+                self.bf_panel.set_downstream_processing_enabled(
+                    runtime.downstream_processing_enabled
+                )
+
+            self._submit_command("正式录音暂停", runtime.pause_runtime_recording, paused)
+
         def _set_record_buttons(self, state: str):
             busy = self._pending_command is not None
             self.record.setEnabled(runtime.running and not busy and state != "finalizing")
@@ -1366,11 +1391,17 @@ def build_window(
                 if runtime.running
                 else "STOPPED"
             )
-            formal_active = runtime.recording_store.manual_active
+            formal_active = runtime.runtime_recording_active
             self._set_text(self.runtime_recording_label,
-                f"Runtime Recording: {runtime.recording_store.mode} / "
+                f"Runtime Recording: {runtime.runtime_recording_mode} / "
                 f"{'recording' if formal_active else 'paused'}"
             )
+            self.bf_panel.set_downstream_processing_enabled(
+                runtime.downstream_processing_enabled
+            )
+            if live_microphone_mode:
+                self.bf_panel.downstream_switch.setEnabled(formal_active)
+                self.bf_panel.mode_switch.setEnabled(True)
             self.runtime_record.setEnabled(runtime.running and not formal_active)
             self.runtime_pause.setEnabled(runtime.running and formal_active)
             if self._pending_command is not None:
@@ -1399,7 +1430,7 @@ def build_window(
             but they are not allowed to clear that valid result immediately.
             """
 
-            if not runtime.downstream_processing_enabled:
+            if runtime.active and not runtime.downstream_processing_enabled:
                 self._last_l5_frame = None
                 self._last_l5_seen = 0.0
                 self._l5_is_stale = False

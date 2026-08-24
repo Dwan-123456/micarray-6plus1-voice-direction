@@ -87,7 +87,13 @@ class RollingStftCache:
         self._last_reused_frames = 0
         self._last_recomputed_frames = 0
 
-    def process(self, window: DecisionWindow, settings: StftSettings) -> torch.Tensor:
+    def process(
+        self,
+        window: DecisionWindow,
+        settings: StftSettings,
+        *,
+        validate_values: bool = True,
+    ) -> torch.Tensor:
         identity = (
             window.session_id,
             window.stream_epoch,
@@ -142,7 +148,9 @@ class RollingStftCache:
             spectrum[:, :, self._recomputed_indices] = recomputed
             self._last_reused_frames = settings.frame_count - 2 - _STFT_FRAMES_PER_HOP * hop_gap
             self._last_recomputed_frames = len(recomputed_frame_indices)
-        if spectrum.shape != (7, 513, settings.frame_count) or not torch.isfinite(spectrum).all():
+        if spectrum.shape != (7, 513, settings.frame_count) or (
+            validate_values and not torch.isfinite(spectrum).all()
+        ):
             self.clear()
             raise Layer3Error("rolling STFT output is invalid")
         # Only the configured 40/80/160 ms window persists. This is deliberately
@@ -180,7 +188,13 @@ def shared_stft(window: DecisionWindow, settings: StftSettings, *, device: torch
     return spectrum
 
 
-def inverse_stft(spectrum: torch.Tensor, settings: StftSettings, *, length: int | None = None) -> torch.Tensor:
+def inverse_stft(
+    spectrum: torch.Tensor,
+    settings: StftSettings,
+    *,
+    length: int | None = None,
+    validate_values: bool = True,
+) -> torch.Tensor:
     """Invert one or more spectra, preserving any leading batch dimensions."""
     length = settings.window_samples if length is None else int(length)
     waveform = torch.istft(
@@ -189,6 +203,8 @@ def inverse_stft(spectrum: torch.Tensor, settings: StftSettings, *, length: int 
         normalized=settings.normalized, onesided=settings.onesided, length=length,
     )
     expected_shape = (*spectrum.shape[:-2], length)
-    if waveform.shape != expected_shape or not torch.isfinite(waveform).all():
+    if waveform.shape != expected_shape or (
+        validate_values and not torch.isfinite(waveform).all()
+    ):
         raise Layer3Error("ISTFT试听音频无效")
     return waveform

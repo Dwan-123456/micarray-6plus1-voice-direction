@@ -16,6 +16,7 @@ class AdaptiveWeightResult:
     soft_null_bins: int
     loaded_mvdr_bins: int
     fallback_bins: tuple[int, ...]
+    deferred_diagnostics: torch.Tensor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +174,7 @@ def adaptive_separation_weights(
     *,
     spatial_p_f: torch.Tensor | None = None,
     static: AdaptiveStaticData | None = None,
+    defer_diagnostics: bool = False,
 ) -> AdaptiveWeightResult:
     candidate_count, frequency_count, channel_count = steering_mfc.shape
     if candidate_count not in {1, 2, 3} or channel_count != 7:
@@ -292,26 +294,38 @@ def adaptive_separation_weights(
             fallback_active[..., None], das.index_select(1, active_indices),
             output.index_select(1, active_indices),
         )
-    diagnostic_values = torch.cat(
+    diagnostic_tensor = torch.cat(
         (
             torch.stack((lcmv_mask.sum(), soft_mask.sum(), mvdr_mask.sum())),
             fallback_active.sum(dim=1),
             torch.isfinite(output).all().reshape(1),
         )
-    ).tolist()
-    if not diagnostic_values[-1]:
-        output = das
-        fallback_count = sum(int(item) for item in diagnostic_values[:3])
-        fallback_counts = (fallback_count,) * candidate_count
+    )
+    finite = diagnostic_tensor[-1].bool()
+    output = torch.where(finite, output, das)
+    active_count = diagnostic_tensor[:3].sum()
+    effective_fallback = torch.where(
+        finite,
+        diagnostic_tensor[3:-1],
+        active_count.expand(candidate_count),
+    )
+    diagnostic_tensor = torch.cat((
+        diagnostic_tensor[:3], effective_fallback, finite.reshape(1),
+    ))
+    if defer_diagnostics:
+        diagnostic_values = None
+        fallback_counts = (-1,) * candidate_count
     else:
+        diagnostic_values = diagnostic_tensor.tolist()
         fallback_counts = tuple(int(item) for item in diagnostic_values[3:-1])
     return AdaptiveWeightResult(
         output,
         rho,
-        int(diagnostic_values[0]),
-        int(diagnostic_values[1]),
-        int(diagnostic_values[2]),
+        -1 if diagnostic_values is None else int(diagnostic_values[0]),
+        -1 if diagnostic_values is None else int(diagnostic_values[1]),
+        -1 if diagnostic_values is None else int(diagnostic_values[2]),
         fallback_counts,
+        diagnostic_tensor if defer_diagnostics else None,
     )
 
 

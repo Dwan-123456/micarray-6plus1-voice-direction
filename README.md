@@ -320,7 +320,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 2. 启动Test UI，先观察全局状态栏是否有设备、CUDA或模型错误。
 3. 点击左上角“启动采集”。首次形成正式窗口前需要累计160 ms音频，IMCRA也会显示预热状态；L2若配置更长的滚动定位历史，会继续独立预热。
 4. 检查8路电平是否都有响应，通道名称和实际敲击位置是否一致。
-5. 需要保存完整实验数据时点击“正式录音开始”；只想临时试听或留一小段测试素材时使用“录制/暂停/结束”scratch录音。
+5. 真实麦克风模式启动后先只运行L1/IMCRA与L2；“正式录音开始”在Test UI内表示清空Center预听并开始本轮临时L3 BF/按ID拼接，不写入正式音频存储系统。只想留一小段临时素材时仍使用“录制/暂停/结束”scratch录音。
 6. 在右上角观察Gate、360°空间响应和候选角度，再根据测试目的切换ID追踪、卡尔曼或L3对照模式。
 7. 在下左L3区域试听Center参考和已确认/保持的方向音频；结束采集并等待L3排空后，选择MossFormer2或TIGER并点击“发送到L4”。
 8. L4整批完成后L5会自动运行；在下中L4音频条查看黄色Voice区间，在下右L5查看整轨概率。再次发送到L4会清空并替换上一批离线结果。
@@ -335,7 +335,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - “IMCRA预降噪”可在采集中切换，修改从后续完整窗口生效；
 - “灯光开/灯光关”用于检查板卡控制链；
 - scratch录音位于`data/dev_test_ui/scratch/current`，用于临时测试；
-- 正式录音位于`data/runtime_sessions/YYYY/MM/<session_id>`，包含正式时间轴和算法sidecar。
+- Production/普通Runtime的正式录音位于`data/runtime_sessions/YYYY/MM/<session_id>`，包含正式时间轴和算法sidecar；真实麦克风Test UI明确不创建该目录中的session。
 
 #### 右上：Layer 2方向定位
 
@@ -442,6 +442,8 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 2026-08-19完成L3内部求解与跳窗滚动修复后，在本机RTX 5060 Laptop GPU上使用连续合成窗口、每档120个计时样本得到隔离L3端到端P95：1/2/3声源分别约`9.23/15.96/9.52 ms`，平均吞吐约`146.63/86.26/136.15窗/秒`；三档均低于20 ms输入节拍。该结果不包含真实麦克风、L1/L2/L5/UI并发，不能替代完整实机复测。当前`runtime.stage_queue_windows=2000`会同步设置L2/L3/L5等待容量，短时过载更少丢窗，但单层最坏可积累约40秒等待；以后只需改这一变量，Joiner容量会自动派生。仍需用新的v5正式session核对队列水位、端到端延迟、内存与真实丢窗率。
 
 2026-08-24短窗有效频带优化后的默认设备拓扑改为`L1 CPU → L2 CPU → L3 CPU → 离线L4 CUDA → L5 CPU`。L3、L4、L5分别由`runtime.l3_device/l4_device/l5_device`控制；旧`preferred_device`只用于兼容缺少独立字段的配置。上述2026-08-19 CUDA数据保留为历史基线，不代表当前默认L3设备。
+
+同日进一步实现了L3 CUDA有界微批实验路径：STFT、IMCRA协方差、波束形成和ISTFT保持在GPU，只有批次完成后的短音频通过pinned host buffer回传，由CPU继续ID连续音频拼接和写盘；批次只合并已经积压的窗口，绝不等待未来窗口。RTX 5060 Laptop GPU实测双候选连续四窗约`11.03 ms/窗`，同条件CPU约`6.21 ms/窗`；28.8秒真实八通道回放的CPU完整排空约`29.07 s`，CUDA最佳约`32.30 s`，所以正式默认仍为CPU。显式设置`runtime.l3_device: cuda`可继续诊断，停机后创建L4前会同步L3 stream、释放L3缓存再清理CUDA allocator。
 
 ## 局限性和待解决问题
 

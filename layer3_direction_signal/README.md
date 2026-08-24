@@ -25,6 +25,8 @@ IMCRA的先验/后验SNR形成有下限的频点软增益；噪声置信度和4.
 
 播放器去DC、音量、淡入淡出和峰值归一化只能作用于试听副本，不能改变交给L5或RecordingStore的正式增强音频。
 
+CUDA实验接口把prepare、候选BF和ISTFT结果保留在设备上，Runtime仅对已经积压的连续窗口做最多4窗的有界微批，再通过pinned host buffer异步回传完整短音频。finite校验和诊断值格式化延迟到批次同步后执行，输出音频、fallback、diagnostics、track ID及绝对sample契约与同步接口一致；异常批次不得发布。RTX 5060 Laptop GPU的四窗双候选隔离结果仍慢于CPU，因此正式配置继续使用CPU，CUDA路径只用于显式性能实验。
+
 ## 有界滚动计算缓存
 
 L3保持现有`n_fft=1024、win_length=960、hop_length=480、center=true、reflect`定义。40/80/160 ms分别形成5/9/17帧STFT；DecisionWindow按绝对sample前进`N`个20 ms hop且仍有配置窗口重叠时，缓存复用对齐内部帧，只重算当前反射边界和新增帧。IMCRA插值状态只搬运新增hop，加权空间协方差分子/分母按相同过期/新增帧集合滚动。BF权重仍按当前窗口和候选角度重新求解，不改变算法选择或公共输出。

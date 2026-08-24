@@ -394,6 +394,8 @@ class RuntimeConfig(StrictModel):
     l2_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     l3_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     l5_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
+    l3_cuda_microbatch_windows: int = Field(default=4, gt=0, le=16)
+    l3_cuda_batch_wait_ms: float = Field(default=0.0, ge=0.0, le=20.0)
     completion_queue_windows: int = Field(default=8, gt=0, le=128)
     max_inflight_windows: int | None = Field(default=None, gt=0, le=30_003)
     compute_cache_max_bytes: int = Field(default=67_108_864, ge=8_388_608)

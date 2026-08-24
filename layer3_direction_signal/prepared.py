@@ -46,6 +46,7 @@ class PreparedL3Context:
     preparation_error: str | None
     stft_reused_frames: int
     covariance_rolled: bool
+    device_validation_deferred: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -62,7 +63,10 @@ class PreparedL3Context:
             self.spectrum_fct.shape != (513, 7, self.stft.frame_count)
             or self.spectrum_fct.dtype != torch.complex64
             or self.spectrum_fct.requires_grad
-            or not torch.isfinite(self.spectrum_fct).all()
+            or (
+                not self.device_validation_deferred
+                and not torch.isfinite(self.spectrum_fct).all()
+            )
         ):
             raise ValueError(
                 f"PreparedL3Context STFT必须是finite complex64 [513,7,{self.stft.frame_count}]"
@@ -71,7 +75,10 @@ class PreparedL3Context:
             self.frequencies_hz.shape != (513,)
             or self.frequencies_hz.dtype != torch.float32
             or self.frequencies_hz.device != self.spectrum_fct.device
-            or not torch.isfinite(self.frequencies_hz).all()
+            or (
+                not self.device_validation_deferred
+                and not torch.isfinite(self.frequencies_hz).all()
+            )
         ):
             raise ValueError("PreparedL3Context频率轴无效")
         if (
@@ -129,6 +136,8 @@ class BeamformedL3Batch:
     fallback_reasons: tuple[str | None, ...]
     diagnostics: tuple[tuple[str, ...], ...]
     track_ids: tuple[int | None, ...] = ()
+    device_validation_deferred: bool = False
+    deferred_diagnostics: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         count = len(self.theta_degrees)
@@ -138,7 +147,10 @@ class BeamformedL3Batch:
             or self.spectra_mft.shape[-1] not in {5, 9, 17}
             or self.spectra_mft.dtype != torch.complex64
             or self.spectra_mft.requires_grad
-            or not torch.isfinite(self.spectra_mft).all()
+            or (
+                not self.device_validation_deferred
+                and not torch.isfinite(self.spectra_mft).all()
+            )
         ):
             raise Layer3Error("L3候选频谱批次无效")
         if not (
@@ -155,3 +167,9 @@ class BeamformedL3Batch:
         ):
             raise Layer3Error("L3 track IDs must be unique")
         object.__setattr__(self, "track_ids", tuple(track_ids))
+        if self.deferred_diagnostics is not None and (
+            not self.device_validation_deferred
+            or self.deferred_diagnostics.ndim != 1
+            or self.deferred_diagnostics.device != self.spectra_mft.device
+        ):
+            raise Layer3Error("L3延迟诊断必须与延迟校验的频谱位于同一设备")

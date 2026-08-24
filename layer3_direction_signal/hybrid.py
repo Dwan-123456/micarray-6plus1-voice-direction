@@ -215,6 +215,7 @@ class ImcraSpatialSeparationBeamformer:
         stft: StftSettings,
         *,
         mode: str = L3_MODE_OPTIMIZED,
+        defer_device_validation: bool = False,
     ) -> PreparedL3Context:
         """Prepare all candidate-independent L3 work in timeline order.
 
@@ -246,7 +247,9 @@ class ImcraSpatialSeparationBeamformer:
             self._prepared_cache.move_to_end(key)
             return cached
 
-        spectrum_cft = self._stft_cache.process(window, stft)
+        spectrum_cft = self._stft_cache.process(
+            window, stft, validate_values=not defer_device_validation,
+        )
         spectrum_fct = spectrum_cft.permute(1, 0, 2).contiguous().detach()
         frequencies = self._frequency_axis(window.sample_rate, stft)
         static = self._adaptive_static_data(frequencies, config)
@@ -264,6 +267,7 @@ class ImcraSpatialSeparationBeamformer:
                     config,
                     stft,
                     allow_rolling=reused_frames > 0,
+                    validate_values=not defer_device_validation,
                 )
                 covariance_rolled = self._noise_cache.snapshot().rolled
             except (Layer3Error, RuntimeError) as exc:
@@ -288,6 +292,7 @@ class ImcraSpatialSeparationBeamformer:
             preparation_error,
             reused_frames,
             covariance_rolled,
+            defer_device_validation,
         )
         self._prepared_cache[key] = prepared
         self._prepared_cache.move_to_end(key)
@@ -322,6 +327,7 @@ class ImcraSpatialSeparationBeamformer:
 
         steering = self._steering_vectors(prepared.frequencies_hz, candidates, geometry)
         fallback_reason: str | None = None
+        deferred_diagnostics: torch.Tensor | None = None
         if prepared.mode == L3_MODE_DS_BASELINE:
             output = apply_weights(das_weights(steering), prepared.spectrum_fct)
             diagnostics = tuple(
@@ -468,30 +474,48 @@ class ImcraSpatialSeparationBeamformer:
                     prepared.config,
                     spatial_p_f=spatial_p,
                     static=self._adaptive_static_data(prepared.frequencies_hz, prepared.config),
+                    defer_diagnostics=prepared.device_validation_deferred,
                 )
                 output = (
                     apply_weights(solved.weights_mfc, prepared.spectrum_fct)
                     * noise.frequency_gain_f[None, :, None]
                 )
-                diagnostics = tuple(
-                    (
-                        "backend=imcra_spatial_separation",
-                        f"imcra={prepared.noise_algorithm_version}:{prepared.stft.window_hops}x20ms",
-                        f"spatial_p={('independent_loaded_mvdr' if len(candidates) == 3 else 'single_candidate') if spatial_p is None else P_TABLE_VERSION}",
-                        f"rho_thresholds={prepared.config.rho_lcmv_max:.3f}/"
-                        f"{prepared.config.rho_soft_null_max:.3f}",
-                        f"rho_range={float(solved.rho_f.min().item()):.4f}.."
-                        f"{float(solved.rho_f.max().item()):.4f}",
-                        f"cache:stft_reused={prepared.stft_reused_frames},"
-                        f"covariance_rolled={prepared.covariance_rolled}",
-                        f"bins:lcmv={solved.lcmv_bins},soft_null_mvdr={solved.soft_null_bins},"
-                        f"loaded_mvdr={solved.loaded_mvdr_bins},das_fallback={solved.fallback_bins[index]}",
-                        f"frequency_gain_min={float(noise.frequency_gain_f.min().item()):.4f}",
+                if solved.deferred_diagnostics is not None:
+                    deferred_diagnostics = torch.cat((
+                        solved.deferred_diagnostics,
+                        torch.stack((
+                            solved.rho_f.min(),
+                            solved.rho_f.max(),
+                            noise.frequency_gain_f.min(),
+                        )),
+                    ))
+                    diagnostics = tuple(() for _item in candidates)
+                else:
+                    rho_min, rho_max, frequency_gain_min = torch.stack((
+                        solved.rho_f.min(),
+                        solved.rho_f.max(),
+                        noise.frequency_gain_f.min(),
+                    )).tolist()
+                    diagnostics = tuple(
+                        (
+                            "backend=imcra_spatial_separation",
+                            f"imcra={prepared.noise_algorithm_version}:{prepared.stft.window_hops}x20ms",
+                            f"spatial_p={('independent_loaded_mvdr' if len(candidates) == 3 else 'single_candidate') if spatial_p is None else P_TABLE_VERSION}",
+                            f"rho_thresholds={prepared.config.rho_lcmv_max:.3f}/"
+                            f"{prepared.config.rho_soft_null_max:.3f}",
+                            f"rho_range={rho_min:.4f}..{rho_max:.4f}",
+                            f"cache:stft_reused={prepared.stft_reused_frames},"
+                            f"covariance_rolled={prepared.covariance_rolled}",
+                            f"bins:lcmv={solved.lcmv_bins},soft_null_mvdr={solved.soft_null_bins},"
+                            f"loaded_mvdr={solved.loaded_mvdr_bins},das_fallback={solved.fallback_bins[index]}",
+                            f"frequency_gain_min={frequency_gain_min:.4f}",
+                        )
+                        for index in range(len(candidates))
                     )
-                    for index in range(len(candidates))
-                )
-                if any(solved.fallback_bins):
-                    fallback_reason = f"per-bin DAS fallback counts={solved.fallback_bins}"
+                    if any(solved.fallback_bins):
+                        fallback_reason = (
+                            f"per-bin DAS fallback counts={solved.fallback_bins}"
+                        )
                 backends = tuple("imcra_spatial_separation" for _item in candidates)
                 fallback_reasons = tuple(fallback_reason for _item in candidates)
             except (Layer3Error, RuntimeError) as exc:
@@ -509,7 +533,10 @@ class ImcraSpatialSeparationBeamformer:
         # skip all other bins, and this early mask keeps the device-resident
         # batch identical to the waveform synthesizer's existing passband.
         output = output * prepared.passband_f[None, :, None]
-        if output.shape != (len(candidates), 513, prepared.stft.frame_count) or not torch.isfinite(output).all():
+        if output.shape != (len(candidates), 513, prepared.stft.frame_count) or (
+            not prepared.device_validation_deferred
+            and not torch.isfinite(output).all()
+        ):
             raise Layer3Error("方向分离频谱输出无效")
         self.last_diagnostics = diagnostics
         return BeamformedL3Batch(
@@ -519,6 +546,8 @@ class ImcraSpatialSeparationBeamformer:
             fallback_reasons,
             diagnostics,
             tuple(getattr(item, "track_id", None) for item in candidates),
+            prepared.device_validation_deferred,
+            deferred_diagnostics,
         )
 
     def process_batch(

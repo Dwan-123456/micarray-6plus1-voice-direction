@@ -46,6 +46,8 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.min_peak_distance_deg == 50.0
     assert config.runtime.max_candidate_batch == 3
     assert config.runtime.l3_device == "cpu"
+    assert config.runtime.l3_cuda_microbatch_windows == 4
+    assert config.runtime.l3_cuda_batch_wait_ms == 0.0
     assert config.runtime.l4_device == "cuda"
     assert config.runtime.l5_device == "cpu"
     assert AudioConfig.from_project(config).block_size == 960

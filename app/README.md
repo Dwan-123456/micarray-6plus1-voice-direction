@@ -18,6 +18,8 @@ ResultJoiner注册前若在途窗口/字节容量已满，Runtime不保留新窗
 
 Runtime的`ComputeCache`按L2/L3/L5分区并受窗口数、分区字节和全局字节硬限制。它只缓存CPU可复用artifact，不能接纳CUDA张量，也不是StageResult的正确性来源。L3自己的滚动STFT/噪声统计、静态steering/p查询及prepared GPU context另有小容量硬上限；完成提交后按窗口退休。
 
+L3显式选择CUDA时，Runtime只把当前L3队列中已经存在的连续工作合并为最多`l3_cuda_microbatch_windows`个窗口，不等待未来输入；各窗依次维护滚动状态，STFT、IMCRA协方差、BF和ISTFT留在同一CUDA stream，短音频异步复制到pinned CPU buffer后只同步一次，再按原WindowKey顺序进入CPU TrackAudioStreamHub。默认配置仍选择实测更快的CPU路径。若L3与停机后L4都选择CUDA，创建离线L4前必须确认实时worker已排空，并释放L3 device cache。
+
 Join后也没有无界队列：completion主队列和后备backlog均受`completion_queue_windows`硬限制，两者都满时拒绝新接纳并由Joiner保留已注册有界结果待重试。commit乱序表的软限为`max_inflight_windows`，硬限为`2*max_inflight_windows + 2*completion_queue_windows`。
 
 Runtime还负责L1预降噪选择：IMCRA始终先读取原始音频；`ImcraWienerPreDenoiser`持续维护40 ms/20 ms WOLA状态。开关关闭时发布原始hop，开启时等待一个hop固定延迟并发布sample边界相同、前7路已替换的降噪hop。开关从关闭切到开启时不得重复发布此前已经旁路的音频。
@@ -26,11 +28,11 @@ L2的`TrackedDirection`是唯一权威方向身份。Runtime把同一`track_id`�
 
 Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`拼接。Runtime在每个L2完成窗口先登记confirmed/coasting权威20 ms绝对时间槽，L3只填入BF波形；首尾或中间没有BF结果的槽保留等时静音，因此轨长只由L2首尾sample决定。其余仍保留真实音频补洞、交叉淡化、Center Mic参考、有界分段和L3模式隔离。UI不再维护私有ID投影、角度贪心关联或别名合并。当前离线L5只继承公共ID并返回该ID的人声语义结果，不向L2反馈，也不拥有方向轨迹生命周期。
 
-Development Test UI可实时关闭下游处理。关闭后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L5 `SKIPPED`终态，已经排队但尚未开始的L3/L5工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner、DecisionRecord或watermark顺序；重新开启后从下一条L2结果恢复L3/L5。
+Development Test UI可实时关闭下游处理。真实麦克风模式每次启动默认进入临时预热阶段：只运行L1/IMCRA和L2 MUSIC/ID，缓存Center试听，禁止提前开启L3/4/5；点击“正式录音开始”只清空Center与下游音轨缓存并打开L3，不重建IMCRA或L2 tracker。关闭下游后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L5 `SKIPPED`终态，已经排队但尚未开始的L3/L5工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner顺序。
 
 Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Output(())`，不执行prepare/STFT/协方差；实时L5不调用空batch模型，仍以`offline_after_l4`的`SKIPPED`终态收束。增强音频和Voice方向为空。
 
-启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit，完成最终Join与Recording水位后才关闭RecordingStore。完整模拟输入EOF不设有限排空期限，Test UI在此期间显示`FINALIZING`；实时/手动停止继续使用配置的安全期限。有限期限超时的已注册窗口显式转为`CANCELLED/error`并以`runtime_error`结束session；仍有worker存活时拒绝假关闭。操作者在模拟播放中点击“从头重播”属于独立的硬换代路径：立即暂停L1并清空所有尚未执行的L2/L3/L5/Commit工作，当前正在执行且不能安全抢占的单个kernel返回后也丢弃其结果，再用全新处理图从sample 0开始；该行为不改变正常EOF的完整排空和`stopped`计时封存。
+普通Runtime启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；真实麦克风Test UI临时模式省略RecordingStore session及其全部音频/结果写入。启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit；普通Runtime随后完成Recording水位并关闭RecordingStore，临时模式只封存可发送给离线L4的本轮UI音轨。完整模拟输入EOF不设有限排空期限，Test UI在此期间显示`FINALIZING`；实时/手动停止继续使用配置的安全期限。有限期限超时的已注册窗口显式转为`CANCELLED/error`；仍有worker存活时拒绝假关闭。操作者在模拟播放中点击“从头重播”属于独立的硬换代路径：立即暂停L1并清空所有尚未执行的L2/L3/L5/Commit工作，当前正在执行且不能安全抢占的单个kernel返回后也丢弃其结果，再用全新处理图从sample 0开始；该行为不改变正常EOF的完整排空和`stopped`计时封存。
 
 Development Test UI只通过公开只读`processing_status`获取每阶段队列深度/容量、worker存活、在途窗口、缓存字节、完成数和错误数；其中`input_health`公开当前epoch、连续性中断次数/最后原因、input overflow、handoff drop及交接队列深度/容量/高水位，L5诊断包括`l5_actual_completed/l5_dropped/l5_skipped/l5_actual_hz`及显示邮箱深度、容量、覆盖数。Gate因新epoch重新预热时，UI错误文案附带`epoch_reset:<reason>`，可直接区分静音、处理丢窗与真实输入中断。UI不得读取Runtime私有队列或据此修改调度。
 

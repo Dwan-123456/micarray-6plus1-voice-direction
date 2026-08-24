@@ -264,8 +264,8 @@ runtime:
   # Legacy fallback for older profiles which do not define per-layer devices.
   preferred_device: cuda
   # L1/IMCRA and L2/MUSIC+ID are intrinsically CPU stages. The accelerated
-  # downstream layers are independent: realtime L3 and lightweight L5 stay
-  # on CPU, while stopped/offline L4 MossFormer2 owns the GPU.
+  # downstream layers are independent. CPU remains the measured realtime L3
+  # default; the bounded CUDA micro-batch path is available for explicit tests.
   l3_device: cpu
   l4_device: cuda
   l5_device: cpu
@@ -279,6 +279,10 @@ runtime:
   # Change this single value to resize all L2/L3/L5 latest-wins waiting queues.
   # 2000 windows represent about 40 s at 50 windows/s.
   stage_queue_windows: 2000
+  # If l3_device is explicitly changed to cuda, coalesce only an existing
+  # backlog and never wait for a future window.
+  l3_cuda_microbatch_windows: 4
+  l3_cuda_batch_wait_ms: 0.0
   completion_queue_windows: 8
   # Per-stage queue overrides and max_inflight_windows are omitted deliberately;
   # Runtime derives 2000/2000/2000 and 3*2000+3=6003 automatically.

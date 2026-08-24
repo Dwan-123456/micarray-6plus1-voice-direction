@@ -418,6 +418,31 @@ def test_two_candidates_use_one_batched_inverse_stft(monkeypatch: pytest.MonkeyP
     assert calls == [(2, 513, processor.window_spec.stft_frames)]
 
 
+def test_deferred_l3_host_handoff_preserves_audio_metadata_and_diagnostics():
+    rng = np.random.default_rng(824)
+    samples = rng.normal(0.0, 0.02, (7_680, 8)).astype(np.float32)
+    window = _window(samples, tuple(_hop(index) for index in range(8)), 0)
+    candidates = _candidates(window)
+    config = load_config(CONFIG, environ={})
+    geometry = physical_6plus1_geometry()
+
+    expected = Layer3Processor(config, device="cpu").process(
+        window, candidates, geometry,
+    )
+    processor = Layer3Processor(config, device="cpu")
+    prepared = processor.prepare(window, defer_device_validation=True)
+    device_output = processor.process_prepared_device(prepared, candidates, geometry)
+    actual = processor.finalize_host_output(processor.stage_host_transfer(device_output))
+
+    assert len(actual.enhanced_audio) == len(expected.enhanced_audio)
+    for left, right in zip(actual.enhanced_audio, expected.enhanced_audio, strict=True):
+        assert left.algorithm == right.algorithm
+        assert left.fallback_reason == right.fallback_reason
+        assert left.diagnostics == right.diagnostics
+        assert left.track_id == right.track_id
+        np.testing.assert_allclose(left.enhanced_audio, right.enhanced_audio, atol=1e-6)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device unavailable")
 def test_prepared_context_accepts_unindexed_cuda_device_alias():
     rng = np.random.default_rng(814)

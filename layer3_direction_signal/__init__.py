@@ -1,7 +1,7 @@
 """Layer 3 IMCRA-controlled spatial audio separation."""
 
 from .configuration import SpatialSeparationConfig, StftSettings
-from .engine import Layer3Processor
+from .engine import Layer3Processor, PendingHostLayer3Output, PendingLayer3Output
 from .hybrid import ImcraSpatialSeparationBeamformer
 from .interface import (
     L3_MODE_DS_BASELINE,
@@ -21,6 +21,7 @@ __all__ = [
     "L3_MODE_DS_BASELINE", "L3_MODE_LOADED_MVDR", "L3_MODE_OPTIMIZED",
     "L3_MODE_SUBBAND_ROBUST",
     "L3_PROCESSING_MODES",
-    "Layer3Error", "Layer3Output", "Layer3Processor", "PreparedL3Context",
+    "Layer3Error", "Layer3Output", "Layer3Processor", "PendingHostLayer3Output",
+    "PendingLayer3Output", "PreparedL3Context",
     "SpatialSeparationConfig", "StftSettings",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -482,7 +482,8 @@ class BeamformPanel(QGroupBox):
         self.downstream_processing_changed.emit(enabled)
 
     def set_downstream_processing_enabled(self, enabled: bool) -> None:
-        self.downstream_switch.setChecked(bool(enabled))
+        with QSignalBlocker(self.downstream_switch):
+            self.downstream_switch.setChecked(bool(enabled))
         self.mode_switch.setEnabled(bool(enabled))
         if enabled:
             self.downstream_switch.setText("L3/4/5")

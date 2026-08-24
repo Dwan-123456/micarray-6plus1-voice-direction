@@ -91,6 +91,15 @@ class _L3Work:
 
 
 @dataclass(frozen=True, slots=True)
+class _L3HostWork:
+    work: _L3Work
+    started_ns: int
+    candidates: tuple[object, ...]
+    result: object
+    ready_event: object | None
+
+
+@dataclass(frozen=True, slots=True)
 class _L5Work:
     work_item: WindowWorkItem
     l2: L2StageResult
@@ -135,6 +144,7 @@ class ApplicationRuntime:
             [DecisionWindow], tuple[SourceProbability20ms, ...]
         ] | None = None,
         speaker_count_model: object | None = None,
+        ephemeral_live_capture: bool = False,
     ) -> None:
         self.config = config
         self.project_root = Path(project_root).resolve()
@@ -179,6 +189,11 @@ class ApplicationRuntime:
         # Optional Test-UI-only sidecar. Production construction leaves this
         # unset, so no IDs or listening cache exist outside Development Test UI.
         self.dev_audio_tracker = dev_audio_tracker
+        # Live microphone sessions in Development Test UI are intentionally
+        # temporary and never enter the formal RecordingStore.
+        self._ephemeral_live_capture = bool(ephemeral_live_capture)
+        self._ephemeral_recording_active = False
+        self._ephemeral_transition_lock = threading.RLock()
         self._recording_session_started = False
         self.meter = L1Meter()
         self.latest_l1: queue.Queue[object] = queue.Queue(maxsize=1)
@@ -247,7 +262,8 @@ class ApplicationRuntime:
         self._l3_processing_mode = L3_MODE_OPTIMIZED
         self._l3_config_revision = 0
         self._downstream_processing_enabled = threading.Event()
-        self._downstream_processing_enabled.set()
+        if not self._ephemeral_live_capture:
+            self._downstream_processing_enabled.set()
         self._scan_config = DirectionScanConfig.from_project(config)
         self._scan_config_lock = threading.Lock()
         self._scan_config_revision = 0
@@ -392,6 +408,7 @@ class ApplicationRuntime:
         runtime = self.config.runtime
         self._l2_windows = queue.Queue(maxsize=runtime.l2_queue_windows)
         self._l3_windows = queue.Queue(maxsize=runtime.l3_queue_windows)
+        self._l3_host_windows = queue.Queue(maxsize=runtime.l3_queue_windows)
         self._l5_windows = queue.Queue(maxsize=runtime.l5_queue_windows)
         self._completion_results = queue.Queue(maxsize=runtime.completion_queue_windows)
         self._completion_backlog = deque()
@@ -616,6 +633,10 @@ class ApplicationRuntime:
                 "reason": rejected.reason,
             },),
         )
+        if not self._recording_session_started:
+            self._stage_completed_counts["commit"] += 1
+            self._prune_completed_stream_history(rejected.session_id)
+            return
         try:
             append_with_watermark = getattr(
                 self.recording_store, "append_result_with_watermark", None
@@ -1269,11 +1290,23 @@ class ApplicationRuntime:
 
         if type(value) is not bool:
             raise ValueError("downstream processing setting must be bool")
+        if value and self._ephemeral_live_capture and not self._ephemeral_recording_active:
+            value = False
         if value:
             self._downstream_processing_enabled.set()
         else:
             self._downstream_processing_enabled.clear()
         return value
+
+    @property
+    def runtime_recording_active(self) -> bool:
+        if self._ephemeral_live_capture:
+            return self._ephemeral_recording_active
+        return bool(self.recording_store.manual_active)
+
+    @property
+    def runtime_recording_mode(self) -> str:
+        return "temporary" if self._ephemeral_live_capture else str(self.recording_store.mode)
 
     @property
     def l1_speaker_count_enabled(self) -> bool:
@@ -1646,6 +1679,9 @@ class ApplicationRuntime:
                 self._l5_ui_overwrites = 0
                 self._l5_completion_times.clear()
             self._input_exhausted = False
+            if self._ephemeral_live_capture:
+                self._ephemeral_recording_active = False
+                self._downstream_processing_enabled.clear()
             self._layer2.reset()
             self._stop.clear()
             self._processing_abort.clear()
@@ -1747,9 +1783,10 @@ class ApplicationRuntime:
         pipeline_start_attempted = False
         started_threads: list[threading.Thread] = []
         try:
-            self.recording_store.start_session(self.coordinator.session_id, metadata)
-            self._recording_session_started = True
-            self.recording_store.set_recording_mode(self.config.recording.runtime.mode)
+            if not self._ephemeral_live_capture:
+                self.recording_store.start_session(self.coordinator.session_id, metadata)
+                self._recording_session_started = True
+                self.recording_store.set_recording_mode(self.config.recording.runtime.mode)
             self._thread = threading.Thread(
                 target=self._run, name="application-runtime-l1", daemon=True
             )
@@ -1849,7 +1886,14 @@ class ApplicationRuntime:
         return tuple(item for item, _denoised in self._flush_pre_denoise_with_mode())
 
     def _publish_l1_selection(self, block, received: float, *, denoised: bool) -> None:
-        if denoised and self.dev_audio_tracker is not None:
+        if (
+            denoised
+            and self.dev_audio_tracker is not None
+            and not (
+                self._ephemeral_live_capture
+                and self._ephemeral_recording_active
+            )
+        ):
             try:
                 self.dev_audio_tracker.append_imcra_center_reference(
                     block, channel_index=6,
@@ -1870,7 +1914,8 @@ class ApplicationRuntime:
             self.scratch.append(recording_block)
         except Exception as exc:
             self.scratch_error = str(exc)
-        self.recording_store.append_audio(runtime_recording_block)
+        if self._recording_session_started:
+            self.recording_store.append_audio(runtime_recording_block)
         with self._pre_denoise_lock:
             enabled = self._pre_denoise_enabled and self._pre_denoise_latency_active
         snapshot = self.meter.add(
@@ -2052,7 +2097,13 @@ class ApplicationRuntime:
                 # Non-blocking enqueue only. CountNet owns resampling, buffering,
                 # model loading and inference on its independent L1 worker.
                 self.speaker_counter.submit(block)
-                if self.dev_audio_tracker is not None:
+                if (
+                    self.dev_audio_tracker is not None
+                    and not (
+                        self._ephemeral_live_capture
+                        and self._ephemeral_recording_active
+                    )
+                ):
                     try:
                         # Raw logical channel 6 is the Center microphone.  It
                         # is cached before optional L1 pre-denoise so the first
@@ -2223,14 +2274,25 @@ class ApplicationRuntime:
 
     def _run_l3(self) -> None:
         drained = False
+        cuda_ready: deque[tuple[_L3Work, int, tuple[object, ...], object]] = deque()
+        deferred_items: deque[object] = deque()
         try:
             while True:
-                try:
-                    item = self._l3_windows.get(timeout=0.1)
-                except queue.Empty:
-                    if self._processing_abort.is_set():
-                        break
-                    continue
+                precomputed: object | None = None
+                candidates: tuple[object, ...] = ()
+                if cuda_ready:
+                    item, started_ns, candidates, precomputed = cuda_ready.popleft()
+                else:
+                    try:
+                        item = (
+                            deferred_items.popleft()
+                            if deferred_items
+                            else self._l3_windows.get(timeout=0.1)
+                        )
+                    except queue.Empty:
+                        if self._processing_abort.is_set():
+                            break
+                        continue
                 if item is _PIPELINE_EOS:
                     drained = True
                     break
@@ -2249,28 +2311,112 @@ class ApplicationRuntime:
                         item.work_item.key, include_l3=True
                     )
                     continue
-                started_ns = monotonic_ns()
+                cuda_batch_api = all(callable(getattr(self._layer3, name, None)) for name in (
+                    "process_prepared_device", "stage_host_transfer", "finalize_host_output",
+                ))
+                if (
+                    self._l3_cuda_stream is not None
+                    and cuda_batch_api
+                    and precomputed is None
+                ):
+                    # CUDA kernels here are intentionally small.  When L3 is
+                    # backlogged, submit several complete windows and perform
+                    # one stream synchronization/host handoff for the group.
+                    # The production profile never waits for a future item;
+                    # only an already-observed backlog is coalesced.
+                    works = [item]
+                    deadline = monotonic() + (
+                        self.config.runtime.l3_cuda_batch_wait_ms / 1_000.0
+                    )
+                    while len(works) < self.config.runtime.l3_cuda_microbatch_windows:
+                        try:
+                            following = self._l3_windows.get_nowait()
+                        except queue.Empty:
+                            remaining = deadline - monotonic()
+                            if remaining <= 0:
+                                break
+                            try:
+                                following = self._l3_windows.get(timeout=remaining)
+                            except queue.Empty:
+                                break
+                        if isinstance(following, _L3Work):
+                            works.append(following)
+                        else:
+                            deferred_items.append(following)
+                            break
+
+                    staged: list[tuple[_L3Work, int, tuple[object, ...], object]] = []
+                    with torch.cuda.stream(self._l3_cuda_stream):
+                        for work in works:
+                            work_started_ns = monotonic_ns()
+                            try:
+                                assert work.l2.output is not None
+                                work_candidates = tuple(
+                                    getattr(work.l2.output, "directions", ())
+                                    or work.l2.output.candidates
+                                )
+                                if not work_candidates:
+                                    result: object = Layer3Output(())
+                                else:
+                                    mode = str(work.work_item.config.values["l3_mode"])
+                                    prepared = self._layer3.prepare(
+                                        work.work_item.window,
+                                        mode=mode,
+                                        defer_device_validation=True,
+                                    )
+                                    device_output = self._layer3.process_prepared_device(
+                                        prepared, work_candidates, self._geometry
+                                    )
+                                    result = self._layer3.stage_host_transfer(device_output)
+                            except Exception as exc:
+                                work_candidates = ()
+                                result = exc
+                            staged.append((
+                                work, work_started_ns, work_candidates, result,
+                            ))
+                    try:
+                        self._l3_cuda_stream.synchronize()
+                    except Exception as exc:
+                        staged = [
+                            (work, work_started_ns, work_candidates, exc)
+                            for work, work_started_ns, work_candidates, _result in staged
+                        ]
+                    for work, work_started_ns, work_candidates, result in staged:
+                        if not isinstance(result, (Layer3Output, Exception)):
+                            try:
+                                result = self._layer3.finalize_host_output(result)
+                            except Exception as exc:
+                                result = exc
+                        cuda_ready.append((
+                            work, work_started_ns, work_candidates, result,
+                        ))
+                    continue
+
+                if precomputed is None:
+                    started_ns = monotonic_ns()
                 try:
                     assert item.l2.output is not None
-                    candidates = tuple(
-                        getattr(item.l2.output, "directions", ()) or item.l2.output.candidates
-                    )
-                    mode = str(item.work_item.config.values["l3_mode"])
-                    if not candidates:
+                    if precomputed is not None:
+                        if isinstance(precomputed, Exception):
+                            raise precomputed
+                        assert isinstance(precomputed, Layer3Output)
+                        output = precomputed
+                    else:
+                        candidates = tuple(
+                            getattr(item.l2.output, "directions", ())
+                            or item.l2.output.candidates
+                        )
+                        mode = str(item.work_item.config.values["l3_mode"])
+                    if precomputed is not None:
+                        pass
+                    elif not candidates:
                         # A valid SRP response can have no accepted peaks.  Do
                         # not pay the 160 ms STFT/covariance preparation cost
                         # when there is no direction to synthesize.
                         output = Layer3Output(())
-                    elif self._l3_cuda_stream is None:
+                    else:
                         prepared = self._layer3.prepare(item.work_item.window, mode=mode)
                         output = self._layer3.process_prepared(prepared, candidates, self._geometry)
-                    else:
-                        with torch.cuda.stream(self._l3_cuda_stream):
-                            prepared = self._layer3.prepare(item.work_item.window, mode=mode)
-                            output = self._layer3.process_prepared(
-                                prepared, candidates, self._geometry
-                            )
-                        self._l3_cuda_stream.synchronize()
                     self._validate_direction_outputs(
                         "L3", candidates, output.enhanced_audio
                     )
@@ -2898,32 +3044,33 @@ class ApplicationRuntime:
         watermark = ResultWatermark(
             window.session_id, window.stream_epoch, window.decision_sample, dropped_windows
         )
-        try:
-            append_with_watermark = getattr(
-                self.recording_store, "append_result_with_watermark", None
-            )
-            if callable(append_with_watermark):
-                append_with_watermark(record, watermark)
-            else:
-                # Compatibility for external stores implementing the v2 API.
-                self.recording_store.append_result(record)
-                self.recording_store.advance_result_watermark(watermark)
-            self.recording_result_error = None
-        except Exception as exc:
-            # Recording is an asynchronous side effect.  A full/failing disk
-            # is visible in diagnostics but cannot kill the real-time stages
-            # or prevent caches from being released.
-            self.recording_result_error = str(exc)
-            self.processing_error = f"recording: {exc}"
+        if self._recording_session_started:
+            try:
+                append_with_watermark = getattr(
+                    self.recording_store, "append_result_with_watermark", None
+                )
+                if callable(append_with_watermark):
+                    append_with_watermark(record, watermark)
+                else:
+                    # Compatibility for external stores implementing the v2 API.
+                    self.recording_store.append_result(record)
+                    self.recording_store.advance_result_watermark(watermark)
+                self.recording_result_error = None
+            except Exception as exc:
+                # Recording is an asynchronous side effect.  A full/failing disk
+                # is visible in diagnostics but cannot kill the real-time stages
+                # or prevent caches from being released.
+                self.recording_result_error = str(exc)
+                self.processing_error = f"recording: {exc}"
 
-        if record.status in {"ok", "degraded"} and record.voice_direction_count > 0:
-            trigger_event = getattr(self.recording_store, "trigger_event", None)
-            if callable(trigger_event):
-                try:
-                    trigger_event(record)
-                except Exception as exc:
-                    self.recording_result_error = f"event trigger failed: {exc}"
-                    self.processing_error = f"recording: {self.recording_result_error}"
+            if record.status in {"ok", "degraded"} and record.voice_direction_count > 0:
+                trigger_event = getattr(self.recording_store, "trigger_event", None)
+                if callable(trigger_event):
+                    try:
+                        trigger_event(record)
+                    except Exception as exc:
+                        self.recording_result_error = f"event trigger failed: {exc}"
+                        self.processing_error = f"recording: {self.recording_result_error}"
 
         if self.dev_audio_tracker is not None:
             try:
@@ -3171,10 +3318,29 @@ class ApplicationRuntime:
         return self.scratch.finish()
 
     def begin_runtime_recording(self) -> None:
-        self.recording_store.start_recording()
+        if not self._ephemeral_live_capture:
+            self.recording_store.start_recording()
+            return
+        if not self.running:
+            raise RuntimeError("采集未运行，不能开始正式录音")
+        with self._ephemeral_transition_lock:
+            if self._ephemeral_recording_active:
+                return
+            # Preserve the already-warmed IMCRA estimator and the complete L2
+            # tracker. Only the listening/BF caches begin a fresh timeline.
+            self._ephemeral_recording_active = True
+            self.track_audio_stream.reset()
+            if self.dev_audio_tracker is not None:
+                self.dev_audio_tracker.reset()
+            self._downstream_processing_enabled.set()
 
     def pause_runtime_recording(self) -> None:
-        self.recording_store.pause_recording()
+        if not self._ephemeral_live_capture:
+            self.recording_store.pause_recording()
+            return
+        with self._ephemeral_transition_lock:
+            self._downstream_processing_enabled.clear()
+            self._ephemeral_recording_active = False
 
     def stop(
         self,
@@ -3319,6 +3485,9 @@ class ApplicationRuntime:
             self.track_audio_stream.seal(
                 allowed_track_keys=allowed_l4_track_keys,
             )
+            if self._ephemeral_live_capture:
+                self._ephemeral_recording_active = False
+                self._downstream_processing_enabled.clear()
         if self._recording_session_started and not alive and not input_alive:
             try:
                 self.recording_store.stop_session("normal" if self.last_error is None else "runtime_error")
@@ -3460,6 +3629,16 @@ class ApplicationRuntime:
         }
         if selected not in artifacts:
             raise ValueError(f"unsupported offline Layer4 backend: {selected}")
+        if self.l3_device == self.l4_device == "cuda":
+            if self.running or any(
+                thread.is_alive() for thread in self._processing_threads.values()
+            ):
+                raise RuntimeError("offline L4 requires CUDA L3 to stop and drain first")
+            if self._l3_cuda_stream is not None:
+                self._l3_cuda_stream.synchronize()
+            self._layer3.clear_cache()
+            self._l3_cache_snapshot = None
+            torch.cuda.empty_cache()
         artifact = Path(artifacts[selected])
         if not artifact.is_absolute():
             artifact = self.project_root / artifact

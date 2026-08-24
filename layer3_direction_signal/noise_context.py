@@ -329,6 +329,8 @@ def _finalize_noise_statistics(
     frequencies_hz: torch.Tensor,
     config: SpatialSeparationConfig,
     frame_count: int,
+    *,
+    validate_values: bool = True,
 ) -> NoiseStatistics:
     covariance = covariance_numerator_fcc / denominator_f[:, None, None].clamp_min(1e-6)
     covariance = 0.5 * (covariance + covariance.mH)
@@ -354,7 +356,9 @@ def _finalize_noise_statistics(
     speech_band = (frequencies_hz >= config.frequency_min_hz) & (frequencies_hz <= config.frequency_max_hz)
     gain = torch.where(speech_band, gain, torch.zeros_like(gain))
 
-    if not torch.isfinite(covariance).all() or not torch.isfinite(gain).all():
+    if validate_values and not torch.stack((
+        torch.isfinite(covariance).all(), torch.isfinite(gain).all(),
+    )).all():
         raise Layer3Error("IMCRA noise statistics produced non-finite values")
     return NoiseStatistics(covariance.to(torch.complex64), confidence.to(torch.float32), gain.to(torch.float32))
 
@@ -555,6 +559,7 @@ class RollingNoiseStatisticsCache:
         stft: StftSettings,
         *,
         allow_rolling: bool,
+        validate_values: bool = True,
     ) -> tuple[NoiseStatistics, str]:
         """Estimate directly from a DecisionWindow with an overlapping-window update.
 
@@ -634,7 +639,13 @@ class RollingNoiseStatisticsCache:
             numerator = _covariance_numerator(spectrum_fct, weights)
             denominator = weights.sum(dim=-1)
         result = _finalize_noise_statistics(
-            interpolated, numerator, denominator, frequencies_hz, config, stft.frame_count,
+            interpolated,
+            numerator,
+            denominator,
+            frequencies_hz,
+            config,
+            stft.frame_count,
+            validate_values=validate_values,
         )
 
         self._identity = identity

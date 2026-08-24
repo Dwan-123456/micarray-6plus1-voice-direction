@@ -65,7 +65,7 @@ def test_runtime_uses_independent_l3_l4_l5_devices(tmp_path):
     assert runtime.l5_device == "cpu"
     assert runtime.processing_device == runtime.l3_device
     assert runtime.processing_status["devices"] == {
-        "l1": "cpu", "l2": "cpu", "l3": "cpu",
+        "l1": "cpu", "l2": "cpu", "l3": runtime.l3_device,
         "l4": runtime.l4_device, "l5": "cpu",
     }
     runtime.close()
@@ -153,6 +153,34 @@ def test_offline_l4_builder_uses_its_independent_device(tmp_path, monkeypatch):
 
     assert captured["device"] == runtime.l4_device
     assert pipeline.backends["mossformer2_ss_16k"].backend_id == "mossformer2_ss_16k"
+    runtime.close()
+
+
+def test_offline_l4_releases_drained_l3_cuda_cache(tmp_path, monkeypatch):
+    events = []
+
+    class Stream:
+        def synchronize(self):
+            events.append("synchronize")
+
+    def build_backend(artifact, *, device):
+        del artifact
+        return SimpleNamespace(backend_id="mossformer2_ss_16k", device=device)
+
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+    runtime.l3_device = runtime.l4_device = "cuda"
+    runtime._l3_cuda_stream = Stream()
+    monkeypatch.setattr(runtime._layer3, "clear_cache", lambda: events.append("clear"))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty"))
+    monkeypatch.setattr("app.runtime.MossFormer2Backend", build_backend)
+
+    pipeline = runtime.build_offline_l4_pipeline("mossformer2_ss_16k")
+
+    assert events == ["synchronize", "clear", "empty"]
+    assert pipeline.backends["mossformer2_ss_16k"].device == "cuda"
     runtime.close()
 
 
@@ -547,6 +575,40 @@ def test_runtime_can_stop_and_start_a_new_capture_session(tmp_path):
     assert pipeline.started == 2
     assert session_ids[0] != session_ids[1]
     runtime.close()
+
+
+def test_live_test_ui_capture_warms_l1_l2_then_starts_temporary_l3(tmp_path):
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}),
+        project_root=tmp_path,
+        pipeline=StubPipeline([]),
+        serial_device=StubSerial(),
+        ephemeral_live_capture=True,
+    )
+    runtime.start()
+    warmed_imcra = runtime.imcra
+    warmed_l2 = runtime._layer2
+
+    assert runtime.runtime_recording_mode == "temporary"
+    assert runtime.runtime_recording_active is False
+    assert runtime.downstream_processing_enabled is False
+    assert runtime.set_downstream_processing_enabled(True) is False
+    assert not (tmp_path / "data/runtime_sessions").exists()
+
+    runtime.begin_runtime_recording()
+
+    assert runtime.runtime_recording_active is True
+    assert runtime.downstream_processing_enabled is True
+    assert runtime.imcra is warmed_imcra
+    assert runtime._layer2 is warmed_l2
+    assert runtime._recording_session_started is False
+
+    runtime.pause_runtime_recording()
+    assert runtime.runtime_recording_active is False
+    assert runtime.downstream_processing_enabled is False
+    runtime.stop()
+    runtime.close()
+    assert not (tmp_path / "data/runtime_sessions").exists()
 
 
 def test_runtime_connects_l1_l2_formal_recording_and_ui_control(tmp_path):

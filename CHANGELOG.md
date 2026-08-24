@@ -23,6 +23,28 @@
 
 ---
 
+## 2026-08-24 — 真实麦克风Test UI两阶段临时采集
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。
+- **启动采集阶段**：真实麦克风Test UI每次启动默认仅运行L1/IMCRA和L2 MUSIC/ID，`L3/4/5`保持关闭且不能被手动提前开启；L3试听区在此阶段只缓存Center RAW及实际启用时的Center IMCRA参考音频。
+- **开始正式录音阶段**：Test UI中的“正式录音开始”改为本轮临时BF阶段开关。切换时保留已经预热的IMCRA实例、噪声统计和完整L2/ID状态，只清空Center试听及下游连续音轨缓存，随后自动开启L3并从后续L2结果执行BF和按ID拼接；暂停会再次切断L2到L3/L5，但不重置L1/L2。
+- **存储边界**：真实麦克风Test UI不再创建RecordingStore session，不写入正式音频、DecisionRecord、watermark或事件触发资产；scratch试听录制和Test UI分段缓存仍为临时文件。关闭UI或重新启动采集继续清除本轮临时缓存。模拟WAV/完整录音回放、Production录音及普通ApplicationRuntime仍保留原正式RecordingStore语义。
+- **未改变**：IMCRA、预降噪、MUSIC、ID追踪、L3 BF算法、离线L4、L5模型、Production/Log UI、正式录音schema和数据管理接口均无算法变化。
+- **验证与资产**：增加真实麦克风临时模式的L1/L2预热、下游门禁、IMCRA/L2状态连续、无正式session及暂停回退测试；完整自动测试`531 passed`。未进行真实麦克风长时间实机验收；无模型、音频或Git LFS资产变化。
+
+---
+
+## 2026-08-24 — L3 CUDA异步微批实验与实机性能裁决
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。
+- **L3与Runtime**：新增设备驻留的prepare/BF/ISTFT结果、pinned host异步回传及仅合并现有积压的有界CUDA微批路径；批次不等待未来窗口，完成后仍按原WindowKey、track ID和绝对sample顺序进入CPU连续音频拼接与记录。逐kernel同步的finite检查和诊断格式化延迟到批次末统一完成，公开音频、fallback和diagnostics保持同步路径兼容。
+- **设备生命周期**：显式配置L3与离线L4共用CUDA时，只有实时worker停止并排空后才能创建L4；Runtime先同步L3 stream、清除L3滚动/device cache并调用CUDA allocator清理，再加载离线L4。
+- **性能裁决**：本机RTX 5060 Laptop GPU、连续双候选四窗隔离微批约`11.03 ms/窗`，同条件CPU约`6.21 ms/窗`。同一条28.8秒真实八通道录音完整回放，CPU排空约`29.07 s`，CUDA各版约`34.75/33.85/32.30 s`，均无错误、丢窗或残余队列。CUDA降低CPU占用但未提高端到端吞吐，因此`runtime.l3_device`正式默认保持`cpu`；CUDA路径仅供显式诊断，不作为更快的生产配置。
+- **配置与兼容性**：新增`l3_cuda_microbatch_windows=4`及`l3_cuda_batch_wait_ms=0`；旧配置使用默认值，CPU路径行为不变。新增同步/延迟接口等价、并行排空与L3→L4 CUDA缓存交接测试。
+- **未改变与资产**：L1/IMCRA输出、L2算法与ID、L4/L5模型算法、UI交互、正式录音schema及数据管理均无变化；无模型、音频或Git LFS资产变化。
+
+---
+
 ## 2026-08-24 — Test UI增加Center Mic IMCRA试听
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不修改项目版本，不创建或提前发布`v1.3.3`标签。
