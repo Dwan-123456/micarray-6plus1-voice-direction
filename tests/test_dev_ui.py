@@ -1234,33 +1234,33 @@ def test_window_has_three_equal_l3_l4_l5_cells_and_fixed_performance_bar(monkeyp
         assert not hasattr(window, "direction_table")
         processing_switches = right_layout.itemAt(2).layout()
         assert processing_switches is not None
-        assert processing_switches.indexOf(window.srp_kalman) == 0
+        assert processing_switches.indexOf(window.srp_id_tracking) == 0
         assert processing_switches.indexOf(window.music_dpd_rank1) == 1
         assert processing_switches.indexOf(window.music_noise_whitening) == 2
         assert processing_switches.stretch(0) == 1
         assert processing_switches.stretch(1) == 1
         assert processing_switches.stretch(2) == 1
-        assert window.srp_kalman.text() == "Kalman"
+        assert not hasattr(window, "srp_kalman")
         assert window.music_dpd_rank1.text() == "DPD"
         assert window.music_noise_whitening.text() == "Whitening"
         for switch in (
-            window.srp_kalman,
+            window.srp_id_tracking,
             window.music_dpd_rank1,
             window.music_noise_whitening,
         ):
             expected_colour = "#16794b" if switch.isChecked() else "#5b6570"
             assert expected_colour in switch.styleSheet()
-        assert right_layout.indexOf(window.srp_kalman_q) == 3
-        assert right_layout.indexOf(window.srp_kalman_r) == 4
-        assert right_layout.indexOf(window.gate_readout) == 5
-        assert right_layout.indexOf(window.music_status) == 6
-        order_tracking_row = right_layout.itemAt(7).layout()
+        assert not hasattr(window, "srp_kalman_q")
+        assert not hasattr(window, "srp_kalman_r")
+        assert right_layout.indexOf(window.gate_readout) == 3
+        assert right_layout.indexOf(window.music_status) == 4
+        order_tracking_row = right_layout.itemAt(5).layout()
         assert order_tracking_row is not None
         assert order_tracking_row.indexOf(window.music_order_limit) == 0
-        assert order_tracking_row.indexOf(window.srp_id_tracking) == 1
+        assert order_tracking_row.count() == 1
         assert window.music_order_limit.maximumWidth() == 185
         assert window.music_order_limit.combo.width() == 64
-        assert right_layout.indexOf(window.srp_threshold) == 8
+        assert right_layout.indexOf(window.srp_threshold) == 6
         decision = ProbabilityGateDecision(
             "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
             0.55, 0.75, 0.65, 0.60, 4, True, "probability_at_or_above_threshold",

@@ -136,8 +136,6 @@ def build_window(
         GateProbabilityThresholdControl,
         DirectionIdTrackingControl,
         DoaBackendControl,
-        DirectionKalmanControl,
-        KalmanNoiseScaleControl,
         MusicDpdRank1Control,
         MusicNoiseWhiteningControl,
         MusicOrderLimitControl,
@@ -215,19 +213,9 @@ def build_window(
             config.layer2.noise_whitening_enabled
         )
     )
-    persisted_kalman = ui_settings.load_direction_kalman_enabled(
-        config.layer2.direction_kalman.enabled
-    )
-    runtime.set_direction_kalman_enabled(persisted_kalman)
     runtime.set_direction_id_tracking_enabled(
         ui_settings.load_direction_id_tracking_enabled(True)
     )
-    runtime.set_direction_kalman_q_scale(ui_settings.load_direction_kalman_q_scale(
-        config.layer2.direction_kalman.process_noise_scale
-    ))
-    runtime.set_direction_kalman_r_scale(ui_settings.load_direction_kalman_r_scale(
-        config.layer2.direction_kalman.measurement_noise_scale
-    ))
     persisted_gate_threshold = ui_settings.load_gate_probability_threshold(
         config.layer2.probability_gate.threshold
     )
@@ -495,17 +483,11 @@ def build_window(
             self.music_noise_whitening.setToolTip(
                 "用IMCRA每麦noise_psd构造对角噪声协方差，同时白化协方差和steering；默认关闭。"
             )
-            self.srp_kalman = DirectionKalmanControl(runtime.direction_kalman_enabled)
             self.srp_id_tracking = DirectionIdTrackingControl(
                 runtime.direction_id_tracking_enabled
             )
             self.srp_id_tracking.setToolTip(
-                "开启时显示L2权威ID；关闭时仅显示MUSIC伪谱和原始峰值，L3/L5正常跳过。"
-            )
-            self.srp_kalman_q = KalmanNoiseScaleControl("Q倍率", runtime.direction_kalman_q_scale)
-            self.srp_kalman_r = KalmanNoiseScaleControl("R倍率", runtime.direction_kalman_r_scale)
-            self.srp_kalman.setToolTip(
-                "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
+                "开启时运行圆周IMM-JPDA、ID生命周期和2秒预测；关闭时仅显示DOA原始峰值。"
             )
             self.gate_readout = ProbabilityGateReadout()
             self.music_status = QLabel("MDL=—  MUSIC=—  valid=—  status=UNAVAILABLE")
@@ -525,19 +507,16 @@ def build_window(
             processing_switches = QHBoxLayout()
             processing_switches.setContentsMargins(0, 0, 0, 0)
             processing_switches.setSpacing(4)
-            processing_switches.addWidget(self.srp_kalman, 1)
+            processing_switches.addWidget(self.srp_id_tracking, 1)
             processing_switches.addWidget(self.music_dpd_rank1, 1)
             processing_switches.addWidget(self.music_noise_whitening, 1)
             right_layout.addLayout(processing_switches)
-            right_layout.addWidget(self.srp_kalman_q)
-            right_layout.addWidget(self.srp_kalman_r)
             right_layout.addWidget(self.gate_readout)
             right_layout.addWidget(self.music_status)
             order_tracking_row = QHBoxLayout()
             order_tracking_row.setContentsMargins(0, 0, 0, 0)
             order_tracking_row.setSpacing(4)
             order_tracking_row.addWidget(self.music_order_limit, 0)
-            order_tracking_row.addWidget(self.srp_id_tracking, 1)
             right_layout.addLayout(order_tracking_row)
             right_layout.addWidget(self.srp_threshold)
             right_layout.addStretch(1)
@@ -552,10 +531,7 @@ def build_window(
             self.music_dpd_rank1.enabled_changed.connect(self._set_music_dpd_rank1)
             self.music_noise_whitening.enabled_changed.connect(self._set_music_noise_whitening)
             self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
-            self.srp_kalman.enabled_changed.connect(self._set_direction_kalman)
             self.srp_id_tracking.enabled_changed.connect(self._set_direction_id_tracking)
-            self.srp_kalman_q.apply_requested.connect(self._apply_kalman_q_scale)
-            self.srp_kalman_r.apply_requested.connect(self._apply_kalman_r_scale)
             return box
 
         def _set_doa_backend(self, backend: str):
@@ -568,7 +544,7 @@ def build_window(
                 self.music_dpd_rank1.setEnabled(music)
                 self.music_noise_whitening.setEnabled(music)
                 self.statusBar().showMessage(
-                    f"完整L2方案切换为 {'MUSIC + Hungarian' if music else 'GI-DOAEnet + LMB/JPDA'}；下一窗口生效",
+                    f"完整L2方案切换为 {'MUSIC' if music else 'GI-DOAEnet'} + Circular IMM-JPDA；下一窗口生效",
                     5000,
                 )
             except Exception as exc:
@@ -680,21 +656,6 @@ def build_window(
                     self.music_noise_whitening.set_enabled(previous)
                 self.statusBar().showMessage(f"IMCRA噪声白化切换失败: {exc}", 8000)
 
-        def _set_direction_kalman(self, enabled: bool):
-            previous = runtime.direction_kalman_enabled
-            try:
-                enabled = ui_settings.save_direction_kalman_enabled(enabled)
-                runtime.set_direction_kalman_enabled(enabled)
-                self.srp_kalman.set_enabled(enabled, pending=True)
-                self.statusBar().showMessage(
-                    f"L2 Kalman smoothing {'enabled' if enabled else 'disabled'}; ID lifecycle is unchanged", 3500
-                )
-            except Exception as exc:
-                runtime.set_direction_kalman_enabled(previous)
-                with QSignalBlocker(self.srp_kalman):
-                    self.srp_kalman.set_enabled(previous)
-                self.statusBar().showMessage(f"Failed to save L2 Kalman switch: {exc}", 8000)
-
         def _set_direction_id_tracking(self, enabled: bool):
             previous = runtime.direction_id_tracking_enabled
             try:
@@ -712,34 +673,6 @@ def build_window(
                 with QSignalBlocker(self.srp_id_tracking):
                     self.srp_id_tracking.set_enabled(previous)
                 self.statusBar().showMessage(f"ID Tracking切换失败: {exc}", 8000)
-
-        def _apply_kalman_q_scale(self, value: float):
-            previous = runtime.direction_kalman_q_scale
-            try:
-                value = ui_settings.save_direction_kalman_q_scale(value)
-                runtime.set_direction_kalman_q_scale(value)
-                self.srp_kalman_q.commit(value, pending=True)
-                self.statusBar().showMessage(
-                    f"L2 Kalman Q scale saved as {value:.2f}; next window applies", 3500
-                )
-            except Exception as exc:
-                runtime.set_direction_kalman_q_scale(previous)
-                self.srp_kalman_q.commit(previous)
-                self.statusBar().showMessage(f"Failed to apply L2 Kalman Q scale: {exc}", 8000)
-
-        def _apply_kalman_r_scale(self, value: float):
-            previous = runtime.direction_kalman_r_scale
-            try:
-                value = ui_settings.save_direction_kalman_r_scale(value)
-                runtime.set_direction_kalman_r_scale(value)
-                self.srp_kalman_r.commit(value, pending=True)
-                self.statusBar().showMessage(
-                    f"L2 Kalman R scale saved as {value:.2f}; next window applies", 3500
-                )
-            except Exception as exc:
-                runtime.set_direction_kalman_r_scale(previous)
-                self.srp_kalman_r.commit(previous)
-                self.statusBar().showMessage(f"Failed to apply L2 Kalman R scale: {exc}", 8000)
 
         def _submit_command(self, name, command, on_success=None):
             if self._pending_command is not None:
@@ -1420,17 +1353,6 @@ def build_window(
                 self.music_noise_whitening.set_enabled(
                     runtime.music_noise_whitening_enabled, pending=revision_pending
                 )
-            applied_kalman = getattr(frame, "direction_kalman_enabled", None)
-            applied_q_scale = getattr(frame, "direction_kalman_q_scale", None)
-            applied_r_scale = getattr(frame, "direction_kalman_r_scale", None)
-            with QSignalBlocker(self.srp_kalman):
-                self.srp_kalman.set_enabled(
-                    runtime.direction_kalman_enabled,
-                    pending=revision_pending or (
-                        applied_kalman is not None
-                        and applied_kalman != runtime.direction_kalman_enabled
-                    ),
-                )
             with QSignalBlocker(self.doa_backend):
                 self.doa_backend.set_backend(runtime.doa_backend, pending=revision_pending)
             music_backend = runtime.doa_backend == "frequency_normalized_music"
@@ -1448,23 +1370,6 @@ def build_window(
                         != runtime.direction_id_tracking_enabled
                     ),
                 )
-            self.srp_kalman.setToolTip(
-                "仅控制每个权威ID的角度平滑；不会创建、删除、暂停或重置ID。"
-            )
-            self.srp_kalman_q.set_applied_value(
-                runtime.direction_kalman_q_scale,
-                pending=revision_pending or (
-                    applied_q_scale is not None
-                    and applied_q_scale != runtime.direction_kalman_q_scale
-                ),
-            )
-            self.srp_kalman_r.set_applied_value(
-                runtime.direction_kalman_r_scale,
-                pending=revision_pending or (
-                    applied_r_scale is not None
-                    and applied_r_scale != runtime.direction_kalman_r_scale
-                ),
-            )
             l1 = frame.l1
             if l1 is not None:
                 with QSignalBlocker(self.pre_denoise_switch):

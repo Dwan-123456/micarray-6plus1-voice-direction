@@ -61,7 +61,7 @@ def test_tracker_uses_sample_lifecycle_and_preserves_session_counter_across_epoc
     tracker = GlobalDirectionTracker(GlobalTrackerConfig(
         association_gate_deg=20.0, max_velocity_dps=60.0,
         confirmation_observations=2, confirmation_window_samples=9_600,
-        coasting_ttl_samples=1_920, miss_cost=30.0, birth_cost=30.0,
+        tentative_ttl_samples=1_920, coasting_ttl_samples=1_920,
     ))
     first = _window(0, 7_680)
     directions, _ = tracker.update(

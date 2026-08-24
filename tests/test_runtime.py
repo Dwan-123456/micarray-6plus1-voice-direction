@@ -135,7 +135,7 @@ def test_processing_status_exposes_input_discontinuity_reason(tmp_path):
     runtime.close()
 
 
-def test_runtime_processing_snapshot_freezes_music_id_lifecycle_and_kalman_revisions(tmp_path):
+def test_runtime_processing_snapshot_freezes_music_and_imm_jpda_lifecycle(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
@@ -154,31 +154,17 @@ def test_runtime_processing_snapshot_freezes_music_id_lifecycle_and_kalman_revis
     assert values["association_config_revision"] == 0
     assert values["kalman_config_revision"] == 0
 
-    runtime.set_direction_kalman_enabled(True)
-    updated = runtime._capture_processing_config()
-    assert updated.values["kalman_config_revision"] == 1
-    assert updated.values["direction_kalman_enabled"] is True
+    assert values["direction_kalman_enabled"] is True
+    assert runtime.config.layer2.direction_id_tracking.backend == "circular_imm_jpda_v1"
 
 
-def test_runtime_kalman_and_id_tracking_switches_are_revisioned(tmp_path):
+def test_runtime_has_only_id_tracking_as_public_tracking_switch(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
     )
-    assert runtime.direction_kalman_enabled is False
-    assert runtime.direction_id_tracking_enabled is True
-    revision = runtime.direction_scan_config_revision
-    runtime.set_direction_kalman_enabled(True)
     assert runtime.direction_kalman_enabled is True
-    assert runtime.direction_scan_config_revision == revision + 1
-    runtime.set_direction_kalman_enabled(True)
-    assert runtime.direction_scan_config_revision == revision + 1
-    runtime.set_direction_kalman_enabled(False)
-    assert runtime.direction_kalman_enabled is False
-    assert runtime.direction_scan_config_revision == revision + 2
-    with pytest.raises(ValueError):
-        runtime.set_direction_kalman_enabled(1)
-
+    assert runtime.direction_id_tracking_enabled is True
     revision = runtime.direction_scan_config_revision
     assert runtime.set_direction_id_tracking_enabled(False) is False
     assert runtime.direction_id_tracking_enabled is False
@@ -459,8 +445,8 @@ def test_runtime_connects_l1_l2_formal_recording_and_ui_control(tmp_path):
     assert len(roots) == 1
     manifest = json.loads((roots[0] / "session_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
-    assert manifest["algorithm_versions"]["layer2_direction_kalman"] == "damped_circular_kalman_v2"
-    assert manifest["algorithm_versions"]["layer2_direction_id_tracking"] == "global_assignment_v1"
+    assert manifest["algorithm_versions"]["layer2_direction_tracker"] == "circular_imm_jpda_v1"
+    assert manifest["algorithm_versions"]["layer2_direction_id_tracking"] == "circular_imm_jpda_v1"
     assert manifest["recorded_intervals"]
     assert manifest["chunks"][0]["result_count"] >= 1
     results_asset = next(x for x in manifest["chunks"][0]["assets"] if x["kind"] == "results")

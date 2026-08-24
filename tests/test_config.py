@@ -22,16 +22,11 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.music.context_ms == 240
     assert config.layer2.music.comparison_context_ms == (160, 240, 320)
     assert config.layer2.music.max_history_ms == 320
-    assert config.layer2.direction_kalman.backend == "damped_circular_kalman_v2"
     assert config.layer2.scanner_backend == "frequency_normalized_music"
-    assert config.layer2.direction_id_tracking.backend == "global_assignment_v1"
-    assert config.layer2.direction_kalman.velocity_half_life_seconds == 0.5
-    assert config.layer2.direction_kalman.max_velocity_dps == 60.0
-    assert config.layer2.direction_kalman.enabled is False
+    assert config.layer2.direction_id_tracking.backend == "circular_imm_jpda_v1"
     assert not hasattr(config.layer2.direction_id_tracking, "enabled")
     assert config.layer2.direction_id_tracking.association_gate_deg == 50.0
-    assert config.layer2.direction_id_tracking.association_gate_base_deg == 20.0
-    assert config.layer2.direction_id_tracking.association_gate_growth_dps == 15.0
+    assert config.layer2.direction_id_tracking.association_chi2 == 9.0
     assert config.layer2.direction_id_tracking.confirmation_observations == 3
     assert config.layer2.direction_id_tracking.confirmation_window_ms == 200
     assert config.layer2.direction_id_tracking.coasting_ttl_ms == 2_000
@@ -40,15 +35,9 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.dpd_peak_fusion_distance_deg == 40.0
     assert config.layer2.dpd_peak_fusion_min_normalized_score == 0.70
     assert config.layer2.noise_whitening_enabled is False
-    assert config.layer2.direction_id_tracking.stationary_history_ms == 3000
-    assert config.layer2.direction_id_tracking.stationary_inlier_ratio == 0.70
-    assert config.layer2.direction_id_tracking.stationary_inlier_tolerance_deg == 15.0
-    assert config.layer2.direction_id_tracking.stationary_outlier_window_ms == 1000
-    assert config.layer2.direction_id_tracking.stationary_outlier_tolerance_deg == 20.0
-    assert config.layer2.direction_id_tracking.stationary_exit_observations == 4
-    assert config.layer2.direction_kalman.max_missed_windows == 150
-    assert config.layer2.direction_kalman.process_noise_scale == 1.0
-    assert config.layer2.direction_kalman.measurement_noise_scale == 1.0
+    assert config.layer2.direction_id_tracking.stationary_velocity_half_life_seconds == 0.15
+    assert config.layer2.direction_id_tracking.moving_velocity_half_life_seconds == 0.5
+    assert config.layer2.direction_id_tracking.max_active_tracks == 4
     assert config.layer2.min_peak_distance_deg == 50.0
     assert config.runtime.max_candidate_batch == 3
     assert AudioConfig.from_project(config).block_size == 960
@@ -210,11 +199,11 @@ def test_probability_gate_threshold_must_be_in_unit_interval(tmp_path):
 @pytest.mark.parametrize(
     ("source", "replacement"),
     (
-        ("backend: damped_circular_kalman_v2", "backend: unknown_tracker_v9"),
+        ("backend: circular_imm_jpda_v1", "backend: unknown_tracker_v9"),
         ("association_gate_deg: 50.0", "association_gate_deg: 181.0"),
         ("measurement_std_deg: 5.0", "measurement_std_deg: 0.0"),
-        ("process_noise_scale: 1.00", "process_noise_scale: 0.03"),
-        ("max_missed_windows: 150", "max_missed_windows: -1"),
+        ("probability_track: 0.80", "probability_track: 0.90"),
+        ("tentative_ttl_ms: 500", "tentative_ttl_ms: -1"),
     ),
 )
 def test_direction_postprocessing_configuration_is_strict(tmp_path, source, replacement):
@@ -225,15 +214,9 @@ def test_direction_postprocessing_configuration_is_strict(tmp_path, source, repl
         load_config(candidate, environ={})
 
 
-def test_kalman_can_be_enabled_because_id_tracking_is_permanent(tmp_path):
-    text = CONFIG.read_text(encoding="utf-8").replace(
-        "direction_kalman:\n    enabled: false",
-        "direction_kalman:\n    enabled: true",
-        1,
-    )
-    candidate = tmp_path / "kalman-without-id.yaml"
-    candidate.write_text(text, encoding="utf-8")
-    assert load_config(candidate, environ={}).layer2.direction_kalman.enabled is True
+def test_standalone_kalman_configuration_was_removed() -> None:
+    config = load_config(CONFIG, environ={})
+    assert not hasattr(config.layer2, "direction_kalman")
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,8 @@
 # Layer 2 1.1：Rolling NormMUSIC 与公共方向轨迹
 
-本目录是项目`1.3.2`正式组成部分，L2公开版本为`1.1`。Development Test UI可在运行中选择两套完整L2：现有Rolling NormMUSIC + Hungarian轨迹链，或GI-DOAEnet PM + LMB/JPDA轨迹链。两者共用公共方向DTO和后续L3边界。
+本目录是项目`1.3.3`开发组成部分，L2公开版本为`1.1`。Development Test UI可在运行中选择Rolling NormMUSIC或GI-DOAEnet PM作为DOA；两者之后统一进入同一个Circular IMM-JPDA方向ID追踪器，并共用公共方向DTO和L3边界。
 
-GI-DOAEnet链读取同一`DecisionWindow float32[7680,8]`，只取前7路物理麦，将48 kHz 160 ms上下文同相重采样为16 kHz，并补零高度坐标形成`[7,3]`阵列位置。网络最后一层最近5个时间帧平均为360点方向概率；候选继续使用UI门限、prominence、50°圆周NMS及1～3输出上限。候选进入独立的LMB存在概率与有界JPDA联合假设关联，再沿用圆周角度/角速度Kalman和公共`TrackedDirection`输出。运行中切换从下一完整窗口生效，并重置目标链的活动轨迹，防止MUSIC与NN状态混用。
+GI-DOAEnet链读取同一`DecisionWindow float32[7680,8]`，只取前7路物理麦，将48 kHz 160 ms上下文同相重采样为16 kHz，并补零高度坐标形成`[7,3]`阵列位置。网络最近时间帧形成360点方向概率；候选继续使用UI门限、prominence、50°圆周NMS及1～3输出上限。DOA后端切换会清空活动轨迹，但同一session内ID计数不复用。
 
 上游GI-DOAEnet固定为提交`af865978c783f309fc929f0f2499769a1c5499d5`和PM权重SHA-256 `d465...9fe8`。因该提交没有LICENSE文件，源码和权重不进入本仓库；运行`scripts/install_gi_doaenet.py --acknowledge-upstream-terms`下载安装到Git忽略目录。模型懒加载，默认仍为MUSIC；本机CUDA稳态实测适配器约5.8～11.8 ms/窗，首次加载约2.7秒。
 
@@ -48,7 +48,7 @@ DecisionWindow + 两个对齐的20 ms概率
 ## 兼容和删除边界
 
 - 原SRP-PHAT与iterative multiple peak正式实现、配置、setter、UI开关和专属测试已删除；包不再导出旧扫描器。
-- 正式主链默认启用ID追踪；Development Test UI可用持久化诊断开关临时关闭。关闭时L2仍运行Gate/MUSIC并只返回无ID的原始峰值供伪谱调试，追踪器在切换边界重置，L3/L5正常跳过；重新开启后从新ID状态开始。Kalman仍可在运行中独立开启/关闭；在追踪开启期间，Kalman切换本身不会清空或换号。Kalman关闭时，confirmed ID会检查最近3秒圆周角度历史：至少70%观测位于圆周均值±15°时进入短时静止，公开角度使用随可信观测滚动更新的圆周均值。静止期间，1秒内最多3个超出均值±20°的观测只刷新ID观测时间，不移动关联锚点或输出角；达到第4个时立即退出静止并跟随当前观测。跨359°/0°始终使用圆周距离。漏检/coasting时保持静止均值或最后一次可信观测，不使用角速度外推；Kalman开启时才允许滤波预测，且短时静止状态和历史不会介入Kalman输出。
+- 正式主链默认启用ID追踪；Development Test UI可用持久化诊断开关临时关闭。开启后，JPDA把每个观测在已有轨迹、新生和伪报之间做联合概率分配；每条轨迹的IMM同时维护静止与慢速移动模型。滚动200 ms内3次观测确认，confirmed漏检后最多预测2秒，内部最多4条轨迹、公共最多3条。关闭时L2只返回无ID原始峰值，L3/L5跳过；不再存在独立Kalman开关或Q/R运行时调节。
 - `CandidateDirection`仅作为尚未迁移消费者的同角度兼容投影；公共权威输出是`TrackedDirection`与`active_tracks`。
 - 第8路HardwareMix只用于接口、显示和录音，不进入MUSIC协方差或导向计算。
 
@@ -56,4 +56,4 @@ DecisionWindow + 两个对齐的20 ms概率
 
 实现依据Schmidt MUSIC、Wax/Kailath MDL以及Pyroomacoustics MUSIC/NormMUSIC的公开算法表达；Pyroomacoustics为MIT许可。本项目没有复制或声称存在“Israel Cohen MUSIC开源实现”，Israel Cohen资料只用于项目另行记录的噪声估计与鲁棒性背景。
 
-自动测试覆盖MDL 0～6阶、手动1/2/3阶上限、高阶窗禁止新ID、最多3个候选、跨0°、rank交换、新生/短漏检/TTL、Gate关闭、sample跳跃、epoch/session、确定性关联、Kalman切换、HardwareMix隔离、滚动增量等价性和实时性能。
+自动测试覆盖MDL 0～6阶、手动1/2/3阶上限、高阶窗禁止新ID、最多3个候选、跨0°、rank交换、JPDA一对一、新生/短漏检/TTL、Gate关闭、sample跳跃、epoch/session、IMM预测与重基准、HardwareMix隔离、滚动增量等价性和实时性能。

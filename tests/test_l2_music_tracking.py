@@ -101,8 +101,8 @@ def _candidate(sample: int, theta: float, rank: int = 1) -> CandidateDirection:
 def _tracker() -> GlobalDirectionTracker:
     return GlobalDirectionTracker(GlobalTrackerConfig(
         association_gate_deg=45.0, max_velocity_dps=60.0,
-        confirmation_observations=2, confirmation_window_samples=9_600,
-        coasting_ttl_samples=4_800, miss_cost=1.0, birth_cost=1.0,
+        confirmation_observations=3, confirmation_window_samples=9_600,
+        tentative_ttl_samples=24_000, coasting_ttl_samples=96_000,
     ))
 
 
@@ -550,331 +550,91 @@ def test_optional_dpd_and_imcra_whitening_fit_20ms_hard_budget() -> None:
     assert max(times[2:]) < 20.0
 
 
-def test_global_assignment_crosses_zero_and_survives_rank_swap() -> None:
+def test_circular_imm_jpda_crosses_zero_and_survives_rank_swap() -> None:
     tracker = _tracker()
     first, _ = _update(tracker, 15_360, (358.0, 120.0))
-    ids = {round(item.theta_deg): item.track_id for item in first}
+    ids = {round(item.measured_theta_deg): item.track_id for item in first}
     second, _ = _update(tracker, 16_320, (121.0, 359.0))
     third, _ = _update(tracker, 17_280, (1.0, 122.0))
     assert {item.track_id for item in second} == set(ids.values())
-    near_zero = min(third, key=lambda item: abs(((item.theta_deg + 180.0) % 360.0) - 180.0))
-    assert near_zero.track_id == ids[358]
-    assert near_zero.track_state == "confirmed"
+    assert min(third, key=lambda item: _circular_error_deg(item.theta_deg, 0)).track_id == ids[358]
+    assert all(item.track_state == "confirmed" for item in third)
 
 
-def test_birth_coast_reacquire_ttl_and_session_scoped_monotonic_ids() -> None:
+def test_imm_jpda_confirmation_coasting_reacquisition_and_ttl() -> None:
     tracker = _tracker()
     first, _ = _update(tracker, 15_360, (30.0,))
-    first_id = first[0].track_id
-    confirmed, _ = _update(tracker, 16_320, (30.5,))
-    assert confirmed[0].track_id == first_id
-    _, active = _update(tracker, 17_280, ())
-    assert active[0].track_id == first_id and active[0].track_state == "coasting"
-    recovered, _ = _update(tracker, 18_240, (31.0,))
-    assert recovered[0].track_id == first_id
-    _update(tracker, 24_000, ())
-    replacement, _ = _update(tracker, 24_960, (31.0,))
-    assert replacement[0].track_id > first_id
-    epoch_track = tracker.update(
-        "track", 1, 25_920, (_candidate(25_920, 31.0),),
-        window_id=27, doa_start_sample=24_000, doa_end_sample=25_920,
-    )[0][0]
-    assert epoch_track.track_id > replacement[0].track_id
-
-
-def test_two_distinct_l5_voice_windows_are_required_and_coasting_feedback_renews_ttl() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=45.0, max_velocity_dps=60.0,
-        confirmation_observations=2, confirmation_window_samples=9_600,
-        coasting_ttl_samples=1_920, miss_cost=1.0, birth_cost=1.0,
-    ))
-    first, _ = _update(tracker, 7_680, (30.0,))
-    confirmed, _ = _update(tracker, 8_640, (30.0,))
-    track_id = confirmed[0].track_id
-    assert track_id == first[0].track_id
-    assert tracker.apply_voice_feedback("track", 0, 7_680, track_id, 0.95, True)
-    assert tracker.voice_confirmed_track_ids("track", 0, 8_640) == frozenset()
-    assert tracker.apply_voice_feedback("track", 0, 7_680, track_id, 0.95, True)
-    assert tracker.voice_confirmed_track_ids("track", 0, 8_640) == frozenset()
-    assert tracker.apply_voice_feedback("track", 0, 8_640, track_id, 0.95, True)
-    assert tracker.voice_confirmed_track_ids("track", 0, 8_640) == frozenset({track_id})
-    _, coasting = _update(tracker, 9_600, ())
-    assert coasting[0].track_state == "coasting"
-    assert tracker.apply_voice_feedback("track", 0, 9_600, track_id, 0.95, True)
-    _, renewed = _update(tracker, 11_520, ())
-    assert renewed[0].track_id == track_id
-    _, expired = _update(tracker, 12_480, ())
+    _update(tracker, 16_320, (30.5,))
+    confirmed, _ = _update(tracker, 17_280, (31.0,))
+    track_id = first[0].track_id
+    assert confirmed[0].track_id == track_id and confirmed[0].track_state == "confirmed"
+    _, coasting = _update(tracker, 18_240, ())
+    assert coasting[0].track_id == track_id and coasting[0].kalman_applied
+    recovered, _ = _update(tracker, 19_200, (32.0,))
+    assert recovered[0].track_id == track_id
+    _, expired = _update(tracker, 19_200 + 96_001, ())
     assert expired == ()
 
 
-def test_tentative_confirmation_retries_in_a_rolling_sample_window() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=45.0,
-        max_velocity_dps=60.0,
-        confirmation_observations=2,
-        confirmation_window_samples=9_600,
-        coasting_ttl_samples=20_000,
-        miss_cost=1.0,
-        birth_cost=1.0,
-    ))
+def test_l4_feedback_branch_is_retained_but_does_not_change_tracker() -> None:
+    tracker = _tracker()
     first, _ = _update(tracker, 15_360, (30.0,))
-    outside_original_window, _ = _update(tracker, 25_920, (30.0,))
-    confirmed, active = _update(tracker, 26_880, (30.0,))
-
-    assert first[0].track_state == "tentative"
-    assert outside_original_window[0].track_id == first[0].track_id
-    assert outside_original_window[0].track_state == "tentative"
-    assert confirmed[0].track_id == first[0].track_id
-    assert confirmed[0].first_seen_sample == first[0].first_seen_sample
-    assert confirmed[0].track_state == "confirmed"
-    assert _select_l3_directions(confirmed, active) == confirmed
+    track_id = first[0].track_id
+    before = tracker._tracks[track_id].existence_probability
+    assert tracker.apply_voice_feedback("track", 0, 15_360, track_id, 0.99, True)
+    assert tracker.voice_confirmed_track_ids("track", 0, 15_360) == frozenset()
+    assert tracker._tracks[track_id].existence_probability == before
 
 
-def test_three_observations_within_200ms_confirm_tentative_track() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=50.0,
-        association_gate_base_deg=20.0,
-        association_gate_growth_dps=15.0,
-        max_velocity_dps=60.0,
-        confirmation_observations=3,
-        confirmation_window_samples=9_600,
-        coasting_ttl_samples=96_000,
-        miss_cost=1.0,
-        birth_cost=1.0,
-    ))
-    first, _ = _update(tracker, 15_360, (10.0,))
-    second, _ = _update(tracker, 19_200, (11.0,))
-    third, active = _update(tracker, 23_040, (12.0,))
-
-    assert first[0].track_state == second[0].track_state == "tentative"
-    assert third[0].track_state == "confirmed"
-    assert first[0].track_id == second[0].track_id == third[0].track_id
-    assert _select_l3_directions(third, active) == third
+def test_jpda_is_one_to_one_and_exposes_probabilistic_diagnostics() -> None:
+    tracker = _tracker()
+    _update(tracker, 15_360, (20.0, 200.0))
+    observed, _ = _update(tracker, 16_320, (202.0, 22.0))
+    assert len({item.track_id for item in observed}) == 2
+    assert tracker.last_diagnostics.backend == "circular_imm_jpda_v1"
+    assert tracker.last_diagnostics.joint_hypotheses > 0
+    assert len(tracker.last_diagnostics.association_probabilities) == 2
 
 
-def test_confirmed_association_gate_expands_from_last_real_observation() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=50.0,
-        association_gate_base_deg=20.0,
-        association_gate_growth_dps=15.0,
-        max_velocity_dps=60.0,
-        confirmation_observations=2,
-        confirmation_window_samples=9_600,
-        coasting_ttl_samples=96_000,
-        miss_cost=1.0,
-        birth_cost=1.0,
-    ))
-    first, _ = _update(tracker, 15_360, (0.0,), kalman_enabled=False)
-    confirmed, _ = _update(tracker, 16_320, (0.0,), kalman_enabled=False)
-    for sample in range(17_280, 64_320, 960):
-        _update(tracker, sample, (), kalman_enabled=False)
-    reacquired, _ = _update(tracker, 64_320, (34.0,), kalman_enabled=False)
-
-    assert confirmed[0].track_state == "confirmed"
-    assert first[0].track_id == reacquired[0].track_id
-    assert reacquired[0].is_observed
-
-
-def test_kalman_coasting_velocity_decays_with_half_second_half_life() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=50.0,
-        association_gate_base_deg=20.0,
-        association_gate_growth_dps=15.0,
-        max_velocity_dps=60.0,
-        confirmation_observations=2,
-        confirmation_window_samples=9_600,
-        coasting_ttl_samples=200_000,
-        miss_cost=1.0,
-        birth_cost=1.0,
-        kalman_velocity_half_life_seconds=0.5,
-    ))
-    _update(tracker, 15_360, (0.0,), kalman_enabled=True)
-    observed, _ = _update(tracker, 16_320, (10.0,), kalman_enabled=True)
-    active = ()
-    for sample in range(17_280, 112_321, 960):
-        _, active = _update(tracker, sample, (), kalman_enabled=True)
-
-    track = next(iter(tracker._tracks.values()))
-    assert abs(track.filtered_velocity_dps) < 5.0
-    assert _circular_error_deg(active[0].theta_deg, observed[0].theta_deg) < 50.0
+def test_internal_unwrapped_state_is_periodically_rebased() -> None:
+    tracker = _tracker()
+    sample = 15_360
+    for angle in tuple(range(0, 360, 10)) * 3:
+        _update(tracker, sample, (float(angle),))
+        sample += 960
+    for track in tracker._tracks.values():
+        assert all(abs(model.mean[0]) <= 180.0 for model in track.models)
 
 
 def test_tracker_blocks_birth_for_saturated_mdl_window() -> None:
     tracker = _tracker()
-    directions, active = tracker.update(
+    observed, active = tracker.update(
         "track", 0, 15_360, (_candidate(15_360, 30.0),),
-        window_id=16, doa_start_sample=13_440, doa_end_sample=15_360,
-        allow_births=False,
+        window_id=16, doa_start_sample=13_440, allow_births=False,
     )
-    assert directions == active == ()
+    assert observed == active == ()
 
 
-@pytest.mark.parametrize("first_theta, duplicate_theta", ((0.0, 15.0), (359.0, 5.0)))
-def test_peak_within_twenty_degrees_of_existing_prediction_cannot_birth_duplicate_id(
-    first_theta: float,
-    duplicate_theta: float,
-) -> None:
+def test_tentative_track_is_not_published_but_confirmed_coasting_is() -> None:
     tracker = _tracker()
-    first, _ = _update(tracker, 15_360, (first_theta,), kalman_enabled=True)
-    directions, active = _update(
-        tracker, 16_320, (first_theta, duplicate_theta), kalman_enabled=True,
-    )
-
-    assert {item.track_id for item in directions} == {first[0].track_id}
-    assert {item.track_id for item in active} == {first[0].track_id}
-
-
-def test_kalman_toggle_changes_only_angle_not_id_or_lifecycle() -> None:
-    tracker = _tracker()
-    first, _ = _update(tracker, 15_360, (50.0,), kalman_enabled=False)
-    second, _ = _update(tracker, 16_320, (55.0,), kalman_enabled=True, q_scale=0.2, r_scale=2.0)
-    third, _ = _update(tracker, 17_280, (54.0,), kalman_enabled=False)
-    assert first[0].track_id == second[0].track_id == third[0].track_id
-    assert second[0].kalman_applied and not third[0].kalman_applied
-    assert third[0].track_state == "confirmed"
-
-
-def test_every_confirmed_coasting_id_is_selected_as_an_l3_bf_target() -> None:
-    tracker = _tracker()
-    _update(tracker, 15_360, (20.0,), kalman_enabled=True)
-    confirmed, _ = _update(tracker, 16_320, (22.0,), kalman_enabled=True)
-    observed, active = _update(tracker, 17_280, (), kalman_enabled=True)
-
-    selected = _select_l3_directions(observed, active)
-
-    assert len(selected) == 1
-    assert selected[0].track_id == confirmed[0].track_id
-    assert selected[0].track_state == "coasting"
-    assert not selected[0].is_observed
-
-
-def test_observed_confirmed_id_keeps_l3_slot_over_nearby_coasting_id() -> None:
-    tracker = _tracker()
-    _update(tracker, 15_360, (20.0,), kalman_enabled=False)
-    confirmed, _ = _update(tracker, 16_320, (20.0,), kalman_enabled=False)
-    _, active = _update(tracker, 17_280, (), kalman_enabled=False)
-    human_id = confirmed[0].track_id
-    transient = replace(
-        confirmed[0],
-        track_id=human_id + 100,
-        measured_theta_deg=55.0,
-        theta_deg=55.0,
-        is_observed=True,
-        is_new_track=True,
-    )
-
-    selected = _select_l3_directions((transient,), active + (transient,))
-
-    assert len(selected) == 1
-    assert selected[0].track_id == transient.track_id
-    assert selected[0].track_state == "confirmed"
-    assert selected[0].is_observed
-
-
-def test_tentative_missing_id_is_not_selected_as_an_l3_bf_target() -> None:
-    tracker = _tracker()
-    first, _ = _update(tracker, 15_360, (20.0,), kalman_enabled=True)
-    observed, active = _update(tracker, 16_320, (), kalman_enabled=True)
-
+    first, active = _update(tracker, 15_360, (20.0,))
     assert first[0].track_state == "tentative"
-    assert active[0].track_state == "tentative"
-    assert _select_l3_directions(observed, active) == ()
+    assert _select_l3_directions(first, active) == ()
+    _update(tracker, 16_320, (20.5,))
+    confirmed, active = _update(tracker, 17_280, (21.0,))
+    assert _select_l3_directions(confirmed, active) == confirmed
+    observed, active = _update(tracker, 18_240, ())
+    selected = _select_l3_directions(observed, active)
+    assert len(selected) == 1 and selected[0].track_state == "coasting"
 
 
-def test_kalman_off_coasting_holds_last_observed_angle_without_prediction() -> None:
+def test_internal_tracker_never_exceeds_four_tracks() -> None:
     tracker = _tracker()
-    first, _ = _update(tracker, 15_360, (10.0,), kalman_enabled=False)
-    second, _ = _update(tracker, 16_320, (20.0,), kalman_enabled=False)
-    _, active = _update(tracker, 18_240, (), kalman_enabled=False)
-    assert first[0].track_id == second[0].track_id == active[0].track_id
-    assert active[0].track_state == "coasting"
-    assert active[0].theta_deg == pytest.approx(20.0)
-    assert not active[0].kalman_applied
-
-
-def test_kalman_off_zero_order_hold_is_circular_and_switch_does_not_change_id() -> None:
-    tracker = _tracker()
-    first, _ = _update(tracker, 15_360, (359.0,), kalman_enabled=True)
-    second, _ = _update(tracker, 16_320, (1.0,), kalman_enabled=True)
-    _, predicted = _update(tracker, 17_280, (), kalman_enabled=True)
-    _, held = _update(tracker, 18_240, (), kalman_enabled=False)
-    assert first[0].track_id == second[0].track_id == predicted[0].track_id == held[0].track_id
-    assert held[0].theta_deg == pytest.approx(1.0)
-    assert not held[0].kalman_applied
-
-
-def test_kalman_off_confirmed_stationary_id_uses_circular_mean_and_rejects_three_outliers() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=45.0,
-        max_velocity_dps=60.0,
-        confirmation_observations=2,
-        confirmation_window_samples=200_000,
-        coasting_ttl_samples=300_000,
-        miss_cost=1.0,
-        birth_cost=1.0,
-        stationary_history_samples=144_000,
-        stationary_inlier_ratio=0.70,
-        stationary_inlier_tolerance_deg=10.0,
-        stationary_outlier_window_samples=48_000,
-        stationary_outlier_tolerance_deg=20.0,
-        stationary_exit_observations=4,
-    ))
-    sample = 1_920
-    stable_angles = (359.0, 0.0, 1.0, 358.0, 2.0, 359.0, 0.0, 1.0, 359.0, 0.0, 2.0)
-    observed = ()
-    for angle in stable_angles:
-        observed, _ = _update(tracker, sample, (angle,), kalman_enabled=False)
-        sample += 14_400
-
-    stationary = observed[0]
-    assert stationary.track_state == "confirmed"
-    assert _circular_error_deg(stationary.theta_deg, 0.0) <= 1.0
-    track_id = stationary.track_id
-
-    for angle in (25.0, 26.0):
-        observed, _ = _update(tracker, sample, (angle,), kalman_enabled=False)
+    sample = 15_360
+    for angles in ((0.0, 60.0, 120.0), (180.0, 240.0, 300.0), (30.0, 90.0, 150.0)):
+        _update(tracker, sample, angles)
         sample += 960
-        assert observed[0].track_id == track_id
-        assert observed[0].measured_theta_deg == pytest.approx(angle)
-        assert _circular_error_deg(observed[0].theta_deg, 0.0) <= 1.0
-
-    # An intervening valid point does not erase the one-second outlier count.
-    observed, _ = _update(tracker, sample, (1.0,), kalman_enabled=False)
-    sample += 960
-    assert _circular_error_deg(observed[0].theta_deg, 0.0) <= 1.0
-    observed, _ = _update(tracker, sample, (27.0,), kalman_enabled=False)
-    sample += 960
-    assert _circular_error_deg(observed[0].theta_deg, 0.0) <= 1.0
-
-    released, _ = _update(tracker, sample, (28.0,), kalman_enabled=False)
-    assert released[0].track_id == track_id
-    assert released[0].theta_deg == pytest.approx(28.0)
-
-
-def test_kalman_enabled_disables_stationary_mean_output_without_changing_id() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=45.0,
-        max_velocity_dps=60.0,
-        confirmation_observations=2,
-        confirmation_window_samples=200_000,
-        coasting_ttl_samples=300_000,
-        miss_cost=1.0,
-        birth_cost=1.0,
-        stationary_history_samples=144_000,
-    ))
-    sample = 1_920
-    result = ()
-    for angle in (50.0,) * 11:
-        result, _ = _update(tracker, sample, (angle,), kalman_enabled=False)
-        sample += 14_400
-    track_id = result[0].track_id
-
-    filtered, _ = _update(
-        tracker, sample, (60.0,), kalman_enabled=True, q_scale=1.0, r_scale=1.0,
-    )
-    assert filtered[0].track_id == track_id
-    assert filtered[0].kalman_applied
-    assert filtered[0].theta_deg != pytest.approx(50.0)
+        assert tracker.active_track_count <= 4
 
 
 def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observation() -> None:
@@ -928,7 +688,7 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
     assert tracked.active_tracks[0].track_state == "tentative"
 
 
-def test_only_twice_l5_voice_confirmed_id_forces_gate_and_publishes_coasting() -> None:
+def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
     audio = _audio((30.0,), seed=29, samples=7_680 + 7 * 960)
@@ -997,13 +757,13 @@ def test_only_twice_l5_voice_confirmed_id_forces_gate_and_publishes_coasting() -
         DirectionScanConfig.from_project(config), gate_threshold=0.6,
         gate_config_revision=0,
     )
-    assert forced.gate_decision.state is ProbabilityGateState.OPEN
+    assert forced.gate_decision.state is ProbabilityGateState.CLOSED
     assert forced.gate_decision.probability_40ms == 0.0
-    assert forced.gate_decision.reason == "voice_confirmed_id_force_open"
-    assert forced.spatial_response is not None
+    assert forced.gate_decision.reason == "probability_below_threshold"
+    assert forced.spatial_response is None
     assert any(item.track_id == track_id for item in forced.directions)
 
-    expired_decision = forced_window.decision_sample + 3 * 48_000 + 960
+    expired_decision = forced_window.decision_sample + 2 * 48_000 + 960
     expired_window = DecisionWindow(
         forced_window.session_id, forced_window.stream_epoch, 999, expired_decision,
         expired_decision - 1_920, expired_decision,
@@ -1018,72 +778,3 @@ def test_only_twice_l5_voice_confirmed_id_forces_gate_and_publishes_coasting() -
     assert restored.gate_decision.state is ProbabilityGateState.CLOSED
     assert restored.gate_decision.reason == "probability_below_threshold"
     assert restored.spatial_response is None and restored.active_tracks == ()
-
-
-def test_three_seconds_without_voice_marks_nonexclusive_noise_track() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=45.0, max_velocity_dps=60.0,
-        confirmation_observations=2, confirmation_window_samples=9_600,
-        coasting_ttl_samples=200_000, miss_cost=1.0, birth_cost=1.0,
-    ))
-    first_sample = 15_360
-    first, _ = _update(tracker, first_sample, (50.0,))
-    old_id = first[0].track_id
-    for sample in range(first_sample + 960, first_sample + 3 * 48_000, 960):
-        observed, _ = _update(tracker, sample, (50.0,))
-        assert observed[0].track_id == old_id
-
-    boundary = first_sample + 3 * 48_000
-    observed, active = _update(tracker, boundary, (52.0,))
-    assert observed[0].track_id == old_id
-    noise = next(item for item in active if item.track_id == old_id)
-    assert noise.is_noise_interference
-    assert noise.measured_theta_deg == pytest.approx(52.0)
-    assert abs(noise.theta_deg - 50.0) < 0.1
-
-    for offset in range(5):
-        assert tracker.apply_voice_feedback(
-            "track", 0, boundary + offset * 960, old_id, 0.95, True
-        )
-        if offset == 1:
-            assert tracker.apply_voice_feedback(
-                "track", 0, boundary + offset * 960 + 1, old_id, 0.05, False
-            )
-    assert not tracker._tracks[old_id].noise_interference
-
-
-def test_normal_track_moving_near_noise_track_is_not_merged_into_it() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=45.0, max_velocity_dps=60.0,
-        confirmation_observations=2, confirmation_window_samples=9_600,
-        coasting_ttl_samples=200_000, miss_cost=1.0, birth_cost=1.0,
-    ))
-    first_sample = 15_360
-    noise, _ = _update(tracker, first_sample, (50.0,))
-    noise_id = noise[0].track_id
-    tracker._tracks[noise_id].noise_interference = True
-
-    moving, _ = _update(tracker, first_sample + 960, (110.0,))
-    moving_id = moving[0].track_id
-    assert moving_id != noise_id
-    moved, active = _update(tracker, first_sample + 1_920, (94.0,))
-    assert moved[0].track_id == moving_id
-    assert any(item.track_id == noise_id and item.is_noise_interference for item in active)
-    for offset in range(5):
-        assert tracker.apply_voice_feedback(
-            "track", 0, first_sample + 1_920 + offset, noise_id, 0.95, True
-        )
-    assert tracker._tracks[noise_id].noise_interference
-
-
-def test_internal_tracker_never_exceeds_four_active_ids() -> None:
-    tracker = GlobalDirectionTracker(GlobalTrackerConfig(
-        association_gate_deg=45.0, max_velocity_dps=60.0,
-        confirmation_observations=2, confirmation_window_samples=9_600,
-        coasting_ttl_samples=200_000, miss_cost=1.0, birth_cost=1.0,
-    ))
-    first, _ = _update(tracker, 15_360, (0.0, 120.0, 240.0))
-    second, active = _update(tracker, 16_320, (60.0, 180.0, 300.0))
-    assert len(first) == len(second) == 3
-    assert len(active) == tracker.active_track_count == 4
-    assert len(set(tracker.active_track_ids)) == 4

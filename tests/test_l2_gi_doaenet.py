@@ -60,18 +60,17 @@ def test_gi_adapter_preserves_common_360_degree_contract() -> None:
     assert diagnostics.model_order.estimated_sources == 2
 
 
-def test_complete_l2_backends_have_independent_association_engines() -> None:
+def test_complete_l2_backends_share_one_authoritative_imm_jpda_tracker() -> None:
     pipeline = Layer2Pipeline.from_project(load_config(CONFIG), project_root=CONFIG.parents[1])
-    assert pipeline._trackers["frequency_normalized_music"].association_backend == "hungarian"
-    assert pipeline._trackers["gi_doaenet"].association_backend == "lmb_jpda"
+    assert pipeline.id_tracker.backend == "circular_imm_jpda_v1"
 
 
 def _candidate(sample: int, theta: float) -> CandidateDirection:
     return CandidateDirection("jpda", 0, sample // 960, sample, sample - 1_920, sample, theta, 0.9, 0.9)
 
 
-def test_lmb_jpda_is_one_to_one_and_circular_across_zero() -> None:
-    tracker = GlobalDirectionTracker(association_backend="lmb_jpda")
+def test_imm_jpda_is_one_to_one_and_circular_across_zero() -> None:
+    tracker = GlobalDirectionTracker()
     observed, _ = tracker.update(
         "jpda", 0, 7_680, (_candidate(7_680, 359.0), _candidate(7_680, 180.0)),
         window_id=8, doa_start_sample=5_760,

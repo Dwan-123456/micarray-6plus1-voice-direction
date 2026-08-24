@@ -236,10 +236,12 @@ class ApplicationRuntime:
         self._scan_config_lock = threading.Lock()
         self._scan_config_revision = 0
         self._kalman_config_revision = 0
-        self._direction_kalman_enabled = config.layer2.direction_kalman.enabled
+        # Compatibility snapshot fields only. Circular IMM is intrinsic to the
+        # ID tracker and no longer has an independent runtime switch or Q/R UI.
+        self._direction_kalman_enabled = True
         self._direction_id_tracking_enabled = True
-        self._direction_kalman_q_scale = config.layer2.direction_kalman.process_noise_scale
-        self._direction_kalman_r_scale = config.layer2.direction_kalman.measurement_noise_scale
+        self._direction_kalman_q_scale = 1.0
+        self._direction_kalman_r_scale = 1.0
         self._geometry = physical_6plus1_geometry(
             config.hardware.speed_of_sound_mps,
             config.hardware.geometry_version,
@@ -1625,7 +1627,7 @@ class ApplicationRuntime:
                 "layer1_imcra": self.config.layer1_imcra.algorithm_version,
                 "layer1_pre_denoise": self.config.layer1_pre_denoise.algorithm_version,
                 "layer2": self.config.layer2.scanner_backend,
-                "layer2_direction_kalman": self.config.layer2.direction_kalman.backend,
+                "layer2_direction_tracker": self.config.layer2.direction_id_tracking.backend,
                 "layer2_direction_id_tracking": self.config.layer2.direction_id_tracking.backend,
                 "layer3": self.config.layer3.main_backend,
                 "feature": self.config.feature.preprocessing_version,
@@ -2393,11 +2395,8 @@ class ApplicationRuntime:
             f"l2_gate_probability_40ms={gate.probability_40ms}",
             f"l2_gate_threshold={gate.threshold}",
             f"l2_gate_config_revision={gate.config_revision}",
-            f"l2_direction_kalman_backend={self.config.layer2.direction_kalman.backend}",
-            f"l2_direction_kalman_enabled={values['direction_kalman_enabled']}",
-            f"l2_direction_kalman_q_scale={values['direction_kalman_q_scale']}",
-            f"l2_direction_kalman_r_scale={values['direction_kalman_r_scale']}",
-            f"l2_direction_kalman_error={self._layer2.last_kalman_error}",
+            f"l2_direction_tracker_backend={self.config.layer2.direction_id_tracking.backend}",
+            "l2_direction_imm=intrinsic",
             f"l2_direction_id_tracking_backend={getattr(self._layer2.id_tracker, 'backend', self.config.layer2.direction_id_tracking.backend)}",
             f"l2_direction_id_tracking_enabled={values['direction_id_tracking_enabled']}",
             f"l2_direction_identity={'authoritative' if values['direction_id_tracking_enabled'] else 'raw_doa_peaks'}",

@@ -23,6 +23,19 @@
 
 ---
 
+## 2026-08-24 — L2方向ID追踪重构为Circular IMM-JPDA
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不创建或提前发布`v1.3.3`标签。
+- **L2**：以单一`circular_imm_jpda_v1`正式替换MUSIC/GI-DOAEnet后的旧Hungarian、简化LMB/JPDA、独立Kalman和静止锁定组合；采用带miss/new/false假设的有界JPDA、静止/慢速移动双模型IMM、Bernoulli存在概率及tentative/confirmed/coasting/deleted生命周期。确认规则为滚动200 ms内3次观测；confirmed漏检后预测2秒；内部最多4条轨迹，公共输出仍最多3条。
+- **圆周与时间契约**：关联、滤波和输出正确跨越359°/0°；内部连续角状态定期按整圈重基准，避免多圈运动造成数值无限增长；确认、漏检、TTL、epoch/session全部使用48 kHz绝对sample。
+- **L4反馈边界**：保留L4→L2反馈队列和接口以便后续启用；本版只校验并短期记录，不参与JPDA、确认、存在概率、轨迹寿命、Gate强制开启或IMM状态。
+- **Runtime与Development Test UI**：两个DOA后端共用同一权威追踪器；删除独立Kalman按键和Q/R控件，只保留`ID Tracking`总开关。关闭时输出原始DOA候选且不建立持续ID；开启时运行完整IMM-JPDA及生命周期。
+- **配置/接口**：删除`layer2.direction_kalman`配置段，将IMM、JPDA、概率和生命周期参数统一纳入`direction_id_tracking`；保留`TrackedDirection.kalman_applied`和旧Runtime快照字段作为下游兼容投影，其值不再代表可切换的独立滤波器。
+- **未改变**：L1、Probability Gate、MUSIC/GI-DOAEnet扫描、DPD、IMCRA白化、L3波束形成、离线L4、L5模型、录音音频格式和模型/音频资产均无变化。
+- **验证与Git LFS**：更新配置、L2、Runtime和Test UI回归；完整pytest及静态检查结果记录于本次提交；无Git LFS对象变化，不提交本地运行数据。
+
+---
+
 ## 2026-08-24 — 冻结v1.3.2并开始1.3.3开发线
 
 - **版本/标签**：项目`1.3.2`最终版固定在发布提交及不可变标签`v1.3.2`，不移动、不覆盖；项目包和当前状态文档从本提交开始更新为`1.3.3`，尚未创建`v1.3.3`标签。

@@ -96,46 +96,38 @@ layer2:
     context_ms: 240
     comparison_context_ms: [160, 240, 320]
     max_history_ms: 320
-  # Optional per-private-ID circular angle filter. Requires ID tracking; default OFF.
-  direction_kalman:
-    enabled: false
-    backend: damped_circular_kalman_v2
-    # Required explicit initial multipliers; Test UI persists last applied values.
-    process_noise_scale: 1.00
-    measurement_noise_scale: 1.00
-    process_angle_std_deg: 1.5
-    process_velocity_std_dps: 25.0
-    measurement_std_deg: 5.0
-    max_missed_windows: 150
-    velocity_half_life_seconds: 0.5
-    max_velocity_dps: 60.0
-    # +inf keeps uncertainty freezing disabled until it is calibrated.
-    prediction_freeze_std_deg: .inf
-  # Production/default runtime keeps direction-track IDs enabled. There is no
-  # project-config enable field; Development Test UI owns a persisted MUSIC-only
-  # diagnostic switch that can bypass/reset tracking and skip L3/L5.
+  # Circular IMM-JPDA direction tracking. The Test UI ID Track switch controls
+  # this complete stage; there is no separate Kalman switch.
   direction_id_tracking:
-    backend: global_assignment_v1
-    # Confirmed IDs expand from 20 degrees according to time since their last
-    # real MUSIC observation, capped at 50 degrees. Tentative IDs stay at 20.
+    backend: circular_imm_jpda_v1
     association_gate_deg: 50.0
-    association_gate_base_deg: 20.0
-    association_gate_growth_dps: 15.0
+    association_chi2: 9.0
     max_velocity_dps: 60.0
-    # Three one-to-one matches in a rolling 200 ms window promote a tentative ID.
     confirmation_observations: 3
     confirmation_window_ms: 200
+    tentative_ttl_ms: 500
     coasting_ttl_ms: 2000
-    miss_cost: 1.0
-    birth_cost: 1.0
-    # Kalman关闭时，正式ID可在3秒圆周历史满足稳定条件后锁定到动态均值。
-    stationary_history_ms: 3000
-    stationary_inlier_ratio: 0.70
-    stationary_inlier_tolerance_deg: 15.0
-    # 1秒内第4个超出静止均值±20°的观测会解除静止锁定。
-    stationary_outlier_window_ms: 1000
-    stationary_outlier_tolerance_deg: 20.0
-    stationary_exit_observations: 4
+    probability_detect: 0.85
+    probability_track: 0.80
+    probability_new: 0.10
+    probability_false: 0.10
+    minimum_association_probability: 0.20
+    minimum_birth_probability: 0.45
+    confirmation_existence_probability: 0.70
+    deletion_existence_probability: 0.05
+    survival_probability_per_second: 0.995
+    measurement_std_deg: 5.0
+    stationary_angle_std_deg: 0.35
+    stationary_velocity_std_dps: 3.0
+    stationary_velocity_half_life_seconds: 0.15
+    moving_angle_std_deg: 1.25
+    moving_velocity_std_dps: 15.0
+    moving_velocity_half_life_seconds: 0.50
+    stationary_to_moving_probability: 0.02
+    moving_to_stationary_probability: 0.05
+    prediction_freeze_std_deg: 25.0
+    duplicate_birth_guard_deg: 15.0
+    max_active_tracks: 4
   scanner_backend: frequency_normalized_music
   angle_step_deg: 1.0
   # MUSIC定位只使用2～4 kHz；L1概率Gate仍独立使用500～4000 Hz。

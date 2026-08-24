@@ -157,51 +157,47 @@ class Layer2MusicPreparationConfig(StrictModel):
         return self
 
 
-class Layer2DirectionKalmanConfig(StrictModel):
-    enabled: bool = False
-    backend: Literal["circular_kalman_v1", "damped_circular_kalman_v2"]
-    process_noise_scale: float = Field(ge=0.02, le=10.0)
-    measurement_noise_scale: float = Field(ge=0.02, le=10.0)
-    process_angle_std_deg: float = Field(gt=0)
-    process_velocity_std_dps: float = Field(gt=0)
-    measurement_std_deg: float = Field(gt=0)
-    max_missed_windows: int = Field(ge=0)
-    velocity_half_life_seconds: float = Field(default=0.5, gt=0)
-    max_velocity_dps: float = Field(default=60.0, gt=0, le=360)
-    prediction_freeze_std_deg: float = Field(default=float("inf"), gt=0)
-
-
 class Layer2DirectionIdTrackingConfig(StrictModel):
-    backend: Literal["global_assignment_v1"]
+    backend: Literal["circular_imm_jpda_v1"]
     association_gate_deg: float = Field(gt=0, le=180)
-    association_gate_base_deg: float = Field(default=20.0, gt=0, le=180)
-    association_gate_growth_dps: float = Field(default=15.0, ge=0, le=360)
+    association_chi2: float = Field(default=9.0, gt=0)
     max_velocity_dps: float = Field(gt=0, le=360)
     confirmation_observations: int = Field(ge=1)
     confirmation_window_ms: int = Field(gt=0)
+    tentative_ttl_ms: int = Field(default=500, gt=0)
     coasting_ttl_ms: int = Field(gt=0)
-    miss_cost: float = Field(gt=0)
-    birth_cost: float = Field(gt=0)
-    stationary_history_ms: int = Field(default=3_000, gt=0)
-    stationary_inlier_ratio: float = Field(default=0.70, ge=0, le=1)
-    stationary_inlier_tolerance_deg: float = Field(default=15.0, gt=0, le=180)
-    stationary_outlier_window_ms: int = Field(default=1_000, gt=0)
-    stationary_outlier_tolerance_deg: float = Field(default=20.0, gt=0, le=180)
-    stationary_exit_observations: int = Field(default=4, ge=1)
+    probability_detect: float = Field(default=0.85, ge=0, le=1)
+    probability_track: float = Field(default=0.80, ge=0, le=1)
+    probability_new: float = Field(default=0.10, ge=0, le=1)
+    probability_false: float = Field(default=0.10, ge=0, le=1)
+    minimum_association_probability: float = Field(default=0.20, ge=0, le=1)
+    minimum_birth_probability: float = Field(default=0.45, ge=0, le=1)
+    confirmation_existence_probability: float = Field(default=0.70, ge=0, le=1)
+    deletion_existence_probability: float = Field(default=0.05, ge=0, le=1)
+    survival_probability_per_second: float = Field(default=0.995, ge=0, le=1)
+    measurement_std_deg: float = Field(default=5.0, gt=0)
+    stationary_angle_std_deg: float = Field(default=0.35, gt=0)
+    stationary_velocity_std_dps: float = Field(default=3.0, gt=0)
+    stationary_velocity_half_life_seconds: float = Field(default=0.15, gt=0)
+    moving_angle_std_deg: float = Field(default=1.25, gt=0)
+    moving_velocity_std_dps: float = Field(default=15.0, gt=0)
+    moving_velocity_half_life_seconds: float = Field(default=0.5, gt=0)
+    stationary_to_moving_probability: float = Field(default=0.02, ge=0, le=1)
+    moving_to_stationary_probability: float = Field(default=0.05, ge=0, le=1)
+    prediction_freeze_std_deg: float = Field(default=25.0, gt=0)
+    duplicate_birth_guard_deg: float = Field(default=15.0, gt=0, le=180)
+    max_active_tracks: Literal[4] = 4
 
     @model_validator(mode="after")
-    def validate_stationary_tracking(self) -> "Layer2DirectionIdTrackingConfig":
-        if self.association_gate_base_deg > self.association_gate_deg:
-            raise ValueError("ID关联基础角距不能大于最大角距")
-        if self.stationary_inlier_tolerance_deg >= self.stationary_outlier_tolerance_deg:
-            raise ValueError("静止ID内点角度范围必须小于退出判断角度范围")
+    def validate_tracker_probabilities(self) -> "Layer2DirectionIdTrackingConfig":
+        if abs(self.probability_track + self.probability_new + self.probability_false - 1.0) > 1e-9:
+            raise ValueError("ID追踪track/new/false概率之和必须为1")
         return self
 
 
 class Layer2Config(StrictModel):
     probability_gate: Layer2ProbabilityGateConfig
     music: Layer2MusicPreparationConfig
-    direction_kalman: Layer2DirectionKalmanConfig
     direction_id_tracking: Layer2DirectionIdTrackingConfig
     scanner_backend: Literal["frequency_normalized_music", "gi_doaenet"]
     angle_step_deg: Literal[1.0]
@@ -239,12 +235,6 @@ class Layer2Config(StrictModel):
 
     @model_validator(mode="after")
     def validate_direction_postprocessing(self) -> "Layer2Config":
-        for value in (
-            self.direction_kalman.process_noise_scale,
-            self.direction_kalman.measurement_noise_scale,
-        ):
-            if value != 0.02 and abs(value * 10.0 - round(value * 10.0)) > 1.0e-9:
-                raise ValueError("Layer 2 Kalman Q/R scales must use 0.1 steps (or the 0.02 minimum)")
         if type(self.dpd_rank1_enabled) is not bool or type(self.noise_whitening_enabled) is not bool:
             raise TypeError("Layer 2 DPD/whitening switches must be bool")
         if self.dpd_min_cluster_subbands > self.dpd_frequency_subbands:

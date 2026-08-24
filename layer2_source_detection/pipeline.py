@@ -163,16 +163,10 @@ class Layer2Pipeline:
     """Probability Gate -> switchable DOA -> permanent global ID tracker."""
 
     def __init__(self, gate: ProbabilityGate, scanner: DetailedDirectionScanner,
-                 tracker: GlobalDirectionTracker | None = None,
-                 neural_tracker: GlobalDirectionTracker | None = None) -> None:
+                 tracker: GlobalDirectionTracker | None = None) -> None:
         self.gate, self.scanner = gate, scanner
-        self._trackers = {
-            "frequency_normalized_music": tracker or GlobalDirectionTracker(),
-            "gi_doaenet": neural_tracker or GlobalDirectionTracker(association_backend="lmb_jpda"),
-        }
         self._active_backend = "frequency_normalized_music"
-        self.id_tracker = self._trackers[self._active_backend]
-        self.last_kalman_error: str | None = None
+        self.id_tracker = tracker or GlobalDirectionTracker()
         self.last_id_tracking_error: str | None = None
         self._direction_id_tracking_enabled = True
         self._voice_feedback: deque[tuple[str, int, int, int, float, bool]] = deque(maxlen=4096)
@@ -188,42 +182,23 @@ class Layer2Pipeline:
             RollingNormMusicScanner(), GiDoaEnetScanner(project_root=project_root)
         )
         tracker_config = GlobalTrackerConfig(
-                association_gate_deg=tracking.association_gate_deg,
-                association_gate_base_deg=tracking.association_gate_base_deg,
-                association_gate_growth_dps=tracking.association_gate_growth_dps,
-                max_velocity_dps=tracking.max_velocity_dps,
-                confirmation_observations=tracking.confirmation_observations,
-                confirmation_window_samples=tracking.confirmation_window_ms * 48,
-                coasting_ttl_samples=tracking.coasting_ttl_ms * 48,
-                miss_cost=tracking.miss_cost,
-                birth_cost=tracking.birth_cost,
-                stationary_history_samples=tracking.stationary_history_ms * 48,
-                stationary_inlier_ratio=tracking.stationary_inlier_ratio,
-                stationary_inlier_tolerance_deg=tracking.stationary_inlier_tolerance_deg,
-                stationary_outlier_window_samples=tracking.stationary_outlier_window_ms * 48,
-                stationary_outlier_tolerance_deg=tracking.stationary_outlier_tolerance_deg,
-                stationary_exit_observations=tracking.stationary_exit_observations,
-                kalman_process_angle_std_deg=config.layer2.direction_kalman.process_angle_std_deg,
-                kalman_process_velocity_std_dps=config.layer2.direction_kalman.process_velocity_std_dps,
-                kalman_measurement_std_deg=config.layer2.direction_kalman.measurement_std_deg,
-                kalman_velocity_half_life_seconds=config.layer2.direction_kalman.velocity_half_life_seconds,
-                kalman_prediction_freeze_std_deg=config.layer2.direction_kalman.prediction_freeze_std_deg,
-            )
+            **tracking.model_dump(exclude={"confirmation_window_ms", "tentative_ttl_ms", "coasting_ttl_ms"}),
+            confirmation_window_samples=tracking.confirmation_window_ms * 48,
+            tentative_ttl_samples=tracking.tentative_ttl_ms * 48,
+            coasting_ttl_samples=tracking.coasting_ttl_ms * 48,
+        )
         return cls(
-            ProbabilityGate(), doa_scanner,
-            GlobalDirectionTracker(tracker_config, association_backend="hungarian"),
-            GlobalDirectionTracker(tracker_config, association_backend="lmb_jpda"),
+            ProbabilityGate(), doa_scanner, GlobalDirectionTracker(tracker_config),
         )
 
     def reset(self) -> None:
         reset_scanner = getattr(self.scanner, "reset", None)
         if callable(reset_scanner):
             reset_scanner()
-        for tracker in self._trackers.values():
-            tracker.reset()
+        self.id_tracker.reset()
         with self._voice_feedback_lock:
             self._voice_feedback.clear()
-        self.last_kalman_error = self.last_id_tracking_error = None
+        self.last_id_tracking_error = None
         self._direction_id_tracking_enabled = True
 
     def submit_voice_feedback(
@@ -258,17 +233,18 @@ class Layer2Pipeline:
     def process(self, window: DecisionWindow, probabilities: tuple[SourceProbability20ms, ...],
                 geometry: MicGeometry, scan_config: DirectionScanConfig, *, gate_threshold: float,
                 gate_config_revision: int, scan_config_revision: int = 0,
-                direction_kalman_enabled: bool = False,
+                direction_kalman_enabled: bool = True,
                 direction_kalman_q_scale: float = 1.0,
                 direction_kalman_r_scale: float = 1.0,
                 direction_id_tracking_enabled: bool = True) -> Layer2PipelineResult:
-        if type(direction_kalman_enabled) is not bool:
-            raise TypeError("L2 Kalman switch must be bool")
+        # Compatibility-only arguments retained for older Runtime callers.
+        # IMM prediction is intrinsic to ID tracking and cannot be toggled or
+        # tuned through the removed standalone Kalman controls.
+        del direction_kalman_enabled, direction_kalman_q_scale, direction_kalman_r_scale
         if type(direction_id_tracking_enabled) is not bool:
             raise TypeError("L2 direction ID tracking switch must be bool")
         if scan_config.scanner_backend != self._active_backend:
             self._active_backend = scan_config.scanner_backend
-            self.id_tracker = self._trackers[self._active_backend]
             self.id_tracker.reset(preserve_session_counters=True)
             with self._voice_feedback_lock:
                 self._voice_feedback.clear()
@@ -307,7 +283,7 @@ class Layer2Pipeline:
             response, observations, diagnostics = self.scanner.scan_detailed(
                 window, geometry, scan_config, scan_config_revision)
         if not direction_id_tracking_enabled:
-            self.last_id_tracking_error = self.last_kalman_error = None
+            self.last_id_tracking_error = None
             return Layer2PipelineResult(
                 Layer2ExecutionState.PROCESSED if decision.allow_srp else Layer2ExecutionState.BLOCKED,
                 decision,
@@ -321,10 +297,9 @@ class Layer2Pipeline:
         observed_directions, active = self.id_tracker.update(
             window.session_id, window.stream_epoch, window.decision_sample, observations,
             window_id=window.window_id, doa_start_sample=window.doa_start_sample,
-            doa_end_sample=window.doa_end_sample, kalman_enabled=direction_kalman_enabled,
-            q_scale=direction_kalman_q_scale, r_scale=direction_kalman_r_scale,
+            doa_end_sample=window.doa_end_sample,
             allow_births=True if diagnostics is None else diagnostics.births_allowed)
-        self.last_id_tracking_error = self.last_kalman_error = None
+        self.last_id_tracking_error = None
         directions = _select_l3_directions(observed_directions, active)
         candidates = tuple(CandidateDirection(
             item.session_id, item.stream_epoch, item.window_id, item.decision_sample,

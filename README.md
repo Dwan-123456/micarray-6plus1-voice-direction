@@ -104,14 +104,14 @@ WindowWorkItem
         MDL只作诊断；实际MUSIC阶数与最多搜峰数=Test UI手动上限1/2/3
         可选DPD逐频投票 + 圆周核聚类、可选IMCRA对角噪声白化（均默认关闭）
         圆周峰值 + 50° NMS → 最多3个方向
-    永久在线全局一对一方向ID
+    永久在线Circular IMM-JPDA方向ID
         tentative → confirmed → coasting → deleted
         滚动200 ms内累计至少3次匹配观测后confirmed
         session内track_id单调且不复用；内部最多4轨，公共输出最多3轨
         几何寿命按绝对sample计算，默认coasting TTL为2秒
         confirmed/coasting公共方向完全由L2状态投影；离线L5不改变ID或几何寿命
-    可选阻尼圆周Kalman（默认关闭）
-        只平滑/预测theta_deg，不创建、重置或关闭ID
+        JPDA联合计算track/new/false/miss概率
+        静止/慢速移动双模型IMM自动融合并预测theta_deg
     ↓ TrackedDirection[0..3] + active_tracks → 有界L3 latest-wins队列
 【已完成】Layer 3：按公共track_id增强方向音频（BF）
     输入：同一WindowKey、160 ms DecisionWindow末尾的配置化40/80/160 ms LogicalAudio和0～3个权威方向
@@ -341,17 +341,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - 圆环蓝线是当前窗口完整360°原始MUSIC伪谱；
 - 候选点使用L2最终平滑角，因此可能与原始峰顶略有偏移；
 - 临时候选显示为灰色；正式ID使用红/绿交替颜色；
-- 大点表示当前窗口有真实观测，小点表示卡尔曼预测；
+- 大点表示当前窗口有真实观测，小点表示IMM预测；
 - “L2声源Gate”阈值决定是否执行定位，默认0.60；
 - MUSIC候选阈值决定伪谱峰是否进入候选；
 - “MUSIC阶数上限”可设为1、2或3，只限制实际处理阶数，不覆盖MDL的0～6阶诊断；
 - DPD rank-1 MUSIC和IMCRA噪声白化是默认关闭的独立试验开关；
-- 公共方向ID追踪永久开启；圆周卡尔曼可独立开关；
-- Q倍率控制过程噪声，R倍率控制测量噪声。调整后点击应用，从下一完整窗口生效。
-
-当前默认卡尔曼参数调得偏保守，主要用于降低静止或缓慢移动声源的角度抖动。声源角速度较高时，滤波结果可能滞后于真实方向。
-
-关闭Kalman时，L2仍会对confirmed ID执行短时静止判断：最近3秒圆周历史中至少70%的观测位于均值±15°，则输出稳定在持续更新的圆周均值。1秒内最多3个超出均值±20°的观测会被视为异常而不改变输出；第4个外点解除静止并恢复跟随观测。该判断使用圆周距离，能正确处理359°/0°边界。
+- 公共方向ID追踪默认开启；Test UI只保留`ID Tracking`总开关，不再提供独立Kalman或Q/R控件；
+- 开启ID Tracking即运行完整Circular IMM-JPDA，针对静止和慢速移动自动调整模型概率。
 
 如果显示`WARMING_UP`或`UNAVAILABLE`，表示概率尚未准备好、输入不连续或必要数据缺失。
 
@@ -416,7 +412,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 
 - L1多通道输入、IMCRA和可切换预降噪；
 - 唯一时间轴与160 ms/20 ms窗口装配；
-- L2 Probability Gate、Rolling NormMUSIC、永久公共方向ID和可选Kalman；
+- L2 Probability Gate、Rolling NormMUSIC/GI-DOAEnet和Circular IMM-JPDA永久公共方向ID；
 - L3优化BF、单声源DAS、全频loaded MVDR和五频段鲁棒对照；旧恒定波束宽度模式已移除；
 - TrackAudioStreamHub逐ID去重拼接、响度补偿、连续试听/录音轨和停机封存；
 - 采集后L4一/二人路由、MossFormer2/TIGER分离、复频谱相干匹配和原生16 kHz试听；

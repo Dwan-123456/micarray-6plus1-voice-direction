@@ -14,8 +14,8 @@
 
 1. 用宽带 MUSIC/NormMUSIC 替换 L2 的 SRP-PHAT 定位主链，并直接支持 0～3 个同时存在的方向峰。
 2. 删除 iterative multiple peak 开关、配置、UI 和算法路径；多声源能力由 MUSIC 空间谱、声源数估计和圆周峰值筛选统一提供。
-3. 将方向 ID 追踪设为正式主链默认启用的L2权威能力；采用全局一对一线性分配，正确处理 `359° ↔ 0°`、候选排序变化、新 ID、短时漏检和超时后重新编号。Development Test UI可为单独调试MUSIC临时关闭追踪；该诊断模式不得向L3/L5发布无权威ID的方向。
-4. Kalman 只作为可选的方向平滑器；关闭 Kalman 不得关闭、重置或绕过 ID 追踪。
+3. 将方向 ID 追踪设为正式主链默认启用的L2权威能力；使用Circular IMM-JPDA完成track/new/false/miss概率关联、静止/慢速移动模型融合及生命周期，正确处理 `359° ↔ 0°`、候选排序变化、新 ID、短时漏检和超时后重新编号。Development Test UI可临时关闭整套追踪；该诊断模式不得向L3/L5发布无权威ID的方向。
+4. IMM是ID追踪器的固有组成，不再提供独立Kalman开关或Q/R运行时参数。
 5. ID 从 L2 的私有 UI sidecar 元数据升级为 L2、L3、L5、Runtime、时间线、正式记录和逐 ID 试听共同使用的公共字段。
 6. Test UI 根据 L2 的权威 ID 拼接 L3 音频；删除 UI 自己的二次角度关联、别名合并和贪心补救。
 7. 录音管理和 Production UI 能按会话与 ID 查询方向时间线、L5 判断及增强音频，并提供逐 ID 试听。
@@ -31,6 +31,7 @@
 - 相干声源和强混响下若普通宽带 MUSIC 不稳定，CSSM 作为后续增强候选，而不是本轮第一实现：[Coherent signal-subspace processing](https://doi.org/10.1109/TASSP.1985.1164667)。
 - Israel Cohen 的工作优先用于本项目的噪声统计、校准、鲁棒性和反馈思路。公开资料入口见 [Israel Cohen publications](https://israelcohen.com/publications/all-publications/) 和 [Source Localization with Feedback Beamforming](https://israelcohen.com/wp-content/uploads/2018/05/Source-Localization-with-FeedbackBeamforming-Thesis-Itay-Yehezkel-Karo.pdf.pdf)。检索阶段未发现可直接替换当前 L2 的 Cohen MUSIC 开源实现，因此不得虚构“Cohen MUSIC 代码”来源；实现以标准 MUSIC/NormMUSIC 为主，并复用现有 Cohen IMCRA 噪声估计结果。
 - 全局关联使用 SciPy [`linear_sum_assignment`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html) 求解线性和分配问题。工程文档可称“匈牙利式全局一对一分配”，但代码注释应准确说明 SciPy 当前实现为改进 Jonker–Volgenant 算法，而不是声称调用了特定内部实现。
+- JPDA的联合假设、漏检和杂波结构参考[Stone Soup](https://github.com/dstl/Stone-Soup)；IMM的模型混合、模型概率更新结构参考[FilterPy IMMEstimator](https://github.com/rlabbe/filterpy/blob/master/filterpy/kalman/IMM.py)；观测的track/new/false分类思想参考[ODAS](https://github.com/introlab/odas)。本项目没有引入这些完整运行时依赖，也没有复制其三维追踪代码，而是按最多4轨/3观测边界实现圆周角专用版本。
 
 所有借鉴的代码必须核对许可证，并在实现文件和第三方声明中保留必要来源信息。
 
@@ -50,8 +51,7 @@ L2：Probability Gate
     → MDL只作诊断；effective_order=Test UI手动上限1/2/3
     → 候选仍限制为0～3个方向
     → 圆周峰值与50° NMS
-    → 默认启用的全局分配方向ID（Test UI诊断模式可旁路）
-    → 可选按ID圆周Kalman
+    → 默认启用的Circular IMM-JPDA方向ID（Test UI诊断模式可旁路）
     → TrackedDirection + active_tracks
     ↓
 L3：按同一WindowKey和track_id执行逐方向增强
@@ -197,37 +197,37 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 无足够有效频点、协方差退化或模型阶数不可信时，返回可诊断的 blocked/degraded/failed 状态，不得静默复用上一窗伪谱冒充新观测。
 - 原 SRP-PHAT、iterative multiple peak 与相关回退不再进入正式1.3.2主链；删除配置、运行时setter、UI开关和专属测试。若保留历史实现用于回归，只能放在明确的非运行时归档边界，不能被新pipeline导入。
 
-## 8. Layer 2：永久 ID 与可选 Kalman
+## 8. Layer 2：Circular IMM-JPDA永久方向ID
 
-### 8.1 全局分配
+### 8.1 JPDA全局概率关联
 
-每窗先预测现有轨迹，再建立“现有轨迹 × 当前观测”的代价矩阵。代价至少包含：
+每窗先由IMM预测现有轨迹，再建立“现有轨迹 × 当前观测”的圆周似然矩阵。联合假设必须包含：
 
 - 圆周最短角残差 `((measurement - prediction + 180) % 360) - 180`；
-- 与时间间隔相关的最大角速度/关联门限；
-- MUSIC 峰值质量、轨迹不确定度和连续性惩罚；
-- 明确的 miss 与 birth 代价。
+- 旧轨与观测的一对一track分配；
+- 每条旧轨的miss；
+- 每个未使用观测的new或false分类；
+- DOA峰值质量、轨迹存在概率、检测概率和不确定度。
 
-矩阵必须加入 dummy 行/列，使“不匹配旧轨”“新建轨迹”和“轨迹漏测”参与同一个全局最优分配，再调用 `linear_sum_assignment`。禁止逐候选贪心、`itertools.product` 穷举组合或按 rank 绑定 ID。相同代价必须使用固定 tie-break，保证重放可复现。
+最多4条内部轨迹和3个观测时精确枚举有界联合假设并归一化为边缘关联概率；随后只用`linear_sum_assignment`从边缘概率中确定当前窗的一对一公开观测归属。禁止逐候选贪心或按rank绑定ID。L4反馈接口保留，但本版不进入这些概率。
 
 ### 8.2 生命周期
 
 - 状态为 `tentative → confirmed → coasting → deleted`。
-- 首次无匹配观测立即分配新 ID；当前正式参数要求滚动200 ms窗口内累计至少3次匹配观测后确认。匹配不要求占满每个20 ms窗口；窗口内不足3次时保持tentative并继续滚动重试。tentative固定使用20°关联角距；confirmed按距离该ID最后一次真实MUSIC观测的时间使用`min(50°, 20° + 15°/s × 漏检时长)`，不得用相邻处理窗口的时间替代。未匹配峰若位于任一现存非噪声ID预测位置±20°内，必须抑制birth；噪声干扰轨继续保持非排他。ID 一经分配，在同一 session 内不得给其他轨迹复用。
+- 首次高new概率且不与现存轨迹重复的观测立即分配新ID；滚动200 ms内累计至少3次关联观测且存在概率达标后确认。ID一经分配，在同一session内不得复用。
 - 短时漏检或 Gate 关闭进入内部 coasting；在 TTL 内重新落入关联门限应恢复原 ID。有效TTL内的confirmed/coasting轨迹均可发布为公共L3方向，准入与排序只依赖L2状态。
-- GlobalDirectionTracker保留精确`track_id`在线语义反馈与噪声干扰标记接口，供兼容测试或未来实时分类器使用；当前离线L5不调用该接口，因此普通1.3.2运行不会产生语义续租、噪声标记或恢复。
+- GlobalDirectionTracker保留精确`track_id`的L4反馈接口和有界审计缓存；当前版本反馈不影响关联、确认、存在概率、寿命、Gate或IMM。
 - 超过 TTL 删除轨迹；之后出现的方向即使相近也必须获得新 ID。
 - 所有确认、miss、coast 和 TTL 使用 48 kHz 绝对 sample 计算，不依赖“处理了多少窗”，从而正确应对 latest-wins 丢窗和 sample 跳跃。
 - 离线L5不拥有ID确认权、语音租约或几何生命周期；它只继承完整track key并返回离线语义，不能按角度猜测ID，也不能延长或缩短ID的2秒几何TTL。
 
-### 8.3 圆周与 Kalman
+### 8.3 圆周与双模型IMM
 
-- 轨迹内部维护 unwrapped angle；`359° → 0°` 应表现为 `+1°`，反向为 `-1°`，公开时再 `% 360`。
+- 轨迹内部使用连续角；`359° → 0°`应表现为`+1°`，反向为`-1°`。每次更新后按整圈统一重基准，禁止连续多圈后无限增长；公开时再`% 360`。
 - 项目配置不提供ID开关，正式运行默认启用；Development Test UI保留本地持久化的MUSIC-only诊断开关，关闭时重置追踪并跳过下游，不改变正式配置schema。
 - 内部活动方向ID最多4个，公共输出仍最多3个；达到上限时只能淘汰未被本窗关联的低优先级轨迹，不得清空整个tracker、重置epoch或把Gate改成`WARMING_UP`。
-- Kalman 可以开关，但只影响 `theta_deg` 平滑和短时预测，不影响 ID 的分配、确认、miss 或删除。
-- 开关 Kalman 不得清空 tracker 或改变已有 ID。Kalman 状态按 `track_id` 建立；重新开启时安全重建滤波状态。
-- Kalman关闭时，confirmed ID使用最近3秒的圆周观测历史判断短时静止：至少70%观测位于圆周均值±15°时，输出改为持续更新的圆周均值。静止期间，滚动1秒内第1～3个超出均值±20°的观测不得移动输出和关联锚点；第4个外点立即解除静止并跟随当前观测。漏检时保持静止均值或最后可信观测，不做角速度外推；所有角差正确处理359°/0°。
+- 每个ID同时维护静止与慢速移动两个`[theta, omega]`Kalman模型，通过IMM转移概率、模型似然和PDA融合自动调整模型权重。最大角速度60°/s；静止速度半衰期0.15 s，慢速移动速度半衰期0.5 s。
+- confirmed轨迹失去DOA观测后由IMM继续预测，最长2秒；角度不确定度超过门限时冻结公开角，但协方差和TTL继续推进。
 - 不确定度过大时 active track 可继续 coasting 展示，但不得发布虚假的 L3 目标。
 
 ## 9. Layer 3 改动
@@ -266,7 +266,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 - 保留 staged 单 worker、各层有界 latest-wins 队列、分区缓存和 ResultJoiner 有序提交。
 - L2 worker持有滚动MUSIC状态，ComputeCache保存预计算导向张量和有界频点工作区；状态只能按worker实际取走且sample连续的窗口推进。发现sample跳跃时按缺口大小更新/重建滚动状态，并发布明确诊断，不能把不连续帧当作连续快照。
-- 配置快照删除 iterative 和 ID enable 字段，增加 MUSIC、模型阶数、关联生命周期与 Kalman revision；旧配置加载必须显式迁移或拒绝未知冲突，不能悄悄保留旧开关语义。
+- 配置快照删除iterative和独立Kalman配置，增加MUSIC、模型阶数及IMM-JPDA关联生命周期；旧配置加载必须显式迁移或拒绝未知冲突。
 - 每层 StageResult 都携带完整窗口身份；ResultJoiner校验实时L2 `directions`与L3 enhanced的`track_id`一一对应，并要求实时L5以`offline_after_l4`的SKIPPED终态收束。真正的离线L5结果不进入逐窗ResultJoiner。
 - 丢弃、超时和跳窗按绝对 sample 更新轨迹；不得因某一层队列替换而重置整个 tracker。
 - 移除 angle-only L5 feedback mailbox 和 Test UI 私有 ID 投影；Runtime 只传递正式公共 ID。
@@ -279,7 +279,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - L3方向轨不得再绘制L5语义颜色。使用当前Test UI阈值重判后，Voice黄色背景只绘制在对应L4音频条；Non-Voice和未发送L5的L4音频保持默认底色。滑块只读取已有概率，不重跑CNN。
 
 - 删除 “Iterative Multiple Peak” 开关。Development Test UI保留一个默认开启、持久化的`ID Tracking`诊断开关：开启时显示并发布L2权威ID；关闭时只显示360点MUSIC伪谱和原始峰值灰色小点，清空追踪状态，并将该窗L3/L5正常标记为`SKIPPED`，不得把原始峰值当作下游ID。重新开启后从新的权威ID状态开始。
-- 保留 Kalman 开关及 Q/R 等调试参数；文案明确“仅平滑，不控制 ID 是否存在”。
+- 删除独立Kalman开关及Q/R调试控件；`ID Tracking`是唯一追踪开关，开启即运行完整IMM-JPDA。
 - 右上面板从 SRP 改名为 DOA/MUSIC，绘制原始360点MUSIC伪谱，分别显示MDL诊断阶数与实际MUSIC阶数，并提供1/2/3手动阶数上限、默认关闭的`DPD + rank-1 MUSIC`和`IMCRA噪声白化`按钮；三项设置均持久化到Test UI本地设置，L2在每次实际计算前读取最新revision。
 - L2接纳队列丢窗属于Runtime过载状态，不得显示成Gate或L1 IMCRA不可用。Test UI保留同一epoch最近一次成功的MUSIC/Gate快照及原始发布时间，以`STALE | L2 DROPPED`明确标记，下一次成功结果到达后恢复`LIVE`。
 - L2候选表显示 `track_id、measured_theta_deg、theta_deg、score、state、is_new_track、is_observed`；离线L5概率只显示在下右L5结果和下中L4黄色时间区间，不混入实时L2候选状态。
@@ -331,13 +331,13 @@ v4 至少保存：
 - 校准前后、错误极性/延迟、MIC 顺序和观察面镜像防错。
 - 与独立 Pyroomacoustics/离线参考输出在约定容差内对照。
 
-### 15.2 ID 与 Kalman
+### 15.2 ID 与 IMM-JPDA
 
 - `358→359→0→1` 和反向跨界不换 ID；公开角始终 `[0,360)`。
 - 候选 rank 交换、两个/三个目标移动和会合前后使用全局一对一分配，不重复分配。
 - 未匹配观测立即新建 ID；短时漏检恢复原 ID；超过 TTL 后同方向分配新 ID。
 - Gate 关闭、latest-wins 丢窗、绝对 sample 大跳、epoch 切换、session 切换和确定性 tie-break。
-- Kalman 开/关/运行时切换不改变 ID；不确定度过大不发布 L3 预测目标。
+- 验证静止/慢速移动模型概率切换、2秒coasting、L4反馈不干预，以及连续多圈后的周期重基准；不确定度过大不发布漂移的L3预测目标。
 
 ### 15.3 跨层、存储和 UI
 
@@ -360,7 +360,7 @@ v4 至少保存：
 
 1. **L1 + Windowing**：补 MUSIC 输入/校准契约和测试，不引入 ID。
 2. **L2 MUSIC**：完成多帧 STFT、协方差、MDL、NormMUSIC、圆周峰值，并移除 iterative 正式路径。
-3. **L2 Tracking**：完成公共 DTO、全局分配、生命周期、跨 0° 与可选 Kalman；不依赖 UI 修补。
+3. **L2 Tracking**：完成公共DTO、Circular IMM-JPDA、生命周期、跨0°与周期重基准；不依赖UI修补。
 4. **L3 + Hub**：贯通公共ID与完整轨封存；离线L4/L5继承ID，删除angle-only lease feedback。
 5. **Runtime**：更新配置快照、StageResult、Joiner、时间线和 DecisionRecord v5。
 6. **Development Test UI**：删除旧开关，展示 MUSIC/ID，并按权威 ID 拼接试听。

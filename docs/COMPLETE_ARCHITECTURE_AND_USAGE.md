@@ -22,7 +22,7 @@ flowchart TB
       ING[IngestCoordinator<br/>session / epoch / 绝对sample时间轴]
       WIN[WindowAssembler<br/>160 ms DecisionWindow<br/>20 ms hop]
       WORK[WindowWorkItem<br/>WindowKey + 冻结配置]
-      L2[Layer 2 方向定位<br/>Gate·Rolling NormMUSIC<br/>峰值/NMS·ID追踪·可选Kalman]
+      L2[Layer 2 方向定位<br/>Gate·Rolling NormMUSIC/GI-DOAEnet<br/>峰值/NMS·Circular IMM-JPDA]
       L3[Layer 3 按方向增强<br/>STFT/协方差·steering<br/>LCMV/MVDR/DAS·ISTFT]
       HUB[TrackAudioStreamHub<br/>每ID取唯一20 ms hop<br/>响度补偿·去重·补洞·连续缓存]
       AUDIT[实时L5审计占位<br/>SKIPPED: offline_after_l4]
@@ -89,8 +89,8 @@ flowchart TB
 | Layer 1 | Host PCM16 `[N,8]`、校准参数、CDC状态 | PCM16解码；增益/极性/整数延迟校准；Host→Logical通道重排；连续性检查；7麦IMCRA；可选IMCRA-Wiener WOLA | `DecodedAudio`：Logical float32 `[N,8]`；Native `[N,8]`；IMCRA噪声PSD/SPP/20 ms声源概率；健康事件 | IMCRA 0–10 kHz；Gate证据500–4000 Hz |
 | Ingest | `DecodedAudio`、sequence/timestamp、校准身份 | 建立`session_id`；检测缺口并切换`stream_epoch`；分配绝对sample；把IMCRA hop对齐到同一时间轴 | `IngestedAudioBlock`：48 kHz float32 `[N,8]`，含native、hotmap、IMCRA、校准元数据 | 输入块通常20 ms |
 | Windowing | 连续同epoch的`IngestedAudioBlock` | 环形累计；检查校准身份与sample连续；组合来源sequence | `DecisionWindow [7680,8]`；末端40 ms DOA区间；最近160 ms上下文；8个20 ms IMCRA hop | 160 ms上下文，每20 ms发布 |
-| Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/MUSIC/Kalman/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
-| Layer 2 | `DecisionWindow`、末尾两个20 ms声源概率、7麦几何、扫描配置 | 40 ms Probability Gate；240 ms Rolling STFT/协方差；2–4 kHz frequency-normalized MUSIC；MDL诊断；圆周峰值与50° NMS；全局一对一ID；可选圆周Kalman；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；MUSIC/MDL诊断 | 每20 ms判断；定位历史240 ms |
+| Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/DOA/IMM-JPDA/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
+| Layer 2 | `DecisionWindow`、末尾两个20 ms声源概率、7麦几何、扫描配置 | 40 ms Probability Gate；MUSIC或GI-DOAEnet；圆周峰值与50° NMS；Circular IMM-JPDA方向ID；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；DOA诊断 | 每20 ms判断；定位历史按DOA后端 |
 | Layer 3 | `DecisionWindow`末尾40/80/160 ms、0–3个公共方向、7麦几何、IMCRA噪声 | 共享STFT与协方差缓存；steering；按`rho`逐频选择Dual LCMV / Soft-null loaded MVDR / Loaded MVDR；或DAS/loaded MVDR/五频段基线；数值保护；批量ISTFT | `Layer3Output`，其中每方向一个`EnhancedAudio`：48 kHz mono `[1920/3840/7680]`，携带`track_id/theta/algorithm/fallback` | 当前默认40 ms音频；每20 ms产生新重叠窗 |
 | TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；2 ms模式切换淡化；IMCRA概率响度补偿；维护实时上下文和完整归档 | `TrackAudioBatch`：`TrackAudioHop [960]`与最长3200 ms `ContinuousTrackAudio`；停机输出`Layer4LongAudioInput`完整48 kHz长轨 | 20 ms hop；目标均值-23 dBFS，峰值不超过-3 dBFS |
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
@@ -127,9 +127,9 @@ DecisionWindow + IMCRA p20
        → MDL/跨频一致性诊断
        → 局部峰 + prominence + 50°圆周NMS
        → 最多3个观测方向
-       → 全局一对一ID关联
+       → Circular IMM-JPDA概率关联
        → tentative / confirmed / coasting / deleted
-       → 可选圆周Kalman或静止方向抑抖
+       → 静止/慢速移动双模型IMM融合与预测
        → 0..3个公共TrackedDirection
 ```
 
@@ -248,7 +248,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 1. 连接阵列，确认Windows识别设备；启动UI并检查顶部设备、CUDA和模型状态。
 2. 点击“启动采集”。等待160 ms窗口累计及IMCRA预热；L2的240 ms滚动定位历史会继续独立预热。
 3. 检查左上8路电平。依次轻敲麦克风，确认MIC0–MIC5、Center及HardwareMix映射没有镜像或错位。
-4. 在右上查看L2 Gate、360°MUSIC谱、MDL诊断和方向ID。初次测试保持DPD、IMCRA白化、Kalman关闭。
+4. 在右上查看L2 Gate、360°MUSIC谱、MDL诊断和方向ID。初次测试保持DPD和IMCRA白化关闭；ID Tracking开启即使用完整IMM-JPDA。
 5. 在左下查看Center参考和按`track_id`排列的L3方向轨，可切换四种BF方法进行同源比较。
 6. 需要正式数据时使用“正式录音开始/暂停”；只做临时试听时使用scratch录音。两者不要混作同一资产。
 7. 点击“停止采集”，等待L2/L3队列完全排空和Hub封存。未排空时不能提交L4。
@@ -263,7 +263,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 | 区域 | 显示内容 | 数据来源 | 会不会控制算法 |
 |---|---|---|---|
 | 左上L1 | 8路电平、削波、IMCRA状态、预降噪、灯控、录音 | Layer 1与采集源 | 预降噪开关会从后续完整窗生效 |
-| 右上L2 | Gate、360°谱、候选/ID、MDL、DPD/白化/Kalman设置 | `Layer2PipelineResult` | Gate、阶数和试验开关会更新后续L2配置 |
+| 右上L2 | Gate、360°谱、候选/ID、MDL、ID Tracking、DPD/白化设置 | `Layer2PipelineResult` | Gate、阶数和试验开关会更新后续L2配置 |
 | 下左L3 | Center参考、各ID增强音频、BF模式、发送L4 | Hub连续音频与L3诊断 | BF模式影响后续L3；发送L4仅在封存后运行 |
 | 下中L4 | 16 kHz结果、时长、波形、播放、黄色Voice区间 | `Layer4ProcessedAudio/OfflineResult` | 选择离线后端；不反向修改实时结果 |
 | 下右L5 | 模型、逐轨概率、Voice判断、阈值 | L4完成后自动产生的MarbleNet结果 | 阈值仅重判现有概率 |
@@ -324,7 +324,7 @@ run_offline_l4   ── 显式写入封存session，可长期审计
 ## 9. 推荐测试场景
 
 1. 单人静止：验证通道方向、Gate、单峰、ID稳定和DAS基线。
-2. 单人缓慢移动：比较Kalman开关、角度滞后和ID连续性。
+2. 单人缓慢移动：检查IMM静止/移动模型切换、角度滞后和ID连续性。
 3. 双人夹角≥50°轮流讲话：验证双峰、ID和优化BF串音。
 4. 双人同时讲话：比较optimized与五频段对照，并运行离线L4。
 5. 风扇/笔记本噪声：记录2–4 kHz异常声源造成的误峰和L5结果。
@@ -353,7 +353,7 @@ run_offline_l4   ── 显式写入封存session，可长期审计
 - 最多输出3个实时方向，但离线L4只按1/2人处理；三方向不等于可靠三人分离；
 - 候选间距至少50°，近角度、同一水平角、近场、高度差和强混响不可靠；
 - 当前方向输出不带物理响度或角度不确定度；
-- Kalman默认较保守，快速移动声源可能滞后；
+- IMM针对静止/慢速移动调校，快速移动声源可能滞后；
 - MarbleNet直接接入NVIDIA预训练模型，未做诊室中文目标域微调；
 - 隔离性能基准不能代替真实阵列、UI、录音并发下的长时间门禁；
 - Development Test UI不是临床产品界面。

@@ -1,6 +1,6 @@
 # Development Test UI：项目1.3.2
 
-> 当前版本按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)显示MUSIC伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；ID追踪默认启用并可进入MUSIC-only诊断模式，Kalman保持可选。
+> 当前版本按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)显示DOA伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；ID追踪默认启用并可进入DOA-only诊断模式，IMM属于追踪器内部且不可独立关闭。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**本README描述当前已迁移界面。**
 
@@ -37,7 +37,7 @@ L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3，并直接决定�
 
 所有算法信息按session、epoch、window和sample endpoint对齐。缺少任一20 ms IMCRA概率、跨epoch或尚未预热时，右上明确显示`WARMING_UP/UNAVAILABLE`，不能拼接旧数据或显示假SRP结果。
 
-L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和Kalman应用状态。右上MUSIC面板只据此绘制；左下试听按同一公共ID拼接L3音频，不执行第二套角度关联或换号补救。离线L4/L5继承同一ID；这些显示逻辑不能改变L2轨迹、音频结果或正式录音。
+L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和IMM应用状态。右上DOA面板只据此绘制；左下试听按同一公共ID拼接L3音频，不执行第二套角度关联或换号补救。离线L4/L5继承同一ID；这些显示逻辑不能改变L2轨迹、音频结果或正式录音。右侧仅保留`ID Tracking`总开关，不再显示独立Kalman或Q/R控件。
 
 ## 回归测试
 
