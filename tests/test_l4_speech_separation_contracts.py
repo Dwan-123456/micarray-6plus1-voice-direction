@@ -7,6 +7,8 @@ import pytest
 
 from layer4_speech_separation import (
     BandMagnitudeMatcher,
+    L4_MATCH_FREQUENCY_MAX_HZ,
+    L4_MATCH_FREQUENCY_MIN_HZ,
     Layer4CandidatePair,
     Layer4LongAudioInput,
     Layer4SeparationRequest,
@@ -49,7 +51,7 @@ def test_layer4_requires_sealed_complete_l3_hops_and_two_speaker_admission() -> 
 def test_two_candidates_are_required_and_selection_preserves_parent_id_and_angle() -> None:
     sample_rate = 16_000
     time = np.arange(sample_rate, dtype=np.float64) / sample_rate
-    dominant = np.sin(2 * np.pi * 2_700 * time).astype(np.float32)
+    dominant = np.sin(2 * np.pi * 1_500 * time).astype(np.float32)
     interferer = np.sin(2 * np.pi * 3_500 * time + 0.4).astype(np.float32)
     reference = np.ascontiguousarray(dominant + 0.1 * interferer, dtype=np.float32)
     candidates = Layer4CandidatePair(
@@ -65,7 +67,9 @@ def test_two_candidates_are_required_and_selection_preserves_parent_id_and_angle
     assert selected.selected_source_index == 1
     assert selected.track_id == 7 and selected.theta_deg == 359.0
     assert selected.candidate_scores[1] > selected.candidate_scores[0]
-    assert selected.matching_algorithm == "l3_bf_2_4khz_complex_coherence_v2"
+    assert L4_MATCH_FREQUENCY_MIN_HZ == 1_000.0
+    assert L4_MATCH_FREQUENCY_MAX_HZ == 4_000.0
+    assert selected.matching_algorithm == "l3_bf_1_4khz_complex_coherence_v3"
     assert not selected.waveform.flags.writeable
 
 

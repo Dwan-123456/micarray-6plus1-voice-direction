@@ -14,9 +14,9 @@ from .contracts import (
 
 
 class BandMagnitudeMatcher:
-    """Select the source phase-coherent with its L3 BF 2--4 kHz reference."""
+    """Select the source phase-coherent with its L3 BF 1--4 kHz reference."""
 
-    algorithm_version = "l3_bf_2_4khz_complex_coherence_v2"
+    algorithm_version = "l3_bf_1_4khz_complex_coherence_v3"
     minimum_reliable_samples = 2 * L4_MODEL_SAMPLE_RATE
     minimum_reliable_score = 0.50
     minimum_score_margin = 0.025
