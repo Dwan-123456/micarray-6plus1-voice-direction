@@ -765,9 +765,6 @@ class Layer6AudioPanel(QGroupBox):
         self.summary = QLabel("等待L4/L5完成后自动运行")
         header.addWidget(self.summary, 1)
         layout.addLayout(header)
-        layout.addWidget(QLabel(
-            "按声纹显示合并音频；首尾静音删除，内部静音最长保留2秒。"
-        ))
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
         self.track_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
