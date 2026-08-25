@@ -178,7 +178,7 @@ def test_l4_sealed_selects_each_track_independently_by_its_1_4khz_scores() -> No
     assert all("cross_track_penalty" not in item.metadata for item in processed)
 
 
-def test_l4_unmerged_mode_keeps_both_anonymous_16khz_candidates_for_preview() -> None:
+def test_l4_unmerged_mode_ranks_both_16khz_candidates_for_preview() -> None:
     backend = _Backend()
     layer5 = _L5()
     pipeline = OfflineLayer4Pipeline(
@@ -194,9 +194,16 @@ def test_l4_unmerged_mode_keeps_both_anonymous_16khz_candidates_for_preview() ->
 
     assert backend.calls == 1
     assert tuple(item.output_kind for item in processed) == ("candidate_0", "candidate_1")
-    assert tuple(item.metadata["candidate_index"] for item in processed) == (0, 1)
+    assert tuple(item.metadata["candidate_index"] for item in processed) == (1, 0)
+    assert tuple(item.metadata["candidate_rank"] for item in processed) == (0, 1)
+    scores = tuple(float(item.metadata["candidate_match_score"]) for item in processed)
+    assert scores[0] > scores[1]
     assert all(item.selected is None for item in processed)
-    assert all(item.metadata["matching_algorithm"] is None for item in processed)
+    assert all(
+        item.metadata["matching_algorithm"]
+        == "l3_bf_1_4khz_complex_coherence_v3"
+        for item in processed
+    )
     assert processed[0].output_sha256 != processed[1].output_sha256
     results = pipeline.process_l5_sealed(processed)
     assert layer5.calls == 2
@@ -211,8 +218,10 @@ def test_l4_unmerged_mode_keeps_both_anonymous_16khz_candidates_for_preview() ->
         assert len({item.track_id for item in snapshots}) == 2
         assert tuple(item.parent_track_id for item in snapshots) == (9, 9)
         assert tuple(item.display_label for item in snapshots) == (
-            "9A · 120.0°", "9B · 120.0°",
+            f"9A · 匹配度 {scores[0]:.3f}",
+            f"9B · 匹配度 {scores[1]:.3f}",
         )
+        assert all("°" not in item.display_label for item in snapshots)
         assert all(
             all(annotation is not None for annotation in item.voice_annotations_20ms)
             for item in snapshots

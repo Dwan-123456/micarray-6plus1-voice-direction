@@ -663,7 +663,7 @@ class Layer4AudioPanel(QGroupBox):
         self.merge_button.setChecked(True)
         self.merge_button.setToolTip(
             "开启：按1–4 kHz匹配度从每组双输出中保留高分音频；"
-            "关闭：不匹配，显示两条匿名候选。"
+            "关闭：按匹配度排序并显示A/B两条候选，A分数更高。"
         )
         self.merge_button.clicked.connect(self._set_merge_from_button)
         header.addWidget(self.summary, 1)

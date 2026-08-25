@@ -66,7 +66,10 @@ class OfflineLayer4UiStore:
                 preview_id = next_preview_id
                 next_preview_id += 1
                 suffix = "A" if item.output_kind == "candidate_0" else "B"
-                display_label = f"{parent_track_id}{suffix} · {item.source.theta_deg:.1f}°"
+                score = float(item.metadata["candidate_match_score"])
+                if not np.isfinite(score) or not 0.0 <= score <= 1.0:
+                    raise ValueError("L4 candidate matching score must be between 0 and 1")
+                display_label = f"{parent_track_id}{suffix} · 匹配度 {score:.3f}"
             path = Path(self._temporary.name) / (
                 f"l4_track_{parent_track_id:06d}_{item.output_kind}.wav"
             )

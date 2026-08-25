@@ -208,7 +208,7 @@ class OfflineLayer4Pipeline:
     def process_l4_unmerged(
         self, source: Layer4LongAudioInput, *, request_id: str | None = None,
     ) -> tuple[Layer4ProcessedAudio, ...]:
-        """Return both anonymous separator outputs without running the matcher."""
+        """Return both separator outputs, ordered by their L3 matching score."""
 
         request_id = request_id or str(uuid4())
         started = perf_counter()
@@ -231,6 +231,15 @@ class OfflineLayer4Pipeline:
         )
         backend = self.backends[request.backend]
         candidates = backend.separate(request_id, reference_16k)
+        scored = self.matcher.select(
+            parent=source,
+            reference_16k=reference_16k,
+            candidates=candidates,
+        )
+        ranked_indices = tuple(sorted(
+            range(len(candidates.sources)),
+            key=lambda index: (-scored.candidate_scores[index], index),
+        ))
         return tuple(
             self._build_processed(
                 source=source,
@@ -238,18 +247,22 @@ class OfflineLayer4Pipeline:
                 speaker_count=count,
                 path="two_speaker_separation",
                 selected=None,
-                output_16k=waveform,
+                output_16k=candidates.sources[candidate_index],
                 model_metadata={
                     "backend": request.backend,
                     "model_id": candidates.model_id,
                     "model_revision": candidates.model_revision,
-                    "candidate_index": index,
+                    "candidate_index": candidate_index,
+                    "candidate_rank": rank,
+                    "candidate_match_score": scored.candidate_scores[candidate_index],
+                    "candidate_scores": scored.candidate_scores,
+                    "matching_algorithm": scored.matching_algorithm,
                     "merge_candidates": False,
                 },
                 started=started,
-                output_kind=("candidate_0", "candidate_1")[index],
+                output_kind=("candidate_0", "candidate_1")[rank],
             )
-            for index, waveform in enumerate(candidates.sources)
+            for rank, candidate_index in enumerate(ranked_indices)
         )
 
     def _build_processed(
@@ -294,7 +307,11 @@ class OfflineLayer4Pipeline:
             metadata={
                 **model_metadata,
                 "resampler": self.resampler.algorithm_version,
-                "matching_algorithm": None if selected is None else selected.matching_algorithm,
+                "matching_algorithm": (
+                    model_metadata.get("matching_algorithm")
+                    if selected is None
+                    else selected.matching_algorithm
+                ),
                 "pcm16_peak_safety_gain": peak_safety_gain,
                 "l4_elapsed_ms": (perf_counter() - started) * 1_000.0,
             },
