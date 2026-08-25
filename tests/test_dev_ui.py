@@ -1068,7 +1068,7 @@ def test_l1_l2_l3_outputs_render_in_test_ui(monkeypatch, tmp_path):
         app.processEvents()
         assert "P 0.90" in window.gate_readout.text()
         assert "Gate OPEN" in window.gate_readout.text()
-        assert "L2 confirmed权威ID" in window.bf_panel.help.text()
+        assert not hasattr(window.bf_panel, "help")
         assert "Directional Audio Preview" in window.bf_panel.title()
     finally:
         window.close()
@@ -1268,6 +1268,10 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert layout.indexOf(window.cnn_panel) == -1
         assert layout.indexOf(window.l6_panel) >= 0
         assert not hasattr(window.l4_panel, "help")
+        assert not hasattr(window.bf_panel, "help")
+        assert len(window.meter_bars) == 8
+        assert all(bar.minimum() == -60 and bar.maximum() == 0 for bar in window.meter_bars)
+        assert all(bar.value() == -60 for bar in window.meter_bars)
         assert window.bf_panel.send.text() == "发送到L4"
         assert not hasattr(window.l4_panel, "send")
         assert set(window.l4_panel.backend_buttons) == {
@@ -1562,7 +1566,7 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         assert "#ffb000" in window.bf_panel._track_rows[3].label.styleSheet().lower()
         assert window.bf_panel._track_rows[2].label.text() == "2 · 20.0°"
         assert "#2ecc71" in window.bf_panel._track_rows[2].label.styleSheet().lower()
-        assert "≥2.0s" in window.bf_panel.help.text()
+        assert not hasattr(window.bf_panel, "help")
 
         window.bf_panel.set_track_playback_progress(3, 0.4)
         assert window.bf_panel._track_rows[3].waveform._playback_progress == pytest.approx(0.4)

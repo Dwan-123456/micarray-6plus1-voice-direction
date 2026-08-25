@@ -494,8 +494,8 @@ def build_window(
                 column = QVBoxLayout()
                 bar = QProgressBar()
                 bar.setOrientation(Qt.Orientation.Vertical)
-                bar.setRange(-90, 0)
-                bar.setValue(-90)
+                bar.setRange(-60, 0)
+                bar.setValue(-60)
                 bar.setTextVisible(False)
                 label = QLabel(f"{name}\n-120.0 dB")
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1773,7 +1773,7 @@ def build_window(
                 self._set_record_buttons(l1.recording_state)
                 for index, (name, label) in enumerate(self.meter_labels):
                     rms = float(l1.rms_dbfs[index])
-                    meter_value = max(-90, round(rms))
+                    meter_value = max(-60, round(rms))
                     if self.meter_bars[index].value() != meter_value:
                         self.meter_bars[index].setValue(meter_value)
                     self._set_text(label, f"{name}\n{rms:.1f} dB")

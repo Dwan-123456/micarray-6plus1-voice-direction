@@ -340,8 +340,6 @@ class BeamformPanel(QGroupBox):
         preview_controls.addWidget(self.send)
         self._equalize_header_control_sizes()
         layout.addLayout(preview_controls)
-        self.help = QLabel("仅按L2权威ID缓存方向音频；Kalman只平滑角度，不控制ID存在。")
-        layout.addWidget(self.help)
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
         self.track_scroll.setHorizontalScrollBarPolicy(
@@ -479,7 +477,7 @@ class BeamformPanel(QGroupBox):
         self.gain_compensation.set_enabled(bool(enabled))
 
     def set_unavailable(self, reason: str) -> None:
-        self.help.setText(reason)
+        self.preview_summary.setText(reason)
 
     def set_tracks(self, tracks) -> None:
         all_tracks = tuple(tracks)
@@ -515,11 +513,6 @@ class BeamformPanel(QGroupBox):
             if item.track_id in {CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID}
             or item.duration_seconds >= self._minimum_listening_track_seconds
         )
-        hidden_count = sum(
-            item.track_id not in {CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID}
-            and item.duration_seconds < self._minimum_listening_track_seconds
-            for item in all_tracks
-        )
         for track in tracks:
             self._track_snapshots[track.track_id] = track
             row = self._track_rows.get(track.track_id)
@@ -545,23 +538,6 @@ class BeamformPanel(QGroupBox):
             row = self._track_rows[track_id]
             self.track_layout.removeWidget(row)
             self.track_layout.insertWidget(index, row)
-        if tracks or self._track_rows:
-            self.help.setText(
-                "前两行为Center Mic RAW与开启期间的Center Mic IMCRA；"
-                "其余仅显示L2 confirmed/coasting权威ID，并按缓存时长从长到短排列。"
-                "权威ID音频：ACTIVE实时追加，"
-                "COASTING等待恢复，ENDED停止追加；"
-                f"仅显示≥{self._minimum_listening_track_seconds:.1f}s音频，"
-                "已显示ID保留至新会话或关闭窗口。"
-            )
-        elif hidden_count:
-            self.help.setText(
-                f"正在缓存 {hidden_count} 个试听ID；累计达到"
-                f"{self._minimum_listening_track_seconds:.1f}s后显示。"
-            )
-        else:
-            self.help.setText("等待L2 confirmed权威ID；UI不会按角度创建、合并或修补ID。")
-
     def _toggle_track(self, track_id: int) -> None:
         if self._playing_track_id == track_id:
             self._playing_track_id = None
