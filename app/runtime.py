@@ -63,6 +63,8 @@ from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoice
 from windowing import WindowAssembler
 
 from .compute_cache import CachePartitionLimits, ComputeCache, ComputeCacheError
+from .realtime_layer456 import IncrementalLayer456Processor
+from .realtime_postprocessing import RealtimePostprocessingService
 from .processing_contracts import (
     JoinedWindowResult,
     L2StageResult,
@@ -363,6 +365,9 @@ class ApplicationRuntime:
             )
         self._layer5 = layer5_engine
         self._dnsmos_scorer: DnsMosScorer | None = None
+        self._layer4_model_lock = threading.RLock()
+        self._layer4_backends: dict[str, object] = {}
+        self._campplus_embedder: CampPlusEmbedder | None = None
         self.track_audio_stream = TrackAudioStreamHub(
             InputGainCompensationSettings(
                 **config.layer5.input_gain_compensation.model_dump()
@@ -374,6 +379,28 @@ class ApplicationRuntime:
                 else 0.0
             ),
         )
+        # Track sealing explicitly rather than inferring it from the Hub's
+        # empty tuple.  An empty tuple is also the Hub's reset/default state,
+        # and must never be mistaken for a successfully sealed empty run.
+        self._offline_l4_sealed = False
+        self.realtime_postprocessing = RealtimePostprocessingService(
+            self._build_realtime_postprocessor,
+            queue_chunks=config.layer4.streaming.queue_chunks,
+            enabled=(
+                config.layer4.enabled
+                and config.layer4.streaming.enabled
+                and config.layer6.enabled
+            ),
+        )
+        self.latest_realtime_postprocessing = self.realtime_postprocessing.latest
+        self._realtime_chunk_signal = threading.Event()
+        self._realtime_chunk_stop = threading.Event()
+        self._realtime_chunk_flush_requested = threading.Event()
+        self._realtime_chunk_flush_done = threading.Event()
+        self._realtime_chunk_thread: threading.Thread | None = None
+        self._realtime_chunk_failure: str | None = None
+        self._realtime_chunk_flush_allowed_keys: set[tuple[str, int, int]] | None = None
+        self._realtime_mode_submission_lock = threading.RLock()
         self.last_error: str | None = None
         self.processing_error: str | None = None
         self.scratch_error: str | None = None
@@ -395,6 +422,7 @@ class ApplicationRuntime:
             maxlen=_CONFIRMED_BACKFILL_HISTORY_WINDOWS
         )
         self._confirmed_backfill_ids: set[tuple[str, int, int]] = set()
+        self._confirmed_backfill_ready_ids: set[tuple[str, int, int]] = set()
         self._stage_errors: dict[str, str | None] = {
             "l2": None, "l3": None, "l5": None, "commit": None,
         }
@@ -906,10 +934,13 @@ class ApplicationRuntime:
 
     @property
     def active(self) -> bool:
+        chunk_worker = self._realtime_chunk_thread
         return (
             self._thread is not None
             or any(thread.is_alive() for thread in self._processing_threads.values())
             or self._recording_session_started
+            or bool(getattr(self.realtime_postprocessing, "active", False))
+            or (chunk_worker is not None and chunk_worker.is_alive())
         )
 
     @property
@@ -1090,6 +1121,7 @@ class ApplicationRuntime:
         snapshots = self._compute_cache.snapshots()
         joiner = self._result_joiner.snapshot()
         l5_diagnostics = self._l5_diagnostic_snapshot()
+        realtime = self.realtime_postprocessing.status
         return {
             "devices": {
                 "l1": "cpu",
@@ -1108,7 +1140,11 @@ class ApplicationRuntime:
                 "completion": self._completion_results.maxsize,
             },
             "stage_alive": {
-                name: thread.is_alive() for name, thread in self._processing_threads.items()
+                **{
+                    name: thread.is_alive()
+                    for name, thread in self._processing_threads.items()
+                },
+                "layer456_stream": self.realtime_postprocessing.active,
             },
             "cache_bytes": sum(item.current_bytes for item in snapshots.values()),
             "cache_max_bytes": self.config.runtime.compute_cache_max_bytes,
@@ -1126,6 +1162,7 @@ class ApplicationRuntime:
             "error_counts": dict(self._stage_error_counts),
             "latest_errors": {
                 **self._stage_errors,
+                "layer456_stream": realtime.error,
                 "recording": self.recording_result_error,
                 "ui": self.dev_ui_error,
             },
@@ -1146,6 +1183,7 @@ class ApplicationRuntime:
             "l5_dropped": l5_diagnostics["dropped"],
             "l5_skipped": l5_diagnostics["skipped"],
             "l5_actual_hz": l5_diagnostics["actual_hz"],
+            "layer456_stream": asdict(realtime),
             "l5_ui_mailbox_depth": self.latest_l5_dev_ui.qsize(),
             "l5_ui_mailbox_capacity": self.latest_l5_dev_ui.maxsize,
             "l5_ui_mailbox_overwrites": l5_diagnostics["ui_mailbox_overwrites"],
@@ -1326,8 +1364,16 @@ class ApplicationRuntime:
     def set_l3_processing_mode(self, mode: str) -> str:
         if type(mode) is not str or mode not in L3_PROCESSING_MODES:
             raise ValueError(f"unsupported L3 processing mode: {mode!r}")
-        with self._l3_mode_lock:
+        with self._realtime_mode_submission_lock, self._l3_mode_lock:
             if self._l3_processing_mode != mode:
+                if (
+                    self.running
+                    and self.realtime_postprocessing.status.submitted_blocks > 0
+                ):
+                    raise RuntimeError(
+                        "cannot switch L3 mode after realtime L4-L6 streaming "
+                        "has accepted its first chunk"
+                    )
                 self._l3_processing_mode = mode
                 self._l3_config_revision = getattr(self, "_l3_config_revision", 0) + 1
         return mode
@@ -1715,7 +1761,10 @@ class ApplicationRuntime:
                 return
             if self._thread is not None or any(
                 thread.is_alive() for thread in self._processing_threads.values()
-            ):
+            ) or (
+                self._realtime_chunk_thread is not None
+                and self._realtime_chunk_thread.is_alive()
+            ) or self.realtime_postprocessing.active:
                 raise RuntimeError("采集仍在停止中，请稍后重试")
             self.last_error = None
             self.processing_error = None
@@ -1751,9 +1800,11 @@ class ApplicationRuntime:
             self._layer3.clear_cache()
             self._layer3_backfill.clear_cache()
             self.track_audio_stream.reset()
+            self._offline_l4_sealed = False
             with self._confirmed_backfill_lock:
                 self._confirmed_backfill_history.clear()
                 self._confirmed_backfill_ids.clear()
+                self._confirmed_backfill_ready_ids.clear()
             self._l3_cache_snapshot = None
             self._reset_processing_graph()
             self._stage_errors = {"l2": None, "l3": None, "l5": None, "commit": None}
@@ -1841,6 +1892,11 @@ class ApplicationRuntime:
         pipeline_start_attempted = False
         started_threads: list[threading.Thread] = []
         try:
+            # The L4/L5/L6 sidecar owns its model lifecycle independently of
+            # the 20 ms graph. It loads lazily only after the first complete
+            # configured audio chunk reaches the worker.
+            self.realtime_postprocessing.start()
+            self._start_realtime_chunk_producer()
             if not self._ephemeral_live_capture:
                 self.recording_store.start_session(self.coordinator.session_id, metadata)
                 self._recording_session_started = True
@@ -1909,6 +1965,8 @@ class ApplicationRuntime:
                 except Exception:
                     pass
             self._wake_processing_workers()
+            self._stop_realtime_chunk_producer(timeout=2.0)
+            self.realtime_postprocessing.abort(timeout=2.0)
             for worker in reversed(started_threads):
                 if worker is not threading.current_thread():
                     worker.join(timeout=2.0)
@@ -2204,6 +2262,8 @@ class ApplicationRuntime:
                 )
                 self._confirmed_backfill_ids.add(key)
             if not windows:
+                with self._confirmed_backfill_lock:
+                    self._confirmed_backfill_ready_ids.add(key)
                 continue
             work = _ConfirmedBackfillWork(
                 track,
@@ -2211,15 +2271,16 @@ class ApplicationRuntime:
                 processing_mode,
                 max(1, min(3, int(l2_direction_count))),
             )
-            while not self._processing_abort.is_set():
-                try:
-                    self._confirmed_backfill_work.put(work, timeout=0.05)
-                    break
-                except queue.Full:
-                    worker = self._processing_threads.get("backfill")
-                    if worker is not None and worker.ident is not None and not worker.is_alive():
-                        self._processing_abort.set()
-                        break
+            try:
+                self._confirmed_backfill_work.put_nowait(work)
+            except queue.Full:
+                self.dev_audio_tracking_error = (
+                    "confirmed L3 backfill queue full; continuing without history "
+                    f"for {key[0]}:epoch{key[1]}:track{key[2]}"
+                )
+                with self._confirmed_backfill_lock:
+                    self._confirmed_backfill_ready_ids.add(key)
+                self._signal_realtime_postprocessing_chunks()
 
     def _run(self) -> None:
         try:
@@ -2444,15 +2505,38 @@ class ApplicationRuntime:
                     break
                 if not isinstance(item, _ConfirmedBackfillWork):
                     continue
+                key = (
+                    str(getattr(item.track, "session_id")),
+                    int(getattr(item.track, "stream_epoch")),
+                    int(getattr(item.track, "track_id")),
+                )
+                failure: BaseException | None = None
                 try:
                     self._process_confirmed_backfill(item)
                 except Exception as exc:
                     # Historical recovery is additive. A failure must remain
                     # visible, but cannot invalidate realtime L1-L3 or stop a
-                    # later ID from attempting its own recovery.
-                    self.dev_audio_tracking_error = f"confirmed L3 backfill: {exc}"
+                    # later ID from attempting its own recovery.  Releasing
+                    # the ready gate lets the Hub represent missing history as
+                    # explicit zero-filled hops instead of blocking this ID
+                    # from realtime L4-L6 forever.
+                    failure = exc
                 finally:
-                    self._layer3_backfill.clear_cache()
+                    with self._confirmed_backfill_lock:
+                        self._confirmed_backfill_ready_ids.add(key)
+                    try:
+                        self._layer3_backfill.clear_cache()
+                    except Exception as exc:
+                        failure = exc if failure is None else RuntimeError(
+                            f"{failure}; backfill cache cleanup: {exc}"
+                        )
+                    if failure is not None:
+                        self.dev_audio_tracking_error = (
+                            "confirmed L3 backfill degraded for "
+                            f"{key[0]}:epoch{key[1]}:track{key[2]}: {failure}; "
+                            "realtime L4-L6 continues with zero-filled history gaps"
+                        )
+                    self._signal_realtime_postprocessing_chunks()
         finally:
             try:
                 self._layer3_backfill.clear_cache()
@@ -2512,6 +2596,8 @@ class ApplicationRuntime:
                 self._context_probabilities_20ms(window),
                 item.processing_mode,
             ))
+        if self._processing_abort.is_set():
+            raise RuntimeError("confirmed L3 backfill was aborted before completion")
         missing = self.track_audio_stream.missing_backfill_windows(
             tuple(audio_windows)
         )
@@ -2524,6 +2610,190 @@ class ApplicationRuntime:
                 authoritative_track=track,
                 processing_mode=missing[0].processing_mode,
             )
+
+    def _signal_realtime_postprocessing_chunks(self) -> None:
+        """Wake the chunk owner without doing audio work on an L3 thread."""
+
+        if self.realtime_postprocessing.enabled:
+            self._realtime_chunk_signal.set()
+
+    def _start_realtime_chunk_producer(self) -> None:
+        if not self.realtime_postprocessing.enabled:
+            return
+        worker = self._realtime_chunk_thread
+        if worker is not None and worker.is_alive():
+            raise RuntimeError("realtime L4-L6 chunk producer is still active")
+        self._realtime_chunk_stop.clear()
+        self._realtime_chunk_flush_requested.clear()
+        self._realtime_chunk_flush_done.clear()
+        self._realtime_chunk_signal.clear()
+        self._realtime_chunk_failure = None
+        self._realtime_chunk_flush_allowed_keys = None
+        worker = threading.Thread(
+            target=self._run_realtime_chunk_producer,
+            name="application-runtime-layer456-chunks",
+            daemon=True,
+        )
+        self._realtime_chunk_thread = worker
+        worker.start()
+
+    def _stop_realtime_chunk_producer(self, *, timeout: float) -> bool:
+        worker = self._realtime_chunk_thread
+        if worker is None:
+            return True
+        self._realtime_chunk_stop.set()
+        self._realtime_chunk_signal.set()
+        if worker is not threading.current_thread():
+            worker.join(timeout=max(0.0, float(timeout)))
+        stopped = not worker.is_alive()
+        if stopped:
+            self._realtime_chunk_thread = None
+        return stopped
+
+    def _run_realtime_chunk_producer(self) -> None:
+        """Materialize at most one bounded admission round per wakeup."""
+
+        retry_after_capacity_block = False
+        try:
+            while not self._realtime_chunk_stop.is_set():
+                flushing = self._realtime_chunk_flush_requested.is_set()
+                triggered = self._realtime_chunk_signal.wait(
+                    timeout=(
+                        0.05
+                        if flushing or retry_after_capacity_block
+                        else None
+                    )
+                )
+                self._realtime_chunk_signal.clear()
+                if self._realtime_chunk_stop.is_set():
+                    break
+                if (
+                    not triggered
+                    and not flushing
+                    and not retry_after_capacity_block
+                ):
+                    continue
+
+                slots = self.realtime_postprocessing.available_slots
+                status = self.realtime_postprocessing.status
+                if slots <= 0:
+                    if flushing and (
+                        status.error is not None
+                        or not self.realtime_postprocessing.active
+                    ):
+                        self._realtime_chunk_flush_done.set()
+                    retry_after_capacity_block = (
+                        status.error is None
+                        and self.realtime_postprocessing.active
+                    )
+                    continue
+                was_capacity_retry = retry_after_capacity_block
+                retry_after_capacity_block = False
+                accepted = self._offer_realtime_postprocessing_chunks(
+                    flush=flushing,
+                    max_chunks=slots,
+                    allowed_track_keys=(
+                        self._realtime_chunk_flush_allowed_keys
+                        if flushing
+                        else None
+                    ),
+                )
+                # Capacity can become full while one or more already-complete
+                # Hub chunks are still pending.  Once a wakeup encountered a
+                # full queue, keep a bounded 50 ms capacity poll alive until a
+                # claim round finds no work; otherwise the final L3 signal can
+                # be consumed while full and that chunk would wait until stop.
+                if not flushing and self.realtime_postprocessing.active:
+                    retry_after_capacity_block = (
+                        accepted == slots
+                        or (was_capacity_retry and accepted > 0)
+                    )
+                if flushing and accepted == 0:
+                    self._realtime_chunk_flush_done.set()
+        except Exception as exc:
+            self._realtime_chunk_failure = str(exc)
+            self.dev_ui_error = f"realtime L4-L6 chunk producer: {exc}"
+            self._realtime_chunk_flush_done.set()
+
+    def _flush_realtime_chunk_producer(
+        self,
+        *,
+        timeout: float,
+        allowed_track_keys: set[tuple[str, int, int]] | None = None,
+    ) -> bool:
+        if not self.realtime_postprocessing.enabled:
+            return True
+        worker = self._realtime_chunk_thread
+        if worker is None or not worker.is_alive():
+            return (
+                not self.realtime_postprocessing.active
+                and self._realtime_chunk_failure is None
+            )
+        self._realtime_chunk_flush_done.clear()
+        self._realtime_chunk_flush_allowed_keys = (
+            None if allowed_track_keys is None else set(allowed_track_keys)
+        )
+        self._realtime_chunk_flush_requested.set()
+        self._realtime_chunk_signal.set()
+        completed = self._realtime_chunk_flush_done.wait(max(0.0, float(timeout)))
+        return completed and self._realtime_chunk_failure is None
+
+    def _offer_realtime_postprocessing_chunks(
+        self,
+        *,
+        flush: bool = False,
+        max_chunks: int | None = None,
+        allowed_track_keys: set[tuple[str, int, int]] | None = None,
+    ) -> int:
+        """Claim a bounded batch and commit cursors only after admission."""
+
+        if not self.realtime_postprocessing.enabled:
+            return 0
+        if max_chunks is None:
+            max_chunks = self.realtime_postprocessing.available_slots
+        if max_chunks <= 0:
+            return 0
+        with self._confirmed_backfill_lock:
+            ready = set(self._confirmed_backfill_ready_ids)
+        if allowed_track_keys is not None:
+            ready.intersection_update(allowed_track_keys)
+        chunk_samples = self.config.layer4.streaming.chunk_seconds * 48_000
+        with self._realtime_mode_submission_lock:
+            chunks = self.track_audio_stream.claim_streaming_chunks(
+                chunk_samples=chunk_samples,
+                ready_track_keys=ready,
+                flush=flush,
+                max_chunks=max_chunks,
+            )
+            accepted = 0
+            for index, source in enumerate(chunks):
+                try:
+                    is_tail = flush and len(source.waveform) < chunk_samples
+                    admitted = self.realtime_postprocessing.submit(
+                        source,
+                        is_final_chunk=is_tail,
+                    )
+                except BaseException:
+                    self.track_audio_stream.resolve_streaming_chunk(
+                        source, accepted=False,
+                    )
+                    for waiting in chunks[index + 1:]:
+                        self.track_audio_stream.resolve_streaming_chunk(
+                            waiting, accepted=False,
+                        )
+                    raise
+                self.track_audio_stream.resolve_streaming_chunk(
+                    source, accepted=admitted,
+                )
+                if admitted:
+                    accepted += 1
+                    continue
+                for waiting in chunks[index + 1:]:
+                    self.track_audio_stream.resolve_streaming_chunk(
+                        waiting, accepted=False,
+                    )
+                break
+        return accepted
 
     def _complete_l3_work(
         self,
@@ -2597,6 +2867,7 @@ class ApplicationRuntime:
                     self.dev_audio_tracking_error = None
                 except Exception as exc:
                     self.dev_audio_tracking_error = str(exc)
+            self._signal_realtime_postprocessing_chunks()
             stage = L3StageResult.completed(
                 item.work_item.key,
                 output,
@@ -3758,9 +4029,11 @@ class ApplicationRuntime:
             with self._layer2_state_lock:
                 self._layer2.reset()
             self.track_audio_stream.reset()
+            self._offline_l4_sealed = False
             with self._confirmed_backfill_lock:
                 self._confirmed_backfill_history.clear()
                 self._confirmed_backfill_ids.clear()
+                self._confirmed_backfill_ready_ids.clear()
             while True:
                 try:
                     self._confirmed_backfill_work.get_nowait()
@@ -3921,9 +4194,52 @@ class ApplicationRuntime:
                     }
                 except Exception as exc:
                     self.dev_audio_tracking_error = f"Test UI audio finalize failed: {exc}"
-            self.track_audio_stream.seal(
-                allowed_track_keys=allowed_l4_track_keys,
+            sidecar_safe_for_seal = True
+            canonical_withheld_error = (
+                "realtime L4-L6 worker is still active; "
+                "canonical offline sealing was withheld"
             )
+            try:
+                sidecar_timeout = float(
+                    self.config.runtime.graceful_shutdown_timeout_seconds
+                )
+                flushed = self._flush_realtime_chunk_producer(
+                    timeout=sidecar_timeout,
+                    allowed_track_keys=allowed_l4_track_keys,
+                )
+                producer_stopped = self._stop_realtime_chunk_producer(
+                    timeout=sidecar_timeout,
+                )
+                if not flushed or not producer_stopped:
+                    self.realtime_postprocessing.abort(timeout=sidecar_timeout)
+                    raise RuntimeError(
+                        "realtime L4-L6 chunk flush did not finish within "
+                        f"{sidecar_timeout:.1f} seconds"
+                    )
+                if not self.realtime_postprocessing.finish(timeout=sidecar_timeout):
+                    raise RuntimeError(
+                        "realtime L4-L6 model drain did not finish within "
+                        f"{sidecar_timeout:.1f} seconds"
+                    )
+                realtime_status = self.realtime_postprocessing.status
+                if realtime_status.error is not None:
+                    raise RuntimeError(realtime_status.error)
+            except Exception as exc:
+                self.dev_ui_error = f"realtime L4-L6 finalize: {exc}"
+                producer = self._realtime_chunk_thread
+                sidecar_safe_for_seal = (
+                    not self.realtime_postprocessing.active
+                    and (producer is None or not producer.is_alive())
+                )
+                if not sidecar_safe_for_seal:
+                    self.last_error = canonical_withheld_error
+            if sidecar_safe_for_seal:
+                self.track_audio_stream.seal(
+                    allowed_track_keys=allowed_l4_track_keys,
+                )
+                self._offline_l4_sealed = True
+                if self.last_error == canonical_withheld_error:
+                    self.last_error = None
             if self._ephemeral_live_capture:
                 self._ephemeral_recording_active = False
                 self._downstream_processing_enabled.clear()
@@ -3988,6 +4304,17 @@ class ApplicationRuntime:
         # be inside a CPU/CUDA kernel. Pausing the source in the UI prevents
         # new capture, and pipeline.stop wakes the input thread immediately.
         clear_waiting_queues()
+        sidecar_timeout = float(
+            self.config.runtime.graceful_shutdown_timeout_seconds
+        )
+        if not self._stop_realtime_chunk_producer(timeout=sidecar_timeout):
+            self.last_error = "replay discard did not stop realtime chunk producer"
+            raise RuntimeError(self.last_error)
+        if not self.realtime_postprocessing.abort(
+            timeout=sidecar_timeout
+        ):
+            self.last_error = "replay discard did not stop realtime L4-L6 worker"
+            raise RuntimeError(self.last_error)
         try:
             self.pipeline.stop()
         except Exception as exc:
@@ -4029,9 +4356,11 @@ class ApplicationRuntime:
         self._layer3.clear_cache()
         self._layer3_backfill.clear_cache()
         self.track_audio_stream.reset()
+        self._offline_l4_sealed = False
         with self._confirmed_backfill_lock:
             self._confirmed_backfill_history.clear()
             self._confirmed_backfill_ids.clear()
+            self._confirmed_backfill_ready_ids.clear()
         if self.dev_audio_tracker is not None:
             self.dev_audio_tracker.reset()
         if self._recording_session_started:
@@ -4049,9 +4378,25 @@ class ApplicationRuntime:
     def offline_l4_sources(self):
         """Sealed Hub output; populated only after a fully drained stop."""
 
-        if self.running or any(thread.is_alive() for thread in self._processing_threads.values()):
+        chunk_worker = self._realtime_chunk_thread
+        if (
+            self.running
+            or any(thread.is_alive() for thread in self._processing_threads.values())
+            or self.realtime_postprocessing.active
+            or (chunk_worker is not None and chunk_worker.is_alive())
+        ):
             raise RuntimeError("offline L4 requires capture stop and complete processing drain")
+        if not self._offline_l4_sealed:
+            raise RuntimeError(
+                "offline L4 is not sealed; stop finalization must be retried"
+            )
         return self.track_audio_stream.sealed_tracks
+
+    @property
+    def offline_l4_sealed(self) -> bool:
+        """Whether the current run has completed authoritative Hub sealing."""
+
+        return self._offline_l4_sealed
 
     def run_offline_l4(self, pipeline):
         """Run a configured offline L4/L5 pipeline on the sealed Hub package."""
@@ -4063,6 +4408,27 @@ class ApplicationRuntime:
         if not callable(process_sealed):
             raise TypeError("offline Layer4 pipeline must provide process_sealed")
         return process_sealed(sources)
+
+    def _build_realtime_postprocessor(self) -> IncrementalLayer456Processor:
+        """Lazily load resident models for the configured progressive sidecar."""
+
+        if self.l3_device == self.l4_device == "cuda":
+            raise RuntimeError(
+                "realtime L4 requires L3 and L4 on separate devices; "
+                "keep DS L3 on CPU when MF2 uses CUDA"
+            )
+        selected = self.config.layer4.default_backend
+        backend = self._get_layer4_backend(selected)
+        streaming = self.config.layer4.streaming
+        return IncrementalLayer456Processor(
+            backend=backend,
+            layer5=self._layer5,
+            quality_scorer=self._get_dnsmos_scorer(),
+            embedder=self._get_campplus_embedder(),
+            layer6_config=self.config.layer6,
+            chunk_samples_48k=streaming.chunk_seconds * 48_000,
+            overlap_samples_48k=streaming.overlap_seconds * 48_000,
+        )
 
     def build_offline_l4_pipeline(self, backend_id: str | None = None) -> OfflineLayer4Pipeline:
         """Create the configured two-step L3→L4→L5 pipeline for UI/batch callers."""
@@ -4086,14 +4452,7 @@ class ApplicationRuntime:
             self._layer3.clear_cache()
             self._l3_cache_snapshot = None
             torch.cuda.empty_cache()
-        artifact = Path(artifacts[selected])
-        if not artifact.is_absolute():
-            artifact = self.project_root / artifact
-        backend = (
-            MossFormer2Backend(artifact, device=self.l4_device)
-            if selected == "mossformer2_ss_16k"
-            else TigerBackend(artifact, device=self.l4_device)
-        )
+        backend = self._get_layer4_backend(selected)
         return OfflineLayer4Pipeline(
             speaker_counter=DirectionCountSpeakerClassifier(),
             backends={selected: backend},
@@ -4101,6 +4460,41 @@ class ApplicationRuntime:
             quality_scorer=self._get_dnsmos_scorer(),
             default_backend=selected,
         )
+
+    def _get_layer4_backend(self, selected: str) -> object:
+        """Keep one stateless separator resident across preview and canonical jobs."""
+
+        artifacts = {
+            "mossformer2_ss_16k": self.config.layer4.mossformer2_artifact,
+            "tiger_speech_16k": self.config.layer4.tiger_artifact,
+        }
+        if selected not in artifacts:
+            raise ValueError(f"unsupported offline Layer4 backend: {selected}")
+        with self._layer4_model_lock:
+            cached = self._layer4_backends.get(selected)
+            if cached is not None:
+                return cached
+            artifact = Path(artifacts[selected])
+            if not artifact.is_absolute():
+                artifact = self.project_root / artifact
+            backend = (
+                MossFormer2Backend(artifact, device=self.l4_device)
+                if selected == "mossformer2_ss_16k"
+                else TigerBackend(artifact, device=self.l4_device)
+            )
+            self._layer4_backends[selected] = backend
+            return backend
+
+    def _get_campplus_embedder(self) -> CampPlusEmbedder:
+        """Reuse the CPU speaker encoder after progressive finalization."""
+
+        with self._layer4_model_lock:
+            if self._campplus_embedder is None:
+                campplus = Path(self.config.layer6.campplus_artifact)
+                if not campplus.is_absolute():
+                    campplus = self.project_root / campplus
+                self._campplus_embedder = CampPlusEmbedder(campplus)
+            return self._campplus_embedder
 
     def _get_dnsmos_scorer(self) -> DnsMosScorer:
         if self._dnsmos_scorer is None:
@@ -4115,11 +4509,8 @@ class ApplicationRuntime:
 
         if not self.config.layer6.enabled:
             raise RuntimeError("Layer6 is disabled in project config")
-        campplus = Path(self.config.layer6.campplus_artifact)
-        if not campplus.is_absolute():
-            campplus = self.project_root / campplus
         return OfflineLayer6Pipeline(
-            CampPlusEmbedder(campplus), self.config.layer6,
+            self._get_campplus_embedder(), self.config.layer6,
         )
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:
@@ -4131,6 +4522,13 @@ class ApplicationRuntime:
         if any(thread.is_alive() for thread in self._processing_threads.values()):
             raise RuntimeError(
                 "cannot close RecordingStore while processing workers are still alive"
+            )
+        chunk_worker = self._realtime_chunk_thread
+        if self.realtime_postprocessing.active or (
+            chunk_worker is not None and chunk_worker.is_alive()
+        ):
+            raise RuntimeError(
+                "cannot close runtime while realtime L4-L6 workers are still alive"
             )
         close_error: BaseException | None = None
         # A light command can lazily open CDC before capture starts.  In that
@@ -4175,9 +4573,11 @@ class ApplicationRuntime:
             self._layer3.clear_cache()
             self._layer3_backfill.clear_cache()
             self.track_audio_stream.reset()
+            self._offline_l4_sealed = False
             with self._confirmed_backfill_lock:
                 self._confirmed_backfill_history.clear()
                 self._confirmed_backfill_ids.clear()
+                self._confirmed_backfill_ready_ids.clear()
         if self.dev_audio_tracker is not None:
             try:
                 self.dev_audio_tracker.close(delete_files=delete_dev_test_ui_audio)

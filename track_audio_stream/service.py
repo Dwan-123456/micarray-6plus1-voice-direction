@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass, field, replace
 import hashlib
@@ -54,6 +55,16 @@ class _L2TrackTimeline:
     direction_counts: dict[int, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class _StreamingChunkPlan:
+    key: tuple[str, int, int]
+    start_sample: int
+    end_sample: int
+    theta_deg: float
+    hops: tuple[_ArchivedHop, ...]
+    direction_counts: dict[int, int]
+
+
 def _combined_diagnostic(
     settings: InputGainCompensationSettings,
     segments: tuple[SegmentGainDiagnostic, ...],
@@ -95,6 +106,10 @@ class TrackAudioStreamHub:
         self._archive_modes: dict[tuple[str, int, int], str] = {}
         self._l2_timelines: dict[tuple[str, int, int], _L2TrackTimeline] = {}
         self._emitted_ends: dict[tuple[str, int, int], int] = {}
+        self._streaming_cursors: dict[tuple[str, int, int], int] = {}
+        self._streaming_claims: dict[
+            tuple[str, int, int], tuple[int, int, str]
+        ] = {}
         self._sealed: tuple[Layer4LongAudioInput, ...] = ()
         self._lock = threading.RLock()
 
@@ -105,6 +120,8 @@ class TrackAudioStreamHub:
             self._archive_modes.clear()
             self._l2_timelines.clear()
             self._emitted_ends.clear()
+            self._streaming_cursors.clear()
+            self._streaming_claims.clear()
             self._sealed = ()
 
     def observe_l2(
@@ -140,6 +157,12 @@ class TrackAudioStreamHub:
                 key = (session_id, stream_epoch, track_id)
                 timeline = self._l2_timelines.get(key)
                 if timeline is None or timeline.processing_mode != processing_mode:
+                    # A mode change starts a new audio experiment under the
+                    # same authoritative ID.  Any incremental consumer cursor
+                    # belongs to the discarded old-mode archive and must not
+                    # hide the beginning of the replacement stream.
+                    self._streaming_cursors.pop(key, None)
+                    self._streaming_claims.pop(key, None)
                     timeline = _L2TrackTimeline(
                         processing_mode, start_sample, end_sample, theta_deg,
                         track_state in {"confirmed", "coasting"},
@@ -317,6 +340,8 @@ class TrackAudioStreamHub:
                     self._archive.pop(key, None)
                     self._archive_modes.pop(key, None)
                     self._emitted_ends.pop(key, None)
+                    self._streaming_cursors.pop(key, None)
+                    self._streaming_claims.pop(key, None)
                 previous = state.last_source_decision
                 if previous is not None and window.decision_sample <= previous:
                     raise ValueError("track-audio windows must be strictly ordered per ID")
@@ -525,6 +550,274 @@ class TrackAudioStreamHub:
                 self._archive_modes[key] = mode
             return tuple(emitted)
 
+    @staticmethod
+    def _build_streaming_chunk(
+        plan: _StreamingChunkPlan,
+    ) -> Layer4LongAudioInput:
+        """Materialize one immutable interval using the final seal gap rules."""
+
+        key = plan.key
+        start_sample = plan.start_sample
+        end_sample = plan.end_sample
+
+        if (
+            start_sample < 0
+            or end_sample <= start_sample
+            or start_sample % _HOP_SAMPLES
+            or (end_sample - start_sample) % _HOP_SAMPLES
+        ):
+            raise ValueError("streaming L4 chunk must align to complete 20 ms hops")
+
+        archived_by_start: dict[int, _ArchivedHop] = {}
+        for hop in plan.hops:
+            if hop.start_sample >= end_sample:
+                break
+            if (
+                hop.end_sample - hop.start_sample != _HOP_SAMPLES
+                or hop.start_sample % _HOP_SAMPLES
+            ):
+                raise ValueError("archived L3 track hops must align to 20 ms")
+            if hop.start_sample in archived_by_start:
+                raise ValueError("archived L3 track hops must not overlap")
+            archived_by_start[hop.start_sample] = hop
+
+        audio: list[np.ndarray] = []
+        direction_counts: list[tuple[int, int]] = []
+        for slot_start in range(start_sample, end_sample, _HOP_SAMPLES):
+            slot_end = slot_start + _HOP_SAMPLES
+            hop = archived_by_start.get(slot_start)
+            if hop is None:
+                audio.append(np.zeros(_HOP_SAMPLES, dtype=np.float32))
+                direction_count = plan.direction_counts.get(slot_end, 0)
+            else:
+                audio.append(hop.waveform)
+                direction_count = plan.direction_counts.get(
+                    slot_end, hop.l2_direction_count,
+                )
+            direction_counts.append((slot_end, direction_count))
+
+        waveform = np.ascontiguousarray(np.concatenate(audio), dtype=np.float32)
+        digest = hashlib.sha256(waveform.tobytes()).hexdigest()
+        session_id, stream_epoch, track_id = key
+        return Layer4LongAudioInput(
+            asset_id=(
+                f"{session_id}:epoch{stream_epoch}:track{track_id}:"
+                f"start{start_sample}"
+            ),
+            sha256=digest,
+            session_id=session_id,
+            stream_epoch=stream_epoch,
+            track_id=track_id,
+            theta_deg=plan.theta_deg,
+            start_sample=start_sample,
+            sample_rate=48_000,
+            waveform=waveform,
+            l2_direction_counts=tuple(direction_counts),
+        )
+
+    def claim_streaming_chunks(
+        self,
+        *,
+        chunk_samples: int,
+        ready_track_keys: set[tuple[str, int, int]] | None = None,
+        flush: bool = False,
+        max_chunks: int = 1,
+    ) -> tuple[Layer4LongAudioInput, ...]:
+        """Claim bounded L4-ready chunks without advancing committed cursors.
+
+        Normal calls stop at the Hub's processed-audio watermark, so a missing
+        realtime L3 result is not converted to silence while it may still
+        arrive.  ``flush=True`` advances through the authoritative L2 end and
+        emits a final shorter interval when it still contains complete 20 ms
+        hops.  Callers may withhold a newly confirmed ID through
+        ``ready_track_keys`` until its asynchronous historical backfill has
+        completed; no cursor is created for a withheld ID.  A claimed chunk
+        remains outstanding until :meth:`resolve_streaming_chunk` accepts or
+        releases it, so downstream admission failure cannot lose its interval.
+        """
+
+        if (
+            type(chunk_samples) is not int
+            or chunk_samples <= 0
+            or chunk_samples % _HOP_SAMPLES
+        ):
+            raise ValueError("streaming chunk_samples must be a positive 20 ms multiple")
+        if type(flush) is not bool:
+            raise ValueError("streaming flush must be bool")
+        if type(max_chunks) is not int or max_chunks <= 0:
+            raise ValueError("streaming max_chunks must be a positive integer")
+        ready = None if ready_track_keys is None else frozenset(ready_track_keys)
+        if ready is not None and any(
+            not isinstance(key, tuple)
+            or len(key) != 3
+            or not isinstance(key[0], str)
+            or not key[0]
+            or type(key[1]) is not int
+            or key[1] < 0
+            or type(key[2]) is not int
+            or key[2] <= 0
+            for key in ready
+        ):
+            raise ValueError("ready_track_keys must contain valid exact track identities")
+
+        plans: list[_StreamingChunkPlan] = []
+        with self._lock:
+            for key, timeline in sorted(self._l2_timelines.items()):
+                if len(plans) >= max_chunks:
+                    break
+                if not timeline.ever_formal or (ready is not None and key not in ready):
+                    continue
+                if key in self._streaming_claims:
+                    continue
+                hops = self._archive.get(key)
+                if not hops:
+                    continue
+                if self._archive_modes.get(key) != timeline.processing_mode:
+                    self._streaming_cursors.pop(key, None)
+                    self._streaming_claims.pop(key, None)
+                    continue
+                if (
+                    timeline.first_start_sample < 0
+                    or timeline.first_start_sample % _HOP_SAMPLES
+                    or (timeline.end_sample - timeline.first_start_sample) % _HOP_SAMPLES
+                ):
+                    raise ValueError("authoritative L2 track timeline must align to 20 ms")
+
+                cursor = self._streaming_cursors.get(
+                    key, timeline.first_start_sample,
+                )
+                if cursor < timeline.first_start_sample:
+                    cursor = timeline.first_start_sample
+                if (
+                    cursor > timeline.end_sample
+                    or (cursor - timeline.first_start_sample) % _HOP_SAMPLES
+                ):
+                    raise ValueError("streaming L4 cursor is outside its authoritative timeline")
+
+                processed_end = self._emitted_ends.get(
+                    key, timeline.first_start_sample,
+                )
+                available_end = (
+                    timeline.end_sample
+                    if flush
+                    else min(timeline.end_sample, processed_end)
+                )
+                if available_end <= cursor:
+                    continue
+
+                if available_end - cursor >= chunk_samples:
+                    chunk_end = cursor + chunk_samples
+                elif flush and available_end > cursor:
+                    chunk_end = available_end
+                else:
+                    continue
+                first_index = bisect_left(
+                    hops, cursor, key=lambda item: item.start_sample,
+                )
+                last_index = bisect_left(
+                    hops, chunk_end, key=lambda item: item.start_sample,
+                )
+                direction_counts = {
+                    sample: timeline.direction_counts[sample]
+                    for sample in range(
+                        cursor + _HOP_SAMPLES,
+                        chunk_end + 1,
+                        _HOP_SAMPLES,
+                    )
+                    if sample in timeline.direction_counts
+                }
+                plans.append(_StreamingChunkPlan(
+                    key,
+                    cursor,
+                    chunk_end,
+                    timeline.theta_deg,
+                    tuple(hops[first_index:last_index]),
+                    direction_counts,
+                ))
+                # Empty digest reserves this exact interval while expensive
+                # concatenation, validation and SHA run outside the Hub lock.
+                self._streaming_claims[key] = (cursor, chunk_end, "")
+
+        outputs: list[Layer4LongAudioInput] = []
+        try:
+            for plan in plans:
+                source = self._build_streaming_chunk(plan)
+                with self._lock:
+                    reservation = (
+                        source.start_sample,
+                        source.end_sample,
+                        "",
+                    )
+                    if self._streaming_claims.get(plan.key) != reservation:
+                        raise RuntimeError(
+                            "streaming L4 claim changed while materializing"
+                        )
+                    self._streaming_claims[plan.key] = (
+                        source.start_sample,
+                        source.end_sample,
+                        source.sha256,
+                    )
+                outputs.append(source)
+        except BaseException:
+            with self._lock:
+                for plan in plans:
+                    claim = self._streaming_claims.get(plan.key)
+                    if claim is not None and claim[:2] == (
+                        plan.start_sample,
+                        plan.end_sample,
+                    ):
+                        self._streaming_claims.pop(plan.key, None)
+            raise
+        return tuple(outputs)
+
+    def resolve_streaming_chunk(
+        self,
+        source: Layer4LongAudioInput,
+        *,
+        accepted: bool,
+    ) -> None:
+        """Commit one admitted claim or release it for an exact retry."""
+
+        if not isinstance(source, Layer4LongAudioInput):
+            raise TypeError("streaming claim resolution requires Layer4LongAudioInput")
+        if type(accepted) is not bool:
+            raise ValueError("streaming claim accepted state must be bool")
+        key = (source.session_id, source.stream_epoch, source.track_id)
+        claim = (source.start_sample, source.end_sample, source.sha256)
+        with self._lock:
+            if self._streaming_claims.get(key) != claim:
+                raise ValueError("streaming chunk is not the outstanding claim for its ID")
+            if accepted:
+                cursor = self._streaming_cursors.get(key, source.start_sample)
+                if cursor != source.start_sample:
+                    raise ValueError("accepted streaming chunk does not start at its cursor")
+                self._streaming_cursors[key] = source.end_sample
+            self._streaming_claims.pop(key, None)
+
+    def take_streaming_chunks(
+        self,
+        *,
+        chunk_samples: int,
+        ready_track_keys: set[tuple[str, int, int]] | None = None,
+        flush: bool = False,
+    ) -> tuple[Layer4LongAudioInput, ...]:
+        """Compatibility helper that claims and immediately accepts all chunks."""
+
+        outputs: list[Layer4LongAudioInput] = []
+        while True:
+            claimed = self.claim_streaming_chunks(
+                chunk_samples=chunk_samples,
+                ready_track_keys=ready_track_keys,
+                flush=flush,
+                max_chunks=64,
+            )
+            if not claimed:
+                break
+            for source in claimed:
+                self.resolve_streaming_chunk(source, accepted=True)
+            outputs.extend(claimed)
+        return tuple(outputs)
+
     def finalize_missing_hops(self) -> tuple[TrackAudioHop, ...]:
         """Emit exact-duration silent tail slots through each L2-authoritative end."""
 
@@ -648,6 +941,8 @@ class TrackAudioStreamHub:
                 self._archive_modes.pop(key, None)
                 self._l2_timelines.pop(key, None)
                 self._emitted_ends.pop(key, None)
+                self._streaming_cursors.pop(key, None)
+                self._streaming_claims.pop(key, None)
                 self._tracks.pop(key, None)
             self._sealed = tuple(outputs)
             return self._sealed

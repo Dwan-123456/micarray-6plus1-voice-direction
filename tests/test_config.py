@@ -83,11 +83,17 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer1_speaker_count.input_level_target_dbfs == -20.0
     assert config.layer1_speaker_count.input_level_floor_dbfs == -70.0
     assert config.layer1_speaker_count.maximum_input_gain_db == 30.0
+    assert config.layer4.enabled is True
+    assert config.layer4.default_backend == "mossformer2_ss_16k"
+    assert config.layer4.streaming.enabled is True
+    assert config.layer4.streaming.chunk_seconds == 10
+    assert config.layer4.streaming.overlap_seconds == 1
+    assert config.layer4.streaming.queue_chunks == 2
     assert config.layer1_speaker_count.model_sha256 == "f655f168bbd9091efd18b950e63484825ba68052a911331cab1e845e27e505e4"
     assert config.recording.runtime.record_imcra is True
     assert config.recording.runtime.record_noise_spectrum is True
     gain = config.layer5.input_gain_compensation
-    assert gain.enabled is True
+    assert gain.enabled is False
     assert gain.algorithm_version == "imcra_probability_rms_v1"
     assert gain.target_rms_dbfs == -23.0
     assert gain.no_compensation_probability == 0.30

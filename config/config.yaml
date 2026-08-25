@@ -218,9 +218,15 @@ layer3:
 layer4:
   enabled: true
   default_backend: mossformer2_ss_16k
-  # Local, hash-verified TorchScript exports. Offline L4 never downloads models.
+  # Local, hash-verified model artifacts. Runtime and final reconciliation never download models.
   mossformer2_artifact: models/mossformer2_ss_16k_v1
   tiger_artifact: models/tiger_speech_16k_v1
+  streaming:
+    enabled: true
+    # Tunable benchmark variable. Compare 3/5/8/10/15 s; 10 s is the baseline.
+    chunk_seconds: 10
+    overlap_seconds: 1
+    queue_chunks: 2
 
 feature:
   preprocessing_version: voice_logmag_v1
@@ -243,7 +249,7 @@ layer5:
   voice_probability_limit: 0.70
   continuous_context_ms: 3200
   input_gain_compensation:
-    enabled: true
+    enabled: false
     algorithm_version: imcra_probability_rms_v1
     target_rms_dbfs: -23.0
     no_compensation_probability: 0.30
@@ -285,15 +291,15 @@ runtime:
   # Legacy serial-queue field retained for old launch profiles.
   processing_queue_windows: 1
   # Change this single value to resize all L2/L3/L5 latest-wins waiting queues.
-  # 2000 windows represent about 40 s at 50 windows/s.
-  stage_queue_windows: 2000
+  # 100 windows represent 2 s at 50 windows/s, bounding latency and RAM.
+  stage_queue_windows: 100
   # If l3_device is explicitly changed to cuda, coalesce only an existing
   # backlog and never wait for a future window.
   l3_cuda_microbatch_windows: 4
   l3_cuda_batch_wait_ms: 0.0
   completion_queue_windows: 8
   # Per-stage queue overrides and max_inflight_windows are omitted deliberately;
-  # Runtime derives 2000/2000/2000 and 3*2000+3=6003 automatically.
+  # Runtime derives 100/100/100 and 3*100+3=303 automatically.
   compute_cache_max_bytes: 67108864
   overflow_policy: drop_oldest
   graceful_shutdown_timeout_seconds: 10.0

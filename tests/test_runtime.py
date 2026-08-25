@@ -137,19 +137,26 @@ class StubSerial:
 
 def test_offline_l4_builder_uses_its_independent_device(tmp_path, monkeypatch):
     captured = {}
+    backend_builds = []
     quality_scorer = SimpleNamespace(score=lambda _waveform: (4.0, 4.0, 4.0))
     quality_artifacts = []
+    campplus_builds = []
 
     def build_backend(artifact, *, device):
         captured.update(artifact=artifact, device=device)
-        return SimpleNamespace(backend_id="mossformer2_ss_16k")
+        value = SimpleNamespace(backend_id="mossformer2_ss_16k")
+        backend_builds.append(value)
+        return value
 
     monkeypatch.setattr("app.runtime.MossFormer2Backend", build_backend)
     monkeypatch.setattr(
         "app.runtime.DnsMosScorer",
         lambda artifact: quality_artifacts.append(artifact) or quality_scorer,
     )
-    monkeypatch.setattr("app.runtime.CampPlusEmbedder", lambda _artifact: object())
+    monkeypatch.setattr(
+        "app.runtime.CampPlusEmbedder",
+        lambda _artifact: campplus_builds.append(object()) or campplus_builds[-1],
+    )
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
@@ -160,8 +167,17 @@ def test_offline_l4_builder_uses_its_independent_device(tmp_path, monkeypatch):
     assert captured["device"] == runtime.l4_device
     assert pipeline.backends["mossformer2_ss_16k"].backend_id == "mossformer2_ss_16k"
     assert pipeline.quality_scorer is quality_scorer
-    assert runtime.build_offline_l4_pipeline().quality_scorer is quality_scorer
-    assert runtime.build_offline_l6_pipeline().config is runtime.config.layer6
+    second_pipeline = runtime.build_offline_l4_pipeline()
+    first_l6 = runtime.build_offline_l6_pipeline()
+    second_l6 = runtime.build_offline_l6_pipeline()
+    assert second_pipeline.quality_scorer is quality_scorer
+    assert second_pipeline.backends["mossformer2_ss_16k"] is pipeline.backends[
+        "mossformer2_ss_16k"
+    ]
+    assert first_l6.config is runtime.config.layer6
+    assert second_l6.embedder is first_l6.embedder
+    assert len(backend_builds) == 1
+    assert len(campplus_builds) == 1
     assert len(quality_artifacts) == 1
     runtime.close()
 
@@ -399,9 +415,9 @@ def test_runtime_l1_pre_denoise_switch_is_live_and_strict(tmp_path):
         pipeline=StubPipeline([]), serial_device=StubSerial(),
     )
     assert runtime.l1_pre_denoise_enabled is False
-    assert runtime.set_l1_pre_denoise_enabled(True) is True
-    assert runtime.l1_pre_denoise_enabled is True
     assert runtime.set_l1_pre_denoise_enabled(False) is False
+    assert runtime.l1_pre_denoise_enabled is False
+    assert runtime.set_l1_pre_denoise_enabled(True) is True
     with pytest.raises(ValueError, match="must be bool"):
         runtime.set_l1_pre_denoise_enabled(1)
 
@@ -785,6 +801,8 @@ def _runtime_with_layer3(layer3):
     runtime = ApplicationRuntime.__new__(ApplicationRuntime)
     runtime._layer3 = layer3
     runtime._geometry = object()
+    runtime._thread = None
+    runtime._realtime_mode_submission_lock = threading.RLock()
     runtime._l3_mode_lock = threading.Lock()
     runtime._l3_processing_mode = L3_MODE_OPTIMIZED
     return runtime

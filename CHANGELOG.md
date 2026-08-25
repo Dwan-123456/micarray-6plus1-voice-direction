@@ -21,6 +21,20 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-25 — L1～L6可调分块伪实时链与MF2性能收口
+
+- **版本/标签与默认工作流**：项目保持`1.3.5`开发线和`codex/develop-v1.3.5`，不创建或移动发布标签。实验profile固定恢复为L1预降噪关、CountNet人数估计关、L2 MUSIC、方向ID开、IMCRA白化开、DPD关、L3 DS、Hub响度补偿关、L4 MossFormer2；Test UI不再用旧本地设置静默覆盖这些默认值。
+- **Runtime与Hub伪实时旁路**：正式20 ms审计链和`DecisionRecord`仍止于`L3 -> L5(SKIPPED: offline_after_l4)`；新增独立chunk producer、Hub claim/resolve事务和有界L4-L6 worker。L3/backfill只发轻量唤醒，Hub锁内仅冻结区间与hop引用，大块拼接、补洞、校验和SHA移到锁外；下游未接纳不推进cursor。backfill失败显式降级并以零填历史继续，不能永久关闭该ID。停机、overflow和模型异常不伪造final；未完成安全封存时`offline_l4_sources`明确拒绝，GUI等待sidecar退出并重试封存。
+- **Layer 4渐进处理**：块长默认10秒、允许3～15秒任意整数，1秒输入/输出重叠用于MF2匿名分支换序和交叉淡化；奇数秒合法。单声源旁路，双声源MF2；1→2声源可回放有限历史，超限标记degraded。稳定branch ID与累计A/B排名分离；错开开始/结束的轨道按自身L5水位生成结果，不再被最早结束ID截短。
+- **Layer 5/6渐进处理**：MarbleNet保留1.6秒双侧上下文并延迟右端稳定帧，停止时冲刷尾部；只读NumPy输入在转Torch前安全复制，不再触发未定义行为警告。DNSMOS每30秒采固定9.02秒窗口，preview结束只补一个固定尾窗，完整整轨精算保留给canonical。CAMPPlus的2秒证据可跨3/5/15秒块，会话内缓存全部已算embedding并避免4096段LRU抖动；L6仅在首次、拓扑变化、固定周期或final更新。
+- **性能与资源**：MF2独占CUDA，DS/L1～L3、L5、DNSMOS、CAMPPlus和L6使用CPU；DNSMOS ORT限制为单线程，模型在首块累计期间后台预载，MF2/CAMPPlus实例在渐进与canonical间复用。L2/L3/L5阶段队列由2000窗收紧为100窗（约2秒），L4-L6队列由4块收紧为2块；latest mailbox保持1。新增分项计时、队列/lag/drop、CPU/RSS/CUDA及canonical指标基准工具，临时数据根不写正式`data/`。
+- **Development Test UI**：采集中显示latest L4/L5/L6 revision和稳定水位，preview尾部状态明确标为“伪实时尾部冲刷”。停止时只有Hub真实seal后才建立canonical边界；完整L4/L5/L6成功后原子替换，失败保留preview并允许人工重试。实时启用时后端锁定YAML默认MF2，采集中禁止改变会破坏分块一致性的L3模式。
+- **PASS实模验收**：使用32.68秒`Pass-开始静音`录音分别以3/5/8/10/15秒块在独立进程回放，五档均为3条封存源、零input/L1-L3/L4-L6 drop、最终preview水位32.66秒。首preview约`8.53/11.04/14.85/17.02/23.36秒`，stop约`4.09/4.99/4.92/5.92/6.95秒`，MF2请求数`21/14/9/7/5`；10秒默认档渐进总墙钟38.71秒、MF2等L4累计8.87秒、DNSMOS 2.84秒、渐进CUDA峰值分配/保留约1.64/2.39 GB、RSS峰值约3.07 GB。其完整canonical另耗32.56秒，输出6条L4/L5候选并归并为2人，完整链CUDA峰值分配/保留约3.81/5.05 GB。基准不包含Qt刷新、Test UI试听WAV写入或真实麦克风回调，不能替代长时间实机验收。
+- **验证**：项目全量自动回归`642 passed, 1 warning`；唯一警告为既有CountNet `torch.jit.load`弃用提示。修改文件Ruff、Python编译和`git diff --check`通过。专项覆盖3～15秒配置、奇数块声纹余量、错开轨水位、claim/ack重试、锁外物化、backfill降级、queue overflow/容量恢复/finish timeout、逐轨preview完整覆盖、preview/canonical one-shot与模型复用。
+- **录音、数据与资产**：正式录音事务、Catalog、数据schema、Production UI、L1校准、L2 MUSIC/IMM-JPDA数学、L3 DS算法及模型权重均无变化；不提交`data/`、运行录音、缓存或临时基准结果。模型、音频fixture和Git LFS对象无新增或修改。
+
+---
+
 ## 2026-08-25 — 从v1.3.3建立1.3.5主开发线
 
 - **版本/分支边界**：从不可变正式标签`v1.3.3`建立`codex/develop-v1.3.5`，项目包版本更新为`1.3.5`；不创建或移动发布标签。

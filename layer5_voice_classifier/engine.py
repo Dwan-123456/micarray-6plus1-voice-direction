@@ -172,7 +172,12 @@ class NvidiaMarbleNetPlugin:
         input_adapter: str,
     ) -> FrameModelPrediction:
         started = perf_counter()
-        audio = torch.from_numpy(audio_16k).unsqueeze(0).to(self.device)
+        tensor_input = (
+            audio_16k
+            if audio_16k.flags.writeable
+            else np.array(audio_16k, dtype=np.float32, copy=True)
+        )
+        audio = torch.from_numpy(tensor_input).unsqueeze(0).to(self.device)
         with torch.inference_mode():
             logits, lengths = self.model(audio)
             frame_probabilities = logits.softmax(dim=-1)[0, :, 1]

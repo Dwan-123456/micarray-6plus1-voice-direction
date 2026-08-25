@@ -87,7 +87,17 @@ class DnsMosScorer:
 
         self.artifact = Path(artifact)
         self.manifest, weights = _verified_file(self.artifact, "audio_quality_artifact_v1")
-        self.session = ort.InferenceSession(str(weights), providers=["CPUExecutionProvider"])
+        options = ort.SessionOptions()
+        # DNSMOS is sidecar work that must not let ORT's default thread pool
+        # contend with the CPU-resident L1-L3 realtime graph.
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        self.session = ort.InferenceSession(
+            str(weights),
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
         self.input_name = self.session.get_inputs()[0].name
 
     def score(self, waveform_16k: np.ndarray) -> tuple[float, float, float]:

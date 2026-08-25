@@ -1,4 +1,5 @@
 from pathlib import Path
+import warnings
 
 import numpy as np
 import pytest
@@ -241,7 +242,11 @@ def test_nvidia_long_audio_adapter_returns_exactly_one_probability_per_20ms() ->
     plugin.manifest = {"architecture_id": "spy", "source_model": "NVIDIA frame VAD"}
     plugin.device = torch.device("cpu")
     plugin.model = _FrameSpyModel()
-    prediction = plugin.predict_16k_20ms(np.zeros(5 * 320, dtype=np.float32))
+    waveform = np.zeros(5 * 320, dtype=np.float32)
+    waveform.flags.writeable = False
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        prediction = plugin.predict_16k_20ms(waveform)
 
     assert observed["shape"] == (1, 5 * 320)
     assert len(prediction.probabilities_20ms) == 5

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import wave
+from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -983,7 +984,54 @@ def test_gain_compensation_control_is_in_l3_header_and_uses_state_colors(
         assert control.isChecked()
         assert "#16794b" in control.styleSheet()
         assert window._runtime.l5_input_gain_compensation_enabled is True
-        assert DevUiSettings(tmp_path).load_l5_input_gain_compensation_enabled(False) is True
+        # Workflow-profile switches are scoped to this window. A stale local
+        # setting must not silently replace the next run's project default.
+        assert DevUiSettings(tmp_path).load_l5_input_gain_compensation_enabled(False) is False
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_workflow_profile_ignores_stale_settings_and_switches_are_run_scoped(
+    monkeypatch, tmp_path,
+):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    config_path = tmp_path / "config" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    settings = DevUiSettings(tmp_path)
+    settings.save_l1_pre_denoise_enabled(True)
+    settings.save_l5_input_gain_compensation_enabled(True)
+    settings.save_music_dpd_rank1_enabled(True)
+    settings.save_music_noise_whitening_enabled(False)
+    settings.save_direction_id_tracking_enabled(False)
+    settings.save_layer4_backend("tiger_speech_16k")
+    before = settings.path.read_bytes()
+
+    app, window = build_window(config_path)
+    try:
+        assert window._runtime.l1_pre_denoise_enabled is False
+        assert window._runtime.l5_input_gain_compensation_enabled is False
+        assert window._runtime.music_dpd_rank1_enabled is False
+        assert window._runtime.music_noise_whitening_enabled is True
+        assert window._runtime.direction_id_tracking_enabled is True
+        assert window.l4_panel.backend_id == "mossformer2_ss_16k"
+
+        for control in (
+            window.pre_denoise_switch,
+            window.bf_panel.gain_compensation,
+            window.music_dpd_rank1,
+            window.music_noise_whitening,
+            window.srp_id_tracking,
+        ):
+            control.click()
+            control.click()
+        app.processEvents()
+
+        assert settings.path.read_bytes() == before
     finally:
         window.close()
         app.processEvents()
@@ -1273,11 +1321,18 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert len(window.meter_bars) == 8
         assert all(bar.minimum() == -60 and bar.maximum() == 0 for bar in window.meter_bars)
         assert all(bar.value() == -60 for bar in window.meter_bars)
+        assert not window.pre_denoise_switch.isChecked()
+        assert window._runtime.l1_pre_denoise_enabled is False
         assert not hasattr(window.bf_panel, "send")
         assert not hasattr(window.l4_panel, "send")
         assert set(window.l4_panel.backend_buttons) == {
             "mossformer2_ss_16k", "tiger_speech_16k",
         }
+        assert window.l4_panel.backend_buttons["mossformer2_ss_16k"].isEnabled()
+        assert not window.l4_panel.backend_buttons["tiger_speech_16k"].isEnabled()
+        assert "切换模型需修改config并重启" in (
+            window.l4_panel.backend_buttons["tiger_speech_16k"].toolTip()
+        )
         assert (
             window.bf_panel.track_scroll.horizontalScrollBarPolicy()
             == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1293,7 +1348,7 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         )
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 自动离线 | "
+            "上一秒性能 | L2 N/A | L3 N/A | L4-6 10s伪实时 | "
             "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%    "
             "总处理时长 | L2 N/A | L3 N/A | L4 N/A | L5 N/A | L6 N/A"
         )
@@ -1472,6 +1527,7 @@ def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkey
     try:
         window._l4_store = FakeStore()
         window._l6_store = FakeL6Store()
+        window._runtime._offline_l4_sealed = True
         monkeypatch.setattr(
             window._runtime,
             "build_offline_l4_pipeline",
@@ -1485,13 +1541,13 @@ def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkey
         monkeypatch.setattr(window, "_submit_command", submit_immediately)
         window._start_automatic_l4()
         one_run = [
-            "l4-clear", "l6-clear", "l4-process", "l5-process", "l4-write",
-            "l5-write", "l6-clear", "l6-process", "l6-write",
+            "l4-process", "l5-process", "l4-clear", "l4-write",
+            "l5-write", "l6-process", "l6-clear", "l6-write",
         ]
         assert events == one_run
         assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0, "l6": 3.0}
         assert "L4 2.50 s | L5 4.00 s | L6 3.00 s" in window.performance_bar.text()
-        assert window.l4_panel.summary.text() == "完成：0条未合并候选"
+        assert window.l4_panel.summary.text() == "最终MossFormer2：0条L4/L5候选"
         assert window.l6_panel.summary.text() == "L6完成：0个声纹"
 
         window._start_automatic_l4()
@@ -1504,9 +1560,240 @@ def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkey
         assert merge_modes == [False, False, False]
         assert submissions == ["自动运行L4/L5", "自动运行L6"] * 3
         assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0, "l6": 6.0}
-        assert "未合并候选" in window.l4_panel.summary.text()
-        assert window.l4_panel.summary.text() == "完成：0条未合并候选"
+        assert window.l4_panel.summary.text() == "最终MossFormer2：0条L4/L5候选"
     finally:
+        window.close()
+        app.processEvents()
+
+
+def test_window_consumes_latest_realtime_l4_l5_preview_without_starting_offline_job(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from types import SimpleNamespace
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    try:
+        monkeypatch.setattr(window._l4_store, "set_processed", lambda _values: None)
+        monkeypatch.setattr(window._l4_store, "apply_l5", lambda _values: None)
+        monkeypatch.setattr(window._l4_store, "snapshots", lambda: ())
+        source = SimpleNamespace(
+            theta_deg=20.0, end_sample=9 * 48_000, start_sample=0,
+        )
+        processed = SimpleNamespace(output_kind="merged")
+        l5 = SimpleNamespace(
+            source=source,
+            l5_probability=0.9,
+            l5_model_id="fake-l5",
+            metadata={"l5_threshold": 0.7},
+        )
+        window._runtime.latest_realtime_postprocessing.put_nowait(SimpleNamespace(
+            session_id=window._runtime.coordinator.session_id,
+            revision=1,
+            is_final=False,
+            valid_through_sample_48k=9 * 48_000,
+            l4_processed=(processed,),
+            l5_results=(l5,),
+            l6_result=None,
+            stage_durations_seconds=(("l4", 0.5), ("l5", 0.1), ("l6", 0.0)),
+        ))
+
+        window._poll_realtime_postprocessing()
+
+        assert window._last_realtime_postprocessing_revision == 1
+        assert "伪实时MossFormer2 rev 1" in window.l4_panel.summary.text()
+        assert window._l4_processed == (processed,)
+        assert window._l5_results == (l5,)
+        assert window._pending_command is None
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_empty_sealed_canonical_clears_preview_and_rejects_late_snapshot(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    clears = []
+    try:
+        monkeypatch.setattr(
+            type(window._runtime),
+            "offline_l4_sources",
+            property(lambda _self: ()),
+        )
+        monkeypatch.setattr(window._l4_store, "clear", lambda: clears.append("l4"))
+        monkeypatch.setattr(window._l6_store, "clear", lambda: clears.append("l6"))
+        window._l4_processed = (object(),)
+        window._l5_results = (object(),)
+        window._l6_result = object()
+        window._runtime.latest_realtime_postprocessing.put_nowait(object())
+
+        assert window._start_automatic_l4_if_ready()
+
+        assert window._canonical_reconcile_guard
+        assert window._offline_l4_auto_submitted
+        assert window._l4_processed == window._l5_results == ()
+        assert window._l6_result is None
+        assert clears == ["l4", "l6"]
+        assert "无合格L3长音频" in window.l4_panel.summary.text()
+        assert window._runtime.latest_realtime_postprocessing.empty()
+
+        window._runtime.latest_realtime_postprocessing.put_nowait(
+            SimpleNamespace(revision=99)
+        )
+        window._poll_realtime_postprocessing()
+        assert window._last_realtime_postprocessing_revision == 0
+        assert window._l4_processed == ()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_failed_canonical_keeps_preview_and_backend_click_retries(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    submitted = []
+    retries = []
+    preview = object()
+    try:
+        window._l4_processed = (preview,)
+        window._offline_stage_durations_seconds = {
+            "l4": 0.5, "l5": 0.1, "l6": 0.2,
+        }
+        window._canonical_reconcile_guard = True
+        window._canonical_auto_attempted = True
+        window._offline_l4_auto_submitted = True
+        monkeypatch.setattr(
+            window,
+            "_submit_command",
+            lambda name, command, on_success=None: submitted.append(
+                (name, command, on_success)
+            ),
+        )
+
+        window._start_automatic_l4()
+
+        assert window._l4_processed == (preview,)
+        assert window._offline_stage_durations_seconds == {
+            "l4": 0.5, "l5": 0.1, "l6": 0.2,
+        }
+        assert len(submitted) == 1
+        assert "伪实时试听保留" in window.l4_panel.summary.text()
+
+        failed = Future()
+        failed.set_exception(RuntimeError("canonical failed"))
+        window._pending_command = ("自动运行L4/L5", failed, None)
+        window._poll_command()
+        assert window._l4_processed == (preview,)
+        assert window._offline_stage_durations_seconds == {
+            "l4": 0.5, "l5": 0.1, "l6": 0.2,
+        }
+        assert not window._offline_l4_auto_submitted
+        assert "保留伪实时预览" in window.l4_panel.summary.text()
+
+        monkeypatch.setattr(
+            type(window._runtime),
+            "offline_l4_sources",
+            property(lambda _self: (object(),)),
+        )
+        assert not window._start_automatic_l4_if_ready()
+
+        monkeypatch.setattr(
+            window,
+            "_start_automatic_l4_if_ready",
+            lambda *, manual_retry=False: retries.append(
+                (window.l4_panel.backend_id, manual_retry)
+            ) or True,
+        )
+        window.l4_panel.backend_buttons["mossformer2_ss_16k"].click()
+        app.processEvents()
+        assert retries == [("mossformer2_ss_16k", True)]
+    finally:
+        window._pending_command = None
+        window.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    (
+        (
+            "  streaming:\n    enabled: true",
+            "  streaming:\n    enabled: false",
+        ),
+        ("layer6:\n  enabled: true", "layer6:\n  enabled: false"),
+    ),
+)
+def test_performance_bar_reports_realtime_off_when_streaming_or_l6_is_disabled(
+    monkeypatch, tmp_path, old, new,
+):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    config_path = tmp_path / "config" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        CONFIG.read_text(encoding="utf-8").replace(old, new),
+        encoding="utf-8",
+    )
+    app, window = build_window(config_path)
+    try:
+        assert "L4-6 OFF" in window.performance_bar.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_l4_backend_is_current_run_only_when_realtime_streaming_is_off(
+    monkeypatch, tmp_path,
+):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    config_path = tmp_path / "config" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        CONFIG.read_text(encoding="utf-8").replace(
+            "  streaming:\n    enabled: true",
+            "  streaming:\n    enabled: false",
+        ),
+        encoding="utf-8",
+    )
+    settings = DevUiSettings(tmp_path)
+    settings.save_layer4_backend("mossformer2_ss_16k")
+    app, window = build_window(config_path)
+    commands = []
+    try:
+        window.l4_panel.backend_buttons["tiger_speech_16k"].click()
+        app.processEvents()
+        assert window.l4_panel.backend_id == "tiger_speech_16k"
+        assert settings.load_layer4_backend() == "mossformer2_ss_16k"
+
+        monkeypatch.setattr(
+            window,
+            "_submit_command",
+            lambda name, command, on_success=None: commands.append(name),
+        )
+        window._start_capture()
+        assert commands == ["启动采集"]
+        assert window._runtime.config.layer4.default_backend == "mossformer2_ss_16k"
+
+        pending = Future()
+        window._pending_command = ("启动采集", pending, None)
+        window._update_control_states()
+        assert all(
+            not button.isEnabled()
+            for button in window.l4_panel.backend_buttons.values()
+        )
+    finally:
+        window._pending_command = None
         window.close()
         app.processEvents()
 
@@ -1540,24 +1827,102 @@ def test_stopped_sealed_l3_automatically_submits_l4_once_per_batch(monkeypatch):
         app.processEvents()
 
 
-def test_stop_command_is_not_reported_complete_while_runtime_remains_active(monkeypatch):
+def test_stop_command_waits_for_sidecar_then_retries_seal_before_stopped(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    sidecar_alive = True
+    finalize_calls = []
+    try:
+        window._last_runtime_state = "running"
+        window._runtime._realtime_chunk_thread = SimpleNamespace(
+            is_alive=lambda: sidecar_alive
+        )
+        completed = Future()
+        completed.set_result(None)
+        window._pending_command = ("停止采集", completed, None)
+
+        window._poll_command()
+
+        assert window._pending_command is not None
+        assert "L4-L6后台仍在收尾" in window.statusBar().currentMessage()
+        assert "STOPPED | capture closed" not in window.l1_header.text()
+        window._refresh()
+        assert window.global_status.text().startswith("FINALIZING")
+
+        sidecar_alive = False
+
+        def finish_seal():
+            finalize_calls.append("seal")
+            window._runtime._offline_l4_sealed = True
+
+        monkeypatch.setattr(window._runtime, "stop", finish_seal)
+        window._poll_command()
+        assert window._pending_command is not None
+        assert "最终音频封存" in window.statusBar().currentMessage()
+
+        deadline = time.monotonic() + 1.0
+        while (
+            window._pending_command is not None
+            and not window._pending_command[1].done()
+            and time.monotonic() < deadline
+        ):
+            app.processEvents()
+            time.sleep(0.01)
+        window._poll_command()
+
+        assert finalize_calls == ["seal"]
+        assert window._pending_command is None
+        assert window._last_runtime_state == "stopped"
+        assert "STOPPED | capture closed" in window.l1_header.text()
+        assert window._canonical_auto_attempted
+    finally:
+        window._runtime._realtime_chunk_thread = None
+        window._pending_command = None
+        window.close()
+        app.processEvents()
+
+
+def test_unsealed_idle_runtime_preserves_preview_and_waits_for_final_seal(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    preview = object()
+    try:
+        window._l4_processed = (preview,)
+        window._runtime._offline_l4_sealed = False
+
+        assert not window._start_automatic_l4_if_ready()
+
+        assert window._l4_processed == (preview,)
+        assert not window._canonical_reconcile_guard
+        assert not window._canonical_auto_attempted
+        assert "等待最终音频封存" in window.l4_panel.summary.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_stop_command_exception_is_still_reported(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from gui.dev_test_ui.app import build_window
 
     app, window = build_window(CONFIG)
     try:
-        window._runtime._recording_session_started = True
-        window._submit_command("停止采集", lambda: None)
-        deadline = time.monotonic() + 1.0
-        while window._pending_command is not None and time.monotonic() < deadline:
-            window._poll_command()
-            app.processEvents()
+        failed = Future()
+        failed.set_exception(RuntimeError("stop failed"))
+        window._pending_command = ("停止采集", failed, None)
+        window._poll_command()
+
+        assert window._pending_command is None
         assert "停止采集失败" in window.statusBar().currentMessage()
-        assert window.stop_button.isEnabled()
-        assert "STOPPED | capture closed" not in window.l1_header.text()
-        window._runtime._recording_session_started = False
     finally:
+        window._pending_command = None
         window.close()
         app.processEvents()
 

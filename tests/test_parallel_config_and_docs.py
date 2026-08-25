@@ -12,25 +12,32 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_parallel_runtime_limits_are_loaded_from_the_single_config():
-    runtime = load_config(PROJECT_ROOT / "config" / "config.yaml").runtime
+    config = load_config(PROJECT_ROOT / "config" / "config.yaml")
+    runtime = config.runtime
 
-    assert runtime.stage_queue_windows == 2_000
+    assert runtime.stage_queue_windows == 100
     assert (runtime.l2_queue_windows, runtime.l3_queue_windows, runtime.l5_queue_windows) == (
-        2_000,
-        2_000,
-        2_000,
+        100,
+        100,
+        100,
     )
     assert runtime.completion_queue_windows == 8
-    assert runtime.max_inflight_windows == 6_003
+    assert runtime.max_inflight_windows == 303
     assert runtime.compute_cache_max_bytes == 64 * 1024 * 1024
     assert runtime.overflow_policy == "drop_oldest"
     assert runtime.graceful_shutdown_timeout_seconds == 10.0
+    assert config.layer4.streaming.model_dump() == {
+        "enabled": True,
+        "chunk_seconds": 10,
+        "overlap_seconds": 1,
+        "queue_chunks": 2,
+    }
 
 
-def test_two_thousand_window_defaults_are_covered_by_joiner_capacity():
+def test_hundred_window_defaults_are_covered_by_joiner_capacity():
     runtime = load_config(PROJECT_ROOT / "config" / "config.yaml").runtime
 
-    assert RuntimeConfig.model_fields["stage_queue_windows"].default == 2_000
+    assert RuntimeConfig.model_fields["stage_queue_windows"].default == 100
     assert RuntimeConfig.model_fields["l2_queue_windows"].default is None
     assert RuntimeConfig.model_fields["l3_queue_windows"].default is None
     assert RuntimeConfig.model_fields["l5_queue_windows"].default is None
@@ -44,7 +51,7 @@ def test_two_thousand_window_defaults_are_covered_by_joiner_capacity():
 
     with pytest.raises(ValidationError, match="must cover all staged queues"):
         RuntimeConfig.model_validate(
-            {**runtime.model_dump(), "max_inflight_windows": 6_002}
+            {**runtime.model_dump(), "max_inflight_windows": 302}
         )
 
 
@@ -63,3 +70,36 @@ def test_shared_stage_queue_variable_resizes_all_stages_and_joiner_capacity():
         runtime.l5_queue_windows,
         runtime.max_inflight_windows,
     ) == (250, 250, 250, 753)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"chunk_seconds": 2},
+        {"chunk_seconds": 16},
+        {"chunk_seconds": 10, "overlap_seconds": 10},
+        {"queue_chunks": 0},
+        {"queue_chunks": 65},
+    ),
+)
+def test_layer4_streaming_limits_are_strict_and_overlap_advances(updates):
+    streaming = load_config(
+        PROJECT_ROOT / "config" / "config.yaml"
+    ).layer4.streaming
+
+    with pytest.raises(ValidationError):
+        streaming.__class__.model_validate({**streaming.model_dump(), **updates})
+
+
+@pytest.mark.parametrize("chunk_seconds", (3, 5, 8, 10, 15))
+def test_layer4_streaming_chunk_is_tunable_across_the_benchmark_range(chunk_seconds):
+    streaming = load_config(
+        PROJECT_ROOT / "config" / "config.yaml"
+    ).layer4.streaming
+
+    value = streaming.__class__.model_validate({
+        **streaming.model_dump(),
+        "chunk_seconds": chunk_seconds,
+    })
+
+    assert value.chunk_seconds == chunk_seconds

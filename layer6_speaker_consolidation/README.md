@@ -1,13 +1,16 @@
 # L6 speaker consolidation
 
-L6 is an automatic offline stage that runs after every successful Test UI L4/L5
-batch and replaces the previous batch's displayed result. Repeating L4 for the
-same sealed test case therefore also reruns L5 and L6. It consumes unmerged L4
+L6 has a throttled provisional preview in the `1.3.5` development runtime and an
+authoritative offline stage after a sealed Test UI L4/L5 batch. The preview runs
+on first evidence, topology changes, or a 30-second watermark interval; unchanged
+two-second CAMPPlus evidence is cached. The sealed batch replaces the preview. It consumes unmerged L4
 A/B tracks plus any single-speaker bypass track that is the source's only A track.
 It concatenates each selected track's L5 Voice
-frames, divides that speech into fixed two-second segments, and extracts one
-CAMPPlus embedding per segment. A final residual is retained only when it has at
-least 500 ms of speech. Same-length segments are inferred in batches.
+frames, divides that continuous speech into fixed two-second segments, and extracts one
+CAMPPlus embedding per segment. Upstream chunks may be any integer 3..15 seconds:
+two-second segmentation crosses those boundaries, so a residual is retained and
+joined with future evidence; the final residual is used when it has at least 500 ms.
+Same-length segments are inferred in batches.
 
 For every L4 source, candidate A is always selected for segmented CAMPPlus
 embedding. Candidate B is embedded only when all three gates
@@ -47,5 +50,6 @@ shorter pauses remain unchanged. The displayed 16 kHz Speaker A/B/C waveform is
 therefore silence-compressed and is not required to remain equal to the original
 recording duration. Its source recording bounds remain attached for audit.
 
-The Test UI displays one row per clustered voiceprint with its number of linked
-tracks, source L2 IDs, mean L4 MOS, compressed duration, waveform and playback.
+The Test UI marks live speaker rows as provisional revisions; their numbering may
+change as evidence arrives. Only the sealed canonical result is final. Both views
+show linked tracks, source L2 IDs, mean L4 MOS, compressed duration, waveform and playback.

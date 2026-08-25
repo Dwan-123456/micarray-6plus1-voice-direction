@@ -354,11 +354,28 @@ class Layer5Config(StrictModel):
         return self
 
 
+class Layer4StreamingConfig(StrictModel):
+    enabled: bool = True
+    chunk_seconds: int = Field(default=10, ge=3, le=15)
+    overlap_seconds: int = Field(default=1, ge=1, le=14)
+    queue_chunks: int = Field(default=2, ge=1, le=64)
+
+    @model_validator(mode="after")
+    def validate_streaming_window(self) -> "Layer4StreamingConfig":
+        # Integer seconds are always exact multiples of the authoritative
+        # 20 ms timeline hop.  Keep overlap strictly smaller so every admitted
+        # chunk advances the downstream stream.
+        if self.overlap_seconds >= self.chunk_seconds:
+            raise ValueError("Layer4 streaming overlap must be shorter than its chunk")
+        return self
+
+
 class Layer4Config(StrictModel):
     enabled: bool = True
     default_backend: Literal["mossformer2_ss_16k", "tiger_speech_16k"]
     mossformer2_artifact: str
     tiger_artifact: str
+    streaming: Layer4StreamingConfig
 
     @model_validator(mode="after")
     def validate_artifacts(self) -> "Layer4Config":
@@ -406,7 +423,7 @@ class RuntimeConfig(StrictModel):
     processing_queue_windows: int = Field(gt=0)
     # Normal deployments change only this shared value. Per-stage fields stay
     # optional for focused tests and exceptional diagnostic profiles.
-    stage_queue_windows: int = Field(default=2_000, gt=0, le=10_000)
+    stage_queue_windows: int = Field(default=100, gt=0, le=10_000)
     l2_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     l3_queue_windows: int | None = Field(default=None, gt=0, le=10_000)
     l5_queue_windows: int | None = Field(default=None, gt=0, le=10_000)

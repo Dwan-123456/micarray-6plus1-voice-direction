@@ -99,11 +99,22 @@ def _format_processing_pipeline_status(
         stage("L5", ("l5",), "l5"),
         stage("JOIN", ("completion", "commit"), "commit"),
     )
+    realtime = status.get("layer456_stream", {})
+    realtime_text = "L4-6 N/A"
+    if isinstance(realtime, Mapping):
+        realtime_text = (
+            f"L4-6 q{max(0, int(realtime.get('queued_blocks', 0)))} "
+            f"{str(realtime.get('state', 'idle')).upper()} "
+            f"#{max(0, int(realtime.get('processed_blocks', 0)))}"
+        )
+        dropped = max(0, int(realtime.get("dropped_blocks", 0)))
+        if dropped:
+            realtime_text += f" d{dropped}"
     inflight = max(0, int(status.get("inflight_windows", 0)))
     cache_bytes = max(0, int(status.get("cache_bytes", 0)))
     cache_max_bytes = max(0, int(status.get("cache_max_bytes", 0)))
     cache_text = f"cache {cache_bytes / (1024 * 1024):.1f}/{cache_max_bytes / (1024 * 1024):.1f} MiB"
-    return " | ".join((*segments, f"flight {inflight}", cache_text))
+    return " | ".join((*segments, realtime_text, f"flight {inflight}", cache_text))
 
 
 def _format_processing_pipeline_tooltip(
@@ -118,6 +129,16 @@ def _format_processing_pipeline_tooltip(
         items = [f"{name}: {value}" for name, value in latest_errors.items() if value]
         if items:
             error_text = "；".join(items)
+    realtime = status.get("layer456_stream", {})
+    realtime_line = "L4-L6伪实时：无遥测"
+    if isinstance(realtime, Mapping):
+        realtime_line = (
+            f"L4-L6伪实时：{str(realtime.get('state', 'idle'))}，"
+            f"排队 {max(0, int(realtime.get('queued_blocks', 0)))}，"
+            f"已提交 {max(0, int(realtime.get('submitted_blocks', 0)))}，"
+            f"已处理 {max(0, int(realtime.get('processed_blocks', 0)))}，"
+            f"丢块 {max(0, int(realtime.get('dropped_blocks', 0)))}"
+        )
     return (
         "分层队列格式为 当前深度/容量；# 后为该阶段完成窗口数。\n"
         f"当前流水中窗口：{max(0, int(status.get('inflight_windows', 0)))}\n"
@@ -132,6 +153,7 @@ def _format_processing_pipeline_tooltip(
         f"L5显示邮箱：{max(0, int(status.get('l5_ui_mailbox_depth', 0)))}/"
         f"{max(0, int(status.get('l5_ui_mailbox_capacity', 0)))}，"
         f"latest-only覆盖：{max(0, int(status.get('l5_ui_mailbox_overwrites', 0)))}\n"
+        f"{realtime_line}\n"
         f"最近阶段错误：{error_text}"
     )
 
@@ -176,6 +198,16 @@ def build_window(
 
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
+    realtime_layer456_enabled = (
+        config.layer4.enabled
+        and config.layer4.streaming.enabled
+        and config.layer6.enabled
+    )
+    realtime_layer456_label = (
+        f"L4-6 {config.layer4.streaming.chunk_seconds}s伪实时"
+        if realtime_layer456_enabled
+        else "L4-6 OFF"
+    )
     project_root = config_path.parent.parent
     if input_wav is not None and replay_recording is not None:
         raise ValueError("input_wav和replay_recording不能同时使用")
@@ -226,39 +258,28 @@ def build_window(
         ephemeral_live_capture=live_microphone_mode,
     )
     ui_settings = DevUiSettings(config_path.parent.parent)
-    persisted_l4_backend = ui_settings.load_layer4_backend(
-        config.layer4.default_backend
-    )
+    # Start every experiment from the project workflow profile. Operators may
+    # still change controls during the run, but stale local UI settings must
+    # not silently undo the measured DS + MF2 baseline.
+    persisted_l4_backend = config.layer4.default_backend
     persisted_threshold = ui_settings.load_direction_threshold(config.layer2.direction_threshold)
     runtime.set_direction_threshold(persisted_threshold)
     runtime.set_music_effective_order_limit(ui_settings.load_music_effective_order_limit(
         config.layer2.effective_order_limit
     ))
-    runtime.set_music_dpd_rank1_enabled(ui_settings.load_music_dpd_rank1_enabled(
-        config.layer2.dpd_rank1_enabled
-    ))
-    runtime.set_music_noise_whitening_enabled(
-        ui_settings.load_music_noise_whitening_enabled(
-            config.layer2.noise_whitening_enabled
-        )
-    )
-    runtime.set_direction_id_tracking_enabled(
-        ui_settings.load_direction_id_tracking_enabled(True)
-    )
+    runtime.set_music_dpd_rank1_enabled(config.layer2.dpd_rank1_enabled)
+    runtime.set_music_noise_whitening_enabled(config.layer2.noise_whitening_enabled)
+    runtime.set_direction_id_tracking_enabled(True)
     persisted_gate_threshold = ui_settings.load_gate_probability_threshold(
         config.layer2.probability_gate.threshold
     )
     runtime.set_gate_probability_threshold(persisted_gate_threshold)
-    runtime.set_l1_pre_denoise_enabled(ui_settings.load_l1_pre_denoise_enabled(
-        config.layer1_pre_denoise.enabled
-    ))
+    runtime.set_l1_pre_denoise_enabled(config.layer1_pre_denoise.enabled)
     # CountNet is an opt-in diagnostic for the current Test UI run. It always
     # starts disabled and is deliberately not restored from prior UI settings.
     runtime.set_l1_speaker_count_enabled(False)
     runtime.set_l5_input_gain_compensation_enabled(
-        ui_settings.load_l5_input_gain_compensation_enabled(
-            config.layer5.input_gain_compensation.enabled
-        )
+        config.layer5.input_gain_compensation.enabled
     )
 
     class MainWindow(QMainWindow):
@@ -292,6 +313,9 @@ def build_window(
             self._audio_source_key = None
             self._offline_l4_pipeline = None
             self._offline_l4_auto_submitted = False
+            self._canonical_auto_attempted = False
+            self._canonical_reconcile_guard = False
+            self._last_realtime_postprocessing_revision = 0
             self._l4_processed = ()
             self._l5_results = ()
             self._l6_result = None
@@ -353,7 +377,18 @@ def build_window(
             self.l6_panel = Layer6AudioPanel()
             self.l4_panel.track_play_requested.connect(self._toggle_l4_audio)
             self.l4_panel.track_stop_requested.connect(self._pause_track_audio)
-            self.l4_panel.backend_changed.connect(ui_settings.save_layer4_backend)
+            self.l4_panel.backend_changed.connect(self._set_l4_backend_for_run)
+            if realtime_layer456_enabled:
+                fixed_backend_label = self.l4_panel.BACKEND_LABELS[
+                    config.layer4.default_backend
+                ]
+                for backend_id, button in self.l4_panel.backend_buttons.items():
+                    button.setToolTip(
+                        f"伪实时与停机最终校正固定使用{fixed_backend_label}；"
+                        "切换模型需修改config并重启"
+                        if backend_id != config.layer4.default_backend
+                        else f"本次伪实时与停机最终校正统一使用{fixed_backend_label}"
+                    )
             self.l6_panel.track_play_requested.connect(self._toggle_l6_audio)
             self.l6_panel.track_stop_requested.connect(self._pause_track_audio)
             self.l4_panel.set_voice_threshold(config.layer5.voice_probability_limit)
@@ -606,7 +641,7 @@ def build_window(
         def _set_l1_pre_denoise(self, enabled: bool):
             previous = runtime.l1_pre_denoise_enabled
             try:
-                enabled = ui_settings.save_l1_pre_denoise_enabled(bool(enabled))
+                enabled = bool(enabled)
                 runtime.set_l1_pre_denoise_enabled(enabled)
                 self.pre_denoise_label.setText(
                     "预降噪: ON | 等待下一完整20 ms替换" if enabled else "预降噪: OFF | 原始音频直通"
@@ -642,7 +677,7 @@ def build_window(
         def _set_l5_input_gain_compensation(self, enabled: bool):
             previous = runtime.l5_input_gain_compensation_enabled
             try:
-                enabled = ui_settings.save_l5_input_gain_compensation_enabled(bool(enabled))
+                enabled = bool(enabled)
                 runtime.set_l5_input_gain_compensation_enabled(enabled)
                 self.bf_panel.set_gain_compensation_enabled(enabled)
                 self.statusBar().showMessage(
@@ -682,7 +717,7 @@ def build_window(
         def _set_music_dpd_rank1(self, enabled: bool):
             previous = runtime.music_dpd_rank1_enabled
             try:
-                enabled = ui_settings.save_music_dpd_rank1_enabled(bool(enabled))
+                enabled = bool(enabled)
                 runtime.set_music_dpd_rank1_enabled(enabled)
                 self.music_dpd_rank1.set_enabled(enabled, pending=True)
                 self.statusBar().showMessage(
@@ -697,7 +732,7 @@ def build_window(
         def _set_music_noise_whitening(self, enabled: bool):
             previous = runtime.music_noise_whitening_enabled
             try:
-                enabled = ui_settings.save_music_noise_whitening_enabled(bool(enabled))
+                enabled = bool(enabled)
                 runtime.set_music_noise_whitening_enabled(enabled)
                 self.music_noise_whitening.set_enabled(enabled, pending=True)
                 self.statusBar().showMessage(
@@ -712,7 +747,7 @@ def build_window(
         def _set_direction_id_tracking(self, enabled: bool):
             previous = runtime.direction_id_tracking_enabled
             try:
-                enabled = ui_settings.save_direction_id_tracking_enabled(bool(enabled))
+                enabled = bool(enabled)
                 runtime.set_direction_id_tracking_enabled(enabled)
                 self.srp_id_tracking.set_enabled(enabled, pending=True)
                 self.statusBar().showMessage(
@@ -727,6 +762,25 @@ def build_window(
                     self.srp_id_tracking.set_enabled(previous)
                 self.statusBar().showMessage(f"ID Tracking切换失败: {exc}", 8000)
 
+        def _set_l4_backend_for_run(self, backend_id: str) -> None:
+            label = self.l4_panel.BACKEND_LABELS[backend_id]
+            self.statusBar().showMessage(
+                f"本次停机最终校正将使用{label}"
+                if not realtime_layer456_enabled else
+                f"本次实时预览与停机最终校正固定使用{label}",
+                4500,
+            )
+            if (
+                self._canonical_reconcile_guard
+                and not self._offline_l4_auto_submitted
+                and self._pending_command is None
+                and not runtime.active
+            ):
+                # A model click is an explicit retry.  Automatic reconciliation
+                # itself remains one-shot so a persistent model error cannot
+                # launch a new canonical job on every refresh tick.
+                self._start_automatic_l4_if_ready(manual_retry=True)
+
         def _submit_command(self, name, command, on_success=None):
             if self._pending_command is not None:
                 self.statusBar().showMessage("上一条命令仍在执行，请稍候", 3000)
@@ -740,6 +794,38 @@ def build_window(
             if pending is None or not pending[1].done():
                 return
             name, future, on_success = pending
+            if name in {"停止采集", "模拟输入已播放完成"}:
+                try:
+                    future.result()
+                except Exception:
+                    # Preserve the normal command-error path below.
+                    pass
+                else:
+                    if runtime.active:
+                        # stop() is deliberately bounded.  Its L1-L3 work may
+                        # be finished while the chunk/model sidecar is still
+                        # winding down, so retain the command as FINALIZING
+                        # instead of presenting a false STOPPED state.
+                        self.statusBar().showMessage(
+                            f"{name}：L4-L6后台仍在收尾…"
+                        )
+                        self._update_control_states()
+                        return
+                    if not runtime.offline_l4_sealed:
+                        # A bounded sidecar timeout intentionally withholds Hub
+                        # sealing.  Once those workers have really exited,
+                        # retry stop on the command executor to perform the
+                        # now-safe authoritative seal before canonical output.
+                        self._pending_command = (
+                            name,
+                            self._commands.submit(runtime.stop),
+                            on_success,
+                        )
+                        self.statusBar().showMessage(
+                            f"{name}：正在完成最终音频封存…"
+                        )
+                        self._update_control_states()
+                        return
             self._pending_command = None
             try:
                 result = future.result()
@@ -758,9 +844,13 @@ def build_window(
                 if name in {"灯光开", "灯光关"}:
                     self.light_label.setText("状态: Error")
                 elif name == "自动运行L4/L5":
-                    self.l4_panel.set_processing(f"L4失败：{exc}")
+                    self._offline_l4_auto_submitted = False
+                    self.l4_panel.set_processing(
+                        f"最终校正失败：{exc}；保留伪实时预览，点击模型重试"
+                    )
                 elif name == "自动运行L6":
-                    self.l6_panel.set_error(str(exc))
+                    self._offline_l4_auto_submitted = False
+                    self.l6_panel.set_error(f"{exc}；保留伪实时预览，点击L4模型重试")
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -783,6 +873,9 @@ def build_window(
             self.music_status.setText("MUSIC order=—  output=—  valid=—  status=WARMING")
             self.cnn_panel.set_unavailable("WARMING: waiting for completed L5 window")
             self._offline_l4_auto_submitted = False
+            self._canonical_auto_attempted = False
+            self._canonical_reconcile_guard = False
+            self._last_realtime_postprocessing_revision = 0
             self.l4_panel.clear_tracks()
             self._l4_store.clear()
             self._offline_l4_pipeline = None
@@ -1033,6 +1126,15 @@ def build_window(
             busy = self._pending_command is not None
             self.start_button.setEnabled(not runtime.active and not busy)
             self.stop_button.setEnabled(runtime.active and not busy)
+            for backend_id, button in self.l4_panel.backend_buttons.items():
+                button.setEnabled(
+                    not runtime.active
+                    and not busy
+                    and (
+                        not realtime_layer456_enabled
+                        or backend_id == config.layer4.default_backend
+                    )
+                )
             # SerialDevice.write() opens the CDC control port on demand, so
             # lighting is intentionally independent of audio capture state.
             self.light_on.setEnabled(not busy)
@@ -1173,44 +1275,69 @@ def build_window(
                 self.l6_panel.sync_track_playback_stopped()
                 self.statusBar().showMessage(f"L6试听失败：{error}", 5000)
 
-        def _start_automatic_l4_if_ready(self) -> bool:
-            if (
-                self._offline_l4_auto_submitted
-                or self._pending_command is not None
-                or runtime.active
-            ):
+        def _drain_realtime_postprocessing(self) -> None:
+            while True:
+                try:
+                    runtime.latest_realtime_postprocessing.get_nowait()
+                except queue.Empty:
+                    return
+
+        def _replace_with_empty_canonical(self) -> None:
+            self.preview_player.close()
+            self._audio_source_key = None
+            self._offline_l4_pipeline = None
+            self._l4_processed = ()
+            self._l5_results = ()
+            self._l6_result = None
+            self._l4_store.clear()
+            self.l4_panel.clear_tracks()
+            self.l4_panel.summary.setText("最终校正完成：无合格L3长音频")
+            self._l6_store.clear()
+            self.l6_panel.clear_tracks("最终校正完成：无可用声纹")
+            self.cnn_panel.set_unavailable("最终校正完成：无L4/L5候选")
+            self._offline_stage_durations_seconds = {
+                "l4": 0.0, "l5": 0.0, "l6": 0.0,
+            }
+            self._refresh_total_duration_text()
+
+        def _start_automatic_l4_if_ready(self, *, manual_retry: bool = False) -> bool:
+            if self._pending_command is not None or runtime.active:
+                return False
+            if self._canonical_auto_attempted and not manual_retry:
                 return False
             try:
                 sources = runtime.offline_l4_sources
-            except RuntimeError:
+            except RuntimeError as exc:
+                self.l4_panel.set_processing(f"等待最终音频封存：{exc}")
                 return False
+            # Reading the sealed package establishes an irreversible UI-side
+            # canonical boundary.  From here on, even a late final preview may
+            # not repaint the stopped result.
+            self._canonical_reconcile_guard = True
+            self._drain_realtime_postprocessing()
+            if self._offline_l4_auto_submitted:
+                return False
+            if not manual_retry:
+                self._canonical_auto_attempted = True
             if not sources:
-                return False
+                self._offline_l4_auto_submitted = True
+                self._replace_with_empty_canonical()
+                return True
             self._offline_l4_auto_submitted = True
             self._start_automatic_l4()
             return True
 
         def _start_automatic_l4(self):
-            self.preview_player.close()
-            self._audio_source_key = None
-            # A submission is a complete replacement, not an append.  Clear
-            # both the visible rows and their backing preview files before the
-            # selected offline L4 backend starts another pass over sealed L3.
-            self.l4_panel.clear_tracks()
-            self._l4_store.clear()
+            # Keep the latest provisional rows playable until the complete
+            # sealed pass succeeds.  Its callback performs one canonical
+            # replacement; a failed pass therefore cannot erase useful live
+            # output.
             self._offline_l4_pipeline = None
-            self._l4_processed = ()
-            self._l5_results = ()
-            self._l6_result = None
-            self._l6_store.clear()
-            self.l6_panel.clear_tracks()
-            self._offline_stage_durations_seconds = {"l4": None, "l5": None, "l6": None}
             self._refresh_total_duration_text()
-            self.cnn_panel.set_unavailable("等待L4完成后自动处理")
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
             self.l4_panel.set_processing(
-                f"正在加载{backend_label}并处理全部L3长音频（保留A/B双候选）…"
+                f"{backend_label}最终校正中；当前伪实时试听保留至成功替换…"
             )
 
             def process_l4_and_l5():
@@ -1241,26 +1368,28 @@ def build_window(
                     pipeline, processed, l5_results, l5_error,
                     l4_elapsed, l5_elapsed,
                 ) = value
+                if l5_error is not None:
+                    raise RuntimeError(f"L5最终校正失败：{l5_error}") from l5_error
+                self.preview_player.close()
+                self._audio_source_key = None
                 self._offline_l4_pipeline = pipeline
                 self._l4_processed = processed
+                self._l5_results = tuple(l5_results)
                 self._offline_stage_durations_seconds = {
                     "l4": l4_elapsed,
                     "l5": l5_elapsed,
-                    "l6": None,
+                    "l6": self._offline_stage_durations_seconds.get("l6"),
                 }
                 self._refresh_total_duration_text()
+                self.l4_panel.clear_tracks()
+                self._l4_store.clear()
                 self._l4_store.set_processed(self._l4_processed)
-                if l5_error is not None:
-                    self.l4_panel.set_tracks(
-                        self._l4_store.snapshots(), unmerged=True,
-                    )
-                    self.l4_panel.set_l5_error(str(l5_error))
-                    self.cnn_panel.set_unavailable(f"L5失败：{l5_error}")
-                    return
                 self._l4_store.apply_l5(l5_results)
-                self._l5_results = tuple(l5_results)
                 self.l4_panel.set_tracks(
                     self._l4_store.snapshots(), l5_complete=True, unmerged=True,
+                )
+                self.l4_panel.summary.setText(
+                    f"最终{backend_label}：{len(self._l4_processed)}条L4/L5候选"
                 )
                 detections = tuple(SimpleNamespace(
                     theta_deg=item.source.theta_deg,
@@ -1278,17 +1407,101 @@ def build_window(
 
             self._submit_command("自动运行L4/L5", process_l4_and_l5, completed)
 
+        def _poll_realtime_postprocessing(self) -> None:
+            snapshot = None
+            while True:
+                try:
+                    snapshot = runtime.latest_realtime_postprocessing.get_nowait()
+                except queue.Empty:
+                    break
+            if snapshot is None:
+                return
+            revision = int(getattr(snapshot, "revision", 0))
+            if (
+                revision <= self._last_realtime_postprocessing_revision
+                or self._canonical_reconcile_guard
+                or str(getattr(snapshot, "session_id", ""))
+                != str(runtime.coordinator.session_id)
+                or (
+                    self._pending_command is not None
+                    and self._pending_command[0] in {"自动运行L4/L5", "自动运行L6"}
+                )
+            ):
+                return
+            self._last_realtime_postprocessing_revision = revision
+            processed = tuple(getattr(snapshot, "l4_processed", ()))
+            l5_results = tuple(getattr(snapshot, "l5_results", ()))
+            if not processed or not l5_results:
+                return
+
+            # Preview files are replaceable snapshots. Release a possibly
+            # mapped Windows WAV before atomically replacing the current view.
+            self.preview_player.close()
+            self._audio_source_key = None
+            self._l4_processed = processed
+            self._l5_results = l5_results
+            self._l4_store.set_processed(processed)
+            self._l4_store.apply_l5(l5_results)
+            unmerged = any(item.output_kind != "merged" for item in processed)
+            self.l4_panel.set_tracks(
+                self._l4_store.snapshots(), l5_complete=True, unmerged=unmerged,
+            )
+            watermark_seconds = float(snapshot.valid_through_sample_48k) / 48_000.0
+            state = "伪实时尾部冲刷" if snapshot.is_final else "伪实时"
+            backend_label = self.l4_panel.BACKEND_LABELS.get(
+                runtime.config.layer4.default_backend,
+                runtime.config.layer4.default_backend,
+            )
+            self.l4_panel.summary.setText(
+                f"{state}{backend_label} rev {revision}：已稳定至 {watermark_seconds:.1f}s，"
+                f"{len(processed)}条L4/L5音轨"
+            )
+            detections = tuple(SimpleNamespace(
+                theta_deg=item.source.theta_deg,
+                probability=item.l5_probability,
+                window_id=item.source.end_sample // 960,
+            ) for item in l5_results)
+            self.cnn_panel.set_result(SimpleNamespace(
+                detections=detections,
+                primary_model_id=l5_results[0].l5_model_id,
+                threshold=float(l5_results[0].metadata["l5_threshold"]),
+            ))
+
+            l6_result = getattr(snapshot, "l6_result", None)
+            if l6_result is not None:
+                self._l6_result = l6_result
+                self._l6_store.set_result(l6_result)
+                self.l6_panel.set_tracks(self._l6_store.snapshots())
+                self.l6_panel.summary.setText(
+                    f"L6暂定 rev {revision}：{len(l6_result.outputs)}个声纹；停止后最终校正"
+                )
+            durations = dict(getattr(snapshot, "stage_durations_seconds", ()))
+            self._offline_stage_durations_seconds = {
+                name: durations.get(name) for name in ("l4", "l5", "l6")
+            }
+
         def _start_automatic_l6(self, l5_results):
             l5_results = tuple(l5_results)
+            if not config.layer6.enabled:
+                if self._audio_source_key is not None and self._audio_source_key[0] == "l6_speaker":
+                    self.preview_player.close()
+                    self._audio_source_key = None
+                self._l6_result = None
+                self._l6_store.clear()
+                self._offline_stage_durations_seconds["l6"] = 0.0
+                self.l6_panel.clear_tracks("L6 OFF")
+                self._refresh_total_duration_text()
+                return
             if not l5_results:
+                if self._audio_source_key is not None and self._audio_source_key[0] == "l6_speaker":
+                    self.preview_player.close()
+                    self._audio_source_key = None
+                self._l6_result = None
+                self._l6_store.clear()
                 self._offline_stage_durations_seconds["l6"] = 0.0
                 self.l6_panel.clear_tracks("L6完成：0个声纹（无L4/L5候选）")
                 self._refresh_total_duration_text()
                 return
-            self.preview_player.close()
-            self._audio_source_key = None
-            self._l6_store.clear()
-            self.l6_panel.clear_tracks()
             self.l6_panel.set_processing()
 
             def process_l6():
@@ -1298,8 +1511,12 @@ def build_window(
 
             def completed(value):
                 result, elapsed = value
+                if self._audio_source_key is not None and self._audio_source_key[0] == "l6_speaker":
+                    self.preview_player.close()
+                    self._audio_source_key = None
                 self._l6_result = result
                 self._offline_stage_durations_seconds["l6"] = elapsed
+                self._l6_store.clear()
                 self._l6_store.set_result(result)
                 self.l6_panel.set_tracks(self._l6_store.snapshots())
                 self._refresh_total_duration_text()
@@ -1308,6 +1525,7 @@ def build_window(
 
         def _refresh(self):
             self._poll_command()
+            self._poll_realtime_postprocessing()
             self._refresh_replay_controls()
             self._refresh_total_duration_text()
             self.preview_player.validate_output()
@@ -1457,16 +1675,17 @@ def build_window(
                     "当前文件: scratch/current"
                 )
                 self.recording_label.setToolTip(str(runtime.scratch.current_root))
-            finalizing_replay = (
+            finalizing_stop = (
                 self._pending_command is not None
-                and self._pending_command[0] == "模拟输入已播放完成"
-                and runtime.active
+                and self._pending_command[0] in {
+                    "停止采集", "模拟输入已播放完成",
+                }
             )
             state = (
-                "ERROR"
+                "FINALIZING"
+                if finalizing_stop
+                else "ERROR"
                 if runtime.last_error
-                else "FINALIZING"
-                if finalizing_replay
                 else "RUNNING"
                 if runtime.running
                 else "STOPPED"
@@ -1800,7 +2019,7 @@ def build_window(
         def _set_performance(self, perf):
             if perf is None:
                 text = (
-                    "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 自动离线 | "
+                    f"上一秒性能 | L2 N/A | L3 N/A | {realtime_layer456_label} | "
                     "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
                 )
             else:
@@ -1808,14 +2027,14 @@ def build_window(
                     "上一秒性能 | "
                     f"L2 {_time(perf.l2_time_ms_last_second_avg)} | "
                     f"L3 {_time(perf.l3_time_ms_last_second_avg)} | "
-                    "L4 离线 | L5 离线 | L6 自动离线 | "
+                    f"{realtime_layer456_label} | "
                     f"20ms窗口 {perf.processed_windows_last_second} | "
                     f"丢窗 {perf.dropped_windows_last_second} | "
                     f"丢窗率 {perf.drop_rate_last_second * 100.0:.1f}%"
                 )
                 self.performance_bar.setToolTip(
-                    "每1秒刷新；L2、L3显示实时20 ms窗口平均耗时；L4、L5在L3长音频"
-                    "拼接完成后离线运行，不伪装成实时窗口性能。"
+                    "每1秒刷新；L2、L3显示实时20 ms窗口平均耗时；L4-L6按配置块长"
+                    "在独立后台渐进处理，停止后再运行完整封存校正。"
                 )
             self._performance_base_text = text
             self._refresh_total_duration_text()
@@ -1837,8 +2056,8 @@ def build_window(
             )
             self.performance_bar.setToolTip(
                 "左侧只统计实时L2/L3窗口性能；总处理时长中，L2、L3分别从首个20 ms"
-                "窗口入队至各自排空，L3包含长音频拼接；L4、L5在点击发送后按整批"
-                "顺序独立计时，每批L4/L5完成后自动运行并独立计时L6。模拟输入手动暂停期间不计实时阶段时长。"
+                "窗口入队至各自排空，L3包含长音频拼接；L4、L5、L6显示当前伪实时"
+                "预览累计耗时，停止后会由完整封存批次替换。模拟输入手动暂停期间不计实时阶段时长。"
             )
             self.performance_bar.setText(text)
 

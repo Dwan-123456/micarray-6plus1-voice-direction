@@ -1,6 +1,6 @@
 # 6+1麦克风阵列：完整架构与使用手册
 
-> 适用版本：项目`1.3.3`，发布基线`v1.3.3`。本文根据当前代码、`config/config.yaml`和各层公开数据类型编写，供第一次接触项目的开发者和测试人员使用。
+> 适用版本：项目`1.3.5`开发线，发布基线`v1.3.3`。本文根据当前代码、`config/config.yaml`和各层公开数据类型编写，供第一次接触项目的开发者和测试人员使用。L4-L6渐进旁路的详细契约见[`REALTIME_L456.md`](REALTIME_L456.md)。
 
 ## 1. 系统目的与边界
 
@@ -8,7 +8,7 @@
 
 系统估计的是相对于麦克风面的水平角`theta_deg ∈ [0°,360°)`：`MIC0=0°`，逆时针为正。系统不估计距离、俯仰角、说话内容、声压级或人物身份。`track_id`只代表一条空间方向轨迹。
 
-当前实时链只运行到L3和按ID连续音频Hub。L4、L5必须在停止采集、实时队列排空并封存完整方向轨后运行。实时L5位置只写入`offline_after_l4`审计跳过状态，不运行CNN。
+正式20 ms审计链只运行到L3和按ID连续音频Hub；实时L5位置仍写入`offline_after_l4`跳过状态，不运行CNN。与审计链隔离的旁路按默认10秒、可调3～15秒的连续ID块渐进运行L4-L6并发布可替换preview；停止后完整封存批次仍会重新运行并成为权威结果。
 
 ## 2. 完整系统架构图
 
@@ -24,7 +24,7 @@ flowchart TB
       WORK[WindowWorkItem<br/>WindowKey + 冻结配置]
       L2[Layer 2 方向定位<br/>Gate·Rolling NormMUSIC<br/>峰值/NMS·Circular IMM-JPDA]
       L3[Layer 3 按方向增强<br/>STFT/协方差·steering<br/>LCMV/MVDR/DAS·ISTFT]
-      HUB[TrackAudioStreamHub<br/>每ID取唯一20 ms hop<br/>响度补偿·去重·补洞·连续缓存]
+      HUB[TrackAudioStreamHub<br/>每ID取唯一20 ms hop<br/>可选响度补偿·去重·补洞·连续缓存]
       AUDIT[实时L5审计占位<br/>SKIPPED: offline_after_l4]
       JOIN[ResultJoiner<br/>终态合并·顺序提交·watermark]
 
@@ -57,6 +57,17 @@ flowchart TB
     HUB -->|同一补偿后20 ms音频| DEV
     HUB -->|逐ID连续WAV| REC
 
+    subgraph PROGRESSIVE[采集中的L4-L6渐进旁路]
+      direction LR
+      CLAIM[后台chunk producer<br/>claim / admission / ack]
+      PL4[L4 GPU<br/>单人旁路 / 双人MF2<br/>1 s重叠换序修复]
+      PL5[L5 CPU<br/>跨块上下文与稳定水位]
+      PL6[L6 CPU<br/>2 s声纹缓存·节流revision]
+      CLAIM --> PL4 --> PL5 --> PL6 --> DEV
+    end
+
+    HUB -->|默认10 s，可调3～15 s| CLAIM
+
     subgraph OFFLINE[采集停止后的离线链]
       direction TB
       SEAL[Hub.seal<br/>完整48 kHz方向长轨<br/>Layer4LongAudioInput]
@@ -79,7 +90,7 @@ flowchart TB
     HW -.独立入口.-> L1ONLY
 ```
 
-图中实线是正式数据流，虚线是独立观察工具。L2有独立worker；CPU L3再分为候选无关STFT/IMCRA准备、候选相关BF+ISTFT、host连续音频拼接三个有界FIFO worker。同一窗口仍遵循`L2(n) → L3(n) → L5审计(n)`，不同窗口可形成跨层和L3内部流水；L3阶段只有host拼接排空后才算完成。L4/L5不与实时链并行运行。
+图中正式逐窗审计仍遵循`L2(n) → L3(n) → L5审计(n)`；不同窗口形成跨层和L3内部流水。渐进L4-L6是独立旁路：L3只发轻量wakeup，chunk producer后台构块，接纳成功后才推进Hub游标。它不进入ResultJoiner、DecisionRecord或RecordingStore，也不反压L1-L3。
 
 ## 3. 逐层输入、内部处理单元与输出
 
@@ -92,13 +103,15 @@ flowchart TB
 | Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/DOA/IMM-JPDA/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
 | Layer 2 | `DecisionWindow`、末尾两个20 ms声源概率、7麦几何、扫描配置 | 40 ms Probability Gate；Rolling NormMUSIC；圆周峰值与50° NMS；Circular IMM-JPDA方向ID；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；MUSIC诊断 | 每20 ms判断与更新 |
 | Layer 3 | `DecisionWindow`末尾40/80/160 ms、0–3个公共方向、7麦几何、IMCRA噪声 | 共享STFT与协方差缓存；steering；按`rho`逐频选择Dual LCMV / Soft-null loaded MVDR / Loaded MVDR；或DAS/全频loaded MVDR；数值保护；批量ISTFT | `Layer3Output`，其中每方向一个`EnhancedAudio`：48 kHz mono `[1920/3840/7680]`，携带`track_id/theta/algorithm/fallback` | 当前默认40 ms音频；每20 ms产生新重叠窗 |
-| TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；ID首次confirmed后用确认时平滑角回溯最多1秒补做出生前缺失BF并前插（实时槽优先）；2 ms模式切换淡化；IMCRA概率响度补偿；维护完整归档；仅在消费者明确请求时构造滚动上下文 | `TrackAudioBatch`：每窗`TrackAudioHop [960]`，ID首次确认可附最长3200 ms `ContinuousTrackAudio`；停机输出`Layer4LongAudioInput`完整48 kHz长轨 | 20 ms hop；目标均值-23 dBFS，峰值不超过-3 dBFS |
+| TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；首次confirmed回填；2 ms模式切换淡化；可选IMCRA概率响度补偿；维护完整归档；渐进块使用claim/resolve事务 | `TrackAudioBatch`；最长3200 ms试听上下文；3～15秒渐进`Layer4LongAudioInput`；停机完整长轨 | 20 ms hop；当前响度补偿默认关 |
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
 | ResultJoiner | 同一`WindowKey`的L2/L3/L5阶段终态 | 校验ID与角度对齐；等待完整终态；按全局window顺序提交；保留失败/丢弃/取消原因 | `JoinedWindowResult`、`DecisionRecord v5`、`ResultWatermark`、UI快照 | 有序逐窗提交 |
 | RecordingStore | 原生/逻辑音频、IMCRA、Joined结果、Hub hop | 异步有界写盘；60秒切块；逐ID hop合并；SHA-256；journal事务；崩溃恢复；Catalog投影 | WAV/NPZ/JSONL/manifest/Catalog；逐ID连续48 kHz增强WAV | 不反压采集 |
-| Layer 4 | Hub封存的`Layer4LongAudioInput`：完整48 kHz mono、ID、角度、L2方向数历史 | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；30秒分块/1秒重叠；排列修复；交叉淡化；1–4 kHz复相干匹配度仅用于A/B排序 | Test UI固定不合并：每双人父轨两条16 kHz候选，保留父`track_id/theta`及A/B标识；单人父轨一条旁路 | 离线整轨处理；每条L4输出分别进入L5 |
-| Layer 5 | L4原生16 kHz完整波形 | NVIDIA MarbleNet Frame-VAD；每320 sample直接推理；阈值比较；连续3帧均值取整轨最大值 | `Layer5LongAudioResult`：每20 ms概率/布尔值、摘要概率/判断、模型与耗时；并入`Layer4OfflineResult` | 16 kHz；20 ms一帧；默认阈值0.70 |
-| Layer 6 | L4 A/B候选或单人旁路、父L2 ID/角度、匹配度、MOS、绝对时间线及L5逐20 ms概率/bool | A整轨声纹；B按匹配差/匹配度/MOS门限准入；整轨声纹两两相似度与平均链接AHC聚为0～3人；重叠按MOS择优；首尾静音删除、内部静音最长2秒 | `Layer6Result`：按声纹显示的Speaker A/B/C压缩16 kHz音频、来源L2 ID、声纹到完整音轨的一对多审计 | 每批L4/L5后自动离线执行；不参与实时链 |
+| 渐进Layer 4 | Hub已确认连续块 | 1人旁路；2人MF2；上一块1秒输入尾+新块；输出重叠换序与淡化；stable branch与累计A/B rank分离 | 可替换L4 revision与稳定水位 | 默认10秒，可调3～15秒；MF2 CUDA |
+| 渐进Layer 5/6 | 稳定L4片段 | MarbleNet跨块上下文并延迟右端；DNSMOS降频；2秒CAMPPlus余量跨块；L6首次/拓扑变化/固定周期更新 | 可替换L5帧与provisional L6 speaker revision | CPU；latest-only；不入正式审计 |
+| 权威Layer 4 | Hub封存的完整`Layer4LongAudioInput` | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；完整排列修复、匹配和DNSMOS | 双人父轨两条16 kHz A/B候选；单人一条旁路 | 停止后完整整轨处理 |
+| 权威Layer 5 | L4原生16 kHz完整波形 | NVIDIA MarbleNet Frame-VAD；每320 sample推理；阈值比较；连续3帧均值摘要 | `Layer5LongAudioResult`和`Layer4OfflineResult` | 16 kHz；20 ms一帧；默认阈值0.70 |
+| 权威Layer 6 | 完整L4/L5及MOS/绝对时间线 | CAMPPlus；B门限；完整链接聚类；MOS择优；静音压缩 | 最终Speaker A/B/C与审计 | 停止后运行并原子替换preview |
 
 ### 3.1 Layer 1内部图
 
@@ -158,26 +171,31 @@ DecisionWindow末尾音频 + TrackedDirection[0..3]
 
 L3输出保留80–8000 Hz，但80–1500 Hz受4 cm阵列孔径限制，不能认为已可靠分离。DAS基线按单声源使用。
 
-### 3.4 Hub、Layer 4与Layer 5内部图
+### 3.4 Hub与渐进/权威Layer 4-L6内部图
 
 ```text
 重叠EnhancedAudio窗口
   → 每ID只追加末尾20 ms
   → 缺口补等时静音 / 重复拒绝
-  → IMCRA概率控制响度补偿
+  → 可选IMCRA概率响度补偿（实验profile默认关）
   → 实时3200 ms试听上下文 + 完整归档
-  → stop + drain + seal
-  → 每ID一条Layer4LongAudioInput
-  → 48→16 kHz
-  → 人数=min(2, 整轨L2最大方向数)
+  ├─ 采集中：L3只signal，producer后台claim 3～15秒连续块
+  │    → admission成功才ack
+  │    → 48→16 kHz
+  │    → 1人旁路 / 2人MF2 + 1秒重叠换序修复
+  │    → MarbleNet跨块上下文与稳定帧水位
+  │    → 2秒CAMPPlus余量跨块、L6节流revision
+  │    → Test UI provisional preview
+  └─ stop + drain + preview tail flush + seal
+       → 每ID一条完整Layer4LongAudioInput
+       → 48→16 kHz
+       → 人数=min(2, 整轨L2最大方向数)
        1人 → 直接旁路
        2人 → MossFormer2/TIGER两候选
              → 分块排列修复与淡化
-             → 合并开启：1–4 kHz复相干匹配父L3轨，低可信时回退父轨
-             → 合并关闭：不匹配，保存并显示A/B两条16 kHz候选
-  → L4 16 kHz WAV
-  → 每条L4输出分别进入MarbleNet逐20 ms概率
-  → Voice区间 + 整轨摘要
+             → 1–4 kHz累计匹配排序A/B
+       → 精确DNSMOS、MarbleNet、CAMPPlus/L6
+       → canonical成功后原子替换preview
 ```
 
 ## 4. 数据身份与时间轴
@@ -202,7 +220,8 @@ L3输出保留80–8000 Hz，但80–1500 Hz受4 cm阵列孔径限制，不能�
 
 - Windows；已验证Python 3.12；
 - Sipeed R6+1、MA-USB8，设备采样率48 kHz、8通道；
-- 默认设备拓扑为`L1 CPU → L2 CPU → L3 CPU → 离线L4 CUDA → L5 CPU`；
+- 默认设备拓扑为`L1 CPU → L2 CPU → L3 DS CPU → 渐进/权威MF2 CUDA → L5/DNSMOS/CAMPPlus/L6 CPU`；后台在首块累计时预载模型并复用渐进/canonical的MF2与CAMPPlus；
+- L2/L3/L5阶段队列默认各100窗（约2秒），L4-L6队列默认2块；Hub大块拼接与SHA在主锁外执行；
 - `runtime.torch_cpu_threads=1`是当前16逻辑核主机的全链最快配置；不要把隔离单层的多线程或CUDA结果直接当作整链配置；
 - `runtime.l3_device/l4_device/l5_device`相互独立，旧配置缺少这些字段时才回退到`preferred_device`；
 - L4配置CUDA但设备不可用时，在`allow_cpu_fallback: true`下自动回退CPU；离线分离会明显变慢；
@@ -247,18 +266,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 .\.venv\Scripts\python.exe -m gui.dev_test_ui.app --input-wav "D:\audio\test.wav" --auto-start
 ```
 
-### 6.2 从采集到离线结果
+### 6.2 从采集到渐进预览和最终结果
 
 1. 连接阵列，确认Windows识别设备；启动UI并检查顶部设备、CUDA和模型状态。
 2. 点击“启动采集”。等待160 ms窗口累计及IMCRA预热；L2的240 ms滚动定位历史会继续独立预热。
 3. 检查左上8路电平。依次轻敲麦克风，确认MIC0–MIC5、Center及HardwareMix映射没有镜像或错位。
-4. 在右上查看L2 Gate、360°MUSIC谱、手动MUSIC阶数、实际候选数和方向ID。初次测试保持DPD和IMCRA白化关闭；ID Tracking开启即使用完整IMM-JPDA。
-5. 在左下查看Center参考和按`track_id`排列的L3方向轨，可切换三种BF方法进行同源比较。
+4. 在右上查看L2 Gate、360°MUSIC谱、手动MUSIC阶数、实际候选数和方向ID。基线保持DPD关闭、IMCRA白化和ID Tracking开启。
+5. 在左下查看Center参考和按`track_id`排列的L3方向轨；基线使用DS。渐进旁路提交首块后，本次采集中锁定L3模式，避免不同算法音频混入同一preview。
 6. 需要正式数据时使用“正式录音开始/暂停”；只做临时试听时使用scratch录音。两者不要混作同一资产。
-7. 在L4区预先选择MossFormer2或TIGER，然后点击“停止采集”，等待L2/L3队列完全排空和Hub封存；封存完成后Test UI自动提交L4。短于2秒的方向轨不会成为有效L4输入。
-8. L4处理期间无需手动发送；新一轮采集或模拟重播封存后会按当时选择的模型自动建立并替换离线批次。
-9. L4固定保留A/B候选并自动对每条运行L5，L4栏可试听16 kHz结果并查看黄色Voice区间。
-10. L4/L5完成后L6会自动运行整轨声纹聚类、MOS择优时间线拼接和静音压缩；完成后按声纹试听Speaker A/B/C音频条。后续自动L4批次会重跑L5/L6并替换展示；L6不回写L2 ID或角度。
+7. 采集满首个配置块后，L4/L5栏显示preview revision和稳定水位，L6栏显示暂定声纹。默认块长10秒，可在YAML改为3～15秒；奇数秒不会截断2秒声纹证据。
+8. 点击“停止采集”，等待L2/L3排空、渐进尾部有限冲刷和Hub封存。若GPU worker超时未退出，UI会明确报错并禁止启动争用同一GPU的canonical。
+9. Test UI自动用YAML默认MF2运行完整L4/L5/L6；开始时保留preview，成功后才一次性替换。失败时保留preview并允许重试。
+10. 最终L4固定保留A/B候选并运行精确DNSMOS和L5；最终L6运行完整声纹聚类、MOS择优与静音压缩。L6不回写L2 ID或角度。
 
 下一轮L3封存触发的自动L4会替换当前UI内的上一批离线结果。Test UI离线缓存不是长期归档。
 
@@ -268,10 +287,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 |---|---|---|---|
 | 左上L1 | 8路电平、削波、IMCRA状态、预降噪、灯控、录音 | Layer 1与采集源 | 预降噪开关会从后续完整窗生效 |
 | 右上L2 | Gate、360°谱、候选/ID、MDL、ID Tracking、DPD/白化设置 | `Layer2PipelineResult` | Gate、阶数和试验开关会更新后续L2配置 |
-| 下左L3 | Center参考、各ID增强音频、BF模式、发送L4 | Hub连续音频与L3诊断 | BF模式影响后续L3；发送L4仅在封存后运行 |
-| 下中L4 | 16 kHz结果、时长、波形、播放、黄色Voice区间 | `Layer4ProcessedAudio/OfflineResult` | 选择离线后端；不反向修改实时结果 |
-| 下右L6 | 声纹Speaker A/B/C、关联音轨数、来源L2 ID、平均MOS、压缩后时长、波形、试听 | L4双候选及L5逐20 ms结果 | 仅手动执行；不反向修改实时结果 |
-| 顶部性能栏 | 队列深度、worker、完成/错误/丢窗、缓存 | Runtime公开只读状态 | 只观察，不反压处理链 |
+| 下左L3 | Center参考、各ID增强音频、BF模式 | Hub连续音频与L3诊断 | 首个渐进块前可切换；基线DS |
+| 下中L4 | preview/canonical 16 kHz结果、水位、播放、黄色Voice区间 | `Layer4ProcessedAudio/OfflineResult` | 伪实时开启时后端固定YAML默认MF2 |
+| 下右L6 | provisional/final Speaker、来源ID、MOS、波形、试听 | L4双候选及L5逐20 ms结果 | 只显示，不反向修改实时结果 |
+| 顶部性能栏 | 正式队列及L4-L6状态、完成/错误/丢窗/丢块、缓存 | Runtime公开只读状态 | 只观察，不反压处理链 |
 
 ## 7. 其他入口
 
