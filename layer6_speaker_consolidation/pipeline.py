@@ -38,6 +38,7 @@ class _PendingFragment:
     probabilities: tuple[float, ...]
     decisions: tuple[bool, ...]
     embedding: np.ndarray
+    embedding_speech_ms: int
     noise_rms: float
 
 
@@ -48,6 +49,7 @@ def _cosine(left: np.ndarray, right: np.ndarray) -> float:
 _MINIMUM_CONCURRENT_OVERLAP_SAMPLES_48K = 24_000
 _CROSS_TRACK_DUPLICATE_SIMILARITY = 0.85
 _WEAK_EXTRA_CLUSTER_MARGIN = 0.15
+_SPEAKER_ASSIGNMENT_WINDOW_MS = 500
 
 
 def _cannot_share_speaker(left: _PendingFragment, right: _PendingFragment) -> bool:
@@ -87,7 +89,7 @@ def _cluster(
     reliable = [
         index
         for index, item in enumerate(fragments)
-        if item.end_sample_48k - item.start_sample_48k >= minimum_samples
+        if item.embedding_speech_ms * 48 >= minimum_samples
     ]
     if not reliable:
         reliable = [max(
@@ -206,7 +208,9 @@ class OfflineLayer6Pipeline:
         self.dnsmos = dnsmos
         self.config = config
 
-    def _regions(self, decisions: tuple[bool, ...]) -> tuple[tuple[int, int], ...]:
+    def _regions(
+        self, decisions: tuple[bool, ...],
+    ) -> tuple[tuple[int, int, int, int], ...]:
         gap = self.config.merge_voice_gap_ms // 20
         runs: list[list[int]] = []
         start: int | None = None
@@ -224,20 +228,31 @@ class OfflineLayer6Pipeline:
                 merged.append(run)
         minimum = self.config.minimum_voice_fragment_ms // 20
         regions = tuple((start, end) for start, end in merged if end - start >= minimum)
-        # A VAD run is not a speaker turn: one L2 direction can contain people
-        # speaking back-to-back without a 200 ms silence.  Bound every voiceprint
-        # analysis fragment so a later speaker can receive its own embedding.
-        window = self.config.minimum_embedding_speech_ms // 20
-        split: list[tuple[int, int]] = []
+        # A VAD run is not a speaker turn. Assign the timeline in 500 ms pieces,
+        # while every piece receives up to 1.5 s of embedding context from only
+        # its own merged voice region. A short isolated residual therefore never
+        # borrows reliable speech from a different region to seed a new ID.
+        assignment_window = _SPEAKER_ASSIGNMENT_WINDOW_MS // 20
+        embedding_window = self.config.minimum_embedding_speech_ms // 20
+        split: list[tuple[int, int, int, int]] = []
         for region_start, region_end in regions:
+            assignments: list[list[int]] = []
             cursor = region_start
-            while region_end - cursor > window:
-                split.append((cursor, cursor + window))
-                cursor += window
+            while region_end - cursor > assignment_window:
+                assignments.append([cursor, cursor + assignment_window])
+                cursor += assignment_window
             if region_end - cursor >= minimum:
-                split.append((cursor, region_end))
-            elif split and split[-1][1] == cursor:
-                split[-1] = (split[-1][0], region_end)
+                assignments.append([cursor, region_end])
+            elif assignments:
+                assignments[-1][1] = region_end
+            for first, last in assignments:
+                center = (first + last) // 2
+                embedding_first = max(
+                    region_start,
+                    min(center - embedding_window // 2, region_end - embedding_window),
+                )
+                embedding_last = min(region_end, embedding_first + embedding_window)
+                split.append((first, last, embedding_first, embedding_last))
         return tuple(split)
 
     def process(self, results: tuple[Layer4OfflineResult, ...]) -> Layer6Result:
@@ -272,9 +287,13 @@ class OfflineLayer6Pipeline:
                 float(np.sqrt(np.mean(np.square(np.concatenate(inactive), dtype=np.float64)) + 1e-12))
                 if inactive else 1e-4
             )
-            for region_index, (first, last) in enumerate(self._regions(result.l5_is_voice_20ms)):
+            for region_index, (first, last, context_first, context_last) in enumerate(
+                self._regions(result.l5_is_voice_20ms)
+            ):
                 waveform = np.ascontiguousarray(branch_waveform[first * 320:last * 320], dtype=np.float32)
-                embedding_audio = waveform
+                embedding_audio = np.ascontiguousarray(
+                    branch_waveform[context_first * 320:context_last * 320], dtype=np.float32,
+                )
                 target = self.config.minimum_embedding_speech_ms * 16
                 if len(embedding_audio) < target:
                     embedding_audio = np.resize(embedding_audio, target).astype(np.float32)
@@ -291,6 +310,7 @@ class OfflineLayer6Pipeline:
                     probabilities=result.l5_probabilities_20ms[first:last],
                     decisions=result.l5_is_voice_20ms[first:last],
                     embedding=self.embedder.embed(np.ascontiguousarray(embedding_audio)),
+                    embedding_speech_ms=(context_last - context_first) * 20,
                     noise_rms=noise_rms,
                 ))
         if not pending:
@@ -331,7 +351,8 @@ class OfflineLayer6Pipeline:
         outputs = tuple(self._stitch(speaker_id, tuple(fragments)) for speaker_id in range(1, len(raw_ids) + 1))
         return Layer6Result(next(iter(sessions)), len(outputs), outputs, tuple(fragments), {
             "algorithm": "campplus_segmented_constrained_ahc_dnsmos_timeline_v2",
-            "speaker_segmentation_window_ms": self.config.minimum_embedding_speech_ms,
+            "speaker_assignment_window_ms": _SPEAKER_ASSIGNMENT_WINDOW_MS,
+            "speaker_embedding_context_ms": self.config.minimum_embedding_speech_ms,
             "minimum_concurrent_overlap_ms": _MINIMUM_CONCURRENT_OVERLAP_SAMPLES_48K // 48,
             "cross_track_duplicate_similarity": _CROSS_TRACK_DUPLICATE_SIMILARITY,
             "weak_extra_cluster_margin": _WEAK_EXTRA_CLUSTER_MARGIN,

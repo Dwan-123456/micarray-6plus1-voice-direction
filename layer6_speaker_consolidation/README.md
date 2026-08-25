@@ -2,8 +2,9 @@
 
 L6 is a manual, offline stage. It accepts only completed L4 results after every
 retained L4 branch has received aligned L5 probabilities. Long L5 speech runs
-are divided into bounded speaker-analysis windows before CAMPPlus embedding, so
-one L2 track can change speaker without requiring a long silence. Constrained
+are assigned in 500 ms pieces while CAMPPlus retains up to 1.5 s of context
+inside the same voice region, so one L2 track can change speaker without
+requiring a long silence. Constrained
 average-link clustering uses sustained simultaneous L2 directions as negative
 evidence while allowing near-identical cross-track leakage copies. Short speech
 residuals attach to reliable clusters instead of creating phantom identities.

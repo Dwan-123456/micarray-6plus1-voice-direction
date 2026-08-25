@@ -93,7 +93,7 @@ def test_l6_clusters_candidates_and_keeps_one_quality_winner_per_speaker_timelin
     assert result.speaker_count == 2
     assert tuple(item.label for item in result.outputs) == ("Speaker A", "Speaker B")
     assert all(item.sample_rate == 16_000 and len(item.waveform_16k) == 32_000 for item in result.outputs)
-    assert len(result.fragments) == 8
+    assert len(result.fragments) == 16
     assert all(np.max(np.abs(item.waveform_16k)) <= 0.1 for item in result.outputs)
 
 
@@ -106,9 +106,10 @@ def test_l6_splits_one_uninterrupted_l2_track_when_the_speaker_embedding_changes
         _one_candidate(waveform, (True,) * 150),
     ))
     assert result.speaker_count == 2
-    assert tuple(item.speaker_id for item in result.fragments) == (1, 2)
+    assert tuple(item.speaker_id for item in result.fragments) == (1, 1, 1, 2, 2, 2)
     assert tuple((item.start_sample_48k, item.end_sample_48k) for item in result.fragments) == (
-        (0, 72_000), (72_000, 144_000),
+        (0, 24_000), (24_000, 48_000), (48_000, 72_000),
+        (72_000, 96_000), (96_000, 120_000), (120_000, 144_000),
     )
 
 
@@ -123,7 +124,7 @@ def test_l6_short_residual_voice_cannot_create_a_phantom_speaker() -> None:
         _one_candidate(waveform, decisions),
     ))
     assert result.speaker_count == 1
-    assert len(result.fragments) == 2
+    assert len(result.fragments) == 4
     assert {item.speaker_id for item in result.fragments} == {1}
 
 
