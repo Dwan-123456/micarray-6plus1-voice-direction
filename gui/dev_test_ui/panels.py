@@ -332,10 +332,10 @@ class BeamformPanel(QGroupBox):
         preview_controls = QHBoxLayout()
         self.preview_summary = QLabel("L3 formal preview: waiting for an open Gate and candidate")
         self.preview_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.mode_switch = QPushButton("优化算法")
-        self._processing_mode = "optimized"
+        self.mode_switch = QPushButton("MVDR")
+        self._processing_mode = "loaded_mvdr_baseline"
         self.mode_switch.setToolTip(
-            "依次切换：优化算法 → DS基线 → Loaded MVDR基线；只影响后续L3窗口"
+            "依次切换：MVDR → LCMV → DS；只影响后续L3窗口"
         )
         self.mode_switch.clicked.connect(self._cycle_mode)
         self.downstream_switch = QPushButton()
@@ -407,9 +407,9 @@ class BeamformPanel(QGroupBox):
             raise ValueError(f"unknown L3 processing mode: {mode}")
         self._processing_mode = mode
         labels = {
-            "optimized": "优化算法",
-            "ds_baseline": "DS基线",
-            "loaded_mvdr_baseline": "Loaded MVDR基线",
+            "optimized": "LCMV",
+            "ds_baseline": "DS",
+            "loaded_mvdr_baseline": "MVDR",
         }
         colors = {
             "optimized": "",

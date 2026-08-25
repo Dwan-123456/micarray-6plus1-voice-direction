@@ -41,7 +41,7 @@ from layer2_source_detection import (
     DirectionScanConfig, Layer2Pipeline, SourceProbability20ms, SourceProbabilityState,
 )
 from layer3_direction_signal import (
-    L3_MODE_OPTIMIZED,
+    L3_MODE_LOADED_MVDR,
     L3_PROCESSING_MODES,
     Layer3Output,
     Layer3Processor,
@@ -289,7 +289,7 @@ class ApplicationRuntime:
         self._gate_probability_threshold = config.layer2.probability_gate.threshold
         self._gate_config_revision = 0
         self._l3_mode_lock = threading.Lock()
-        self._l3_processing_mode = L3_MODE_OPTIMIZED
+        self._l3_processing_mode = L3_MODE_LOADED_MVDR
         self._l3_config_revision = 0
         self._downstream_processing_enabled = threading.Event()
         if not self._ephemeral_live_capture:

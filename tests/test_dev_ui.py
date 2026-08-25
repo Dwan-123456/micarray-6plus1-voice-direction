@@ -947,20 +947,21 @@ def test_l3_mode_button_switches_runtime_before_capture(monkeypatch, tmp_path):
     config_path.write_text(CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
     app, window = build_window(config_path)
     try:
-        assert window._runtime.l3_processing_mode == "optimized"
-        assert window.bf_panel.mode_switch.text() == "优化算法"
+        assert window._runtime.l3_processing_mode == "loaded_mvdr_baseline"
+        assert window.bf_panel.mode_switch.text() == "MVDR"
         window.bf_panel.mode_switch.click()
         app.processEvents()
-        assert window._runtime.l3_processing_mode == "ds_baseline"
-        assert window.bf_panel.mode_switch.text() == "DS基线"
+        assert window._runtime.l3_processing_mode == "optimized"
+        assert window.bf_panel.mode_switch.text() == "LCMV"
         assert window.bf_panel.mode_switch.isEnabled()
         window.bf_panel.mode_switch.click()
         app.processEvents()
-        assert window._runtime.l3_processing_mode == "loaded_mvdr_baseline"
-        assert window.bf_panel.mode_switch.text() == "Loaded MVDR基线"
+        assert window._runtime.l3_processing_mode == "ds_baseline"
+        assert window.bf_panel.mode_switch.text() == "DS"
         window.bf_panel.mode_switch.click()
         app.processEvents()
-        assert window._runtime.l3_processing_mode == "optimized"
+        assert window._runtime.l3_processing_mode == "loaded_mvdr_baseline"
+        assert window.bf_panel.mode_switch.text() == "MVDR"
     finally:
         window.close()
         app.processEvents()

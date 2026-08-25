@@ -1089,9 +1089,9 @@ def build_window(
             self._l5_is_stale = False
             self.cnn_panel.set_unavailable("L3 MODE CHANGED: waiting for next window")
             label = {
-                "optimized": "优化算法",
-                "ds_baseline": "DS基线",
-                "loaded_mvdr_baseline": "Loaded MVDR基线",
+                "optimized": "LCMV",
+                "ds_baseline": "DS",
+                "loaded_mvdr_baseline": "MVDR",
             }[applied]
             self.statusBar().showMessage(f"L3已切换为{label}；从下一个处理窗口生效", 5000)
 

@@ -369,7 +369,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - 前两行是`Center Mic RAW`与`Center Mic IMCRA`：前者为校准后、预降噪前原音，后者仅缓存预降噪开启期间实际采用的Center降噪输出；
 - 方向轨严格按L2权威`track_id`缓存和显示，Test UI不再按角度创建第二套ID；
 - confirmed方向短时漏检时可进入coasting并在2秒TTL内沿用同一ID；
-- 可通过按键切换`optimized`、`ds_baseline`和`loaded_mvdr_baseline`三种BF方法；
+- L3按键显示为`MVDR`、`LCMV`和`DS`，默认使用MVDR；内部仍分别对应`loaded_mvdr_baseline`、`optimized`和`ds_baseline`；
 - 切换L3模式会清空旧模式的方向试听缓存；
 
 #### 下中与下右：离线Layer 4 / Layer 5 / Layer 6
@@ -389,7 +389,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 1. 先保持预降噪、DPD、IMCRA白化和卡尔曼关闭，检查基础Gate、MUSIC伪谱和永久ID关联；
 2. 再分别把MUSIC阶数设为1、2、3，记录候选数量和误峰变化；
 3. 需要试验鲁棒定位时，每次只开启DPD或IMCRA白化中的一个；最后再开启卡尔曼并小幅调整Q/R倍率；
-4. 使用同一段录音比较`optimized`、`ds_baseline`和`loaded_mvdr_baseline`；DAS只用于单声源，双声源重点比较优化方法与Loaded MVDR对照；
+4. 使用同一段录音比较`LCMV`（内部`optimized`）、`DS`（内部`ds_baseline`）和`MVDR`（内部`loaded_mvdr_baseline`）；DS只用于单声源，双声源重点比较LCMV与MVDR；
 5. Gate阈值、MUSIC候选阈值和L5分类阈值分别记录，不要把三者当成同一个“灵敏度”。
 
 ## 录音数据和配置
