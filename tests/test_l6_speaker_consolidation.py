@@ -55,8 +55,29 @@ def _results(track_id: int) -> tuple[Layer4OfflineResult, Layer4OfflineResult]:
     ) for index in range(2))  # type: ignore[return-value]
 
 
-def test_l6_clusters_candidates_and_keeps_one_quality_winner_per_speaker_timeline() -> None:
-    config = SimpleNamespace(
+def _one_candidate(
+    waveform_16k: np.ndarray,
+    decisions: tuple[bool, ...],
+) -> Layer4OfflineResult:
+    source_audio = np.zeros(len(waveform_16k) * 3, np.float32)
+    source = Layer4LongAudioInput(
+        "asset-segmented", _sha(source_audio), "session", 0, 1, 0.0,
+        0, 48_000, source_audio,
+        tuple((sample, 1) for sample in range(960, len(source_audio) + 1, 960)),
+    )
+    count = SpeakerCountDecision(source.asset_id, 2, 1.0, "test", {})
+    probabilities = tuple(0.9 if active else 0.1 for active in decisions)
+    return Layer4OfflineResult(
+        "request-segmented", source, count, "two_speaker_separation", None,
+        0.9, True, "l5", probabilities, decisions,
+        "asset-segmented:branch-0", _sha(waveform_16k),
+        {"l5_threshold": 0.5, "output_waveform_16k": waveform_16k},
+        "candidate_0",
+    )
+
+
+def _config() -> SimpleNamespace:
+    return SimpleNamespace(
         maximum_speakers=3,
         speaker_similarity_threshold=0.62,
         minimum_embedding_speech_ms=1_500,
@@ -65,12 +86,45 @@ def test_l6_clusters_candidates_and_keeps_one_quality_winner_per_speaker_timelin
         selection_switch_margin=0.05,
         crossfade_ms=2,
     )
-    result = OfflineLayer6Pipeline(_Embedder(), _DnsMos(), config).process((*_results(1), *_results(2)))
+
+
+def test_l6_clusters_candidates_and_keeps_one_quality_winner_per_speaker_timeline() -> None:
+    result = OfflineLayer6Pipeline(_Embedder(), _DnsMos(), _config()).process((*_results(1), *_results(2)))
     assert result.speaker_count == 2
     assert tuple(item.label for item in result.outputs) == ("Speaker A", "Speaker B")
     assert all(item.sample_rate == 16_000 and len(item.waveform_16k) == 32_000 for item in result.outputs)
-    assert len(result.fragments) == 4
+    assert len(result.fragments) == 8
     assert all(np.max(np.abs(item.waveform_16k)) <= 0.1 for item in result.outputs)
+
+
+def test_l6_splits_one_uninterrupted_l2_track_when_the_speaker_embedding_changes() -> None:
+    waveform = np.concatenate((
+        np.full(24_000, 0.1, np.float32),
+        np.full(24_000, -0.1, np.float32),
+    ))
+    result = OfflineLayer6Pipeline(_Embedder(), _DnsMos(), _config()).process((
+        _one_candidate(waveform, (True,) * 150),
+    ))
+    assert result.speaker_count == 2
+    assert tuple(item.speaker_id for item in result.fragments) == (1, 2)
+    assert tuple((item.start_sample_48k, item.end_sample_48k) for item in result.fragments) == (
+        (0, 72_000), (72_000, 144_000),
+    )
+
+
+def test_l6_short_residual_voice_cannot_create_a_phantom_speaker() -> None:
+    waveform = np.concatenate((
+        np.full(24_000, 0.1, np.float32),
+        np.zeros(4_800, np.float32),
+        np.full(6_400, -0.1, np.float32),
+    ))
+    decisions = (True,) * 75 + (False,) * 15 + (True,) * 20
+    result = OfflineLayer6Pipeline(_Embedder(), _DnsMos(), _config()).process((
+        _one_candidate(waveform, decisions),
+    ))
+    assert result.speaker_count == 1
+    assert len(result.fragments) == 2
+    assert {item.speaker_id for item in result.fragments} == {1}
 
 
 def test_l6_ui_aligns_each_final_id_to_one_shared_absolute_timeline() -> None:

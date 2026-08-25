@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations
 from time import perf_counter
 from typing import Protocol
 
@@ -44,15 +45,75 @@ def _cosine(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.dot(left, right) / max(float(np.linalg.norm(left) * np.linalg.norm(right)), 1e-12))
 
 
-def _cluster(embeddings: tuple[np.ndarray, ...], threshold: float, maximum: int) -> tuple[int, ...]:
-    clusters: list[list[int]] = [[index] for index in range(len(embeddings))]
+_MINIMUM_CONCURRENT_OVERLAP_SAMPLES_48K = 24_000
+_CROSS_TRACK_DUPLICATE_SIMILARITY = 0.85
+_WEAK_EXTRA_CLUSTER_MARGIN = 0.15
+
+
+def _cannot_share_speaker(left: _PendingFragment, right: _PendingFragment) -> bool:
+    """Keep two sustained, simultaneous L2 directions in different speaker classes."""
+
+    if left.source_track_id == right.source_track_id:
+        return False
+    overlap = min(left.end_sample_48k, right.end_sample_48k) - max(
+        left.start_sample_48k, right.start_sample_48k,
+    )
+    shorter = min(
+        left.end_sample_48k - left.start_sample_48k,
+        right.end_sample_48k - right.start_sample_48k,
+    )
+    return (
+        overlap >= _MINIMUM_CONCURRENT_OVERLAP_SAMPLES_48K
+        and overlap * 2 >= shorter
+        and _cosine(left.embedding, right.embedding) < _CROSS_TRACK_DUPLICATE_SIMILARITY
+    )
+
+
+def _cluster(
+    fragments: tuple[_PendingFragment, ...],
+    threshold: float,
+    maximum: int,
+    minimum_embedding_speech_ms: int,
+) -> tuple[int, ...]:
+    """Constrained AHC over reliable windows, then attach short residual speech.
+
+    Repeating a 200 ms residual until CAMPPlus accepts it produces an embedding,
+    but not enough evidence to establish a new person.  Only windows containing
+    the configured minimum amount of real audio seed clusters.  Short residuals
+    are assigned to the closest established centroid afterwards.
+    """
+
+    minimum_samples = minimum_embedding_speech_ms * 48
+    reliable = [
+        index
+        for index, item in enumerate(fragments)
+        if item.end_sample_48k - item.start_sample_48k >= minimum_samples
+    ]
+    if not reliable:
+        reliable = [max(
+            range(len(fragments)),
+            key=lambda index: fragments[index].end_sample_48k - fragments[index].start_sample_48k,
+        )]
+    clusters: list[list[int]] = [[index] for index in reliable]
 
     def similarity(left: list[int], right: list[int]) -> float:
-        return float(np.mean([_cosine(embeddings[a], embeddings[b]) for a in left for b in right]))
+        return float(np.mean([
+            _cosine(fragments[a].embedding, fragments[b].embedding)
+            for a in left for b in right
+        ]))
+
+    def constrained_similarity(left: list[int], right: list[int]) -> float:
+        score = similarity(left, right)
+        if any(
+            _cannot_share_speaker(fragments[a], fragments[b])
+            for a in left for b in right
+        ):
+            score -= 0.25
+        return score
 
     while len(clusters) > 1:
         options = [
-            (similarity(clusters[left], clusters[right]), left, right)
+            (constrained_similarity(clusters[left], clusters[right]), left, right)
             for left in range(len(clusters))
             for right in range(left + 1, len(clusters))
         ]
@@ -60,10 +121,80 @@ def _cluster(embeddings: tuple[np.ndarray, ...], threshold: float, maximum: int)
         if len(clusters) <= maximum and score < threshold:
             break
         clusters[left].extend(clusters.pop(right))
-    assignments = [0] * len(embeddings)
+
+    # Directional L2 tracks provide a conservative speaker floor.  AHC may
+    # still add another class for a real speaker change inside one track, but
+    # only when that class is clearly separated.  This removes unstable third
+    # classes caused by separator leakage and noisy per-window embeddings.
+    track_ids = sorted({fragments[index].source_track_id for index in reliable})
+    incompatible_tracks = {
+        (left, right)
+        for left, right in combinations(track_ids, 2)
+        if any(
+            _cannot_share_speaker(fragments[a], fragments[b])
+            for a in reliable for b in reliable
+            if fragments[a].source_track_id == left
+            and fragments[b].source_track_id == right
+        )
+    }
+    speaker_floor = 1
+    for size in range(2, min(maximum, len(track_ids)) + 1):
+        if any(
+            all(tuple(sorted(pair)) in incompatible_tracks for pair in combinations(group, 2))
+            for group in combinations(track_ids, size)
+        ):
+            speaker_floor = size
+    while len(clusters) > max(1, speaker_floor):
+        centroids = []
+        for members in clusters:
+            centroid = np.mean([fragments[index].embedding for index in members], axis=0)
+            centroid /= max(float(np.linalg.norm(centroid)), 1e-12)
+            centroids.append(centroid)
+        margins = []
+        for cluster_index, members in enumerate(clusters):
+            own = float(np.mean([
+                _cosine(fragments[index].embedding, centroids[cluster_index])
+                for index in members
+            ]))
+            alternate = max(
+                float(np.mean([
+                    _cosine(fragments[index].embedding, centroids[other])
+                    for index in members
+                ]))
+                for other in range(len(clusters)) if other != cluster_index
+            )
+            margins.append(own - alternate)
+        weakest = int(np.argmin(margins))
+        if margins[weakest] >= _WEAK_EXTRA_CLUSTER_MARGIN:
+            break
+        destination = max(
+            (index for index in range(len(clusters)) if index != weakest),
+            key=lambda index: similarity(clusters[weakest], clusters[index]),
+        )
+        clusters[destination].extend(clusters.pop(weakest))
+    assignments = [-1] * len(fragments)
     for cluster_index, members in enumerate(clusters):
         for member in members:
             assignments[member] = cluster_index
+    for index, item in enumerate(fragments):
+        if assignments[index] >= 0:
+            continue
+        centroids = [
+            np.mean([fragments[member].embedding for member in members], axis=0)
+            for members in clusters
+        ]
+        allowed = [
+            cluster_index
+            for cluster_index, members in enumerate(clusters)
+            if not any(_cannot_share_speaker(item, fragments[member]) for member in members)
+        ]
+        candidates = allowed or list(range(len(clusters)))
+        selected = max(
+            candidates,
+            key=lambda cluster_index: _cosine(item.embedding, centroids[cluster_index]),
+        )
+        assignments[index] = selected
+        clusters[selected].append(index)
     return tuple(assignments)
 
 
@@ -92,7 +223,22 @@ class OfflineLayer6Pipeline:
             else:
                 merged.append(run)
         minimum = self.config.minimum_voice_fragment_ms // 20
-        return tuple((start, end) for start, end in merged if end - start >= minimum)
+        regions = tuple((start, end) for start, end in merged if end - start >= minimum)
+        # A VAD run is not a speaker turn: one L2 direction can contain people
+        # speaking back-to-back without a 200 ms silence.  Bound every voiceprint
+        # analysis fragment so a later speaker can receive its own embedding.
+        window = self.config.minimum_embedding_speech_ms // 20
+        split: list[tuple[int, int]] = []
+        for region_start, region_end in regions:
+            cursor = region_start
+            while region_end - cursor > window:
+                split.append((cursor, cursor + window))
+                cursor += window
+            if region_end - cursor >= minimum:
+                split.append((cursor, region_end))
+            elif split and split[-1][1] == cursor:
+                split[-1] = (split[-1][0], region_end)
+        return tuple(split)
 
     def process(self, results: tuple[Layer4OfflineResult, ...]) -> Layer6Result:
         started = perf_counter()
@@ -149,12 +295,14 @@ class OfflineLayer6Pipeline:
                 ))
         if not pending:
             return Layer6Result(next(iter(sessions)), 0, (), (), {
-                "algorithm": "campplus_ahc_dnsmos_timeline_v1", "elapsed_ms": (perf_counter() - started) * 1_000.0,
+                "algorithm": "campplus_segmented_constrained_ahc_dnsmos_timeline_v2",
+                "elapsed_ms": (perf_counter() - started) * 1_000.0,
             })
         raw_assignments = _cluster(
-            tuple(item.embedding for item in pending),
+            tuple(pending),
             self.config.speaker_similarity_threshold,
             self.config.maximum_speakers,
+            self.config.minimum_embedding_speech_ms,
         )
         raw_ids = sorted(set(raw_assignments), key=lambda value: min(
             item.start_sample_48k for item, assignment in zip(pending, raw_assignments) if assignment == value
@@ -182,7 +330,11 @@ class OfflineLayer6Pipeline:
             ))
         outputs = tuple(self._stitch(speaker_id, tuple(fragments)) for speaker_id in range(1, len(raw_ids) + 1))
         return Layer6Result(next(iter(sessions)), len(outputs), outputs, tuple(fragments), {
-            "algorithm": "campplus_ahc_dnsmos_timeline_v1",
+            "algorithm": "campplus_segmented_constrained_ahc_dnsmos_timeline_v2",
+            "speaker_segmentation_window_ms": self.config.minimum_embedding_speech_ms,
+            "minimum_concurrent_overlap_ms": _MINIMUM_CONCURRENT_OVERLAP_SAMPLES_48K // 48,
+            "cross_track_duplicate_similarity": _CROSS_TRACK_DUPLICATE_SIMILARITY,
+            "weak_extra_cluster_margin": _WEAK_EXTRA_CLUSTER_MARGIN,
             "speaker_similarity_threshold": self.config.speaker_similarity_threshold,
             "quality_weights": {"voice": 0.30, "speaker": 0.30, "mos": 0.20, "snr": 0.10, "continuity": 0.10},
             "elapsed_ms": (perf_counter() - started) * 1_000.0,
