@@ -89,6 +89,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer4.streaming.chunk_seconds == 4
     assert config.layer4.streaming.overlap_seconds == 1
     assert config.layer4.streaming.queue_chunks == 2
+    assert config.layer6.maximum_speakers == 5
     assert config.layer1_speaker_count.model_sha256 == "f655f168bbd9091efd18b950e63484825ba68052a911331cab1e845e27e505e4"
     assert config.recording.runtime.record_imcra is True
     assert config.recording.runtime.record_noise_spectrum is True

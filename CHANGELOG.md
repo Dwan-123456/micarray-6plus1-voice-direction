@@ -21,6 +21,16 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-25 — L6输出契约扩展至100并限制MultiStage最多5簇
+
+- **问题与边界**：MultiStage在少于`L=30`条证据时使用距离门限fallback AHC，该第三方fallback不遵守SpectralClusterer的`max_clusters`，实机产生第4簇后触发旧DTO仅允许Speaker 1～3的校验，导致L4/L5成功但最终L6失败。
+- **MultiStage上限**：部署默认与配置上限由3调为5；fallback或历史修订返回超过5簇时，按每簇16 kHz有效样本数加权计算声纹质心，反复合并余弦距离最近的簇，保证发布结果最多5人。正常不超限时保留第三方后端原标签。
+- **输出契约**：`Layer6Fragment`、`Layer6SpeakerAudio`和`Layer6Result`的会话内输出范围放宽至1～100；标签从Speaker A～Z继续扩展为AA～CV。DTO扩展空间与当前MultiStage最多5簇相互独立，UI当前实际输出仍为Speaker A～E。
+- **验证状态**：新增fallback六簇压缩为五簇、100个有序输出、Speaker CV标签及101越界测试；按用户要求直接提交，本次未运行自动回归或Pass实模，不能视为实机验收。
+- **未改变范围**：L1～L5、CAMPPlus embedding、L6候选准入、MOS择优、时间线拼接、静音压缩、录音/数据schema及模型资产无变化。
+
+---
+
 ## 2026-08-25 — 正式录音后移除L3 Center Mic试听轨
 
 - **Development Test UI**：真实麦克风模式点击“正式录音开始”并成功切换后，立即清除L3中已有的`Center Mic RAW`与`Center Mic IMCRA`试听行；正式录音期间所有后续快照均过滤这两条参考轨，避免录音边界前的旧UI快照将其重新显示。L3正式ID方向音轨继续按原规则刷新和试听。

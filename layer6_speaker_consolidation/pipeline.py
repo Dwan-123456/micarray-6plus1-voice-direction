@@ -12,6 +12,7 @@ from .contracts import (
     Layer6Fragment,
     Layer6Result,
     Layer6SpeakerAudio,
+    speaker_label,
 )
 from .models import CampPlusEmbedder
 from .matching import TrackMatchFeatures, hungarian_track_features
@@ -711,7 +712,7 @@ class OfflineLayer6Pipeline:
             return None
         return Layer6SpeakerAudio(
             speaker_id,
-            f"Speaker {chr(64 + speaker_id)}",
+            speaker_label(speaker_id),
             16_000,
             recording_start,
             recording_end,

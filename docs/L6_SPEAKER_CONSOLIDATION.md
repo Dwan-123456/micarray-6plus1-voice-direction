@@ -18,7 +18,7 @@ L6是每批L4、L5成功完成后自动运行的离线步骤，不参与实时�
 
 全部入选整轨声纹
   -> 两两余弦相似度矩阵
-  -> 平均链接AHC，阈值0.62，强制最多3个声纹
+  -> MultiStage聚类；fallback超过5簇时按最近加权质心合并，最多5个声纹
   -> 一个声纹关联一条或多条完整A/B音轨
 
 逐个声纹
@@ -28,7 +28,7 @@ L6是每批L4、L5成功完成后自动运行的离线步骤，不参与实时�
   -> 无音频帧保持静音
   -> 删除全部首尾静音
   -> 内部静音不超过2秒时保留，超过2秒时缩短为2秒
-  -> 按Speaker A/B/C声纹显示压缩后的16 kHz音频
+  -> 按Speaker A～E声纹显示压缩后的16 kHz音频
 ```
 
 ## 声纹与音频关系
@@ -73,6 +73,7 @@ Q分不再参与选择，L6也不重复运行DNSMOS。
 - `ApplicationRuntime.build_offline_l6_pipeline()`：构建CPU L6，只加载CAMPPlus。
 - `OfflineLayer6Pipeline.process(tuple[Layer4OfflineResult, ...])`：返回
   `Layer6Result`。
-- `Layer6Result.outputs`：0～3条按声纹显示的`Layer6SpeakerAudio`，包含压缩后
-  16 kHz波形、原始录音边界、来源L2 ID、关联音轨ID和平均MOS。
+- `Layer6Result.outputs`：当前聚类最多生成5条按声纹显示的`Layer6SpeakerAudio`，包含压缩后
+  16 kHz波形、原始录音边界、来源L2 ID、关联音轨ID和平均MOS。DTO的会话内
+  `speaker_id`范围独立放宽为1～100，标签按A～Z、AA～CV生成；当前MultiStage仍硬限制为5簇。
 - `Layer6Result.fragments`：每条入选完整A/B音轨到最终声纹的审计关系。

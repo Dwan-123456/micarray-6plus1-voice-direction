@@ -46,7 +46,7 @@ higher-MOS audio. Missing frames remain silent.
 
 After the absolute-time merge, all leading and trailing silence is removed.
 Every internal silent run longer than two seconds is shortened to two seconds;
-shorter pauses remain unchanged. The displayed 16 kHz Speaker A/B/C waveform is
+shorter pauses remain unchanged. The displayed 16 kHz Speaker A-E waveform is
 therefore silence-compressed and is not required to remain equal to the original
 recording duration. Its source recording bounds remain attached for audit.
 

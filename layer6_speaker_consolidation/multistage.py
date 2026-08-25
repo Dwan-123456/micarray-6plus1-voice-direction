@@ -111,6 +111,42 @@ class MultiStageVoiceprintClusterer:
     def evidence_count(self) -> int:
         return len(self._evidence)
 
+    def _limit_cluster_count(self, labels: np.ndarray) -> np.ndarray:
+        """Merge nearest weighted centroids until the configured cap is met."""
+
+        limited = np.asarray(labels, dtype=np.int32).copy()
+        maximum = int(self.config.maximum_speakers)
+        while len(np.unique(limited)) > maximum:
+            cluster_ids = tuple(int(value) for value in np.unique(limited))
+            centroids: dict[int, np.ndarray] = {}
+            for cluster_id in cluster_ids:
+                indices = np.flatnonzero(limited == cluster_id)
+                weights = np.asarray(
+                    [self._evidence[index].weight_samples_16k for index in indices],
+                    dtype=np.float64,
+                )
+                vectors = np.stack(
+                    [self._evidence[index].embedding for index in indices],
+                ).astype(np.float64, copy=False)
+                centroid = np.average(vectors, axis=0, weights=weights)
+                centroid /= max(float(np.linalg.norm(centroid)), 1e-12)
+                centroids[cluster_id] = centroid
+            target, source = max(
+                (
+                    (
+                        float(np.dot(centroids[left], centroids[right])),
+                        -left,
+                        -right,
+                        left,
+                        right,
+                    )
+                    for index, left in enumerate(cluster_ids)
+                    for right in cluster_ids[index + 1:]
+                ),
+            )[3:]
+            limited[limited == source] = target
+        return limited
+
     def update(self, evidence: tuple[SegmentEvidence, ...]) -> MultiStageSnapshot:
         for item in evidence:
             previous = self._by_id.get(item.evidence_id)
@@ -125,9 +161,10 @@ class MultiStageVoiceprintClusterer:
             self._evidence.append(item)
             self._by_id[item.evidence_id] = item
             self._labels = labels
+        limited_labels = self._limit_cluster_count(self._labels)
         labels_by_id = {
             item.evidence_id: int(label)
-            for item, label in zip(self._evidence, self._labels, strict=True)
+            for item, label in zip(self._evidence, limited_labels, strict=True)
         }
         count = len(set(labels_by_id.values()))
         if len(self._evidence) < int(self.config.multistage_l):

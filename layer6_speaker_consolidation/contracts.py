@@ -8,6 +8,22 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+MAX_SESSION_SPEAKERS = 100
+
+
+def speaker_label(speaker_id: int) -> str:
+    """Return stable spreadsheet-style labels from Speaker A through CV."""
+
+    if type(speaker_id) is not int or not 1 <= speaker_id <= MAX_SESSION_SPEAKERS:
+        raise ValueError("L6 speaker ID must be a session-local value in 1..100")
+    value = speaker_id
+    suffix = ""
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        suffix = chr(65 + remainder) + suffix
+    return f"Speaker {suffix}"
+
+
 def _audio(value: NDArray[np.float32], name: str) -> NDArray[np.float32]:
     array = np.asarray(value)
     if array.ndim != 1 or array.dtype != np.float32 or not array.flags.c_contiguous or not np.isfinite(array).all():
@@ -82,8 +98,8 @@ class Layer6Fragment:
             raise ValueError("L6 fragment probabilities must align to 20 ms audio")
         if len(decisions) != len(probabilities) or any(type(value) is not bool for value in decisions):
             raise ValueError("L6 fragment voice decisions must align to 20 ms audio")
-        if self.speaker_id not in {1, 2, 3}:
-            raise ValueError("L6 speaker IDs are session-local values 1..3")
+        if type(self.speaker_id) is not int or not 1 <= self.speaker_id <= MAX_SESSION_SPEAKERS:
+            raise ValueError("L6 speaker IDs are session-local values 1..100")
         if any(
             not np.isfinite(value) or not 0.0 <= value <= 1.0
             for value in (self.match_score, self.mos_score, self.speaker_similarity)
@@ -109,7 +125,7 @@ class Layer6SpeakerAudio:
 
     def __post_init__(self) -> None:
         waveform = _audio(self.waveform_16k, "L6 speaker output")
-        if self.speaker_id not in {1, 2, 3} or self.label != f"Speaker {chr(64 + self.speaker_id)}":
+        if self.label != speaker_label(self.speaker_id):
             raise ValueError("L6 speaker label is invalid")
         if (
             self.sample_rate != 16_000
@@ -135,7 +151,11 @@ class Layer6Result:
     metadata: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        if not self.session_id or self.speaker_count != len(self.outputs) or not 0 <= self.speaker_count <= 3:
+        if (
+            not self.session_id
+            or self.speaker_count != len(self.outputs)
+            or not 0 <= self.speaker_count <= MAX_SESSION_SPEAKERS
+        ):
             raise ValueError("L6 result speaker count is invalid")
         if tuple(item.speaker_id for item in self.outputs) != tuple(range(1, self.speaker_count + 1)):
             raise ValueError("L6 outputs must use ordered session-local speaker IDs")

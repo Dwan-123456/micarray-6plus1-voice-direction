@@ -15,9 +15,11 @@ from layer4_speech_separation import (
     SpeakerCountDecision,
 )
 from layer6_speaker_consolidation import (
+    Layer6Fragment,
     Layer6Result,
     Layer6SpeakerAudio,
     OfflineLayer6Pipeline,
+    speaker_label,
 )
 from layer6_speaker_consolidation.pipeline import _cluster, _track_similarity
 from layer6_speaker_consolidation.campplus import CAMPPlus
@@ -297,6 +299,49 @@ def test_l6_clusters_complete_tracks_and_records_one_voiceprint_to_many_audio() 
     assert matrix.shape == (3, 3)
     assert np.allclose(matrix, matrix.T)
     assert np.allclose(np.diag(matrix), 1.0)
+
+
+def test_l6_output_contract_supports_one_hundred_session_speakers() -> None:
+    waveform = np.zeros(320, dtype=np.float32)
+    outputs = tuple(
+        Layer6SpeakerAudio(
+            speaker_id,
+            speaker_label(speaker_id),
+            16_000,
+            0,
+            960,
+            waveform,
+            (speaker_id,),
+            (f"fragment-{speaker_id}",),
+            0.5,
+        )
+        for speaker_id in range(1, 101)
+    )
+    fragment = Layer6Fragment(
+        "fragment-100",
+        "asset-100",
+        100,
+        0.0,
+        0,
+        True,
+        0,
+        960,
+        waveform,
+        (0.9,),
+        (True,),
+        np.asarray((1.0, 0.0), dtype=np.float32),
+        100,
+        0.5,
+        0.5,
+        0.5,
+    )
+
+    result = Layer6Result("session", 100, outputs, (fragment,), {})
+
+    assert result.outputs[-1].label == "Speaker CV"
+    assert result.fragments[0].speaker_id == 100
+    with pytest.raises(ValueError, match="1..100"):
+        speaker_label(101)
 
 
 def test_l6_forces_four_distinct_complete_track_voiceprints_down_to_three() -> None:

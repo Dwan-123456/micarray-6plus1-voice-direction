@@ -185,10 +185,10 @@ WindowWorkItem
 【已完成】Layer 6：整次录音人物归类与重复音频择优
     每条A完整提取CAMPPlus 192维声纹
     B仅在A/B匹配度差≤0.20、B匹配度>0.50且B MOS>0.30时完整提取声纹
-    入选整轨声纹两两计算相似度，经平均链接AHC聚为0～3人
+    入选声纹由MultiStage增量聚类，fallback溢出按最近质心合并为最多5人
     每个声纹关联一条或多条A/B音轨；按录音绝对时间线逐20 ms填入
     重叠部分保留MOS更高音频；无音频处补静音
-    删除首尾静音，内部超过2秒的静音压缩为2秒，按声纹显示Speaker A/B/C
+    删除首尾静音，内部超过2秒的静音压缩为2秒，按声纹显示Speaker A～E
 
 【已完成】独立L1 Spectrum UI（平行工具，不接入上述Runtime）
     自建L1-only采集链：设备自动扫描、校准、IMCRA、可选预降噪、电平与频谱抓拍
@@ -386,7 +386,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - L4整批完成后自动且仅一次运行L5，不再提供单独“发送到L5”按钮；
 - L5为每个20 ms hop输出概率和Voice / Non-Voice，Voice区间在对应L4音频条标黄；
 - L5阈值只重新判断缓存概率并重绘黄色区间，不改变L2 Gate，也不重跑模型；
-- L4固定保留A/B双候选并分别进入L5；每批L4/L5完成后自动运行L6，结果按声纹显示Speaker A/B/C，标出关联音轨数、来源L2 ID和平均MOS。
+- L4固定保留A/B双候选并分别进入L5；每批L4/L5完成后自动运行L6，MultiStage最多输出5个声纹并显示Speaker A～E，标出关联音轨数、来源L2 ID和平均MOS。底层会话输出契约为后续扩展保留1～100及A～CV标签空间。
 
 
 ### 4. 参数调整建议

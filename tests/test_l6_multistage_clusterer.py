@@ -98,6 +98,22 @@ def test_multistage_adapter_rejects_changed_evidence() -> None:
         clusterer.update((_evidence(0, (0.0, 1.0)),))
 
 
+def test_multistage_adapter_merges_fallback_overflow_to_five_clusters() -> None:
+    outputs = tuple(tuple(range(count)) for count in range(1, 7))
+    clusterer = MultiStageVoiceprintClusterer(
+        _config(maximum_speakers=5, multistage_u1=6),
+        backend=_SequenceBackend(outputs),
+    )
+
+    snapshot = clusterer.update(tuple(
+        _evidence(index, (1.0, float(index + 1)))
+        for index in range(6)
+    ))
+
+    assert snapshot.cluster_count == 5
+    assert len(set(snapshot.labels_by_evidence_id.values())) == 5
+
+
 class _SignEmbedder:
     def embed_batch(self, waveforms: tuple[np.ndarray, ...]) -> tuple[np.ndarray, ...]:
         return tuple(

@@ -262,7 +262,7 @@ layer6:
   enabled: true
   campplus_artifact: models/campplus_zh_en_16k_v1
   dnsmos_artifact: models/dnsmos_p835_v1
-  maximum_speakers: 3
+  maximum_speakers: 5
   speaker_similarity_threshold: 0.62
   secondary_candidate_match_gap_max: 0.20
   secondary_candidate_match_min: 0.50

@@ -111,7 +111,7 @@ flowchart TB
 | 渐进Layer 5/6 | 稳定L4片段 | MarbleNet跨块上下文并延迟右端；DNSMOS降频；2秒CAMPPlus余量跨块；L6随L4块长刷新 | 可替换L5帧与provisional L6 speaker revision | CPU；latest-only；不入正式审计 |
 | 权威Layer 4 | Hub封存的完整`Layer4LongAudioInput`与实时final/逐轨完成检查点 | 逐ID核验身份/范围/SHA/后端/分支/水位及逐轨final；一致则转正，仅未完成或异常轨运行完整L4 | 双人父轨两条16 kHz A/B候选；单人一条旁路 | 停止后选择性校正 |
 | 权威Layer 5 | L4原生16 kHz完整波形 | NVIDIA MarbleNet Frame-VAD；每320 sample推理；阈值比较；连续3帧均值摘要 | `Layer5LongAudioResult`和`Layer4OfflineResult` | 16 kHz；20 ms一帧；默认阈值0.70 |
-| 权威Layer 6 | 完整L4/L5及MOS/绝对时间线 | CAMPPlus；B门限；完整链接聚类；MOS择优；静音压缩 | 最终Speaker A/B/C与审计 | 停止后运行并原子替换preview |
+| 权威Layer 6 | 完整L4/L5及MOS/绝对时间线 | CAMPPlus；B门限；MultiStage最多5簇；MOS择优；静音压缩 | 最终Speaker A～E与审计；DTO保留1～100扩展空间 | 停止后运行并原子替换preview |
 
 ### 3.1 Layer 1内部图
 
