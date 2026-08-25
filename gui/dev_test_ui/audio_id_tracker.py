@@ -891,7 +891,13 @@ class AudioIdTracker:
             self._processing_partition = f"{next_mode or 'unknown'}_{self._mode_generation:03d}"
 
     def finalize_capture(self) -> tuple[TrackedAudioSnapshot, ...]:
-        """End live rows and physically remove completed non-playable tracks."""
+        """End live rows and return exact identities for the Hub allow-list.
+
+        Regular UI snapshots deliberately project retained rows onto the
+        currently displayed stream so one panel can keep prior-epoch audio
+        playable.  That projection must not be used for authoritative Hub
+        sealing: Hub keys include the epoch in which each track was created.
+        """
 
         with self._lock:
             self._close_reference_streams()
@@ -900,7 +906,20 @@ class AudioIdTracker:
                     self._flush_pending(track, fade_out=True)
                     track.state = "ended"
             self._remove_filtered_ended_tracks()
-            return self.snapshots()
+            finalized: list[TrackedAudioSnapshot] = []
+            for track in sorted(self._tracks.values(), key=lambda item: item.track_id):
+                if track.stream_key is None:
+                    raise RuntimeError(
+                        f"Test UI track {track.track_id} has no authoritative stream identity"
+                    )
+                finalized.append(TrackedAudioSnapshot(
+                    track.stream_key[0], track.stream_key[1], track.track_id,
+                    track.state, track.theta_deg, track.score,
+                    self._cached_samples(track),
+                    waveform_envelope=tuple(track.envelope_peaks),
+                    voice_annotations_20ms=tuple(track.voice_annotations),
+                ))
+            return tuple(finalized)
 
     def append_terminal_hops(
         self,

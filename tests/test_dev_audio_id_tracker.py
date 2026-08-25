@@ -90,6 +90,31 @@ def test_exact_authoritative_id_is_the_only_join_key_and_cross_zero_never_splits
     assert rows[0].audio_sample_count == 3 * 960
 
 
+def test_capture_finalize_preserves_each_track_original_epoch_for_hub_allow_list(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    first = _direction(7, 7_680, 35.0)
+    tracker.update(
+        _window(7_680), (first,), (_preview(7, 7_680, 35.0),),
+        active_tracks=(first,),
+    )
+
+    # Moving the UI to a new epoch keeps prior audio playable and therefore
+    # projects the visible row onto the current stream.  Final sealing must
+    # recover the track's original epoch instead of using that UI projection.
+    next_epoch = SimpleNamespace(
+        session_id="session", stream_epoch=1, decision_sample=8_640,
+    )
+    tracker.update(next_epoch, (), (), active_tracks=())
+    assert tracker.snapshots()[0].stream_epoch == 1
+
+    retained = tracker.finalize_capture()
+    assert {
+        (item.session_id, item.stream_epoch, item.track_id)
+        for item in retained
+        if item.track_id > 0
+    } == {("session", 0, 7)}
+
+
 def test_nearby_different_authoritative_ids_are_never_merged(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     decision = 7_680
