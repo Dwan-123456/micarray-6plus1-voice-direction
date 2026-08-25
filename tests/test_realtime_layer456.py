@@ -161,7 +161,7 @@ def test_two_source_pipeline_publishes_l5_stable_watermarks_and_flushes_20_secon
     assert second is not None
     assert second.valid_through_sample_48k == 835_200  # 17.4 s.
     assert all(len(item.l5_probabilities_20ms) == 870 for item in second.l5_results)
-    assert second.l6_result.metadata["realtime_l6_reused"] is True
+    assert second.l6_result.metadata["realtime_l6_reused"] is False
 
     final = processor.finalize()
     assert final is not None and final.is_final
@@ -207,7 +207,11 @@ def test_voiceprint_embeddings_are_cached_across_revisions():
     processor.push(_source(1))
     second_calls = embedder.calls
     assert first_calls > 0
-    assert second_calls == first_calls  # The full L6 batch is throttled, not merely re-embedded.
+    # L6 now refreshes with every L4 block. Previously embedded, unchanged
+    # 2 s evidence remains cached; only newly completed/changed evidence is
+    # sent to CAMPPlus.
+    assert first_calls < second_calls < first_calls * 2
+    assert processor.cached_embedder.cached_segments == second_calls
     final = processor.finalize()
     assert final is not None
     # Six complete 2 s segments from the first revision remain cache hits; the
@@ -284,6 +288,45 @@ def test_long_odd_chunk_sequence_has_linear_state_and_throttled_l6():
     )
     assert counting_l6.calls <= 4
     assert quality.calls == [144_320, 144_320]
+
+
+def test_l6_refresh_interval_defaults_to_l4_chunk_size():
+    processor = _processor(
+        chunk_samples_48k=4 * 48_000,
+        overlap_samples_48k=48_000,
+    )
+
+    assert processor.l6_interval_samples_48k == 4 * 48_000
+
+
+def test_l6_refreshes_after_each_complete_l4_chunk():
+    processor = _processor(
+        chunk_samples_48k=4 * 48_000,
+        overlap_samples_48k=48_000,
+    )
+    real_l6 = processor.layer6
+
+    class _CountingL6:
+        def __init__(self):
+            self.calls = 0
+
+        def process(self, results):
+            self.calls += 1
+            return real_l6.process(results)
+
+    counting_l6 = _CountingL6()
+    processor.layer6 = counting_l6
+
+    first = processor.push(_source(0, duration_seconds=4))
+    second = processor.push(_source(1, duration_seconds=4))
+
+    assert first is not None and second is not None
+    assert counting_l6.calls == 2
+    assert second.l6_result.metadata["realtime_l6_reused"] is False
+    assert (
+        second.l6_result.metadata["realtime_l6_interval_samples_48k"]
+        == 4 * 48_000
+    )
 
 
 def test_campplus_two_second_evidence_crosses_odd_3_5_15_second_chunks():

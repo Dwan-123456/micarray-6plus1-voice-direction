@@ -1454,23 +1454,13 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         app.processEvents()
 
 
-def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkeypatch):
+def test_l3_repeated_final_reconciliation_reuses_l4_l5_and_refreshes_l6(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from gui.dev_test_ui.app import build_window
 
     app, window = build_window(CONFIG)
     events: list[str] = []
-    clock = iter((
-        10.0, 12.5, 20.0, 24.0,
-        30.0, 33.0,
-        40.0, 41.0, 50.0, 52.0,
-        60.0, 64.0,
-        70.0, 73.0, 80.0, 85.0,
-        90.0, 96.0,
-    ))
-    monkeypatch.setattr("gui.dev_test_ui.app.perf_counter", lambda: next(clock))
-    merge_modes: list[bool] = []
     submissions: list[str] = []
     l5_result = SimpleNamespace(
         source=SimpleNamespace(theta_deg=10.0, end_sample=960),
@@ -1501,23 +1491,12 @@ def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkey
     class FakePipeline:
         layer5 = SimpleNamespace(threshold=0.7)
 
-        def process_l4_sealed(self, sources, *, merge_candidates=True):
-            del sources
-            merge_modes.append(merge_candidates)
-            events.append("l4-process")
-            return ()
-
-        def process_l5_sealed(self, processed):
-            assert processed == ()
-            events.append("l5-process")
-            return (l5_result,)
-
     class FakeL6Store:
         def clear(self):
             events.append("l6-clear")
 
         def set_result(self, result):
-            assert result == "l6-result"
+            assert result is l6_result
             events.append("l6-write")
 
         @staticmethod
@@ -1528,14 +1507,10 @@ def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkey
         def close():
             return None
 
-    class FakeL6Pipeline:
-        def process(self, results):
-            assert results == (l5_result,)
-            events.append("l6-process")
-            return "l6-result"
+    l6_result = SimpleNamespace(outputs=())
 
     def submit_immediately(name, command, on_success=None):
-        assert name in {"自动运行L4/L5", "自动运行L6"}
+        assert name == "自动运行L4/L5"
         submissions.append(name)
         value = command()
         if on_success is not None:
@@ -1545,27 +1520,34 @@ def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkey
         window._l4_store = FakeStore()
         window._l6_store = FakeL6Store()
         window._runtime._offline_l4_sealed = True
-        monkeypatch.setattr(
-            window._runtime,
-            "build_offline_l4_pipeline",
-            lambda _backend_id: FakePipeline(),
-        )
-        monkeypatch.setattr(
-            window._runtime,
-            "build_offline_l6_pipeline",
-            lambda: FakeL6Pipeline(),
-        )
+        durations = iter(((2.5, 4.0, 3.0), (1.0, 2.0, 4.0), (3.0, 5.0, 6.0)))
+
+        def reconcile(_backend_id):
+            events.append("reconcile")
+            l4, l5, l6 = next(durations)
+            return SimpleNamespace(
+                pipeline=FakePipeline(),
+                l4_processed=(),
+                l5_results=(l5_result,),
+                l6_result=l6_result,
+                reused_track_keys=(("session", 0, 1),),
+                recomputed_track_keys=(),
+                stage_durations_seconds=(("l4", l4), ("l5", l5), ("l6", l6)),
+                diagnostics={"sealed_track_count": 1},
+            )
+
+        monkeypatch.setattr(window._runtime, "reconcile_final_layer456", reconcile)
         monkeypatch.setattr(window, "_submit_command", submit_immediately)
         window._start_automatic_l4()
         one_run = [
-            "l4-process", "l5-process", "l4-clear", "l4-write",
-            "l5-write", "l6-process", "l6-clear", "l6-write",
+            "reconcile", "l4-clear", "l4-write", "l5-write",
+            "l6-clear", "l6-write",
         ]
         assert events == one_run
         assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0, "l6": 3.0}
         assert "L4 2.50 s | L5 4.00 s | L6 3.00 s" in window.performance_bar.text()
-        assert window.l4_panel.summary.text() == "最终MossFormer2：0条L4/L5候选"
-        assert window.l6_panel.summary.text() == "L6完成：0个声纹"
+        assert window.l4_panel.summary.text() == "最终MossFormer2：0条候选；复用1/1轨，补算0轨"
+        assert window.l6_panel.summary.text() == "L6最终封存：0个声纹；复用1轨，补算0轨"
 
         window._start_automatic_l4()
         assert events == one_run * 2
@@ -1574,10 +1556,9 @@ def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkey
 
         window._start_automatic_l4()
         assert events == one_run * 3
-        assert merge_modes == [False, False, False]
-        assert submissions == ["自动运行L4/L5", "自动运行L6"] * 3
+        assert submissions == ["自动运行L4/L5"] * 3
         assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0, "l6": 6.0}
-        assert window.l4_panel.summary.text() == "最终MossFormer2：0条L4/L5候选"
+        assert window.l4_panel.summary.text() == "最终MossFormer2：0条候选；复用1/1轨，补算0轨"
     finally:
         window.close()
         app.processEvents()
@@ -1700,7 +1681,7 @@ def test_failed_canonical_keeps_preview_and_backend_click_retries(monkeypatch):
             "l4": 0.5, "l5": 0.1, "l6": 0.2,
         }
         assert len(submitted) == 1
-        assert "伪实时试听保留" in window.l4_panel.summary.text()
+        assert "仅补算缺失轨道" in window.l4_panel.summary.text()
 
         failed = Future()
         failed.set_exception(RuntimeError("canonical failed"))

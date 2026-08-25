@@ -71,6 +71,9 @@ class CachingEmbeddingBackend:
     def cached_segments(self) -> int:
         return len(self._cache)
 
+    def clear(self) -> None:
+        self._cache.clear()
+
     def embed(self, waveform_16k: np.ndarray) -> np.ndarray:
         return self.embed_batch((waveform_16k,))[0]
 
@@ -235,10 +238,12 @@ class IncrementalLayer456Processor:
         overlap_samples_48k: int = 48_000,
         l5_context_samples_16k: int = _L5_CONTEXT_SAMPLES_16K,
         dnsmos_interval_samples_16k: int = 30 * 16_000,
-        l6_interval_samples_48k: int = 30 * 48_000,
+        l6_interval_samples_48k: int | None = None,
         max_replay_samples_48k: int = 60 * 48_000,
         embedding_cache_segments: int | None = None,
     ) -> None:
+        if l6_interval_samples_48k is None:
+            l6_interval_samples_48k = chunk_samples_48k
         if (
             type(chunk_samples_48k) is not int
             or not 3 * 48_000 <= chunk_samples_48k <= 15 * 48_000
@@ -283,8 +288,12 @@ class IncrementalLayer456Processor:
         self.dnsmos_interval_samples_16k = int(dnsmos_interval_samples_16k)
         self.l6_interval_samples_48k = int(l6_interval_samples_48k)
         self.max_replay_samples_48k = int(max_replay_samples_48k)
-        self.cached_embedder = CachingEmbeddingBackend(
-            embedder, max_segments=embedding_cache_segments,
+        self.cached_embedder = (
+            embedder
+            if isinstance(embedder, CachingEmbeddingBackend)
+            else CachingEmbeddingBackend(
+                embedder, max_segments=embedding_cache_segments,
+            )
         )
         self.layer6 = OfflineLayer6Pipeline(self.cached_embedder, layer6_config)
         # Reuse the proven L5 conversion/validation path. The offline object is
@@ -449,9 +458,9 @@ class IncrementalLayer456Processor:
             score_window(branch.next_dnsmos_sample_16k)
             branch.next_dnsmos_sample_16k += self.dnsmos_interval_samples_16k
         if final:
-            # Realtime finality only flushes this provisional sidecar. Score
-            # one fixed tail window and combine it with periodic samples;
-            # complete-branch DNSMOS remains the canonical offline job.
+            # DNSMOS affects ranking metadata, not audio correctness. Reuse
+            # periodic evidence and score only the unobserved tail so final
+            # sealing never blocks on a complete-branch quality-only rerun.
             if branch.last_dnsmos_end_sample_16k != branch.audio_samples_16k:
                 score_window(branch.audio_samples_16k)
             branch.final_dnsmos = tuple(
@@ -764,6 +773,7 @@ class IncrementalLayer456Processor:
                     else "periodic_30s_9_02s_windows"
                 ),
                 "dnsmos_complete_branch": False,
+                "dnsmos_finalized_without_full_rerun": branch.final_dnsmos is not None,
                 "mos_score": mos,
                 "realtime_commit_count": branch.commit_count,
                 "realtime_mf2_request_count": state.session.model_request_count,

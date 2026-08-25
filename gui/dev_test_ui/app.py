@@ -1405,48 +1405,25 @@ def build_window(
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
             self.l4_panel.set_processing(
-                f"{backend_label}最终校正中；当前伪实时试听保留至成功替换…"
+                f"{backend_label}最终封存校验中；仅补算缺失轨道…"
             )
 
             def process_l4_and_l5():
-                pipeline = runtime.build_offline_l4_pipeline(backend_id)
-                l4_started = perf_counter()
-                processed = tuple(
-                    pipeline.process_l4_sealed(
-                        runtime.offline_l4_sources,
-                        merge_candidates=False,
-                    )
-                )
-                l4_elapsed = perf_counter() - l4_started
-                l5_started = perf_counter()
-                try:
-                    l5_results = tuple(pipeline.process_l5_sealed(processed))
-                except Exception as exc:
-                    return (
-                        pipeline, processed, (), exc, l4_elapsed,
-                        perf_counter() - l5_started,
-                    )
-                return (
-                    pipeline, processed, l5_results, None, l4_elapsed,
-                    perf_counter() - l5_started,
-                )
+                return runtime.reconcile_final_layer456(backend_id)
 
             def completed(value):
-                (
-                    pipeline, processed, l5_results, l5_error,
-                    l4_elapsed, l5_elapsed,
-                ) = value
-                if l5_error is not None:
-                    raise RuntimeError(f"L5最终校正失败：{l5_error}") from l5_error
+                pipeline = value.pipeline
+                processed = tuple(value.l4_processed)
+                l5_results = tuple(value.l5_results)
+                l6_result = value.l6_result
                 self.preview_player.close()
                 self._audio_source_key = None
                 self._offline_l4_pipeline = pipeline
                 self._l4_processed = processed
-                self._l5_results = tuple(l5_results)
+                self._l5_results = l5_results
+                durations = dict(value.stage_durations_seconds)
                 self._offline_stage_durations_seconds = {
-                    "l4": l4_elapsed,
-                    "l5": l5_elapsed,
-                    "l6": self._offline_stage_durations_seconds.get("l6"),
+                    name: durations.get(name) for name in ("l4", "l5", "l6")
                 }
                 self._refresh_total_duration_text()
                 self.l4_panel.clear_tracks()
@@ -1456,8 +1433,12 @@ def build_window(
                 self.l4_panel.set_tracks(
                     self._l4_store.snapshots(), l5_complete=True, unmerged=True,
                 )
+                reused = len(value.reused_track_keys)
+                recomputed = len(value.recomputed_track_keys)
+                sealed_count = int(value.diagnostics.get("sealed_track_count", 0))
                 self.l4_panel.summary.setText(
-                    f"最终{backend_label}：{len(self._l4_processed)}条L4/L5候选"
+                    f"最终{backend_label}：{len(self._l4_processed)}条候选；"
+                    f"复用{reused}/{sealed_count}轨，补算{recomputed}轨"
                 )
                 detections = tuple(SimpleNamespace(
                     theta_deg=item.source.theta_deg,
@@ -1471,7 +1452,20 @@ def build_window(
                     ),
                     threshold=pipeline.layer5.threshold,
                 ))
-                self._start_automatic_l6(tuple(l5_results))
+                if l6_result is None:
+                    self._l6_result = None
+                    self._l6_store.clear()
+                    self.l6_panel.clear_tracks("L6 OFF")
+                else:
+                    self._l6_result = l6_result
+                    self._l6_store.clear()
+                    self._l6_store.set_result(l6_result)
+                    self.l6_panel.set_tracks(self._l6_store.snapshots())
+                    self.l6_panel.summary.setText(
+                        f"L6最终封存：{len(l6_result.outputs)}个声纹；"
+                        f"复用{reused}轨，补算{recomputed}轨"
+                    )
+                self._refresh_total_duration_text()
 
             self._submit_command("自动运行L4/L5", process_l4_and_l5, completed)
 

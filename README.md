@@ -166,7 +166,7 @@ WindowWorkItem
 【已完成】按权威ID封存离线输入
     每个(session_id, stream_epoch, track_id)只生成一条完整48 kHz长轨
     跨缺口补等时静音并记录L2方向数0；Test UI丢弃短于2秒的轨
-    ↓ Test UI在封存完成后自动提交（封存前选择模型）
+    ↓ Test UI逐ID校验实时final与封存轨；一致则直接转正，仅异常轨补算
 【已完成】Layer 4：采集后1/2人语音分离与主候选匹配
     48→16 kHz；人数=min(2, 整轨L2方向数最大值)
     ├── 1人：直接旁路为L4输出
@@ -181,7 +181,7 @@ WindowWorkItem
     每320样本输出一个20 ms概率和Voice/Non-Voice；默认阈值0.70
     整轨摘要=完整概率序列中连续3帧均值的最大值
     ↓ 按原track_id回写L4音频条；Voice区间标黄，失败保留L4试听音频
-    ↓ 每批L4与L5成功完成后自动运行L6
+    ↓ 采集中L6跟随L4块长刷新；停止后统一运行最终L6确认
 【已完成】Layer 6：整次录音人物归类与重复音频择优
     每条A完整提取CAMPPlus 192维声纹
     B仅在A/B匹配度差≤0.20、B匹配度>0.50且B MOS>0.30时完整提取声纹
@@ -203,7 +203,7 @@ WindowWorkItem
 运行约束：
     同窗实时审计严格L2(n) → L3(n) → TrackAudioStreamHub → L5(SKIPPED: offline_after_l4)
     跨窗正式审计稳态为L2(n) || L3(n-1)；L4-L6预览在独立旁路渐进运行
-    停机封存后的完整L4/L5/L6仍是权威结果，并原子替换全部preview
+    停机后以封存轨逐ID验证并转正实时结果；仅异常轨补算，再原子替换全部preview
     各阶段单worker、队列/Joiner/缓存均有界；满队列按latest-wins替换未开始旧窗
     L2先登记每个权威ID的绝对20 ms时间槽，L3只填BF波形，缺失槽保留等时静音
     既有optimized隔离L3基准已低于20 ms节拍；真实阵列全链并发仍待复测
@@ -213,7 +213,7 @@ WindowWorkItem
 
 ### 渐进L4-L6与采集后权威校正
 
-L4/L5/L6不进入正式20 ms `WindowKey`审计。采集中由独立旁路按默认4秒、可调3～15秒的连续ID块渐进运行：单人旁路，双人MF2使用1秒重叠修复换序；L5保留跨块上下文，只发布稳定帧；L6缓存跨块2秒CAMPPlus证据并节流更新。Preview可被后续revision替换，不写DecisionRecord或RecordingStore。停止采集并排空L3后，旁路在有限期限内冲刷尾部，`TrackAudioStreamHub.seal()`再封存完整ID长音频和L2方向数量。Test UI随后运行完整L4/L5/L6；该canonical批次成功后一次性替换preview，迟到preview不能回写。双人轨的两条原生16 kHz候选按累计1～4 kHz复频谱相干度标记A/B并分别进入L5；单人轨保留唯一旁路。完整批次执行精确DNSMOS、MarbleNet和CAMPPlus/L6，仍是最终权威结果。
+L4/L5/L6不进入正式20 ms `WindowKey`审计。采集中由独立旁路按默认4秒、可调3～15秒的连续ID块渐进运行：单人旁路，双人MF2使用1秒重叠修复换序；L5保留跨块上下文，只发布稳定帧；L6缓存跨块2秒CAMPPlus证据，并把刷新周期绑定到同一个块长变量，默认每4秒新结果后重聚类。Preview可被后续revision替换，不写DecisionRecord或RecordingStore。停止采集并排空L3后，旁路冲刷尾部，`TrackAudioStreamHub.seal()`封存完整ID长音频。Test UI逐ID核验实时final与封存源的精确身份、时间范围、SHA、后端、分支和水位；一致的L4/L5直接转为canonical，只对缺失或降级轨道补算，最后用共享的CAMPPlus片段缓存做一次全局L6确认并原子替换preview。迟到preview不能回写。双人轨的两条原生16 kHz候选按累计1～4 kHz复频谱相干度标记A/B并分别进入L5；单人轨保留唯一旁路。
 
 ## 算法流程说明
 

@@ -5,7 +5,7 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from time import monotonic, monotonic_ns
+from time import monotonic, monotonic_ns, perf_counter
 from typing import Callable
 
 import numpy as np
@@ -63,7 +63,12 @@ from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoice
 from windowing import WindowAssembler
 
 from .compute_cache import CachePartitionLimits, ComputeCache, ComputeCacheError
-from .realtime_layer456 import IncrementalLayer456Processor
+from .final_layer456 import (
+    FinalLayer456Outcome,
+    plan_final_reuse,
+    track_load_diagnostics,
+)
+from .realtime_layer456 import CachingEmbeddingBackend, IncrementalLayer456Processor
 from .realtime_postprocessing import RealtimePostprocessingService
 from .processing_contracts import (
     JoinedWindowResult,
@@ -368,6 +373,7 @@ class ApplicationRuntime:
         self._layer4_model_lock = threading.RLock()
         self._layer4_backends: dict[str, object] = {}
         self._campplus_embedder: CampPlusEmbedder | None = None
+        self._campplus_cached_embedder: CachingEmbeddingBackend | None = None
         self._realtime_chunk_seconds = int(config.layer4.streaming.chunk_seconds)
         self.track_audio_stream = TrackAudioStreamHub(
             InputGainCompensationSettings(
@@ -1926,6 +1932,8 @@ class ApplicationRuntime:
             # The L4/L5/L6 sidecar owns its model lifecycle independently of
             # the 20 ms graph. It loads lazily only after the first complete
             # configured audio chunk reaches the worker.
+            if self._campplus_cached_embedder is not None:
+                self._campplus_cached_embedder.clear()
             self.realtime_postprocessing.start()
             self._start_realtime_chunk_producer()
             if not self._ephemeral_live_capture:
@@ -4440,6 +4448,104 @@ class ApplicationRuntime:
             raise TypeError("offline Layer4 pipeline must provide process_sealed")
         return process_sealed(sources)
 
+    def reconcile_final_layer456(
+        self,
+        backend_id: str | None = None,
+    ) -> FinalLayer456Outcome:
+        """Promote exact realtime work and recompute only unsafe sealed tracks."""
+
+        sources = tuple(self.offline_l4_sources)
+        if not sources:
+            raise RuntimeError("TrackAudioStreamHub has no sealed long audio")
+        selected = backend_id or self.config.layer4.default_backend
+        pipeline = self.build_offline_l4_pipeline(selected)
+        snapshot = self.realtime_postprocessing.final_snapshot
+        plan = plan_final_reuse(snapshot, sources, backend_id=selected)
+
+        l4_started = perf_counter()
+        recomputed_l4 = (
+            tuple(
+                pipeline.process_l4_sealed(
+                    plan.missing_sources,
+                    merge_candidates=False,
+                )
+            )
+            if plan.missing_sources
+            else ()
+        )
+        l4_seconds = perf_counter() - l4_started
+        l5_started = perf_counter()
+        recomputed_l5 = (
+            tuple(pipeline.process_l5_sealed(recomputed_l4))
+            if recomputed_l4
+            else ()
+        )
+        l5_seconds = perf_counter() - l5_started
+        processed = tuple(sorted(
+            plan.reused_l4 + recomputed_l4,
+            key=lambda item: (
+                item.source.stream_epoch,
+                item.source.start_sample,
+                item.source.track_id,
+                item.output_kind,
+            ),
+        ))
+        l5_results = tuple(sorted(
+            plan.reused_l5 + recomputed_l5,
+            key=lambda item: (
+                item.source.stream_epoch,
+                item.source.start_sample,
+                item.source.track_id,
+                item.output_kind,
+            ),
+        ))
+        if not processed or not l5_results:
+            raise RuntimeError("final L4/L5 reconciliation produced no candidates")
+
+        l6_started = perf_counter()
+        l6_result = (
+            self.build_offline_l6_pipeline().process(l5_results)
+            if self.config.layer6.enabled
+            else None
+        )
+        l6_seconds = perf_counter() - l6_started
+        recomputed_keys = tuple(
+            (source.session_id, source.stream_epoch, source.track_id)
+            for source in plan.missing_sources
+        )
+        diagnostics = {
+            **track_load_diagnostics(
+                sources,
+                chunk_samples_48k=self._realtime_chunk_seconds * 48_000,
+            ),
+            "reused_track_count": len(plan.reused_track_keys),
+            "recomputed_track_count": len(recomputed_keys),
+            "additional_mf2_track_count": sum(
+                min(2, max(value for _, value in source.l2_direction_counts)) == 2
+                for source in plan.missing_sources
+            ),
+            "exact_fast_path": plan.exact_fast_path,
+            "rejected_reasons": plan.rejected,
+            "cached_voiceprint_segments": (
+                0
+                if self._campplus_cached_embedder is None
+                else self._campplus_cached_embedder.cached_segments
+            ),
+        }
+        return FinalLayer456Outcome(
+            selected,
+            pipeline,
+            processed,
+            l5_results,
+            l6_result,
+            plan.reused_track_keys,
+            recomputed_keys,
+            plan.rejected,
+            plan.exact_fast_path,
+            (("l4", l4_seconds), ("l5", l5_seconds), ("l6", l6_seconds)),
+            diagnostics,
+        )
+
     def _build_realtime_postprocessor(self) -> IncrementalLayer456Processor:
         """Lazily load resident models for the configured progressive sidecar."""
 
@@ -4455,10 +4561,11 @@ class ApplicationRuntime:
             backend=backend,
             layer5=self._layer5,
             quality_scorer=self._get_dnsmos_scorer(),
-            embedder=self._get_campplus_embedder(),
+            embedder=self._get_campplus_cached_embedder(),
             layer6_config=self.config.layer6,
             chunk_samples_48k=self._realtime_chunk_seconds * 48_000,
             overlap_samples_48k=streaming.overlap_seconds * 48_000,
+            l6_interval_samples_48k=self._realtime_chunk_seconds * 48_000,
         )
 
     def build_offline_l4_pipeline(self, backend_id: str | None = None) -> OfflineLayer4Pipeline:
@@ -4527,6 +4634,16 @@ class ApplicationRuntime:
                 self._campplus_embedder = CampPlusEmbedder(campplus)
             return self._campplus_embedder
 
+    def _get_campplus_cached_embedder(self) -> CachingEmbeddingBackend:
+        """Share content-addressed voiceprints between realtime and final L6."""
+
+        with self._layer4_model_lock:
+            if self._campplus_cached_embedder is None:
+                self._campplus_cached_embedder = CachingEmbeddingBackend(
+                    self._get_campplus_embedder()
+                )
+            return self._campplus_cached_embedder
+
     def _get_dnsmos_scorer(self) -> DnsMosScorer:
         if self._dnsmos_scorer is None:
             artifact = Path(self.config.layer6.dnsmos_artifact)
@@ -4541,7 +4658,7 @@ class ApplicationRuntime:
         if not self.config.layer6.enabled:
             raise RuntimeError("Layer6 is disabled in project config")
         return OfflineLayer6Pipeline(
-            self._get_campplus_embedder(), self.config.layer6,
+            self._get_campplus_cached_embedder(), self.config.layer6,
         )
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:

@@ -337,7 +337,7 @@ def _configure_runtime(runtime: ApplicationRuntime) -> None:
 def run_benchmark(
     recording_manifest: str | Path,
     *,
-    chunk_seconds: int = 10,
+    chunk_seconds: int = 4,
     config_path: str | Path = DEFAULT_CONFIG,
     poll_interval_seconds: float = 0.02,
     playback_timeout_seconds: float | None = None,
@@ -480,43 +480,31 @@ def run_benchmark(
                     torch.cuda.reset_peak_memory_stats()
                 canonical_started = time.perf_counter()
                 try:
-                    build_started = time.perf_counter()
-                    pipeline = runtime.build_offline_l4_pipeline()
-                    build_l4_seconds = time.perf_counter() - build_started
-                    l4_started = time.perf_counter()
-                    canonical_l4 = tuple(
-                        pipeline.process_l4_sealed(
-                            offline_sources,
-                            merge_candidates=False,
-                        )
-                    )
-                    l4_seconds = time.perf_counter() - l4_started
-                    l5_started = time.perf_counter()
-                    canonical_l5 = tuple(pipeline.process_l5_sealed(canonical_l4))
-                    l5_seconds = time.perf_counter() - l5_started
-                    build_l6_started = time.perf_counter()
-                    l6_pipeline = runtime.build_offline_l6_pipeline()
-                    build_l6_seconds = time.perf_counter() - build_l6_started
-                    l6_started = time.perf_counter()
-                    canonical_l6 = l6_pipeline.process(canonical_l5)
-                    l6_seconds = time.perf_counter() - l6_started
+                    reconciled = runtime.reconcile_final_layer456()
+                    canonical_l4 = tuple(reconciled.l4_processed)
+                    canonical_l5 = tuple(reconciled.l5_results)
+                    canonical_l6 = reconciled.l6_result
+                    durations = dict(reconciled.stage_durations_seconds)
                     canonical_gpu_allocated, canonical_gpu_reserved = _gpu_peaks(
                         runtime.l4_device
                     )
                     canonical = {
                         "included": True,
                         "success": True,
-                        "build_l4_seconds": build_l4_seconds,
-                        "l4_seconds": l4_seconds,
-                        "l5_seconds": l5_seconds,
-                        "build_l6_seconds": build_l6_seconds,
-                        "l6_seconds": l6_seconds,
+                        "l4_seconds": float(durations.get("l4", 0.0)),
+                        "l5_seconds": float(durations.get("l5", 0.0)),
+                        "l6_seconds": float(durations.get("l6", 0.0)),
                         "total_seconds": time.perf_counter() - canonical_started,
                         "l4_output_count": len(canonical_l4),
                         "l5_output_count": len(canonical_l5),
                         "speaker_count": int(
                             _ObservedMetrics._get(canonical_l6, "speaker_count", 0)
                         ),
+                        "exact_fast_path": bool(reconciled.exact_fast_path),
+                        "reused_track_count": len(reconciled.reused_track_keys),
+                        "recomputed_track_count": len(reconciled.recomputed_track_keys),
+                        "rejected": tuple(reconciled.rejected),
+                        "diagnostics": dict(reconciled.diagnostics),
                         "gpu_peak_allocated_bytes": canonical_gpu_allocated,
                         "gpu_peak_reserved_bytes": canonical_gpu_reserved,
                     }
@@ -698,9 +686,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--chunk-seconds",
         type=_chunk_seconds,
-        default=10,
+        default=4,
         metavar="3..15",
-        help="integer L4-L6 cadence in seconds; odd values are valid (default: 10)",
+        help="integer L4-L6 cadence in seconds; odd values are valid (default: 4)",
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--poll-interval-ms", type=float, default=20.0)
@@ -708,7 +696,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--progressive-only",
         action="store_true",
-        help="skip the post-stop canonical L4/L5/L6 correction",
+        help="skip post-stop validation, selective fallback and final L6 reconciliation",
     )
     parser.add_argument("--output", type=Path, help="optional JSON file; stdout is always emitted")
     return parser

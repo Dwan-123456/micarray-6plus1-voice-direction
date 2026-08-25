@@ -11,7 +11,7 @@ from layer4_speech_separation import Layer4LongAudioInput
 
 @dataclass(frozen=True, slots=True)
 class RealtimePostprocessingSnapshot:
-    """Latest replaceable L4/L5/L6 preview produced by the 10 s sidecar."""
+    """Latest replaceable L4/L5/L6 preview produced by the configurable sidecar."""
 
     session_id: str
     revision: int
@@ -73,7 +73,8 @@ class RealtimePostprocessingService:
 
     L1-L3 callers only use :meth:`submit`.  A full queue is reported as an
     explicit downstream failure and never applies backpressure to the 20 ms
-    runtime graph.  The final sealed pass remains the authoritative fallback.
+    runtime graph. Final sealing validates exact reusable tracks and falls back
+    only for missing or unsafe tracks.
     """
 
     def __init__(
@@ -100,6 +101,7 @@ class RealtimePostprocessingService:
         self._latest_revision = 0
         self._error: str | None = None
         self._model_load_seconds = 0.0
+        self._final_snapshot: RealtimePostprocessingSnapshot | None = None
         self._accepting = False
         self._finished = threading.Event()
 
@@ -140,6 +142,13 @@ class RealtimePostprocessingService:
                 self._model_load_seconds,
             )
 
+    @property
+    def final_snapshot(self) -> RealtimePostprocessingSnapshot | None:
+        """Retain the drained final result independently of the latest-only UI queue."""
+
+        with self._lock:
+            return self._final_snapshot
+
     def _clear_mailboxes(self) -> None:
         for mailbox in (self._mailbox, self.latest):
             while True:
@@ -163,6 +172,7 @@ class RealtimePostprocessingService:
             self._latest_revision = 0
             self._error = None
             self._model_load_seconds = 0.0
+            self._final_snapshot = None
             self._accepting = True
             self._finished.clear()
             self._thread = threading.Thread(
@@ -302,6 +312,8 @@ class RealtimePostprocessingService:
                 self.latest.put_nowait(value)
             self._processed_blocks = max(self._processed_blocks, value.processed_blocks)
             self._latest_revision = value.revision
+            if value.is_final:
+                self._final_snapshot = value
             if self._error is None:
                 self._state = "final" if value.is_final else "running"
 

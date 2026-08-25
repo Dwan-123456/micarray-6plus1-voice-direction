@@ -81,6 +81,7 @@ def test_realtime_service_drains_chunks_and_publishes_replaceable_final_snapshot
     assert service.finish(timeout=2.0)
     snapshot = service.latest.get_nowait()
     assert snapshot.is_final
+    assert service.final_snapshot is snapshot
     assert snapshot.processed_blocks == 2
     assert snapshot.valid_through_sample_48k == 960_000
     assert service.status.state == "final"
@@ -103,6 +104,7 @@ def test_realtime_service_queue_overflow_is_explicit_and_never_blocks_caller():
     outcomes = [service.submit(_source(index)) for index in range(1, 5)]
     assert False in outcomes
     assert service.status.error == "realtime_layer456_queue_overflow"
+    assert service.final_snapshot is None
     assert service.status.dropped_blocks >= 1
     release.set()
     service.abort(timeout=2.0)
@@ -162,6 +164,7 @@ def test_finish_timeout_is_bounded_and_suppresses_late_final_snapshot():
     assert service.status.dropped_blocks >= 1
     while not service.latest.empty():
         assert not service.latest.get_nowait().is_final
+    assert service.final_snapshot is None
 
 
 def test_snapshot_validation_rejects_unaligned_watermark():

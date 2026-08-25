@@ -21,6 +21,12 @@ def test_chunk_seconds_rejects_values_outside_three_to_fifteen(seconds: int) -> 
         benchmark._chunk_seconds(str(seconds))
 
 
+def test_benchmark_cli_default_matches_the_runtime_four_second_cadence() -> None:
+    args = benchmark._parser().parse_args(["recording_manifest.json"])
+
+    assert args.chunk_seconds == 4
+
+
 def test_benchmark_config_freezes_the_ephemeral_ds_mf2_profile(tmp_path: Path) -> None:
     config = benchmark._benchmark_config(
         benchmark.DEFAULT_CONFIG,

@@ -21,6 +21,20 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-25 — L4～L6实时final直接转正、选择性补算与4秒L6刷新
+
+- **版本、分支与恢复点**：项目保持`1.3.5`开发线，不创建或移动发布标签；实施前将`d2d5c588a13fc8873ade39ac4174c60b89be1ba3`保存并推送到`codex/develop-v1.3.5-pre-canonical-reuse-20260825`，用于完整恢复改动前状态。
+- **涉及文件**：新增`app/final_layer456.py`与`tests/test_final_layer456.py`；修改Realtime处理器/服务、ApplicationRuntime、Development Test UI、实时基准脚本及相应测试，并同步根README、`docs/REALTIME_L456.md`、完整架构使用手册、Test UI说明和本日志。
+- **最终校正不再整批重跑**：Realtime sidecar独立保留已冲刷尾部的final snapshot。Hub封存后按精确`(session_id, stream_epoch, track_id)`逐轨验证起止sample、源SHA、L4分支集、后端、降级标记、DNSMOS尾窗状态、L4/L5水位及输出SHA；全部匹配的L4/L5结果直接标记为canonical，只有缺失或不安全的轨道进入离线L4/L5补算。任一轨回退不再带动其他轨重算。
+- **L6增量与最终确认**：L6刷新周期直接绑定`layer4.streaming.chunk_seconds`，当前默认4秒；3～15秒运行时调节会同时改变L4块长和L6周期。采集中每个新L4/L5稳定块后重聚类，旧2秒CAMPPlus片段继续按内容SHA命中缓存，主要只推理新增或变化片段。停止后合并已转正和局部补算结果，再用共享CAMPPlus缓存执行一次全局最终L6确认。
+- **DNSMOS与资源**：停止冲刷继续复用30秒周期证据，只补未覆盖的9.02秒尾窗，不再为质量元数据重新评分完整分支。MF2仍独占CUDA；Hub、L5、DNSMOS、CAMPPlus和L6仍在CPU旁路线程运行，不反压L1～L3。新增封存轨数量、短轨数量、累计音频秒数、时间轴跨度、重叠负载比、复用/补算轨数和额外MF2轨数诊断。
+- **Development Test UI与基准**：停止后状态改为“最终封存校验”，后台一次性接收L4/L5/L6 reconciliation结果；界面显示复用、封存和补算数量，不再串行启动完整L4、完整L5及第二次L6作业。基准工具同步报告exact fast path、拒绝原因、逐层校正时间和额外MF2负载，默认块长同步为4秒。
+- **Pass实模验收**：32.68秒`Pass-开始静音`、4秒块回放成功，渐进总墙钟`36.83 s`、首preview`9.98 s`、停止收尾`4.04 s`；L6累计CPU耗时`2.78 s`，17次实时MF2请求，L1～L6零丢块且无错误。3条封存轨全部精确复用，额外MF2为0；最终L4约`0.0000005 s`、L5约`0.0000001 s`、L6`0.0115 s`，最终确认总计`0.0176 s`，相对旧完整canonical约`32.56 s`消除了整轨重复推理。基准不包含Qt刷新和真实麦克风回调，不能替代长时间阵列验收。
+- **验证**：核心新契约专项测试`87 passed`；项目全量回归`652 passed, 1 warning`，唯一警告为既有CountNet `torch.jit.load`弃用提示；修改文件Ruff、Python编译及`git diff --check`通过。
+- **未改变与资产**：L1采集/校准/IMCRA、L2 MUSIC与ID数学、L3 DS/BF算法、正式20 ms审计链、RecordingStore、Catalog、正式录音和数据schema均无变化；不提交运行录音、试听缓存、基准JSON或`data/`。模型、测试音频fixture及Git LFS对象无新增或修改。
+
+---
+
 ## 2026-08-25 — Test UI伪实时分块默认值改为4秒
 
 - **默认值与依据**：Development Test UI及Runtime的L4～L6渐进分块默认值由10秒改为4秒，可调范围仍为3～15秒、步长1秒。使用音频库32.68秒`Pass-开始静音`录音对3～10秒逐档独立进程测试；八档均为3条封存源、最终覆盖32.66秒且所有层零丢块。4秒档首个preview为9.85秒、停止收尾4.34秒、渐进总墙钟37.13秒、MF2请求17次，在实时观感、调用频率和资源峰值之间最均衡。

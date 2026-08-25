@@ -28,7 +28,7 @@ def test_parallel_runtime_limits_are_loaded_from_the_single_config():
     assert runtime.graceful_shutdown_timeout_seconds == 10.0
     assert config.layer4.streaming.model_dump() == {
         "enabled": True,
-        "chunk_seconds": 10,
+        "chunk_seconds": 4,
         "overlap_seconds": 1,
         "queue_chunks": 2,
     }
