@@ -306,6 +306,20 @@ def test_l6_track_similarity_requires_repeated_one_to_one_segment_evidence() -> 
     assert one_score == 0.0
 
 
+def test_l6_track_similarity_allows_one_segment_short_track_to_merge() -> None:
+    short = np.array([[1.0, 0.0]], dtype=np.float32)
+    established = np.array([
+        [1.0, 0.0],
+        [0.9, 0.1],
+        [0.8, 0.2],
+    ], dtype=np.float32)
+
+    score, matched, required = _track_similarity(short, established)
+
+    assert required == matched == 1
+    assert score == 1.0
+
+
 def test_l6_hungarian_matching_avoids_greedy_pairing_trap() -> None:
     left = np.eye(2, dtype=np.float32)
     right = np.array([

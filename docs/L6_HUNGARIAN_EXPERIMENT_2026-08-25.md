@@ -1,5 +1,20 @@
 # L6 Hungarian matching experiment — 2026-08-25
 
+## Follow-up: allow one-segment short tracks
+
+The hard minimum of two matched segments was removed after the initial
+comparison. Evidence coverage remains 30 percent of the shorter track, with an
+absolute minimum of one pair. A short track with one retained voiceprint can now
+merge at the normal `0.62` threshold.
+
+The newest cache WAV directory had already been cleaned by the Test UI before
+this follow-up run. Applying the revised rule to its previously captured matrix
+changes single-segment decisions from `-1` to their measured cosine; the short A
+track has `0.819/0.784` links to an established cluster. The remaining older
+cache was reprocessed and stayed at three clusters because its short track's
+best cosine was only `0.410`. A fresh recording is still required to confirm the
+new final speaker count through the real B-candidate admission gate.
+
 ## Scope
 
 This experiment preserves `codex/develop-v1.3.3` at commit `5b15fa3` and changes
@@ -55,9 +70,8 @@ negligible beside VAD and CAMPPlus inference.
 
 Hungarian assignment is a sound, auditable replacement for greedy pairing, but
 the observed L6 over-segmentation is not primarily a pairing-optimization bug.
-The next experiment should address short-track evidence explicitly: attach a
-single high-confidence segment to an existing multi-segment cluster under a
-stricter cosine/quality gate, while forbidding that short track from creating or
-bridging clusters. A real logistic `P(same speaker)` must wait for labeled
-same/different speaker pairs; fitting it from source count alone would create
-false ground truth.
+The follow-up now permits one-segment tracks at the standard threshold. This
+removes the deterministic rejection but increases sensitivity to one accidental
+high cosine; a fresh two-speaker recording is needed to measure that trade-off.
+A real logistic `P(same speaker)` must wait for labeled same/different speaker
+pairs; fitting it from source count alone would create false ground truth.

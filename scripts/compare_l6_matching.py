@@ -40,7 +40,7 @@ def _greedy_score(left: np.ndarray, right: np.ndarray) -> float:
         matched.append(float(available[row, column]))
         available[row, :] = -np.inf
         available[:, column] = -np.inf
-    required = max(2, int(np.ceil(0.30 * min(len(left), len(right)))))
+    required = max(1, int(np.ceil(0.30 * min(len(left), len(right)))))
     return -1.0 if len(matched) < required else matched[required - 1]
 
 
@@ -105,7 +105,7 @@ def main() -> int:
                 left_values,
                 right_values,
                 threshold=args.threshold,
-                minimum_match_count=2,
+                minimum_match_count=1,
                 required_coverage=0.30,
             )
             old_matrix[left, right] = old_matrix[right, left] = old
@@ -128,7 +128,7 @@ def main() -> int:
                 left_values,
                 right_values,
                 threshold=args.threshold,
-                minimum_match_count=2,
+                minimum_match_count=1,
                 required_coverage=0.30,
             )
     hungarian_benchmark_ms = (perf_counter() - benchmark_started) * 1_000.0
