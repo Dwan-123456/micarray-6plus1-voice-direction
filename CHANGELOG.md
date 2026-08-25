@@ -24,6 +24,17 @@
 
 ---
 
+## 2026-08-25 — L6 CUDA批量声纹与DNSMOS有声区复用加速
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。
+- **CAMPPlus批量加速**：`CampPlusEmbedder`新增设备与批量接口，Runtime在CUDA可用时自动使用GPU并以64条1.5秒上下文为一批推理；CUDA不可用或构建失败时自动回退CPU。修正CAMPPlus CAM层中依赖batch=1广播才能运行的分段池化维度展开，批量与逐条前向现在数值一致。
+- **DNSMOS复用**：DNSMOS仍使用CPU ONNX Runtime，但从每个0.5秒归属片段重复推理改为每个合并后连续有声区评分一次，其子片段复用同一SIG/BAK/OVRL。`score_quality`改为消费已缓存的DNSMOS三元组，五项权重和时间线拼接不变。算法审计ID升级为`campplus_batched_constrained_ahc_dnsmos_region_cache_timeline_v3`。
+- **当前缓存基准**：使用最新`run_eeecd2acbf2a42a591f0712ec17bf43d/loaded_mvdr_baseline`同一批两条L3长轨和真实MossFormer2/MarbleNet/CAMPPlus/DNSMOS重跑。195个归属片段经CUDA batch处理，DNSMOS实际评分17个有声区，L6从操作者观察的约82秒（上一CPU缓存复核74.8秒）降为14.99秒，仍输出2个Speaker。
+- **测试与文档**：新增CAM层批量/逐条等价、Pipeline只调用一个声纹batch、同有声区DNSMOS只评分一次及性能审计元数据回归；同步根README、L6说明、目标架构和包内说明。L6、Runtime、Development Test UI及状态契约聚焦回归`78 passed`，修改Python文件Ruff与`git diff --check`通过。按L6局部性能变更规则未运行全量回归，未执行实机声卡试听验收。
+- **未改变**：L1、L2、L3、L4、L5算法，L6的0.5秒归属粒度/声纹聚类门限/综合质量权重/绝对时间线拼接，Test UI布局，正式录音与数据管理均无其他行为或公共DTO变化；无配置、模型、音频或Git LFS资产变化。
+
+---
+
 ## 2026-08-25 — 收录6+1阵列MUSIC伪峰与旁瓣抑制研究报告
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。

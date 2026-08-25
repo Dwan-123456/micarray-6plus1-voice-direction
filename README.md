@@ -177,6 +177,7 @@ WindowWorkItem
     L5有效片段按0.5秒做人物归属，每段使用同一有声区内最多1.5秒CAMPPlus上下文
     CAMPPlus 192维声纹 → 同时L2方向约束的平均链接AHC聚为0～3人
     不足1.5秒的短残留仅归入已有人物，不能单独建立伪ID
+    CAMPPlus在CUDA可用时按64条批量推理（否则CPU回退）；DNSMOS每个连续有声区评分一次并复用
     同一人物按绝对时间线归并；重叠候选按Voice/声纹/DNSMOS/SNR/连续性综合评分
     → Speaker A/B/C 16 kHz长音频，保留来源L2 ID并在Test UI逐条试听
 
