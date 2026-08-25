@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import wave
 
 import numpy as np
+import torch
 
 from gui.dev_test_ui.offline_l6_store import OfflineLayer6UiStore
 from layer4_speech_separation import (
@@ -17,17 +18,24 @@ from layer6_speaker_consolidation import (
     Layer6SpeakerAudio,
     OfflineLayer6Pipeline,
 )
+from layer6_speaker_consolidation.pipeline import _cluster, _track_similarity
+from layer6_speaker_consolidation.campplus import CAMPPlus
 
 
 class _Embedder:
     def __init__(self) -> None:
         self.calls: list[np.ndarray] = []
+        self.batch_calls: list[tuple[int, ...]] = []
 
     def embed(self, waveform: np.ndarray) -> np.ndarray:
         self.calls.append(waveform)
         if float(np.mean(waveform)) >= 0:
             return np.array([1.0, 0.0], np.float32)
         return np.array([0.0, 1.0], np.float32)
+
+    def embed_batch(self, waveforms: tuple[np.ndarray, ...]) -> tuple[np.ndarray, ...]:
+        self.batch_calls.append(tuple(len(waveform) for waveform in waveforms))
+        return tuple(self.embed(waveform) for waveform in waveforms)
 
 
 class _DistinctEmbedder:
@@ -38,6 +46,18 @@ class _DistinctEmbedder:
         embedding = np.eye(4, dtype=np.float32)[self.index]
         self.index += 1
         return embedding
+
+
+def test_campplus_batch_matches_independent_forward_passes() -> None:
+    torch.manual_seed(7)
+    model = CAMPPlus(80, 16).eval()
+    features = torch.randn(3, 199, 80)
+
+    with torch.inference_mode():
+        batched = model(features)
+        independent = torch.cat(tuple(model(row[None]) for row in features), dim=0)
+
+    assert torch.allclose(batched, independent, atol=1e-5, rtol=1e-5)
 
 
 def _sha(audio: np.ndarray) -> str:
@@ -182,11 +202,31 @@ def test_l6_concatenates_only_l5_voice_frames_for_one_track_embedding() -> None:
     }
 
 
+def test_l6_batches_two_second_segments_per_track() -> None:
+    embedder = _Embedder()
+    source = _result(
+        1,
+        0,
+        np.full(80_000, 0.25, np.float32),
+        (True,) * 250,
+    )
+
+    result = OfflineLayer6Pipeline(embedder, _config()).process((source,))
+
+    assert embedder.batch_calls == [(32_000, 32_000, 16_000)]
+    assert result.metadata["voiceprint_segment_counts"] == {
+        "asset-1:branch-0": 3,
+    }
+    assert result.metadata["voiceprint_retained_segment_counts"] == {
+        "asset-1:branch-0": 3,
+    }
+
+
 def test_l6_clusters_complete_tracks_and_records_one_voiceprint_to_many_audio() -> None:
     embedder = _Embedder()
     result = OfflineLayer6Pipeline(embedder, _config()).process((
-        *_pair(1, a_value=0.2, b_value=0.1),
-        *_pair(2, a_value=-0.2, b_value=-0.1, b_match=0.4),
+        *_pair(1, a_value=0.2, b_value=0.1, frames=200),
+        *_pair(2, a_value=-0.2, b_value=-0.1, b_match=0.4, frames=200),
     ))
 
     assert result.speaker_count == 2
@@ -220,12 +260,12 @@ def test_l6_forces_four_distinct_complete_track_voiceprints_down_to_three() -> N
 
 
 def test_l6_overlap_keeps_the_audio_with_higher_l4_mos() -> None:
-    decisions = (True,) * 25
+    decisions = (True,) * 200
     low = _result(
-        1, 0, np.full(8_000, 0.2, np.float32), decisions, match=0.95, mos=0.40,
+        1, 0, np.full(64_000, 0.2, np.float32), decisions, match=0.95, mos=0.40,
     )
     high = _result(
-        2, 0, np.full(8_000, 0.8, np.float32), decisions, match=0.60, mos=0.90,
+        2, 0, np.full(64_000, 0.8, np.float32), decisions, match=0.60, mos=0.90,
     )
 
     result = OfflineLayer6Pipeline(_Embedder(), _config()).process((low, high))
@@ -235,6 +275,42 @@ def test_l6_overlap_keeps_the_audio_with_higher_l4_mos() -> None:
     assert result.outputs[0].fragment_ids == (
         "asset-1:branch-0", "asset-2:branch-0",
     )
+
+
+def test_l6_track_similarity_requires_repeated_one_to_one_segment_evidence() -> None:
+    left = np.eye(4, dtype=np.float32)
+    repeated = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+    ], dtype=np.float32)
+    one_match = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+    ], dtype=np.float32)
+
+    repeated_score, _, repeated_required = _track_similarity(left, repeated)
+    one_score, _, one_required = _track_similarity(left, one_match)
+
+    assert repeated_required == one_required == 2
+    assert repeated_score == 1.0
+    assert one_score == 0.0
+
+
+def test_l6_complete_link_does_not_allow_one_track_to_bridge_two_people() -> None:
+    similarities = np.array([
+        [1.0, 0.8, 0.5],
+        [0.8, 1.0, 0.8],
+        [0.5, 0.8, 1.0],
+    ], dtype=np.float32)
+
+    assignments = _cluster(similarities, 0.62, 3)
+
+    assert assignments[1] == assignments[2]
+    assert assignments[0] != assignments[1]
 
 
 def test_l6_trims_edge_silence_and_caps_internal_silence_at_two_seconds() -> None:

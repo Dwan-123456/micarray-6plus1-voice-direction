@@ -17,6 +17,11 @@ from .models import CampPlusEmbedder
 
 
 _MINIMUM_VOICEPRINT_SAMPLES = 8_000
+_VOICEPRINT_SEGMENT_SAMPLES = 32_000
+_MINIMUM_TRACK_MATCH_COUNT = 2
+_TRACK_MATCH_COVERAGE = 0.30
+_OUTLIER_MAD_SCALE = 2.5
+_OUTLIER_MINIMUM_MARGIN = 0.05
 
 
 class Layer6Configuration(Protocol):
@@ -36,7 +41,10 @@ class _VoiceprintAudio:
     mos_score: float
     waveform: np.ndarray
     embedding: np.ndarray
+    segment_embeddings: np.ndarray
     voice_sample_count: int
+    segment_count: int
+    retained_segment_count: int
 
     @property
     def audio_id(self) -> str:
@@ -66,13 +74,62 @@ def _score(metadata: Mapping[str, object], name: str, low: float, high: float) -
     return value
 
 
-def _pairwise_similarities(items: tuple[_VoiceprintAudio, ...]) -> np.ndarray:
+def _retain_consistent_segments(embeddings: np.ndarray) -> np.ndarray:
+    """Drop 2 s embeddings whose within-track centrality is a robust low outlier."""
+
+    if len(embeddings) <= 2:
+        return embeddings
+    similarities = embeddings @ embeddings.T
+    centrality = np.asarray([
+        np.median(np.delete(similarities[index], index))
+        for index in range(len(embeddings))
+    ], dtype=np.float32)
+    center = float(np.median(centrality))
+    mad = float(np.median(np.abs(centrality - center)))
+    cutoff = center - max(_OUTLIER_MINIMUM_MARGIN, _OUTLIER_MAD_SCALE * mad)
+    keep = centrality >= cutoff
+    if int(np.count_nonzero(keep)) < 2:
+        keep[np.argsort(centrality)[-2:]] = True
+    return np.ascontiguousarray(embeddings[keep], dtype=np.float32)
+
+
+def _track_similarity(left: np.ndarray, right: np.ndarray) -> tuple[float, int, int]:
+    """Return the weakest required one-to-one 2 s match and its evidence counts."""
+
+    similarities = left @ right.T
+    available = np.asarray(similarities, dtype=np.float32).copy()
+    matched: list[float] = []
+    for _ in range(min(available.shape)):
+        flat_index = int(np.argmax(available))
+        left_index, right_index = np.unravel_index(flat_index, available.shape)
+        matched.append(float(available[left_index, right_index]))
+        available[left_index, :] = -np.inf
+        available[:, right_index] = -np.inf
+    required = max(
+        _MINIMUM_TRACK_MATCH_COUNT,
+        int(np.ceil(_TRACK_MATCH_COVERAGE * min(len(left), len(right)))),
+    )
+    if len(matched) < required:
+        return -1.0, len(matched), required
+    return float(matched[required - 1]), len(matched), required
+
+
+def _pairwise_similarities(
+    items: tuple[_VoiceprintAudio, ...],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     matrix = np.eye(len(items), dtype=np.float32)
+    matched_counts = np.zeros((len(items), len(items)), dtype=np.int32)
+    required_counts = np.zeros((len(items), len(items)), dtype=np.int32)
     for left in range(len(items)):
         for right in range(left + 1, len(items)):
-            value = _cosine(items[left].embedding, items[right].embedding)
+            value, matched, required = _track_similarity(
+                items[left].segment_embeddings,
+                items[right].segment_embeddings,
+            )
             matrix[left, right] = matrix[right, left] = value
-    return matrix
+            matched_counts[left, right] = matched_counts[right, left] = matched
+            required_counts[left, right] = required_counts[right, left] = required
+    return matrix, matched_counts, required_counts
 
 
 def _cluster(
@@ -80,12 +137,12 @@ def _cluster(
     threshold: float,
     maximum_speakers: int,
 ) -> tuple[int, ...]:
-    """Average-link AHC over one embedding per complete selected L4 track."""
+    """Complete-link AHC over multi-segment evidence for each selected L4 track."""
 
     clusters: list[list[int]] = [[index] for index in range(len(similarities))]
 
-    def average_similarity(left: list[int], right: list[int]) -> float:
-        return float(np.mean([
+    def complete_link_similarity(left: list[int], right: list[int]) -> float:
+        return float(np.min([
             similarities[a, b]
             for a in left
             for b in right
@@ -93,7 +150,7 @@ def _cluster(
 
     while len(clusters) > 1:
         options = [
-            (average_similarity(clusters[left], clusters[right]), left, right)
+            (complete_link_similarity(clusters[left], clusters[right]), left, right)
             for left in range(len(clusters))
             for right in range(left + 1, len(clusters))
         ]
@@ -220,9 +277,27 @@ class OfflineLayer6Pipeline:
         )
         if len(voice_waveform) < _MINIMUM_VOICEPRINT_SAMPLES:
             return None
-        embedding = np.ascontiguousarray(
-            self.embedder.embed(voice_waveform), dtype=np.float32,
-        )
+        segments = []
+        for start in range(0, len(voice_waveform), _VOICEPRINT_SEGMENT_SAMPLES):
+            segment = np.ascontiguousarray(
+                voice_waveform[start:start + _VOICEPRINT_SEGMENT_SAMPLES],
+                dtype=np.float32,
+            )
+            if len(segment) < _MINIMUM_VOICEPRINT_SAMPLES:
+                continue
+            segments.append(segment)
+        if not segments:
+            return None
+        batch_embed = getattr(self.embedder, "embed_batch", None)
+        if callable(batch_embed):
+            segment_embeddings = tuple(batch_embed(tuple(segments)))
+        else:
+            segment_embeddings = tuple(self.embedder.embed(segment) for segment in segments)
+        all_embeddings = np.ascontiguousarray(np.stack(segment_embeddings), dtype=np.float32)
+        retained_embeddings = _retain_consistent_segments(all_embeddings)
+        embedding = np.mean(retained_embeddings, axis=0)
+        embedding /= max(float(np.linalg.norm(embedding)), 1e-12)
+        embedding = np.ascontiguousarray(embedding, dtype=np.float32)
         return _VoiceprintAudio(
             result=result,
             branch_index=branch_index,
@@ -230,7 +305,10 @@ class OfflineLayer6Pipeline:
             mos_score=mos_score,
             waveform=np.ascontiguousarray(waveform, dtype=np.float32),
             embedding=embedding,
+            segment_embeddings=retained_embeddings,
             voice_sample_count=len(voice_waveform),
+            segment_count=len(all_embeddings),
+            retained_segment_count=len(retained_embeddings),
         )
 
     @staticmethod
@@ -271,7 +349,7 @@ class OfflineLayer6Pipeline:
                 extracted.append(voiceprint)
         voiceprints = tuple(extracted)
 
-        similarities = _pairwise_similarities(voiceprints)
+        similarities, matched_counts, required_counts = _pairwise_similarities(voiceprints)
         raw_assignments = _cluster(
             similarities,
             self.config.speaker_similarity_threshold,
@@ -286,14 +364,26 @@ class OfflineLayer6Pipeline:
         if not order:
             matrix = tuple(tuple(float(value) for value in row) for row in similarities)
             return Layer6Result(session_id, 0, (), (), {
-                "algorithm": "campplus_l5_voice_only_track_ahc_mos_timeline_v4",
+                "algorithm": "campplus_2s_segment_consistency_complete_link_v5",
                 "recording_start_sample_48k": recording_start,
                 "recording_end_sample_48k": recording_end,
                 "extracted_audio_ids": tuple(item.audio_id for item in voiceprints),
                 "pairwise_audio_ids": tuple(item.audio_id for item in voiceprints),
                 "pairwise_similarity_matrix": matrix,
+                "pairwise_matched_segment_counts": tuple(
+                    tuple(int(value) for value in row) for row in matched_counts
+                ),
+                "pairwise_required_segment_counts": tuple(
+                    tuple(int(value) for value in row) for row in required_counts
+                ),
                 "voiceprint_voice_sample_counts": {
                     item.audio_id: item.voice_sample_count for item in voiceprints
+                },
+                "voiceprint_segment_counts": {
+                    item.audio_id: item.segment_count for item in voiceprints
+                },
+                "voiceprint_retained_segment_counts": {
+                    item.audio_id: item.retained_segment_count for item in voiceprints
                 },
                 "silent_voiceprint_audio_ids": tuple(item.audio_id for item in voiceprints),
                 "insufficient_voice_audio_ids": tuple(insufficient_voice_audio_ids),
@@ -352,7 +442,7 @@ class OfflineLayer6Pipeline:
             raise ValueError("L6 voiceprint cluster contains no active audio")
         matrix = tuple(tuple(float(value) for value in row) for row in similarities)
         return Layer6Result(session_id, len(outputs), outputs, tuple(assignments), {
-            "algorithm": "campplus_l5_voice_only_track_ahc_mos_timeline_v4",
+            "algorithm": "campplus_2s_segment_consistency_complete_link_v5",
             "recording_start_sample_48k": recording_start,
             "recording_end_sample_48k": recording_end,
             "secondary_candidate_gate": {
@@ -365,6 +455,12 @@ class OfflineLayer6Pipeline:
             "voiceprint_voice_sample_counts": {
                 item.audio_id: item.voice_sample_count for item in voiceprints
             },
+            "voiceprint_segment_counts": {
+                item.audio_id: item.segment_count for item in voiceprints
+            },
+            "voiceprint_retained_segment_counts": {
+                item.audio_id: item.retained_segment_count for item in voiceprints
+            },
             "insufficient_voice_audio_ids": tuple(insufficient_voice_audio_ids),
             "silent_voiceprint_audio_ids": tuple(
                 item.audio_id
@@ -373,6 +469,12 @@ class OfflineLayer6Pipeline:
             ),
             "pairwise_audio_ids": tuple(item.audio_id for item in voiceprints),
             "pairwise_similarity_matrix": matrix,
+            "pairwise_matched_segment_counts": tuple(
+                tuple(int(value) for value in row) for row in matched_counts
+            ),
+            "pairwise_required_segment_counts": tuple(
+                tuple(int(value) for value in row) for row in required_counts
+            ),
             "voiceprint_audio_ids": {
                 speaker_id: tuple(
                     item.audio_id

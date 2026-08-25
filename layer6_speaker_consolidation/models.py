@@ -49,14 +49,36 @@ class CampPlusEmbedder:
         return np.ascontiguousarray(frames - frames.mean(axis=0, keepdims=True), dtype=np.float32)
 
     def embed(self, waveform_16k: np.ndarray) -> np.ndarray:
-        waveform = np.ascontiguousarray(waveform_16k, dtype=np.float32)
-        if len(waveform) < 8_000:
+        return self.embed_batch((waveform_16k,))[0]
+
+    def embed_batch(self, waveforms_16k: tuple[np.ndarray, ...]) -> tuple[np.ndarray, ...]:
+        """Embed variable-length speech in same-shape inference batches."""
+
+        waveforms = tuple(
+            np.ascontiguousarray(waveform, dtype=np.float32)
+            for waveform in waveforms_16k
+        )
+        if not waveforms:
+            return ()
+        if any(len(waveform) < 8_000 for waveform in waveforms):
             raise ValueError("CAMPPlus requires at least 500 ms of speech")
-        features = torch.from_numpy(self._features(waveform)).unsqueeze(0)
+        features = tuple(self._features(waveform) for waveform in waveforms)
+        groups: dict[tuple[int, int], list[int]] = {}
+        for index, value in enumerate(features):
+            groups.setdefault(value.shape, []).append(index)
+        outputs: list[np.ndarray | None] = [None] * len(features)
         with torch.inference_mode():
-            embedding = self.model(features)[0].float().numpy()
-        embedding /= max(float(np.linalg.norm(embedding)), 1e-12)
-        return np.ascontiguousarray(embedding, dtype=np.float32)
+            for indices in groups.values():
+                batch = torch.from_numpy(np.stack([features[index] for index in indices]))
+                embeddings = self.model(batch).float().numpy()
+                embeddings /= np.maximum(
+                    np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-12,
+                )
+                for index, embedding in zip(indices, embeddings, strict=True):
+                    outputs[index] = np.ascontiguousarray(embedding, dtype=np.float32)
+        if any(output is None for output in outputs):
+            raise RuntimeError("CAMPPlus batch did not produce every requested embedding")
+        return tuple(np.asarray(output, dtype=np.float32) for output in outputs)
 
 
 class DnsMosScorer:

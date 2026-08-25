@@ -2,22 +2,30 @@
 
 L6 is a manual offline stage that runs only after unmerged L4 A/B tracks have
 received aligned L5 decisions. It concatenates each selected track's L5 Voice
-frames and performs one voiceprint extraction for that complete speech-only
-track. It no longer divides tracks into 1.5-second speaker-analysis fragments.
+frames, divides that speech into fixed two-second segments, and extracts one
+CAMPPlus embedding per segment. A final residual is retained only when it has at
+least 500 ms of speech. Same-length segments are inferred in batches.
 
-For every L4 source, candidate A is always selected for complete-track CAMPPlus
+For every L4 source, candidate A is always selected for segmented CAMPPlus
 embedding. Candidate B is embedded only when all three gates
 pass: the absolute A/B L4 match-score gap is at most `0.20`, B's match score is
 strictly greater than `0.50`, and B's normalized L4 DNSMOS score is strictly
-greater than `0.30`. Tracks with no L5 voice are still embedded as required, but
-a cluster containing no L5-active audio cannot create an empty display output.
+greater than `0.30`. Tracks with less than 500 ms of cumulative L5 Voice do not
+create a voiceprint.
 
-All selected embeddings are compared pairwise. Average-link AHC uses the
-configured cosine threshold (`0.62`) and forcibly limits the result to at most
-three session-local voiceprints. Each voiceprint owns one or more complete L4
-audio tracks; `Layer6Result.metadata.voiceprint_audio_ids` records this one-to-many
-relationship, while the full symmetric similarity matrix remains available for
-audit.
+Within one track, every segment's median similarity to the other segments is its
+centrality. Robust low-centrality outliers are discarded, while at least the two
+most central segments remain. Between two tracks, segment embeddings are paired
+one-to-one from highest similarity downward. The track score is the weakest of
+the top evidence set, where the evidence set contains at least two pairs and at
+least 30 percent of the shorter track's retained segments. Complete-link AHC
+requires every cross-track pair in two clusters to pass the configured cosine
+threshold (`0.62`), preventing a B track from bridging two incompatible people.
+The result is forcibly limited to at most three session-local voiceprints. Each
+voiceprint owns one or more complete L4 audio tracks;
+`Layer6Result.metadata.voiceprint_audio_ids` records this one-to-many relation,
+while segment counts, evidence counts and the symmetric track-score matrix remain
+available for audit.
 
 For each voiceprint, associated tracks are projected onto the recording's
 absolute 48 kHz capture bounds. Only L5-active 20 ms frames are inserted. Tracks
