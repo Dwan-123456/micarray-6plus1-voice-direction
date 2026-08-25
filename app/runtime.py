@@ -282,7 +282,7 @@ class ApplicationRuntime:
             self._performance, stale_after_ms=config.dev_test_ui.stale_after_ms
         )
         self._ui_lock = threading.Lock()
-        self._layer2 = Layer2Pipeline.from_project(config, project_root=self.project_root)
+        self._layer2 = Layer2Pipeline.from_project(config)
         self._layer2_state_lock = threading.RLock()
         self._source_probability_provider = source_probability_provider or self._imcra_probabilities
         self._gate_config_lock = threading.Lock()
@@ -1173,15 +1173,6 @@ class ApplicationRuntime:
     def doa_backend(self) -> str:
         with self._scan_config_lock:
             return self._scan_config.scanner_backend
-
-    def set_doa_backend(self, value: str) -> str:
-        if value not in {"frequency_normalized_music", "gi_doaenet"}:
-            raise ValueError("L2 DOA backend must be frequency_normalized_music or gi_doaenet")
-        with self._scan_config_lock:
-            if value != self._scan_config.scanner_backend:
-                self._scan_config = replace(self._scan_config, scanner_backend=value)
-                self._scan_config_revision += 1
-        return value
 
     @property
     def music_effective_order_limit(self) -> int:

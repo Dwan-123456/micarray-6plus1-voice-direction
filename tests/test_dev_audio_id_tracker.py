@@ -170,22 +170,26 @@ def test_unrecoverable_gap_preserves_duration_and_uses_newest_full_160ms(tmp_pat
     assert tracker.snapshots()[0].audio_sample_count == 21 * 960
 
 
-def test_ended_track_at_or_below_thirty_percent_sound_is_deleted(tmp_path):
-    tracker = AudioIdTracker("cache", project_root=tmp_path)
-    for index in range(10):
+def test_long_low_activity_track_remains_playable_after_capture(tmp_path):
+    tracker = AudioIdTracker(
+        "cache", project_root=tmp_path, minimum_listening_track_seconds=2.0,
+    )
+    for index in range(125):
         decision = 7_680 + index * 960
         direction = _direction(12, decision, 80.0)
         preview = (
             _preview(12, decision, 80.0)
-            if index < 3 else _silent_preview(12, decision, 80.0)
+            if index < 37 else _silent_preview(12, decision, 80.0)
         )
         tracker.update(_window(decision), (direction,), (preview,), active_tracks=(direction,))
     tracker.update(_window(24_960), (), (), active_tracks=())
-    assert tracker.snapshots() == ()
-    assert not tuple((tmp_path / "cache").rglob("track_012/segment_*.f32"))
+    rows = tracker.finalize_capture()
+    assert len(rows) == 1
+    assert rows[0].track_id == 12
+    assert tracker.audio_cache_path(12) is not None
 
 
-def test_ended_track_above_thirty_percent_sound_is_retained(tmp_path):
+def test_long_active_track_is_retained(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     for index in range(10):
         decision = 7_680 + index * 960

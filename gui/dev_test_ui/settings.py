@@ -15,6 +15,8 @@ class DevUiSettings:
     LEGACY_SCHEMA_VERSION = "dev_test_ui_settings_v1"
     OBSOLETE_KEYS = {
         "layer2_iterative_peak_search_enabled",
+        "layer2_doa_backend",
+        "layer1_speaker_count_enabled",
     }
     LAYER4_BACKENDS = {"mossformer2_ss_16k", "tiger_speech_16k"}
 
@@ -77,18 +79,6 @@ class DevUiSettings:
         threshold = self._validate_threshold(value)
         self._save_update(layer2_direction_threshold=threshold)
         return threshold
-
-    def load_doa_backend(self, default: str = "frequency_normalized_music") -> str:
-        fallback = self._validate_doa_backend(default)
-        try:
-            return self._validate_doa_backend(self._load_payload()["layer2_doa_backend"])
-        except (KeyError, TypeError, ValueError):
-            return fallback
-
-    def save_doa_backend(self, value: str) -> str:
-        backend = self._validate_doa_backend(value)
-        self._save_update(layer2_doa_backend=backend)
-        return backend
 
     def load_music_effective_order_limit(self, default: int = 3) -> int:
         fallback = self._validate_music_order_limit(default)
@@ -210,18 +200,6 @@ class DevUiSettings:
         self._save_update(layer1_pre_denoise_enabled=enabled)
         return enabled
 
-    def load_l1_speaker_count_enabled(self, default: bool = False) -> bool:
-        fallback = self._validate_bool(default)
-        try:
-            return self._validate_bool(self._load_payload()["layer1_speaker_count_enabled"])
-        except (KeyError, TypeError, ValueError):
-            return fallback
-
-    def save_l1_speaker_count_enabled(self, value: bool) -> bool:
-        enabled = self._validate_bool(value)
-        self._save_update(layer1_speaker_count_enabled=enabled)
-        return enabled
-
     def load_l5_input_gain_compensation_enabled(self, default: bool = True) -> bool:
         fallback = self._validate_bool(default)
         try:
@@ -261,12 +239,6 @@ class DevUiSettings:
     def _validate_bool(value: bool) -> bool:
         if type(value) is not bool:
             raise ValueError("switch setting must be bool")
-        return value
-
-    @staticmethod
-    def _validate_doa_backend(value: str) -> str:
-        if value not in {"frequency_normalized_music", "gi_doaenet"}:
-            raise ValueError("invalid Layer 2 DOA backend")
         return value
 
     @staticmethod

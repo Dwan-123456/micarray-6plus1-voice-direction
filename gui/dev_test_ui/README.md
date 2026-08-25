@@ -4,7 +4,7 @@
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../../ARCHITECTURE_V0.3_TARGET.md)。**本README描述当前已迁移界面。**
 
-当前回归状态：L1预降噪及界面相关自动化门禁已通过。L1区域已增加持久化的“IMCRA预降噪”开关；开启后Runtime等待对应20 ms降噪块完成，再将替换后的7路音频送入后续层。L1区域另有持久化“CountNet人数估计”开关：只读校准后Center Mic，开启后先预热5秒、随后每100 ms显示0/1/2、三位P0/P1/P2、输入RMS、模型输入增益和标注end sample；关闭会清空其私有状态。该worker不在GUI或采集线程推理，第一阶段结果不进入Windowing和L2～L5。
+当前回归状态：L1预降噪及界面相关自动化门禁已通过。L1区域已增加持久化的“IMCRA预降噪”开关；开启后Runtime等待对应20 ms降噪块完成，再将替换后的7路音频送入后续层。L1区域另有“CountNet人数估计”诊断开关，每次启动Test UI默认关闭且不恢复上次状态；开启后先预热5秒、随后每100 ms显示0/1/2、三位P0/P1/P2、输入RMS、模型输入增益和标注end sample；关闭会清空其私有状态。该worker不在GUI或采集线程推理，第一阶段结果不进入Windowing和L2～L5。
 
 每次麦克风采集成功连接后，Test UI会尽力发送一次官方关灯命令`e`。麦克风未连接时不会访问CDC或发送灯控命令；启动默认关灯失败也不弹出灯控错误，手动“灯光开/灯光关”仍保留完整错误提示。
 
@@ -46,7 +46,7 @@ L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和I
 - 8路meter及通道标签/顺序；
 - IMCRA 20 ms与Gate 40 ms值显示一致；
 - L1预降噪开关持久化、开启后等待替换且不重复/跳过sample区间；
-- CountNet开关持久化、5秒预热、100 ms更新、无平滑、gap重置和缺模型/推理异常显式INVALID；
+- CountNet每次启动默认关闭、5秒预热、100 ms更新、无平滑、gap重置和缺模型/推理异常显式INVALID；
 - L2滑条动态revision、L5滑条只重判、二者互不影响；
 - Gate关闭时MUSIC显示Blocked且公开方向为空；
 - 原始MUSIC圆环和公共轨迹点同窗显示，UI不执行二次滤波或二次ID关联；

@@ -202,7 +202,6 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.load_direction_id_tracking_enabled() is True
     assert settings.load_gate_probability_threshold(0.60) == 0.60
     assert settings.load_l1_pre_denoise_enabled(False) is False
-    assert settings.load_l1_speaker_count_enabled(False) is False
     assert settings.load_l5_input_gain_compensation_enabled(True) is True
     assert settings.load_layer4_backend("mossformer2_ss_16k") == "mossformer2_ss_16k"
 
@@ -219,7 +218,6 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert settings.save_direction_kalman_r_scale(0.8) == 0.8
     assert settings.save_gate_probability_threshold(0.73) == 0.73
     assert settings.save_l1_pre_denoise_enabled(True) is True
-    assert settings.save_l1_speaker_count_enabled(True) is True
     assert settings.save_l5_input_gain_compensation_enabled(False) is False
     assert settings.save_layer4_backend("tiger_speech_16k") == "tiger_speech_16k"
 
@@ -234,7 +232,6 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert loaded.load_direction_kalman_r_scale(1.0) == 0.8
     assert loaded.load_gate_probability_threshold(0.60) == 0.73
     assert loaded.load_l1_pre_denoise_enabled(False) is True
-    assert loaded.load_l1_speaker_count_enabled(False) is True
     assert loaded.load_l5_input_gain_compensation_enabled(True) is False
     assert loaded.load_layer4_backend("mossformer2_ss_16k") == "tiger_speech_16k"
 
@@ -244,7 +241,7 @@ def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     assert '"layer2_music_dpd_rank1_enabled": true' in payload
     assert '"layer2_music_noise_whitening_enabled": true' in payload
     assert '"layer2_direction_id_tracking_enabled": false' in payload
-    assert '"layer1_speaker_count_enabled": true' in payload
+    assert "layer1_speaker_count_enabled" not in payload
     assert '"layer5_input_gain_compensation_enabled": false' in payload
     assert '"layer4_offline_backend": "tiger_speech_16k"' in payload
     assert "layer2_iterative_peak_search_enabled" not in payload
@@ -258,8 +255,6 @@ def test_operator_settings_reject_invalid_values(tmp_path):
         settings.save_gate_probability_threshold(1.01)
     with pytest.raises(ValueError, match="must be bool"):
         settings.save_l1_pre_denoise_enabled(1)
-    with pytest.raises(ValueError, match="must be bool"):
-        settings.save_l1_speaker_count_enabled(1)
     with pytest.raises(ValueError, match="MossFormer2 or TIGER"):
         settings.save_layer4_backend("unknown")
 
@@ -1305,7 +1300,8 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert not hasattr(window, "calibration_label")
         assert window.srp_threshold.parentWidget() is not window.srp_polar
         right_layout = window.srp_threshold.parentWidget().layout()
-        assert right_layout.indexOf(window.doa_backend) == 0
+        assert right_layout.indexOf(window.doa_method) == 0
+        assert window.doa_method.text() == "DOA方法：MUSIC"
         assert right_layout.indexOf(window.gate_threshold) == 1
         assert not hasattr(window, "srp_iterative")
         assert window.srp_id_tracking.text() == "ID Tracking"

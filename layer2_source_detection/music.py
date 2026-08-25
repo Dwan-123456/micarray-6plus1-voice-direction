@@ -95,7 +95,7 @@ class MusicDiagnostics:
     total_ms: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.mode not in {"frequency_normalized_music", "gi_doaenet"} or self.config_revision < 0:
+        if self.mode != "frequency_normalized_music" or self.config_revision < 0:
             raise ValueError("invalid L2 DOA diagnostics identity")
         if self.valid_frequency_bins < 0 or self.covariance_quality not in {
             "ready", "degraded", "failed",

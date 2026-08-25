@@ -164,7 +164,6 @@ def build_window(
     from .panels import (
         GateProbabilityThresholdControl,
         DirectionIdTrackingControl,
-        DoaBackendControl,
         MusicDpdRank1Control,
         MusicNoiseWhiteningControl,
         MusicOrderLimitControl,
@@ -231,7 +230,6 @@ def build_window(
     )
     persisted_threshold = ui_settings.load_direction_threshold(config.layer2.direction_threshold)
     runtime.set_direction_threshold(persisted_threshold)
-    runtime.set_doa_backend(ui_settings.load_doa_backend(config.layer2.scanner_backend))
     runtime.set_music_effective_order_limit(ui_settings.load_music_effective_order_limit(
         config.layer2.effective_order_limit
     ))
@@ -253,9 +251,9 @@ def build_window(
     runtime.set_l1_pre_denoise_enabled(ui_settings.load_l1_pre_denoise_enabled(
         config.layer1_pre_denoise.enabled
     ))
-    runtime.set_l1_speaker_count_enabled(ui_settings.load_l1_speaker_count_enabled(
-        config.layer1_speaker_count.enabled
-    ))
+    # CountNet is an opt-in diagnostic for the current Test UI run. It always
+    # starts disabled and is deliberately not restored from prior UI settings.
+    runtime.set_l1_speaker_count_enabled(False)
     runtime.set_l5_input_gain_compensation_enabled(
         ui_settings.load_l5_input_gain_compensation_enabled(
             config.layer5.input_gain_compensation.enabled
@@ -513,7 +511,7 @@ def build_window(
             return box
 
         def _doa_panel(self):
-            box = QGroupBox("L2 · 可切换定位与追踪")
+            box = QGroupBox("L2 · MUSIC定位与追踪")
             layout = QVBoxLayout(box)
             self.srp_header = QLabel("UNAVAILABLE | session — | epoch 0 | window — | sample — | age N/A")
             self.srp_header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -527,16 +525,12 @@ def build_window(
             self.gate_threshold = GateProbabilityThresholdControl(
                 runtime.gate_probability_threshold
             )
-            self.doa_backend = DoaBackendControl(runtime.doa_backend)
             self.srp_threshold = SrpThresholdControl(runtime.direction_threshold)
             self.music_order_limit = MusicOrderLimitControl(runtime.music_effective_order_limit)
             self.music_dpd_rank1 = MusicDpdRank1Control(runtime.music_dpd_rank1_enabled)
             self.music_noise_whitening = MusicNoiseWhiteningControl(
                 runtime.music_noise_whitening_enabled
             )
-            music_backend_active = runtime.doa_backend == "frequency_normalized_music"
-            self.music_dpd_rank1.setEnabled(music_backend_active)
-            self.music_noise_whitening.setEnabled(music_backend_active)
             self.music_dpd_rank1.setToolTip(
                 "仅使用通过直达声主导检验的频点，以rank-1 MUSIC逐频投票并执行圆周聚类；默认关闭。"
             )
@@ -562,7 +556,13 @@ def build_window(
                 "QLabel { background:#202a34; color:#9fb2c5; padding:0 8px; "
                 "font-family:Consolas; font-weight:600; }"
             )
-            right_layout.addWidget(self.doa_backend)
+            self.doa_method = QLabel("DOA方法：MUSIC")
+            self.doa_method.setMinimumHeight(38)
+            self.doa_method.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.doa_method.setStyleSheet(
+                "QLabel { background:#245c99; color:white; font-weight:600; }"
+            )
+            right_layout.addWidget(self.doa_method)
             right_layout.addWidget(self.gate_threshold)
             processing_switches = QHBoxLayout()
             processing_switches.setContentsMargins(0, 0, 0, 0)
@@ -585,7 +585,6 @@ def build_window(
             splitter.setSizes((700, 300))
             layout.addWidget(splitter, 1)
             self.srp_polar.candidate_selected.connect(self._select_candidate)
-            self.doa_backend.backend_changed.connect(self._set_doa_backend)
             self.srp_threshold.threshold_changed.connect(self._set_srp_threshold)
             self.music_order_limit.order_changed.connect(self._set_music_order_limit)
             self.music_dpd_rank1.enabled_changed.connect(self._set_music_dpd_rank1)
@@ -593,25 +592,6 @@ def build_window(
             self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
             self.srp_id_tracking.enabled_changed.connect(self._set_direction_id_tracking)
             return box
-
-        def _set_doa_backend(self, backend: str):
-            previous = runtime.doa_backend
-            try:
-                backend = ui_settings.save_doa_backend(backend)
-                runtime.set_doa_backend(backend)
-                self.doa_backend.set_backend(backend, pending=True)
-                music = backend == "frequency_normalized_music"
-                self.music_dpd_rank1.setEnabled(music)
-                self.music_noise_whitening.setEnabled(music)
-                self.statusBar().showMessage(
-                    f"完整L2方案切换为 {'MUSIC' if music else 'GI-DOAEnet'} + Circular IMM-JPDA；下一窗口生效",
-                    5000,
-                )
-            except Exception as exc:
-                runtime.set_doa_backend(previous)
-                with QSignalBlocker(self.doa_backend):
-                    self.doa_backend.set_backend(previous)
-                self.statusBar().showMessage(f"L2方案切换失败: {exc}", 8000)
 
         def _set_gate_probability_threshold(self, threshold: float):
             previous = runtime.gate_probability_threshold
@@ -649,7 +629,7 @@ def build_window(
         def _set_l1_speaker_count(self, enabled: bool):
             previous = runtime.l1_speaker_count_enabled
             try:
-                enabled = ui_settings.save_l1_speaker_count_enabled(bool(enabled))
+                enabled = bool(enabled)
                 runtime.set_l1_speaker_count_enabled(enabled)
                 self._set_text(
                     self.countnet_label,
@@ -1626,11 +1606,6 @@ def build_window(
                 self.music_noise_whitening.set_enabled(
                     runtime.music_noise_whitening_enabled, pending=revision_pending
                 )
-            with QSignalBlocker(self.doa_backend):
-                self.doa_backend.set_backend(runtime.doa_backend, pending=revision_pending)
-            music_backend = runtime.doa_backend == "frequency_normalized_music"
-            self.music_dpd_rank1.setEnabled(music_backend)
-            self.music_noise_whitening.setEnabled(music_backend)
             applied_id_tracking = getattr(
                 frame, "direction_id_tracking_enabled", None
             )
@@ -1682,12 +1657,9 @@ def build_window(
                     if snapshot.age_ms > config.dev_test_ui.stale_after_ms
                     else "LIVE"
                 )
-                backend_name = (
-                    "NN" if frame.search_diagnostics.mode == "gi_doaenet" else "MUSIC"
-                )
                 self._set_text(
                     self.music_status,
-                    f"{backend_name} order={model.estimated_sources}  "
+                    f"MUSIC order={model.estimated_sources}  "
                     f"output={snapshot.effective_order if snapshot.effective_order is not None else '—'}  "
                     f"valid={frame.spatial_response.valid_frequency_bins}  "
                     f"status={frame.spatial_response.numerical_status}  {panel_state}",
@@ -1703,7 +1675,7 @@ def build_window(
                         f" {diagnostics.selected_frequency_bins} bins"
                         f" | WHITE {diagnostics.whitening_status.upper()}"
                         f" | {diagnostics.covariance_quality.upper()}"
-                        f" | ASSOC {'LMB/JPDA' if diagnostics.mode == 'gi_doaenet' else 'HUNGARIAN'}"
+                        " | ASSOC HUNGARIAN"
                     )
                 dropped_reason = frame.missing_reasons.get("srp")
                 state_prefix = (

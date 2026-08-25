@@ -12,7 +12,6 @@ from .probability_gate import (
 )
 from .music import MusicDiagnostics, MusicStateDiagnostic, RollingNormMusicScanner
 from .global_tracker import GlobalDirectionTracker
-from .gi_doaenet import GiDoaEnetScanner, SwitchableDoaScanner
 
 LAYER2_PUBLIC_VERSION = "1.1"
 __version__ = LAYER2_PUBLIC_VERSION
@@ -21,7 +20,6 @@ __all__ = [
     "LAYER2_PUBLIC_VERSION",
     "DirectionScanConfig", "DirectionScanError", "DirectionScanner", "DetailedDirectionScanner",
     "RollingNormMusicScanner", "MusicDiagnostics", "MusicStateDiagnostic",
-    "GiDoaEnetScanner", "SwitchableDoaScanner",
     "Layer2Pipeline", "Layer2PipelineResult", "Layer2ExecutionState",
     "GlobalDirectionTracker",
     "ProbabilityGate", "ProbabilityGateDecision", "ProbabilityGateState",

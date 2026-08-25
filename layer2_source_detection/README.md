@@ -1,10 +1,6 @@
 # Layer 2 1.1：Rolling NormMUSIC 与公共方向轨迹
 
-本目录是项目`1.3.3`开发组成部分，L2公开版本为`1.1`。Development Test UI可在运行中选择Rolling NormMUSIC或GI-DOAEnet PM作为DOA；两者之后统一进入同一个Circular IMM-JPDA方向ID追踪器，并共用公共方向DTO和L3边界。
-
-GI-DOAEnet链读取同一`DecisionWindow float32[7680,8]`，只取前7路物理麦，将48 kHz 160 ms上下文同相重采样为16 kHz，并补零高度坐标形成`[7,3]`阵列位置。网络最近时间帧形成360点方向概率；候选继续使用UI门限、prominence、50°圆周NMS及1～3输出上限。DOA后端切换会清空活动轨迹，但同一session内ID计数不复用。
-
-上游GI-DOAEnet固定为提交`af865978c783f309fc929f0f2499769a1c5499d5`和PM权重SHA-256 `d465...9fe8`。因该提交没有LICENSE文件，源码和权重不进入本仓库；运行`scripts/install_gi_doaenet.py --acknowledge-upstream-terms`下载安装到Git忽略目录。模型懒加载，默认仍为MUSIC；本机CUDA稳态实测适配器约5.8～11.8 ms/窗，首次加载约2.7秒。
+本目录是项目`1.3.3`开发组成部分，L2公开版本为`1.1`。DOA固定使用Rolling NormMUSIC，随后进入Circular IMM-JPDA方向ID追踪器，并共用公共方向DTO和L3边界。Development Test UI只显示MUSIC方法，不提供后端切换。
 
 IMCRA白化严格只读DecisionWindow携带的L1不可变快照，不拥有、更新或重置IMCRA状态。L1在低SPP频点持续维护完整7×7复数空间噪声协方差，L2对其做频率插值、收缩、loading及批量Cholesky白化，同时变换观测协方差和steering。缺少READY快照或空间噪声协方差不可用时，本窗明确退回未白化MUSIC。
 

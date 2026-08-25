@@ -15,7 +15,6 @@ from .configuration import DirectionScanConfig
 from .global_tracker import GlobalDirectionTracker, GlobalTrackerConfig
 from .interface import DetailedDirectionScanner
 from .music import MusicDiagnostics, MusicStateDiagnostic, RollingNormMusicScanner
-from .gi_doaenet import GiDoaEnetScanner, SwitchableDoaScanner
 from .probability_gate import ProbabilityGate, ProbabilityGateDecision, ProbabilityGateState, SourceProbability20ms
 
 
@@ -170,12 +169,11 @@ class Layer2PipelineResult:
 
 
 class Layer2Pipeline:
-    """Probability Gate -> switchable DOA -> permanent global ID tracker."""
+    """Probability Gate -> rolling NormMUSIC -> permanent global ID tracker."""
 
     def __init__(self, gate: ProbabilityGate, scanner: DetailedDirectionScanner,
                  tracker: GlobalDirectionTracker | None = None) -> None:
         self.gate, self.scanner = gate, scanner
-        self._active_backend = "frequency_normalized_music"
         self.id_tracker = tracker or GlobalDirectionTracker()
         self.last_id_tracking_error: str | None = None
         self._direction_id_tracking_enabled = True
@@ -185,14 +183,11 @@ class Layer2Pipeline:
         self._gate_activity: deque[int] = deque(maxlen=_MUSIC_ACTIVITY_HISTORY_HOPS)
 
     @classmethod
-    def from_project(cls, config: ProjectConfig, *, scanner: DetailedDirectionScanner | None = None,
-                     project_root=None) -> "Layer2Pipeline":
+    def from_project(cls, config: ProjectConfig, *, scanner: DetailedDirectionScanner | None = None) -> "Layer2Pipeline":
         if config.layer2.probability_gate.backend != ProbabilityGate.backend:
             raise ValueError(f"unsupported L2 probability Gate backend: {config.layer2.probability_gate.backend}")
         tracking = config.layer2.direction_id_tracking
-        doa_scanner = scanner or SwitchableDoaScanner(
-            RollingNormMusicScanner(), GiDoaEnetScanner(project_root=project_root)
-        )
+        doa_scanner = scanner or RollingNormMusicScanner()
         tracker_config = GlobalTrackerConfig(
             **tracking.model_dump(exclude={"confirmation_window_ms", "tentative_ttl_ms", "coasting_ttl_ms"}),
             confirmation_window_samples=tracking.confirmation_window_ms * 48,
@@ -276,13 +271,6 @@ class Layer2Pipeline:
         del direction_kalman_enabled, direction_kalman_q_scale, direction_kalman_r_scale
         if type(direction_id_tracking_enabled) is not bool:
             raise TypeError("L2 direction ID tracking switch must be bool")
-        if scan_config.scanner_backend != self._active_backend:
-            self._active_backend = scan_config.scanner_backend
-            self.id_tracker.reset(preserve_session_counters=True)
-            self._gate_activity_key = None
-            self._gate_activity.clear()
-            with self._voice_feedback_lock:
-                self._voice_feedback.clear()
         if direction_id_tracking_enabled != self._direction_id_tracking_enabled:
             # This transition runs on the single L2 worker, so tracker state is
             # never reset concurrently with an update. Re-enabling starts a
@@ -321,14 +309,13 @@ class Layer2Pipeline:
         if decision.allow_srp:
             response, observations, diagnostics = self.scanner.scan_detailed(
                 window, geometry, scan_config, scan_config_revision)
-            if scan_config.scanner_backend == "frequency_normalized_music":
-                warm = active_frame_count >= _MUSIC_BIRTH_WARMUP_HOPS
-                diagnostics = replace(
-                    diagnostics,
-                    births_allowed=diagnostics.births_allowed and warm,
-                    active_frame_count=active_frame_count,
-                    birth_required_active_frames=_MUSIC_BIRTH_WARMUP_HOPS,
-                )
+            warm = active_frame_count >= _MUSIC_BIRTH_WARMUP_HOPS
+            diagnostics = replace(
+                diagnostics,
+                births_allowed=diagnostics.births_allowed and warm,
+                active_frame_count=active_frame_count,
+                birth_required_active_frames=_MUSIC_BIRTH_WARMUP_HOPS,
+            )
         if not direction_id_tracking_enabled:
             self.last_id_tracking_error = None
             return Layer2PipelineResult(

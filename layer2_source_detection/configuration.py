@@ -53,8 +53,8 @@ class DirectionScanConfig:
         return cls(**values)
 
     def __post_init__(self) -> None:
-        if self.scanner_backend not in {"frequency_normalized_music", "gi_doaenet"}:
-            raise ValueError("unsupported Layer 2 DOA backend")
+        if self.scanner_backend != "frequency_normalized_music":
+            raise ValueError("Layer 2 DOA backend must be frequency_normalized_music")
         if self.angle_step_deg != 1.0:
             raise ValueError("MUSIC scan step must be one degree")
         if (self.frequency_min_hz, self.frequency_max_hz) != (2_000.0, 4_000.0):

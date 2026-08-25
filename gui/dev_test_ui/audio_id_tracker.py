@@ -20,8 +20,6 @@ _HOP_SAMPLES = 960
 # edge fade below.
 _CROSSFADE_SAMPLES = 96
 _EDGE_FADE_SAMPLES = 240
-_SOUND_RMS_THRESHOLD = 10.0 ** (-60.0 / 20.0)
-_MIN_SOUND_RATIO = 0.30
 CENTER_RAW_TRACK_ID = 0
 CENTER_IMCRA_TRACK_ID = -1
 _REFERENCE_TRACK_IDS = frozenset((CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID))
@@ -44,8 +42,6 @@ class _Track:
     authoritative_id: bool = False
     envelope_peaks: deque[float] = field(default_factory=deque)
     voice_annotations: deque[TrackVoiceAnnotation | None] = field(default_factory=deque)
-    total_hops: int = 0
-    sound_hops: int = 0
     stream_key: tuple[str, int] | None = None
     processing_mode: str = "optimized"
 
@@ -290,17 +286,6 @@ class AudioIdTracker:
             float(item) for item in np.max(np.abs(hops), axis=1)
         )
         track.voice_annotations.extend(None for _item in hops)
-        rms_values = np.sqrt(np.mean(np.square(hops, dtype=np.float64), axis=1))
-        for rms, observed in zip(rms_values, observed_hops, strict=True):
-            # Exact-duration silence inserted for a missing/coasting result is
-            # a timeline placeholder, not evidence that the L3 output itself
-            # was a silent/low-quality candidate.  Keep it audible as silence
-            # but exclude it from the post-capture quality filter.
-            if not observed:
-                continue
-            track.total_hops += 1
-            if float(rms) >= _SOUND_RMS_THRESHOLD:
-                track.sound_hops += 1
         if track.track_id in _REFERENCE_TRACK_IDS:
             return
         maximum = self.retained_segments * self.segment_samples // _HOP_SAMPLES
@@ -488,17 +473,6 @@ class AudioIdTracker:
     def _cached_samples(track: _Track) -> int:
         return sum(path.stat().st_size // np.dtype(np.float32).itemsize for path in track.segments if path.exists())
 
-    @staticmethod
-    def _should_discard_quiet_track(track: _Track) -> bool:
-        if track.track_id in _REFERENCE_TRACK_IDS or track.total_hops <= 0:
-            return False
-        # Judge the completed candidate as a whole.  A valid recording may
-        # legitimately end with several seconds of silence while an offline
-        # replay backlog drains; that silent tail must not delete the earlier
-        # playable speech.  Fully/mostly silent candidates still fail the
-        # requested 30 percent sound-ratio gate.
-        return track.sound_hops / track.total_hops <= _MIN_SOUND_RATIO
-
     def _should_discard_short_track(self, track: _Track) -> bool:
         return (
             track.track_id not in _REFERENCE_TRACK_IDS
@@ -519,10 +493,7 @@ class AudioIdTracker:
 
     def _remove_filtered_ended_tracks(self) -> None:
         for track_id, track in tuple(self._tracks.items()):
-            if track.state == "ended" and (
-                self._should_discard_short_track(track)
-                or self._should_discard_quiet_track(track)
-            ):
+            if track.state == "ended" and self._should_discard_short_track(track):
                 self._delete_track_segments(track)
                 del self._tracks[track_id]
 
@@ -816,8 +787,6 @@ class AudioIdTracker:
                 prefix_observed.extend(False for _ in range(gap // _HOP_SAMPLES))
 
             self._delete_track_segments(track)
-            track.total_hops = 0
-            track.sound_hops = 0
             self._append_audio(
                 track,
                 np.ascontiguousarray(np.concatenate(prefix_audio), dtype=np.float32),

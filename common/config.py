@@ -221,7 +221,7 @@ class Layer2Config(StrictModel):
     probability_gate: Layer2ProbabilityGateConfig
     music: Layer2MusicPreparationConfig
     direction_id_tracking: Layer2DirectionIdTrackingConfig
-    scanner_backend: Literal["frequency_normalized_music", "gi_doaenet"]
+    scanner_backend: Literal["frequency_normalized_music"]
     angle_step_deg: Literal[1.0]
     frequency_min_hz: Literal[2000.0]
     frequency_max_hz: Literal[4000.0]

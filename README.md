@@ -422,7 +422,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 
 - L1多通道输入、IMCRA和可切换预降噪；
 - 唯一时间轴与160 ms/20 ms窗口装配；
-- L2 Probability Gate、Rolling NormMUSIC/GI-DOAEnet和Circular IMM-JPDA永久公共方向ID；
+- L2 Probability Gate、Rolling NormMUSIC和Circular IMM-JPDA永久公共方向ID；
 - L3优化BF、单声源DAS和全频loaded MVDR；五频段与固定30°波束模式均已移除；
 - TrackAudioStreamHub逐ID去重拼接、响度补偿、连续试听/录音轨和停机封存；
 - 采集后L4一/二人路由、MossFormer2/TIGER分离、复频谱相干匹配和原生16 kHz试听；

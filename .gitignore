@@ -13,7 +13,6 @@ dist/
 coverage.xml
 htmlcov/
 legacy_reference_only/
-models/gi_doaenet_pm_v1/upstream/
 # All runtime recordings, local corpora, catalogs, imported sources and UI
 # settings stay on this computer. Curated regression audio belongs under
 # tests/fixtures/audio/ instead.
