@@ -760,7 +760,7 @@ class Layer4AudioPanel(QGroupBox):
             row = self._rows.get(track.track_id)
             if row is None:
                 row = AudioTrackRow(
-                    track.track_id, show_voice_highlights=True, label_width=350,
+                    track.track_id, show_voice_highlights=True, label_width=136,
                 )
                 row.toggle_requested.connect(self._toggle_track)
                 row.set_voice_threshold(self._voice_threshold)
@@ -1016,7 +1016,14 @@ class AudioTrackRow(QWidget):
             text = "Center Mic IMCRA"
             label_style = "font-family:Consolas"
         else:
-            text = snapshot.display_label or f"{snapshot.track_id} · {snapshot.theta_deg:.1f}°"
+            full_text = (
+                snapshot.display_label
+                or f"{snapshot.track_id} · {snapshot.theta_deg:.1f}°"
+            )
+            text = full_text.replace(" · 匹配度 ", "·匹配度").replace(
+                " · MOS ", "\nMOS ",
+            )
+            self.label.setToolTip(full_text)
             colour_id = snapshot.parent_track_id or snapshot.track_id
             label_style = f"font-family:Consolas;color:{track_colour_hex(colour_id)}"
         if text != self._rendered_text:

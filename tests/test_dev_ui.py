@@ -77,8 +77,18 @@ def test_l5_voice_colour_is_disabled_for_l3_rows_and_enabled_for_l4_rows():
     assert l3_row.waveform.minimumWidth() == 80
     assert l3_row.waveform._voice_columns(1) == ()
     assert l4_row.waveform._voice_columns(1) == (True,)
+    compact_row = AudioTrackRow(7, show_voice_highlights=True, label_width=136)
+    compact_row.set_snapshot(replace(
+        snapshot,
+        display_label="7A · 匹配度 0.941 · MOS 0.823",
+    ), playing=False)
+    assert compact_row.label.text() == "7A·匹配度0.941\nMOS 0.823"
+    assert compact_row.label.toolTip() == "7A · 匹配度 0.941 · MOS 0.823"
+    assert compact_row.label.width() == 136
+    assert compact_row.waveform.minimumWidth() == 80
     l3_row.close()
     l4_row.close()
+    compact_row.close()
     app.processEvents()
 
 
