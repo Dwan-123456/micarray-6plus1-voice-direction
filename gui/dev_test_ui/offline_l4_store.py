@@ -59,9 +59,15 @@ class OfflineLayer4UiStore:
         next_preview_id = max((item.source.track_id for item in values), default=0) + 1
         for item in values:
             parent_track_id = item.source.track_id
+            mos_score = float(item.metadata["mos_score"])
+            if not np.isfinite(mos_score) or not 0.0 <= mos_score <= 1.0:
+                raise ValueError("L4 MOS score must be between 0 and 1")
             if parent_counts[parent_track_id] == 1:
                 preview_id = parent_track_id
-                display_label = None
+                display_label = (
+                    f"{parent_track_id} · {item.source.theta_deg:.1f}°"
+                    f" · MOS {mos_score:.3f}"
+                )
             else:
                 preview_id = next_preview_id
                 next_preview_id += 1
@@ -69,7 +75,10 @@ class OfflineLayer4UiStore:
                 score = float(item.metadata["candidate_match_score"])
                 if not np.isfinite(score) or not 0.0 <= score <= 1.0:
                     raise ValueError("L4 candidate matching score must be between 0 and 1")
-                display_label = f"{parent_track_id}{suffix} · 匹配度 {score:.3f}"
+                display_label = (
+                    f"{parent_track_id}{suffix} · 匹配度 {score:.3f}"
+                    f" · MOS {mos_score:.3f}"
+                )
             path = Path(self._temporary.name) / (
                 f"l4_track_{parent_track_id:06d}_{item.output_kind}.wav"
             )

@@ -759,7 +759,9 @@ class Layer4AudioPanel(QGroupBox):
             self._snapshots[track.track_id] = track
             row = self._rows.get(track.track_id)
             if row is None:
-                row = AudioTrackRow(track.track_id, show_voice_highlights=True)
+                row = AudioTrackRow(
+                    track.track_id, show_voice_highlights=True, label_width=350,
+                )
                 row.toggle_requested.connect(self._toggle_track)
                 row.set_voice_threshold(self._voice_threshold)
                 self._rows[track.track_id] = row
@@ -976,7 +978,7 @@ class AudioTrackRow(QWidget):
 
     def __init__(
         self, track_id: int, parent: QWidget | None = None, *,
-        show_voice_highlights: bool = True,
+        show_voice_highlights: bool = True, label_width: int = 128,
     ):
         super().__init__(parent)
         self.track_id = int(track_id)
@@ -992,7 +994,7 @@ class AudioTrackRow(QWidget):
         self.play.clicked.connect(lambda: self.toggle_requested.emit(self.track_id))
         self.label = QLabel()
         self.label.setStyleSheet("font-family:Consolas")
-        self.label.setFixedWidth(128)
+        self.label.setFixedWidth(label_width)
         self.duration = QLabel()
         self.duration.setStyleSheet("font-family:Consolas")
         self.duration.setFixedWidth(62)

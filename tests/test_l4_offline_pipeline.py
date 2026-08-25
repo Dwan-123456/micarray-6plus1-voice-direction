@@ -71,6 +71,17 @@ class _L5:
         )
 
 
+class _DnsMos:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def score(self, waveform_16k):
+        self.calls += 1
+        assert waveform_16k.dtype == np.float32
+        assert waveform_16k.flags.c_contiguous
+        return 4.0, 3.0, 2.0
+
+
 def test_direction_count_classifier_uses_maximum_recorded_l2_output_count() -> None:
     decision = DirectionCountSpeakerClassifier().classify(_source((1, 1, 2, 1)))
     assert decision.speaker_count == 2
@@ -92,6 +103,7 @@ def test_one_speaker_is_resampled_and_bypasses_separator_before_l5() -> None:
         speaker_counter=DirectionCountSpeakerClassifier(),
         backends={"mossformer2_ss_16k": backend},
         layer5=_L5(),
+        quality_scorer=_DnsMos(),
         default_backend="mossformer2_ss_16k",
     )
     result = pipeline.process(_source((1, 1, 1)), request_id="one")
@@ -107,6 +119,7 @@ def test_two_speakers_are_separated_matched_and_keep_parent_identity() -> None:
         speaker_counter=DirectionCountSpeakerClassifier(),
         backends={"mossformer2_ss_16k": backend},
         layer5=_L5(),
+        quality_scorer=_DnsMos(),
         default_backend="mossformer2_ss_16k",
     )
     result = pipeline.process(_source((1, 2, 2)), request_id="two")
@@ -124,12 +137,17 @@ def test_l4_and_l5_pipeline_stages_share_the_same_16khz_waveform() -> None:
         speaker_counter=DirectionCountSpeakerClassifier(),
         backends={"mossformer2_ss_16k": backend},
         layer5=layer5,
+        quality_scorer=_DnsMos(),
         default_backend="mossformer2_ss_16k",
     )
     processed = pipeline.process_l4_sealed((_source((1, 2)),))
     assert len(processed) == 1
     assert processed[0].source.track_id == 9
     assert layer5.calls == 0
+    assert processed[0].metadata["dnsmos_sig"] == pytest.approx(4.0)
+    assert processed[0].metadata["dnsmos_bak"] == pytest.approx(3.0)
+    assert processed[0].metadata["dnsmos_ovrl"] == pytest.approx(2.0)
+    assert processed[0].metadata["mos_score"] == pytest.approx(0.4375)
     results = pipeline.process_l5_sealed(processed)
     assert layer5.calls == 1
     assert results[0].l5_is_voice is True
@@ -141,6 +159,7 @@ def test_l4_and_l5_pipeline_stages_share_the_same_16khz_waveform() -> None:
         with wave.open(str(store.audio_path(9)), "rb") as preview:
             assert preview.getframerate() == 16_000
             assert preview.getnframes() == len(processed[0].waveform_16k)
+        assert store.snapshots()[0].display_label == "9 · 120.0° · MOS 0.438"
         assert all(item is None for item in store.snapshots()[0].voice_annotations_20ms)
         store.apply_l5(results)
         annotations = store.snapshots()[0].voice_annotations_20ms
@@ -160,6 +179,7 @@ def test_l4_sealed_selects_each_track_independently_by_its_1_4khz_scores() -> No
         speaker_counter=DirectionCountSpeakerClassifier(),
         backends={"mossformer2_ss_16k": backend},
         layer5=_L5(),
+        quality_scorer=_DnsMos(),
         default_backend="mossformer2_ss_16k",
     )
     first = _source((1, 2, 2))
@@ -185,6 +205,7 @@ def test_l4_unmerged_mode_ranks_both_16khz_candidates_for_preview() -> None:
         speaker_counter=DirectionCountSpeakerClassifier(),
         backends={"mossformer2_ss_16k": backend},
         layer5=layer5,
+        quality_scorer=_DnsMos(),
         default_backend="mossformer2_ss_16k",
     )
 
@@ -218,8 +239,8 @@ def test_l4_unmerged_mode_ranks_both_16khz_candidates_for_preview() -> None:
         assert len({item.track_id for item in snapshots}) == 2
         assert tuple(item.parent_track_id for item in snapshots) == (9, 9)
         assert tuple(item.display_label for item in snapshots) == (
-            f"9A · 匹配度 {scores[0]:.3f}",
-            f"9B · 匹配度 {scores[1]:.3f}",
+            f"9A · 匹配度 {scores[0]:.3f} · MOS 0.438",
+            f"9B · 匹配度 {scores[1]:.3f} · MOS 0.438",
         )
         assert all("°" not in item.display_label for item in snapshots)
         assert all(
@@ -286,6 +307,7 @@ def test_l4_output_is_attenuated_before_pcm16_clipping() -> None:
         speaker_counter=DirectionCountSpeakerClassifier(),
         backends={"mossformer2_ss_16k": _Backend()},
         layer5=_L5(),
+        quality_scorer=_DnsMos(),
         default_backend="mossformer2_ss_16k",
     )
     processed = pipeline.process_l4(_source((1, 1)), request_id="peak-safe")

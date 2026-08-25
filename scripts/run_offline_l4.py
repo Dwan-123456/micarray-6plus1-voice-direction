@@ -14,6 +14,7 @@ from layer4_speech_separation import (
 from layer4_speech_separation.offline import OfflineLayer4Pipeline, load_sealed_l3_tracks, persist_offline_results
 from layer5_voice_classifier import Layer5Engine, NvidiaMarbleNetPlugin
 from layer5_voice_classifier.gain_compensation import InputGainCompensationSettings
+from layer6_speaker_consolidation import DnsMosScorer
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +61,7 @@ def main() -> int:
         speaker_counter=DirectionCountSpeakerClassifier(),
         backends={backend_id: backend},
         layer5=l5,
+        quality_scorer=DnsMosScorer(config.layer6.dnsmos_artifact),
         default_backend=backend_id,
     )
     sources = load_sealed_l3_tracks(args.session_root)

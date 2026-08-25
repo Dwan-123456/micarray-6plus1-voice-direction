@@ -137,12 +137,19 @@ class StubSerial:
 
 def test_offline_l4_builder_uses_its_independent_device(tmp_path, monkeypatch):
     captured = {}
+    quality_scorer = SimpleNamespace(score=lambda _waveform: (4.0, 4.0, 4.0))
+    quality_artifacts = []
 
     def build_backend(artifact, *, device):
         captured.update(artifact=artifact, device=device)
         return SimpleNamespace(backend_id="mossformer2_ss_16k")
 
     monkeypatch.setattr("app.runtime.MossFormer2Backend", build_backend)
+    monkeypatch.setattr(
+        "app.runtime.DnsMosScorer",
+        lambda artifact: quality_artifacts.append(artifact) or quality_scorer,
+    )
+    monkeypatch.setattr("app.runtime.CampPlusEmbedder", lambda _artifact: object())
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
@@ -152,6 +159,10 @@ def test_offline_l4_builder_uses_its_independent_device(tmp_path, monkeypatch):
 
     assert captured["device"] == runtime.l4_device
     assert pipeline.backends["mossformer2_ss_16k"].backend_id == "mossformer2_ss_16k"
+    assert pipeline.quality_scorer is quality_scorer
+    assert runtime.build_offline_l4_pipeline().quality_scorer is quality_scorer
+    assert runtime.build_offline_l6_pipeline().dnsmos is quality_scorer
+    assert len(quality_artifacts) == 1
     runtime.close()
 
 
@@ -175,6 +186,10 @@ def test_offline_l4_releases_drained_l3_cuda_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime._layer3, "clear_cache", lambda: events.append("clear"))
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty"))
     monkeypatch.setattr("app.runtime.MossFormer2Backend", build_backend)
+    monkeypatch.setattr(
+        "app.runtime.DnsMosScorer",
+        lambda _artifact: SimpleNamespace(score=lambda _waveform: (4.0, 4.0, 4.0)),
+    )
 
     pipeline = runtime.build_offline_l4_pipeline("mossformer2_ss_16k")
 

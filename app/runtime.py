@@ -342,6 +342,7 @@ class ApplicationRuntime:
                 window_spec=config.downstream_audio_window,
             )
         self._layer5 = layer5_engine
+        self._dnsmos_scorer: DnsMosScorer | None = None
         self.track_audio_stream = TrackAudioStreamHub(
             InputGainCompensationSettings(
                 **config.layer5.input_gain_compensation.model_dump()
@@ -3880,8 +3881,17 @@ class ApplicationRuntime:
             speaker_counter=DirectionCountSpeakerClassifier(),
             backends={selected: backend},
             layer5=self._layer5,
+            quality_scorer=self._get_dnsmos_scorer(),
             default_backend=selected,
         )
+
+    def _get_dnsmos_scorer(self) -> DnsMosScorer:
+        if self._dnsmos_scorer is None:
+            artifact = Path(self.config.layer6.dnsmos_artifact)
+            if not artifact.is_absolute():
+                artifact = self.project_root / artifact
+            self._dnsmos_scorer = DnsMosScorer(artifact)
+        return self._dnsmos_scorer
 
     def build_offline_l6_pipeline(self) -> OfflineLayer6Pipeline:
         """Load the CPU-only models for a manually triggered L6 job."""
@@ -3889,13 +3899,10 @@ class ApplicationRuntime:
         if not self.config.layer6.enabled:
             raise RuntimeError("Layer6 is disabled in project config")
         campplus = Path(self.config.layer6.campplus_artifact)
-        dnsmos = Path(self.config.layer6.dnsmos_artifact)
         if not campplus.is_absolute():
             campplus = self.project_root / campplus
-        if not dnsmos.is_absolute():
-            dnsmos = self.project_root / dnsmos
         return OfflineLayer6Pipeline(
-            CampPlusEmbedder(campplus), DnsMosScorer(dnsmos), self.config.layer6,
+            CampPlusEmbedder(campplus), self._get_dnsmos_scorer(), self.config.layer6,
         )
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:

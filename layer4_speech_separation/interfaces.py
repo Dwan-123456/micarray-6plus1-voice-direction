@@ -25,3 +25,9 @@ class Layer4SeparationBackend(Protocol):
     source_count: int
 
     def separate(self, request_id: str, waveform_16k: NDArray[np.float32]) -> Layer4CandidatePair: ...
+
+
+class AudioQualityScorer(Protocol):
+    """No-reference scorer returning DNSMOS SIG, BAK and OVRL values."""
+
+    def score(self, waveform_16k: NDArray[np.float32]) -> tuple[float, float, float]: ...

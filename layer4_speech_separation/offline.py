@@ -26,7 +26,7 @@ from .contracts import (
     Layer4SeparationRequest,
     SpeakerCountDecision,
 )
-from .interfaces import Layer4SeparationBackend, SpeakerCountClassifier
+from .interfaces import AudioQualityScorer, Layer4SeparationBackend, SpeakerCountClassifier
 from .matching import BandMagnitudeMatcher
 from .resampling import Layer4Resampler
 
@@ -147,6 +147,7 @@ class OfflineLayer4Pipeline:
         speaker_counter: SpeakerCountClassifier,
         backends: Mapping[str, Layer4SeparationBackend],
         layer5: Layer5Engine,
+        quality_scorer: AudioQualityScorer,
         default_backend: str,
         resampler: Layer4Resampler | None = None,
         matcher: BandMagnitudeMatcher | None = None,
@@ -156,6 +157,7 @@ class OfflineLayer4Pipeline:
         self.speaker_counter = speaker_counter
         self.backends = dict(backends)
         self.layer5 = layer5
+        self.quality_scorer = quality_scorer
         self.default_backend = default_backend
         self.resampler = resampler or Layer4Resampler()
         self.matcher = matcher or BandMagnitudeMatcher()
@@ -290,6 +292,19 @@ class OfflineLayer4Pipeline:
             output_16k = np.ascontiguousarray(
                 output_16k * np.float32(peak_safety_gain), dtype=np.float32,
             )
+        dnsmos_sig, dnsmos_bak, dnsmos_ovrl = self.quality_scorer.score(output_16k)
+        dnsmos_values = tuple(float(value) for value in (
+            dnsmos_sig, dnsmos_bak, dnsmos_ovrl,
+        ))
+        if any(not np.isfinite(value) or not 1.0 <= value <= 5.0 for value in dnsmos_values):
+            raise ValueError("L4 DNSMOS scores must be between 1 and 5")
+        dnsmos_sig, dnsmos_bak, dnsmos_ovrl = dnsmos_values
+        mos_score = float(np.clip(
+            ((0.25 * dnsmos_sig + 0.25 * dnsmos_bak + 0.50 * dnsmos_ovrl) - 1.0)
+            / 4.0,
+            0.0,
+            1.0,
+        ))
         output_hash = _sha256_bytes(output_16k.tobytes())
         return Layer4ProcessedAudio(
             request_id=request_id,
@@ -313,6 +328,10 @@ class OfflineLayer4Pipeline:
                     else selected.matching_algorithm
                 ),
                 "pcm16_peak_safety_gain": peak_safety_gain,
+                "dnsmos_sig": dnsmos_sig,
+                "dnsmos_bak": dnsmos_bak,
+                "dnsmos_ovrl": dnsmos_ovrl,
+                "mos_score": mos_score,
                 "l4_elapsed_ms": (perf_counter() - started) * 1_000.0,
             },
             output_kind=output_kind,
