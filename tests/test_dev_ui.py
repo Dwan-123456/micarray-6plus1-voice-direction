@@ -1323,6 +1323,23 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert all(bar.value() == -60 for bar in window.meter_bars)
         assert not window.pre_denoise_switch.isChecked()
         assert window._runtime.l1_pre_denoise_enabled is False
+        assert window.realtime_chunk_slider.minimum() == 3
+        assert window.realtime_chunk_slider.maximum() == 15
+        assert window.realtime_chunk_slider.value() == 10
+        assert "L1→L6 可调分块伪实时链: 10 秒" in (
+            window.realtime_chunk_label.text()
+        )
+        window.realtime_chunk_slider.setValue(7)
+        assert "7 秒（松开后应用）" in window.realtime_chunk_label.text()
+        window.realtime_chunk_slider.sliderReleased.emit()
+        deadline = time.monotonic() + 3.0
+        while window._pending_command is not None and time.monotonic() < deadline:
+            app.processEvents()
+            window._poll_command()
+            time.sleep(0.005)
+        assert window._pending_command is None
+        assert window._runtime.realtime_chunk_seconds == 7
+        assert "7 秒（已应用）" in window.realtime_chunk_label.text()
         assert not hasattr(window.bf_panel, "send")
         assert not hasattr(window.l4_panel, "send")
         assert set(window.l4_panel.backend_buttons) == {

@@ -68,8 +68,28 @@ def _runtime(tmp_path):
     )
 
 
+def test_realtime_chunk_seconds_can_change_before_formal_recording(tmp_path):
+    runtime = _runtime(tmp_path)
+
+    assert runtime.realtime_chunk_seconds == 10
+    assert runtime.set_realtime_chunk_seconds(3) == 3
+    assert runtime.realtime_chunk_seconds == 3
+    assert runtime.set_realtime_chunk_seconds(15) == 15
+    with pytest.raises(ValueError, match="integer"):
+        runtime.set_realtime_chunk_seconds(True)
+    with pytest.raises(ValueError, match="between 3 and 15"):
+        runtime.set_realtime_chunk_seconds(2)
+
+    runtime._ephemeral_live_capture = True
+    runtime._ephemeral_recording_active = True
+    with pytest.raises(RuntimeError, match="正式录音进行中"):
+        runtime.set_realtime_chunk_seconds(10)
+    runtime.close()
+
+
 def test_runtime_handoff_uses_configured_chunk_and_backfill_ready_gate(tmp_path):
     runtime = _runtime(tmp_path)
+    runtime.set_realtime_chunk_seconds(7)
     calls = []
     resolutions = []
     submitted = []
@@ -97,7 +117,7 @@ def test_runtime_handoff_uses_configured_chunk_and_backfill_ready_gate(tmp_path)
 
     assert runtime._offer_realtime_postprocessing_chunks() == 1
     assert calls == [{
-        "chunk_samples": 10 * 48_000,
+        "chunk_samples": 7 * 48_000,
         "ready_track_keys": {("session", 0, 1)},
         "flush": False,
         "max_chunks": 4,

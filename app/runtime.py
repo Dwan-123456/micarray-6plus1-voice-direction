@@ -368,6 +368,7 @@ class ApplicationRuntime:
         self._layer4_model_lock = threading.RLock()
         self._layer4_backends: dict[str, object] = {}
         self._campplus_embedder: CampPlusEmbedder | None = None
+        self._realtime_chunk_seconds = int(config.layer4.streaming.chunk_seconds)
         self.track_audio_stream = TrackAudioStreamHub(
             InputGainCompensationSettings(
                 **config.layer5.input_gain_compensation.model_dump()
@@ -1406,6 +1407,36 @@ class ApplicationRuntime:
     @property
     def runtime_recording_mode(self) -> str:
         return "temporary" if self._ephemeral_live_capture else str(self.recording_store.mode)
+
+    @property
+    def realtime_chunk_seconds(self) -> int:
+        """Current L1-to-L6 progressive chunk size in whole seconds."""
+
+        return self._realtime_chunk_seconds
+
+    def set_realtime_chunk_seconds(self, value: int) -> int:
+        """Apply a new progressive chunk size before formal recording begins."""
+
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("realtime chunk seconds must be an integer")
+        if not 3 <= value <= 15:
+            raise ValueError("realtime chunk seconds must be between 3 and 15")
+        if self.runtime_recording_active:
+            raise RuntimeError("正式录音进行中，不能调整伪实时分块")
+        with self._realtime_mode_submission_lock:
+            status = self.realtime_postprocessing.status
+            if status.submitted_blocks > 0:
+                raise RuntimeError("本次正式录音已接纳分块，不能再调整块长")
+            if value == self._realtime_chunk_seconds:
+                return value
+
+            was_active = self.realtime_postprocessing.active
+            if was_active and not self.realtime_postprocessing.abort(timeout=30.0):
+                raise RuntimeError("L4-L6处理器仍在退出，分块调整未应用")
+            self._realtime_chunk_seconds = value
+            if was_active:
+                self.realtime_postprocessing.start()
+        return value
 
     @property
     def l1_speaker_count_enabled(self) -> bool:
@@ -2757,7 +2788,7 @@ class ApplicationRuntime:
             ready = set(self._confirmed_backfill_ready_ids)
         if allowed_track_keys is not None:
             ready.intersection_update(allowed_track_keys)
-        chunk_samples = self.config.layer4.streaming.chunk_seconds * 48_000
+        chunk_samples = self._realtime_chunk_seconds * 48_000
         with self._realtime_mode_submission_lock:
             chunks = self.track_audio_stream.claim_streaming_chunks(
                 chunk_samples=chunk_samples,
@@ -4426,7 +4457,7 @@ class ApplicationRuntime:
             quality_scorer=self._get_dnsmos_scorer(),
             embedder=self._get_campplus_embedder(),
             layer6_config=self.config.layer6,
-            chunk_samples_48k=streaming.chunk_seconds * 48_000,
+            chunk_samples_48k=self._realtime_chunk_seconds * 48_000,
             overlap_samples_48k=streaming.overlap_seconds * 48_000,
         )
 

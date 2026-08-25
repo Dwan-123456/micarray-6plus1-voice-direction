@@ -170,7 +170,7 @@ def build_window(
         from PySide6.QtCore import QSignalBlocker, QTimer, Qt
         from PySide6.QtWidgets import (
             QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
-            QPushButton, QProgressBar, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+            QPushButton, QProgressBar, QSizePolicy, QSlider, QSplitter, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         raise RuntimeError("Development Test UI需要安装项目ui依赖") from exc
@@ -495,7 +495,7 @@ def build_window(
                 runtime_recording.addWidget(widget)
             runtime_recording.addStretch()
             layout.addLayout(runtime_recording)
-            denoise = QHBoxLayout()
+            l1_options = QHBoxLayout()
             self.pre_denoise_switch = QCheckBox("IMCRA预降噪")
             self.pre_denoise_switch.setChecked(runtime.l1_pre_denoise_enabled)
             self.pre_denoise_switch.setToolTip(
@@ -503,11 +503,8 @@ def build_window(
             )
             self.pre_denoise_switch.toggled.connect(self._set_l1_pre_denoise)
             self.pre_denoise_label = QLabel("预降噪: OFF | 原始音频直通")
-            denoise.addWidget(self.pre_denoise_switch)
-            denoise.addWidget(self.pre_denoise_label)
-            denoise.addStretch()
-            layout.addLayout(denoise)
-            countnet = QHBoxLayout()
+            l1_options.addWidget(self.pre_denoise_switch)
+            l1_options.addWidget(self.pre_denoise_label)
             self.countnet_switch = QCheckBox("CountNet人数估计")
             self.countnet_switch.setChecked(runtime.l1_speaker_count_enabled)
             self.countnet_switch.setToolTip(
@@ -516,10 +513,33 @@ def build_window(
             self.countnet_switch.toggled.connect(self._set_l1_speaker_count)
             self.countnet_label = QLabel("Speech count: OFF")
             self.countnet_label.setStyleSheet("font-family:Consolas")
-            countnet.addWidget(self.countnet_switch)
-            countnet.addWidget(self.countnet_label)
-            countnet.addStretch()
-            layout.addLayout(countnet)
+            l1_options.addWidget(self.countnet_switch)
+            l1_options.addWidget(self.countnet_label)
+            l1_options.addStretch()
+            layout.addLayout(l1_options)
+            chunk_controls = QHBoxLayout()
+            self.realtime_chunk_label = QLabel(
+                f"L1→L6 可调分块伪实时链: {runtime.realtime_chunk_seconds} 秒"
+            )
+            self.realtime_chunk_slider = QSlider(Qt.Orientation.Horizontal)
+            self.realtime_chunk_slider.setRange(3, 15)
+            self.realtime_chunk_slider.setSingleStep(1)
+            self.realtime_chunk_slider.setPageStep(1)
+            self.realtime_chunk_slider.setTickInterval(1)
+            self.realtime_chunk_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            self.realtime_chunk_slider.setValue(runtime.realtime_chunk_seconds)
+            self.realtime_chunk_slider.setToolTip(
+                "默认10秒；支持3–15秒整数。松开后自动应用，正式录音期间不可调整。"
+            )
+            self.realtime_chunk_slider.valueChanged.connect(
+                self._preview_realtime_chunk_seconds
+            )
+            self.realtime_chunk_slider.sliderReleased.connect(
+                self._apply_realtime_chunk_seconds
+            )
+            chunk_controls.addWidget(self.realtime_chunk_label)
+            chunk_controls.addWidget(self.realtime_chunk_slider, 1)
+            layout.addLayout(chunk_controls)
             self.imcra_label = QLabel("IMCRA: WAITING | noise MIC0— MIC1— MIC2— MIC3— MIC4— MIC5— Center—")
             self.imcra_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.imcra_label.setStyleSheet("font-family:Consolas")
@@ -673,6 +693,39 @@ def build_window(
                 with QSignalBlocker(self.countnet_switch):
                     self.countnet_switch.setChecked(previous)
                 self.statusBar().showMessage(f"L1 CountNet切换失败: {exc}", 8000)
+
+        def _preview_realtime_chunk_seconds(self, value: int):
+            applied = runtime.realtime_chunk_seconds
+            suffix = "" if value == applied else "（松开后应用）"
+            self._set_text(
+                self.realtime_chunk_label,
+                f"L1→L6 可调分块伪实时链: {value} 秒{suffix}",
+            )
+
+        def _apply_realtime_chunk_seconds(self):
+            nonlocal realtime_layer456_label
+            requested = int(self.realtime_chunk_slider.value())
+
+            def applied(value):
+                nonlocal realtime_layer456_label
+                realtime_layer456_label = (
+                    f"L4-6 {value}s伪实时" if realtime_layer456_enabled else "L4-6 OFF"
+                )
+                with QSignalBlocker(self.realtime_chunk_slider):
+                    self.realtime_chunk_slider.setValue(value)
+                self._set_text(
+                    self.realtime_chunk_label,
+                    f"L1→L6 可调分块伪实时链: {value} 秒（已应用）",
+                )
+                self.statusBar().showMessage(
+                    f"L1→L6伪实时分块已调整为{value}秒", 3500
+                )
+
+            self._submit_command(
+                "调整L1→L6伪实时分块",
+                lambda: runtime.set_realtime_chunk_seconds(requested),
+                applied,
+            )
 
         def _set_l5_input_gain_compensation(self, enabled: bool):
             previous = runtime.l5_input_gain_compensation_enabled
@@ -851,6 +904,16 @@ def build_window(
                 elif name == "自动运行L6":
                     self._offline_l4_auto_submitted = False
                     self.l6_panel.set_error(f"{exc}；保留伪实时预览，点击L4模型重试")
+                elif name == "调整L1→L6伪实时分块":
+                    with QSignalBlocker(self.realtime_chunk_slider):
+                        self.realtime_chunk_slider.setValue(
+                            runtime.realtime_chunk_seconds
+                        )
+                    self._set_text(
+                        self.realtime_chunk_label,
+                        "L1→L6 可调分块伪实时链: "
+                        f"{runtime.realtime_chunk_seconds} 秒",
+                    )
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -1126,6 +1189,11 @@ def build_window(
             busy = self._pending_command is not None
             self.start_button.setEnabled(not runtime.active and not busy)
             self.stop_button.setEnabled(runtime.active and not busy)
+            self.realtime_chunk_slider.setEnabled(
+                not busy
+                and not runtime.runtime_recording_active
+                and runtime.realtime_postprocessing.status.submitted_blocks == 0
+            )
             for backend_id, button in self.l4_panel.backend_buttons.items():
                 button.setEnabled(
                     not runtime.active
