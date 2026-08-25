@@ -1,8 +1,8 @@
-# 6+1 麦克风阵列项目1.3.2：独立Pipeline Log UI架构
+# 6+1 麦克风阵列项目1.3.3：独立Pipeline Log UI架构
 
-状态：**代码、公共只读查询、五个页面与自动化测试已纳入项目1.3.2；真实封存session人工回放和大规模实机数据验收仍需继续。**
+状态：**代码、公共只读查询、五个页面与自动化测试已纳入项目1.3.3；真实封存session人工回放和大规模实机数据验收仍需继续。**
 
-发布版本：项目`1.3.2`，最终发布基线为`v1.3.2`。本文件定义Log UI的定位、只读边界、数据覆盖、页面与验收要求；未通过的实机项目必须继续明确标注。
+发布版本：项目`1.3.3`，最终发布基线为`v1.3.3`。本文件定义Log UI的定位、只读边界、数据覆盖、页面与验收要求；未通过的实机项目必须继续明确标注。
 
 上位架构：[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)。当前运行时与录音实现以[`app/README.md`](app/README.md)、[`data_management/README.md`](data_management/README.md)和代码为准；[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)仅保留历史迁移契约。
 

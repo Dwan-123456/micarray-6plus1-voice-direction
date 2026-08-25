@@ -1,6 +1,6 @@
 # Layer 5：48 kHz音频到人声概率
 
-> 项目1.3.2中，L5音频段、检测和阶段结果贯通`track_id`；L5不按角度创建或修补ID，语义概率反馈只按L2权威身份关联。
+> 项目1.3.3中，L5音频段、检测和阶段结果贯通`track_id`；L5不按角度创建或修补ID，语义概率反馈只按L2权威身份关联。
 
 权威目标契约见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。L3按统一配置输出40/80/160 ms重叠增强窗（当前40 ms）；`TrackAudioStreamHub`按`(session_id, stream_epoch, track_id)`把它们拼接并封存为完整长音频。L5不再实时消费连续片段，只在停机排空、Hub封存并完成L4一/二人路由后执行。
 
@@ -18,7 +18,7 @@ L5判断阈值与L2 Gate阈值是两套不同参数。Development Test UI必须�
 
 ## 已实现门禁
 
-- 当前离线入口只接受L4输出的16 kHz单声道、完整20 ms hop音频；兼容实时接口仍保留48 kHz契约但不在1.3.2 Runtime执行；
+- 当前离线入口只接受L4输出的16 kHz单声道、完整20 ms hop音频；兼容实时接口仍保留48 kHz契约但不在1.3.3 Runtime执行；
 - 明确拒绝旧`[17,169]`主输入；
 - 角度、window和sample身份继承；
 - 概率finite且位于`[0,1]`，阈值重判不重跑模型；

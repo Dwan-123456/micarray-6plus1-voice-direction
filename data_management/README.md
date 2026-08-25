@@ -1,6 +1,6 @@
 # Audio Data Manager：DecisionRecord v5与公共方向ID存储
 
-本目录已纳入项目`1.3.2`：新结果写`decision_record_v5`，MUSIC诊断、公共`track_id`、逐ID增强资产和时间线进入正式存储；旧`decision_record_v3/v4`只读兼容，不原地迁移或补造ID。旧v4的CNN阶段名`l4`只在读取展示边界映射为当前`l5`，封存记录不原地改写。
+本目录已纳入项目`1.3.3`：新结果写`decision_record_v5`，MUSIC诊断、公共`track_id`、逐ID增强资产和时间线进入正式存储；旧`decision_record_v3/v4`只读兼容，不原地迁移或补造ID。旧v4的CNN阶段名`l4`只在读取展示边界映射为当前`l5`，封存记录不原地改写。
 
 权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1 IMCRA sidecar已按v0.3迁移；其余资产的状态以目标架构和当前代码为准。
 

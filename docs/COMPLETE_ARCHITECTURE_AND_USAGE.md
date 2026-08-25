@@ -1,6 +1,6 @@
 # 6+1麦克风阵列：完整架构与使用手册
 
-> 适用版本：项目`1.3.2`，发布基线`v1.3.2`。本文根据当前代码、`config/config.yaml`和各层公开数据类型编写，供第一次接触项目的开发者和测试人员使用。
+> 适用版本：项目`1.3.3`，发布基线`v1.3.3`。本文根据当前代码、`config/config.yaml`和各层公开数据类型编写，供第一次接触项目的开发者和测试人员使用。
 
 ## 1. 系统目的与边界
 
@@ -365,10 +365,10 @@ run_offline_l4   ── 显式写入封存session，可长期审计
 ## 12. 权威文档关系
 
 - 当前操作入口与项目概览：[`../README.md`](../README.md)
-- 1.3.2详细架构契约：[`../ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)
+- 1.3.3详细架构契约：[`../ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)
 - 唯一业务配置：[`../config/config.yaml`](../config/config.yaml)
 - 各层实现说明：[`../layer1_input/README.md`](../layer1_input/README.md)、[`../layer2_source_detection/README.md`](../layer2_source_detection/README.md)、[`../layer3_direction_signal/README.md`](../layer3_direction_signal/README.md)、[`../layer4_speech_separation/README.md`](../layer4_speech_separation/README.md)、[`../layer5_voice_classifier/README.md`](../layer5_voice_classifier/README.md)
 - Test UI说明：[`../gui/dev_test_ui/README.md`](../gui/dev_test_ui/README.md)
 - 变更记录：[`../CHANGELOG.md`](../CHANGELOG.md)
 
-发生冲突时，当前代码和严格加载的`config/config.yaml`描述实际运行行为，`ARCHITECTURE_V1.1_TARGET.md`描述1.3.2契约；本文用于把两者组织成可操作的交接说明，不建立第二份配置来源。
+发生冲突时，当前代码和严格加载的`config/config.yaml`描述实际运行行为，`ARCHITECTURE_V1.1_TARGET.md`描述1.3.3契约；本文用于把两者组织成可操作的交接说明，不建立第二份配置来源。

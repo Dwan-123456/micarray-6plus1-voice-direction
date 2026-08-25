@@ -1,4 +1,4 @@
-# Development Test UI：项目1.3.2
+# Development Test UI：项目1.3.3
 
 > 当前版本按[`ARCHITECTURE_V1.1_TARGET.md`](../../ARCHITECTURE_V1.1_TARGET.md#12-development-test-ui-与逐-id-试听)显示DOA伪谱/公共方向ID，并按L2权威`(session_id, stream_epoch, track_id)`拼接试听；ID追踪默认启用并可进入DOA-only诊断模式，IMM属于追踪器内部且不可独立关闭。
 

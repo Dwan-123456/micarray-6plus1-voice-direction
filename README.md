@@ -1,8 +1,8 @@
 # 6+1 麦克风阵列二维人声方向识别系统
 
-> 当前开发版本：`1.3.3`；Layer 2公开版本：`1.1`。最终发布基线为`v1.3.2`。
+> 当前正式版本：`1.3.3`；Layer 2公开版本：`1.1`。发布基线为`v1.3.3`。
 
-> **开发状态：项目 `1.3.3`。** 当前代码从不可变`v1.3.2`基线开始，实时链与停机后L4/L5工作流暂保持一致；后续修改统一进入`codex/develop-v1.3.3`，自动化验收不替代真实双人录音和GPU质量门禁。
+> **发布状态：项目 `1.3.3`。** 当前代码已收束为不可变标签`v1.3.3`；自动化验收不替代真实双人录音、长时间运行和GPU质量门禁。
 
 > 项目每次具体修改统一记录在[`CHANGELOG.md`](CHANGELOG.md)。任何L1～L6、Development Test UI、Pipeline Log UI、音频录制/数据管理、跨层接口、测试或模型资产变化都必须在提交前同步该日志。
 
@@ -201,7 +201,7 @@ WindowWorkItem
     既有optimized隔离L3基准已低于20 ms节拍；真实阵列全链并发仍待复测
 ```
 
-上图描述当前1.3.2代码实现；`【已完成】`表示模块和自动化契约已经接通，不代表真实阵列、诊室声场、中文目标域或长时间负载已经验收。独立Pipeline Log UI的详细只读边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
+上图描述当前1.3.3代码实现；`【已完成】`表示模块和自动化契约已经接通，不代表真实阵列、诊室声场、中文目标域或长时间负载已经验收。独立Pipeline Log UI的详细只读边界见[`LOG_UI_ARCHITECTURE_V1.1_TARGET.md`](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)。
 
 ### 采集后离线L4/L5路径
 
@@ -236,7 +236,7 @@ WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因
 
 ### 4. Probability Gate
 
-Layer 2先计算窗口末尾两个连续20 ms声源概率的平均值，达到默认阈值`0.60`才运行MUSIC。L2内部仍保留按精确ID接收在线人声反馈后强制放行的兼容接口，但当前L5只在停机后的离线链运行，ApplicationRuntime没有把离线结果回传L2，因此普通1.3.2运行不会触发该强制放行。预热、缺失或无效概率同样保持阻断。
+Layer 2先计算窗口末尾两个连续20 ms声源概率的平均值，达到默认阈值`0.60`才运行MUSIC。L2内部仍保留按精确ID接收在线人声反馈后强制放行的兼容接口，但当前L5只在停机后的离线链运行，ApplicationRuntime没有把离线结果回传L2，因此普通1.3.3运行不会触发该强制放行。预热、缺失或无效概率同样保持阻断。
 
 Gate阈值与MUSIC候选阈值是两个不同参数：前者决定“是否启动或继续定位”，后者决定“伪谱上的峰是否足够可信”。
 
@@ -408,7 +408,7 @@ Test UI离线L4试听WAV保存在独立临时目录，L5逐20 ms概率保存在�
 
 配置中的`privacy.local_only=true`、`automatic_upload=false`表示项目默认只在本机保存且不自动上传。但这只是软件默认行为，不等同于完成医疗数据合规。诊室采集前仍需要取得授权、限制访问权限、制定保留和删除策略，并根据所在地区要求进行去标识化和审计。
 
-## Pipeline Log UI（1.3.2已实现）
+## Pipeline Log UI（1.3.3已实现）
 
 项目已提供独立只读的 Pipeline Log UI，用于查看单次运行记录中的阶段性能、终态、MUSIC/方向 ID、L3增强资产、已持久化时可用的L5结果、丢窗和时间线。当前Test UI离线L4/L5临时结果不会自动进入Log UI。其项目地位与 L1～L5、Development Test UI、RecordingStore/Audio Data Manager 平行，不属于算法流水线的下一层。
 
@@ -432,7 +432,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 
 “代码已接通”不代表已经完成诊室部署验收。下列实机与目标域门禁仍需完成。
 
-历史v3/v4实测曾出现较高的处理丢窗率和偏低的有效输出帧率。这里指算法处理队列中的window/frame drop，不是已经确认的USB输入数据包丢失。当前1.3.2已经优化Layer 3滚动缓存和矩阵求解，但尚无新的v5真实阵列全链session可以证明持续输入下的最终丢窗率。
+历史v3/v4实测曾出现较高的处理丢窗率和偏低的有效输出帧率。这里指算法处理队列中的window/frame drop，不是已经确认的USB输入数据包丢失。当前1.3.3已经优化Layer 3滚动缓存和矩阵求解，但尚无新的v5真实阵列全链session可以证明持续输入下的最终丢窗率。
 
 最近一份可计算的正式缓存来自2026-08-18 14:30，session为`ea30a66d-9d4b-44c5-bb52-e106c85e05ed`，记录了15.36秒、768个20 ms窗口。统计结果如下：
 
@@ -515,7 +515,7 @@ Log UI 只能统计、展示和回放，不得启动/停止 Runtime、修改算�
 - [完整架构、逐层输入输出与使用手册](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)
 - [总执行规格](CODEX_PROJECT_SPEC_6plus1_2D_voice_direction_v0.2.md)
 - [v0.3目标架构与迁移契约](ARCHITECTURE_V0.3_TARGET.md)
-- [1.3.2 MUSIC、公共方向ID与平行子系统架构](ARCHITECTURE_V1.1_TARGET.md)
+- [1.3.3 MUSIC、公共方向ID与平行子系统架构](ARCHITECTURE_V1.1_TARGET.md)
 - [Pipeline Log UI 1.1架构](LOG_UI_ARCHITECTURE_V1.1_TARGET.md)
 - [Windows与RTX 5060环境说明](ENVIRONMENT.md)
 - [Layer 1说明](layer1_input/README.md)
