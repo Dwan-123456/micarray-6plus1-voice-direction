@@ -3884,7 +3884,7 @@ class ApplicationRuntime:
         )
 
     def build_offline_l6_pipeline(self) -> OfflineLayer6Pipeline:
-        """Load manual L6, preferring batched CUDA speaker embeddings."""
+        """Load the CPU-only models for a manually triggered L6 job."""
 
         if not self.config.layer6.enabled:
             raise RuntimeError("Layer6 is disabled in project config")
@@ -3894,14 +3894,9 @@ class ApplicationRuntime:
             campplus = self.project_root / campplus
         if not dnsmos.is_absolute():
             dnsmos = self.project_root / dnsmos
-        embedding_device = "cuda" if torch.cuda.is_available() else "cpu"
-        try:
-            embedder = CampPlusEmbedder(campplus, device=embedding_device)
-        except RuntimeError:
-            if embedding_device != "cuda":
-                raise
-            embedder = CampPlusEmbedder(campplus, device="cpu")
-        return OfflineLayer6Pipeline(embedder, DnsMosScorer(dnsmos), self.config.layer6)
+        return OfflineLayer6Pipeline(
+            CampPlusEmbedder(campplus), DnsMosScorer(dnsmos), self.config.layer6,
+        )
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:
         self.stop()

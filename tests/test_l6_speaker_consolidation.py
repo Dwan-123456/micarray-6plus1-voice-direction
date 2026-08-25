@@ -5,9 +5,7 @@ from types import SimpleNamespace
 import wave
 
 import numpy as np
-import torch
 
-from layer6_speaker_consolidation.campplus import _CAMLayer
 from layer4_speech_separation import (
     Layer4LongAudioInput,
     Layer4OfflineResult,
@@ -27,38 +25,12 @@ class _Embedder:
 
 
 class _DnsMos:
-    def __init__(self) -> None:
-        self.calls = 0
-
     def score(self, _waveform: np.ndarray) -> tuple[float, float, float]:
-        self.calls += 1
         return 4.0, 4.0, 4.0
-
-
-class _BatchEmbedder(_Embedder):
-    device = "cuda"
-    batch_size = 64
-
-    def __init__(self) -> None:
-        self.batch_lengths: list[int] = []
-
-    def embed_many(self, waveforms: tuple[np.ndarray, ...]) -> tuple[np.ndarray, ...]:
-        self.batch_lengths.append(len(waveforms))
-        return tuple(self.embed(item) for item in waveforms)
 
 
 def _sha(audio: np.ndarray) -> str:
     return hashlib.sha256(audio.tobytes()).hexdigest()
-
-
-def test_campplus_cam_layer_batch_matches_individual_inference() -> None:
-    torch.manual_seed(7)
-    layer = _CAMLayer(4, 3, 3, 1).eval()
-    values = torch.randn(2, 4, 149)
-    with torch.inference_mode():
-        batched = layer(values)
-        individual = torch.cat(tuple(layer(item[None]) for item in values), dim=0)
-    assert torch.allclose(batched, individual, atol=1e-6, rtol=1e-5)
 
 
 def _results(track_id: int) -> tuple[Layer4OfflineResult, Layer4OfflineResult]:
@@ -121,7 +93,7 @@ def test_l6_clusters_candidates_and_keeps_one_quality_winner_per_speaker_timelin
     assert result.speaker_count == 2
     assert tuple(item.label for item in result.outputs) == ("Speaker A", "Speaker B")
     assert all(item.sample_rate == 16_000 and len(item.waveform_16k) == 32_000 for item in result.outputs)
-    assert len(result.fragments) == 16
+    assert len(result.fragments) == 8
     assert all(np.max(np.abs(item.waveform_16k)) <= 0.1 for item in result.outputs)
 
 
@@ -134,10 +106,9 @@ def test_l6_splits_one_uninterrupted_l2_track_when_the_speaker_embedding_changes
         _one_candidate(waveform, (True,) * 150),
     ))
     assert result.speaker_count == 2
-    assert tuple(item.speaker_id for item in result.fragments) == (1, 1, 1, 2, 2, 2)
+    assert tuple(item.speaker_id for item in result.fragments) == (1, 2)
     assert tuple((item.start_sample_48k, item.end_sample_48k) for item in result.fragments) == (
-        (0, 24_000), (24_000, 48_000), (48_000, 72_000),
-        (72_000, 96_000), (96_000, 120_000), (120_000, 144_000),
+        (0, 72_000), (72_000, 144_000),
     )
 
 
@@ -152,24 +123,8 @@ def test_l6_short_residual_voice_cannot_create_a_phantom_speaker() -> None:
         _one_candidate(waveform, decisions),
     ))
     assert result.speaker_count == 1
-    assert len(result.fragments) == 4
+    assert len(result.fragments) == 2
     assert {item.speaker_id for item in result.fragments} == {1}
-
-
-def test_l6_batches_embeddings_and_reuses_one_dnsmos_score_per_voice_region() -> None:
-    embedder = _BatchEmbedder()
-    dnsmos = _DnsMos()
-    waveform = np.full(32_000, 0.1, np.float32)
-    result = OfflineLayer6Pipeline(embedder, dnsmos, _config()).process((
-        _one_candidate(waveform, (True,) * 100),
-    ))
-    assert result.speaker_count == 1
-    assert len(result.fragments) == 4
-    assert embedder.batch_lengths == [4]
-    assert dnsmos.calls == 1
-    assert result.metadata["embedding_device"] == "cuda"
-    assert result.metadata["embedding_batch_size"] == 64
-    assert result.metadata["dnsmos_evaluation_count"] == 1
 
 
 def test_l6_ui_aligns_each_final_id_to_one_shared_absolute_timeline() -> None:

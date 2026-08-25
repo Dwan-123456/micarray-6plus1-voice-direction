@@ -21,21 +21,13 @@ def _verified_file(artifact: Path, expected_schema: str) -> tuple[dict[str, obje
 
 
 class CampPlusEmbedder:
-    def __init__(self, artifact: str | Path, *, device: str = "cpu", batch_size: int = 64) -> None:
-        if device not in {"cpu", "cuda"}:
-            raise ValueError("CAMPPlus device must be cpu or cuda")
-        if device == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("CAMPPlus CUDA was requested but is unavailable")
-        if batch_size <= 0:
-            raise ValueError("CAMPPlus batch size must be positive")
+    def __init__(self, artifact: str | Path) -> None:
         self.artifact = Path(artifact)
-        self.device = device
-        self.batch_size = int(batch_size)
         self.manifest, weights = _verified_file(self.artifact, "speaker_embedding_artifact_v1")
         self.model = CAMPPlus(80, int(self.manifest["embedding_size"]))
         state = torch.load(weights, map_location="cpu", weights_only=True)
         self.model.load_state_dict(state, strict=True)
-        self.model.to(self.device).eval()
+        self.model.eval()
 
     @staticmethod
     def _features(waveform: np.ndarray) -> np.ndarray:
@@ -57,25 +49,14 @@ class CampPlusEmbedder:
         return np.ascontiguousarray(frames - frames.mean(axis=0, keepdims=True), dtype=np.float32)
 
     def embed(self, waveform_16k: np.ndarray) -> np.ndarray:
-        return self.embed_many((waveform_16k,))[0]
-
-    def embed_many(self, waveforms_16k: tuple[np.ndarray, ...]) -> tuple[np.ndarray, ...]:
-        waveforms = tuple(np.ascontiguousarray(item, dtype=np.float32) for item in waveforms_16k)
-        if not waveforms:
-            return ()
-        if any(len(item) < 8_000 for item in waveforms):
+        waveform = np.ascontiguousarray(waveform_16k, dtype=np.float32)
+        if len(waveform) < 8_000:
             raise ValueError("CAMPPlus requires at least 500 ms of speech")
-        features = tuple(self._features(item) for item in waveforms)
-        if len({item.shape for item in features}) != 1:
-            raise ValueError("batched CAMPPlus inputs must have one aligned duration")
-        outputs = []
+        features = torch.from_numpy(self._features(waveform)).unsqueeze(0)
         with torch.inference_mode():
-            for first in range(0, len(features), self.batch_size):
-                batch = torch.from_numpy(np.stack(features[first:first + self.batch_size])).to(self.device)
-                outputs.append(self.model(batch).float().cpu().numpy())
-        embeddings = np.concatenate(outputs, axis=0)
-        embeddings /= np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-12)
-        return tuple(np.ascontiguousarray(item, dtype=np.float32) for item in embeddings)
+            embedding = self.model(features)[0].float().numpy()
+        embedding /= max(float(np.linalg.norm(embedding)), 1e-12)
+        return np.ascontiguousarray(embedding, dtype=np.float32)
 
 
 class DnsMosScorer:

@@ -25,26 +25,6 @@ class Layer6Configuration(Protocol):
 
 
 @dataclass(slots=True)
-class _PendingInput:
-    fragment_id: str
-    source_asset_id: str
-    source_track_id: int
-    source_theta_deg: float
-    branch_index: int
-    selected_for_parent: bool
-    start_sample_48k: int
-    end_sample_48k: int
-    waveform: np.ndarray
-    probabilities: tuple[float, ...]
-    decisions: tuple[bool, ...]
-    embedding_audio: np.ndarray
-    embedding_speech_ms: int
-    noise_rms: float
-    quality_key: tuple[str, int, int, int]
-    quality_audio: np.ndarray
-
-
-@dataclass(slots=True)
 class _PendingFragment:
     fragment_id: str
     source_asset_id: str
@@ -58,9 +38,7 @@ class _PendingFragment:
     probabilities: tuple[float, ...]
     decisions: tuple[bool, ...]
     embedding: np.ndarray
-    embedding_speech_ms: int
     noise_rms: float
-    quality_key: tuple[str, int, int, int]
 
 
 def _cosine(left: np.ndarray, right: np.ndarray) -> float:
@@ -70,7 +48,6 @@ def _cosine(left: np.ndarray, right: np.ndarray) -> float:
 _MINIMUM_CONCURRENT_OVERLAP_SAMPLES_48K = 24_000
 _CROSS_TRACK_DUPLICATE_SIMILARITY = 0.85
 _WEAK_EXTRA_CLUSTER_MARGIN = 0.15
-_SPEAKER_ASSIGNMENT_WINDOW_MS = 500
 
 
 def _cannot_share_speaker(left: _PendingFragment, right: _PendingFragment) -> bool:
@@ -110,7 +87,7 @@ def _cluster(
     reliable = [
         index
         for index, item in enumerate(fragments)
-        if item.embedding_speech_ms * 48 >= minimum_samples
+        if item.end_sample_48k - item.start_sample_48k >= minimum_samples
     ]
     if not reliable:
         reliable = [max(
@@ -229,9 +206,7 @@ class OfflineLayer6Pipeline:
         self.dnsmos = dnsmos
         self.config = config
 
-    def _regions(
-        self, decisions: tuple[bool, ...],
-    ) -> tuple[tuple[int, int, int, int, int, int], ...]:
+    def _regions(self, decisions: tuple[bool, ...]) -> tuple[tuple[int, int], ...]:
         gap = self.config.merge_voice_gap_ms // 20
         runs: list[list[int]] = []
         start: int | None = None
@@ -249,33 +224,20 @@ class OfflineLayer6Pipeline:
                 merged.append(run)
         minimum = self.config.minimum_voice_fragment_ms // 20
         regions = tuple((start, end) for start, end in merged if end - start >= minimum)
-        # A VAD run is not a speaker turn. Assign the timeline in 500 ms pieces,
-        # while every piece receives up to 1.5 s of embedding context from only
-        # its own merged voice region. A short isolated residual therefore never
-        # borrows reliable speech from a different region to seed a new ID.
-        assignment_window = _SPEAKER_ASSIGNMENT_WINDOW_MS // 20
-        embedding_window = self.config.minimum_embedding_speech_ms // 20
-        split: list[tuple[int, int, int, int, int, int]] = []
+        # A VAD run is not a speaker turn: one L2 direction can contain people
+        # speaking back-to-back without a 200 ms silence.  Bound every voiceprint
+        # analysis fragment so a later speaker can receive its own embedding.
+        window = self.config.minimum_embedding_speech_ms // 20
+        split: list[tuple[int, int]] = []
         for region_start, region_end in regions:
-            assignments: list[list[int]] = []
             cursor = region_start
-            while region_end - cursor > assignment_window:
-                assignments.append([cursor, cursor + assignment_window])
-                cursor += assignment_window
+            while region_end - cursor > window:
+                split.append((cursor, cursor + window))
+                cursor += window
             if region_end - cursor >= minimum:
-                assignments.append([cursor, region_end])
-            elif assignments:
-                assignments[-1][1] = region_end
-            for first, last in assignments:
-                center = (first + last) // 2
-                embedding_first = max(
-                    region_start,
-                    min(center - embedding_window // 2, region_end - embedding_window),
-                )
-                embedding_last = min(region_end, embedding_first + embedding_window)
-                split.append((
-                    first, last, embedding_first, embedding_last, region_start, region_end,
-                ))
+                split.append((cursor, region_end))
+            elif split and split[-1][1] == cursor:
+                split[-1] = (split[-1][0], region_end)
         return tuple(split)
 
     def process(self, results: tuple[Layer4OfflineResult, ...]) -> Layer6Result:
@@ -286,7 +248,7 @@ class OfflineLayer6Pipeline:
         sessions = {item.source.session_id for item in results}
         if len(sessions) != 1:
             raise ValueError("one L6 job cannot mix capture sessions")
-        pending_inputs: list[_PendingInput] = []
+        pending: list[_PendingFragment] = []
         for result in results:
             output_kind = getattr(result, "output_kind", "merged")
             if output_kind not in {"merged", "candidate_0", "candidate_1"}:
@@ -310,19 +272,13 @@ class OfflineLayer6Pipeline:
                 float(np.sqrt(np.mean(np.square(np.concatenate(inactive), dtype=np.float64)) + 1e-12))
                 if inactive else 1e-4
             )
-            for region_index, (
-                first, last, context_first, context_last, region_first, region_last,
-            ) in enumerate(
-                self._regions(result.l5_is_voice_20ms)
-            ):
+            for region_index, (first, last) in enumerate(self._regions(result.l5_is_voice_20ms)):
                 waveform = np.ascontiguousarray(branch_waveform[first * 320:last * 320], dtype=np.float32)
-                embedding_audio = np.ascontiguousarray(
-                    branch_waveform[context_first * 320:context_last * 320], dtype=np.float32,
-                )
+                embedding_audio = waveform
                 target = self.config.minimum_embedding_speech_ms * 16
                 if len(embedding_audio) < target:
                     embedding_audio = np.resize(embedding_audio, target).astype(np.float32)
-                pending_inputs.append(_PendingInput(
+                pending.append(_PendingFragment(
                     fragment_id=f"{result.source.asset_id}:b{branch_index}:v{region_index}",
                     source_asset_id=result.source.asset_id,
                     source_track_id=result.source.track_id,
@@ -334,40 +290,14 @@ class OfflineLayer6Pipeline:
                     waveform=waveform,
                     probabilities=result.l5_probabilities_20ms[first:last],
                     decisions=result.l5_is_voice_20ms[first:last],
-                    embedding_audio=np.ascontiguousarray(embedding_audio),
-                    embedding_speech_ms=(context_last - context_first) * 20,
+                    embedding=self.embedder.embed(np.ascontiguousarray(embedding_audio)),
                     noise_rms=noise_rms,
-                    quality_key=(result.source.asset_id, branch_index, region_first, region_last),
-                    quality_audio=np.ascontiguousarray(
-                        branch_waveform[region_first * 320:region_last * 320], dtype=np.float32,
-                    ),
                 ))
-        if not pending_inputs:
+        if not pending:
             return Layer6Result(next(iter(sessions)), 0, (), (), {
-                "algorithm": "campplus_batched_constrained_ahc_dnsmos_region_cache_timeline_v3",
+                "algorithm": "campplus_segmented_constrained_ahc_dnsmos_timeline_v2",
                 "elapsed_ms": (perf_counter() - started) * 1_000.0,
             })
-        embed_many = getattr(self.embedder, "embed_many", None)
-        if callable(embed_many):
-            embeddings = tuple(embed_many(tuple(item.embedding_audio for item in pending_inputs)))
-        else:
-            embeddings = tuple(self.embedder.embed(item.embedding_audio) for item in pending_inputs)
-        if len(embeddings) != len(pending_inputs):
-            raise RuntimeError("CAMPPlus batch output count does not match L6 fragments")
-        pending = [
-            _PendingFragment(
-                item.fragment_id, item.source_asset_id, item.source_track_id,
-                item.source_theta_deg, item.branch_index, item.selected_for_parent,
-                item.start_sample_48k, item.end_sample_48k, item.waveform,
-                item.probabilities, item.decisions, embedding, item.embedding_speech_ms,
-                item.noise_rms, item.quality_key,
-            )
-            for item, embedding in zip(pending_inputs, embeddings, strict=True)
-        ]
-        dnsmos_scores: dict[tuple[str, int, int, int], tuple[float, float, float]] = {}
-        for item in pending_inputs:
-            if item.quality_key not in dnsmos_scores:
-                dnsmos_scores[item.quality_key] = self.dnsmos.score(item.quality_audio)
         raw_assignments = _cluster(
             tuple(pending),
             self.config.speaker_similarity_threshold,
@@ -391,7 +321,7 @@ class OfflineLayer6Pipeline:
                 item.probabilities,
                 _cosine(item.embedding, centroids[speaker_id]),
                 item.noise_rms,
-                dnsmos_scores[item.quality_key],
+                self.dnsmos,
             )
             fragments.append(Layer6Fragment(
                 item.fragment_id, item.source_asset_id, item.source_track_id, item.source_theta_deg,
@@ -400,12 +330,8 @@ class OfflineLayer6Pipeline:
             ))
         outputs = tuple(self._stitch(speaker_id, tuple(fragments)) for speaker_id in range(1, len(raw_ids) + 1))
         return Layer6Result(next(iter(sessions)), len(outputs), outputs, tuple(fragments), {
-            "algorithm": "campplus_batched_constrained_ahc_dnsmos_region_cache_timeline_v3",
-            "speaker_assignment_window_ms": _SPEAKER_ASSIGNMENT_WINDOW_MS,
-            "speaker_embedding_context_ms": self.config.minimum_embedding_speech_ms,
-            "embedding_device": str(getattr(self.embedder, "device", "custom")),
-            "embedding_batch_size": int(getattr(self.embedder, "batch_size", 1)),
-            "dnsmos_evaluation_count": len(dnsmos_scores),
+            "algorithm": "campplus_segmented_constrained_ahc_dnsmos_timeline_v2",
+            "speaker_segmentation_window_ms": self.config.minimum_embedding_speech_ms,
             "minimum_concurrent_overlap_ms": _MINIMUM_CONCURRENT_OVERLAP_SAMPLES_48K // 48,
             "cross_track_duplicate_similarity": _CROSS_TRACK_DUPLICATE_SIMILARITY,
             "weak_extra_cluster_margin": _WEAK_EXTRA_CLUSTER_MARGIN,

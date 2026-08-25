@@ -3,17 +3,20 @@ from __future__ import annotations
 import numpy as np
 
 from .contracts import Layer6QualityScore
+from .models import DnsMosScorer
+
+
 def score_quality(
     waveform: np.ndarray,
     probabilities: tuple[float, ...],
     speaker_similarity: float,
     noise_rms: float,
-    dnsmos_scores: tuple[float, float, float],
+    dnsmos: DnsMosScorer,
 ) -> Layer6QualityScore:
     audio = np.asarray(waveform, dtype=np.float32)
     voice = float(np.median(probabilities))
     speaker = float(np.clip(speaker_similarity, 0.0, 1.0))
-    sig, bak, ovrl = dnsmos_scores
+    sig, bak, ovrl = dnsmos.score(audio)
     mos = float(np.clip(((0.25 * sig + 0.25 * bak + 0.50 * ovrl) - 1.0) / 4.0, 0.0, 1.0))
     signal_rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64)) + 1e-12))
     snr_db = 20.0 * np.log10(signal_rms / max(noise_rms, 1e-6))

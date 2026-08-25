@@ -92,7 +92,7 @@ class _CAMLayer(nn.Module):
     def forward(self, value: torch.Tensor) -> torch.Tensor:
         local = self.linear_local(value)
         pooled = functional.avg_pool1d(value, 100, stride=100, ceil_mode=True)
-        pooled = pooled.repeat_interleave(100, dim=-1)[..., : value.shape[-1]]
+        pooled = pooled.unsqueeze(-1).expand(*pooled.shape, 100).reshape(*pooled.shape[:-2], -1)[..., : value.shape[-1]]
         context = functional.relu(self.linear1(value.mean(-1, keepdim=True) + pooled))
         return local * torch.sigmoid(self.linear2(context))
 
