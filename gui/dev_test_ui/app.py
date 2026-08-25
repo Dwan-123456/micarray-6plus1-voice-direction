@@ -142,6 +142,7 @@ def build_window(
     input_wav: str | Path | None = None,
     replay_recording: str | Path | None = None,
     auto_start: bool = False,
+    reference_l4_bypass: bool = False,
 ):
     try:
         from PySide6.QtCore import QSignalBlocker, QTimer, Qt
@@ -158,6 +159,8 @@ def build_window(
         AudioIdTracker,
         CENTER_IMCRA_TRACK_ID,
         CENTER_RAW_TRACK_ID,
+        HARDWARE_MIX_IMCRA_TRACK_ID,
+        HARDWARE_MIX_RAW_TRACK_ID,
     )
     from .offline_l4_store import OfflineLayer4UiStore
     from .offline_l6_store import OfflineLayer6UiStore
@@ -223,6 +226,7 @@ def build_window(
         config, project_root=project_root, pipeline=pipeline,
         dev_audio_tracker=audio_id_tracker,
         ephemeral_live_capture=live_microphone_mode,
+        development_center_l4_bypass=reference_l4_bypass,
     )
     ui_settings = DevUiSettings(config_path.parent.parent)
     persisted_l4_backend = ui_settings.load_layer4_backend(
@@ -316,10 +320,14 @@ def build_window(
             grid.setSpacing(1)
             for index in (0, 1):
                 grid.setRowStretch(index, 1)
-            for index in range(6):
+            for index in (0, 1):
                 grid.setColumnStretch(index, 1)
-            grid.addWidget(self._l1_panel(), 0, 0, 1, 3)
-            grid.addWidget(self._doa_panel(), 0, 3, 1, 3)
+            grid.addWidget(self._l1_panel(), 0, 0)
+            # Keep the former L2 widgets alive for compatibility with the
+            # existing refresh methods, but remove the panel from the visible
+            # Development UI while this local L1→L4 bypass is active.
+            self._hidden_doa_panel = self._doa_panel()
+            self._hidden_doa_panel.hide()
             self.bf_panel = BeamformPanel(
                 config, runtime.l5_input_gain_compensation_enabled
             )
@@ -339,11 +347,16 @@ def build_window(
                 self._set_l5_input_gain_compensation
             )
             self.bf_panel.send_requested.connect(self._send_l3_to_l4)
+            self.bf_panel.reference_source_changed.connect(
+                self._select_reference_l4_source
+            )
             self.bf_panel.set_processing_mode(runtime.l3_processing_mode)
             self.bf_panel.set_downstream_processing_enabled(
                 runtime.downstream_processing_enabled
             )
-            if live_microphone_mode:
+            if reference_l4_bypass:
+                self.bf_panel.set_reference_l4_bypass()
+            if live_microphone_mode and not reference_l4_bypass:
                 # The BF algorithm may be selected during L1/L2 warm-up even
                 # though no L3 window is admitted yet.
                 self.bf_panel.mode_switch.setEnabled(True)
@@ -359,9 +372,9 @@ def build_window(
             self.cnn_panel.threshold_changed.connect(
                 self.l4_panel.set_voice_threshold
             )
-            grid.addWidget(self.bf_panel, 1, 0, 1, 2)
-            grid.addWidget(self.l4_panel, 1, 2, 1, 2)
-            grid.addWidget(self.l6_panel, 1, 4, 1, 2)
+            grid.addWidget(self.bf_panel, 0, 1)
+            grid.addWidget(self.l4_panel, 1, 0)
+            grid.addWidget(self.l6_panel, 1, 1)
             for item_index in range(grid.count()):
                 quadrant = grid.itemAt(item_index).widget()
                 quadrant.setMinimumSize(0, 0)
@@ -763,7 +776,7 @@ def build_window(
             except Exception as exc:
                 if name in {"灯光开", "灯光关"}:
                     self.light_label.setText("状态: Error")
-                elif name == "L3发送到L4":
+                elif name in {"L3发送到L4", "参考音频发送到L4"}:
                     self.bf_panel.set_send_enabled(True)
                     self.l4_panel.set_processing(f"L4失败：{exc}")
                 elif name == "自动运行L6":
@@ -1099,6 +1112,15 @@ def build_window(
         def _pause_track_audio(self):
             self.preview_player.pause()
 
+        def _select_reference_l4_source(self, track_id: int):
+            runtime.set_development_l4_reference_track(track_id)
+            if not runtime.active:
+                try:
+                    available = bool(runtime.offline_l4_sources)
+                except RuntimeError:
+                    available = False
+                self.bf_panel.set_send_enabled(available)
+
         def _toggle_track_audio(self, track_id: int):
             if (
                 self._audio_source_key is not None
@@ -1116,6 +1138,10 @@ def build_window(
                     label = "Center Mic RAW"
                 elif track_id == CENTER_IMCRA_TRACK_ID:
                     label = "Center Mic IMCRA"
+                elif track_id == HARDWARE_MIX_RAW_TRACK_ID:
+                    label = "Hardware Mix RAW"
+                elif track_id == HARDWARE_MIX_IMCRA_TRACK_ID:
+                    label = "Hardware Mix IMCRA"
                 else:
                     label = f"ID-{track_id:03d}"
                 self.statusBar().showMessage(f"{label} 暂无可播放缓存", 3000)
@@ -1205,7 +1231,9 @@ def build_window(
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
             self.l4_panel.set_processing(
-                f"正在加载{backend_label}并处理全部L3长音频（保留A/B双候选）…"
+                f"正在加载{backend_label}并处理"
+                f"{'所选RAW/IMCRA参考长音频' if reference_l4_bypass else '全部L3长音频'}"
+                "（保留A/B双候选）…"
             )
 
             def process_l4_and_l5():
@@ -1272,7 +1300,11 @@ def build_window(
                 ))
                 self._start_automatic_l6(tuple(l5_results))
 
-            self._submit_command("L3发送到L4", process_l4_and_l5, completed)
+            self._submit_command(
+                "参考音频发送到L4" if reference_l4_bypass else "L3发送到L4",
+                process_l4_and_l5,
+                completed,
+            )
 
         def _start_automatic_l6(self, l5_results):
             l5_results = tuple(l5_results)
@@ -1478,8 +1510,10 @@ def build_window(
                 runtime.downstream_processing_enabled
             )
             if live_microphone_mode:
-                self.bf_panel.downstream_switch.setEnabled(formal_active)
-                self.bf_panel.mode_switch.setEnabled(True)
+                self.bf_panel.downstream_switch.setEnabled(
+                    formal_active and not reference_l4_bypass
+                )
+                self.bf_panel.mode_switch.setEnabled(not reference_l4_bypass)
             self.runtime_record.setEnabled(runtime.running and not formal_active)
             self.runtime_pause.setEnabled(runtime.running and formal_active)
             if self._pending_command is not None:
@@ -1701,14 +1735,15 @@ def build_window(
 
         def _render_frame(self, frame, *, render_l2=True, render_l5=True):
             self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
-            self.bf_panel.set_previews(
-                frame.previews if runtime.downstream_processing_enabled else (),
-                missing_reason=(
-                    frame.missing_reasons.get("beamforming")
-                    if runtime.downstream_processing_enabled
-                    else "STOPPED BY TEST UI; L2 remains active"
-                ),
-            )
+            if not reference_l4_bypass:
+                self.bf_panel.set_previews(
+                    frame.previews if runtime.downstream_processing_enabled else (),
+                    missing_reason=(
+                        frame.missing_reasons.get("beamforming")
+                        if runtime.downstream_processing_enabled
+                        else "STOPPED BY TEST UI; L2 remains active"
+                    ),
+                )
             if render_l5:
                 self._update_l5_panel(frame)
             if render_l2:
@@ -1891,6 +1926,7 @@ def main() -> int:
         input_wav=args.input_wav,
         replay_recording=args.replay_recording,
         auto_start=args.auto_start,
+        reference_l4_bypass=True,
     )
     return app.exec()
 

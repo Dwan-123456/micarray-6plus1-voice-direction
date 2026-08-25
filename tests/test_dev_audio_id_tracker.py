@@ -9,6 +9,8 @@ from gui.dev_test_ui.audio_id_tracker import (
     AudioIdTracker,
     CENTER_IMCRA_TRACK_ID,
     CENTER_RAW_TRACK_ID,
+    HARDWARE_MIX_IMCRA_TRACK_ID,
+    HARDWARE_MIX_RAW_TRACK_ID,
     _CROSSFADE_SAMPLES,
     _EDGE_FADE_SAMPLES,
 )
@@ -355,3 +357,35 @@ def test_raw_and_imcra_center_references_are_distinct_full_capture_rows(tmp_path
     np.testing.assert_allclose(imcra, raw * 0.1)
     tracker.close(delete_files=True)
     assert not (tmp_path / "cache").exists()
+
+
+def test_four_reference_tracks_can_each_be_selected_as_the_only_l4_source(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    raw = np.zeros((960, 8), dtype=np.float32)
+    raw[:, 6], raw[:, 7] = 1.0, 2.0
+    denoised = raw.copy()
+    denoised[:, 6], denoised[:, 7] = 0.1, 0.2
+    block = SimpleNamespace(
+        session_id="session", stream_epoch=0, end_sample=960, samples=raw,
+    )
+    denoised_block = SimpleNamespace(
+        session_id="session", stream_epoch=0, end_sample=960, samples=denoised,
+    )
+    tracker.append_center_reference(block)
+    tracker.append_imcra_center_reference(denoised_block)
+    tracker.append_hardware_mix_reference(block)
+    tracker.append_imcra_hardware_mix_reference(denoised_block)
+
+    expected = {
+        CENTER_RAW_TRACK_ID: 1.0,
+        CENTER_IMCRA_TRACK_ID: 0.1,
+        HARDWARE_MIX_RAW_TRACK_ID: 2.0,
+        HARDWARE_MIX_IMCRA_TRACK_ID: 0.2,
+    }
+    assert {item.track_id for item in tracker.snapshots()} == set(expected)
+    for track_id, level in expected.items():
+        source = tracker.reference_l4_source(track_id)
+        assert source is not None
+        assert source.track_id == 1
+        assert source.l2_direction_counts == ((0, 2),)
+        np.testing.assert_allclose(source.waveform, level)

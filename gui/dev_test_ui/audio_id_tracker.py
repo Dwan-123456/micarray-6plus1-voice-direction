@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+import hashlib
 import shutil
 import threading
 from typing import BinaryIO
@@ -22,7 +23,14 @@ _CROSSFADE_SAMPLES = 96
 _EDGE_FADE_SAMPLES = 240
 CENTER_RAW_TRACK_ID = 0
 CENTER_IMCRA_TRACK_ID = -1
-_REFERENCE_TRACK_IDS = frozenset((CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID))
+HARDWARE_MIX_RAW_TRACK_ID = -2
+HARDWARE_MIX_IMCRA_TRACK_ID = -3
+_REFERENCE_TRACK_IDS = frozenset((
+    CENTER_RAW_TRACK_ID,
+    CENTER_IMCRA_TRACK_ID,
+    HARDWARE_MIX_RAW_TRACK_ID,
+    HARDWARE_MIX_IMCRA_TRACK_ID,
+))
 
 
 @dataclass(slots=True)
@@ -171,6 +179,12 @@ class AudioIdTracker:
         """Cache only Center hops that actually passed through IMCRA denoising."""
         self._append_center_reference(block, CENTER_IMCRA_TRACK_ID, channel_index)
 
+    def append_hardware_mix_reference(self, block, *, channel_index: int = 7) -> None:
+        self._append_center_reference(block, HARDWARE_MIX_RAW_TRACK_ID, channel_index)
+
+    def append_imcra_hardware_mix_reference(self, block, *, channel_index: int = 7) -> None:
+        self._append_center_reference(block, HARDWARE_MIX_IMCRA_TRACK_ID, channel_index)
+
     def _append_center_reference(self, block, track_id: int, channel_index: int) -> None:
         samples = np.asarray(block.samples, dtype=np.float32)
         if (
@@ -212,6 +226,10 @@ class AudioIdTracker:
             directory = self.cache_root / "track_000"
         elif track.track_id == CENTER_IMCRA_TRACK_ID:
             directory = self.cache_root / "track_imcra"
+        elif track.track_id == HARDWARE_MIX_RAW_TRACK_ID:
+            directory = self.cache_root / "track_hardware_mix_raw"
+        elif track.track_id == HARDWARE_MIX_IMCRA_TRACK_ID:
+            directory = self.cache_root / "track_hardware_mix_imcra"
         else:
             directory = self.cache_root / track.processing_mode / f"track_{track.track_id:03d}"
         directory.mkdir(parents=True, exist_ok=True)
@@ -949,7 +967,12 @@ class AudioIdTracker:
                     0.0, 0.0, sample_count,
                     waveform_envelope=tuple(self._reference_tracks[track_id].envelope_peaks),
                 )
-                for track_id in (CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID)
+                for track_id in (
+                    CENTER_RAW_TRACK_ID,
+                    CENTER_IMCRA_TRACK_ID,
+                    HARDWARE_MIX_RAW_TRACK_ID,
+                    HARDWARE_MIX_IMCRA_TRACK_ID,
+                )
                 if (sample_count := self._reference_cached_samples(track_id)) > 0
             )
             return references + tracks
@@ -972,6 +995,55 @@ class AudioIdTracker:
                         with path.open("rb") as source:
                             shutil.copyfileobj(source, target, length=1 << 20)
             return output
+
+    def reference_l4_source(self, track_id: int):
+        """Build one sealed reference track for the Development UI L4 bypass."""
+        from layer4_speech_separation import Layer4LongAudioInput
+
+        resolved_id = int(track_id)
+        if resolved_id not in _REFERENCE_TRACK_IDS:
+            raise ValueError("L4 bypass source must be a Development UI reference track")
+        with self._lock:
+            self._close_reference_stream(resolved_id)
+            track = self._reference_tracks.get(resolved_id)
+            if track is None or self._stream is None:
+                return None
+            chunks = tuple(
+                np.fromfile(path, dtype=np.float32)
+                for path in track.segments
+                if path.exists() and path.stat().st_size
+            )
+            if not chunks:
+                return None
+            waveform = np.ascontiguousarray(np.concatenate(chunks), dtype=np.float32)
+            complete_samples = len(waveform) - len(waveform) % _HOP_SAMPLES
+            if complete_samples <= 0:
+                return None
+            waveform = np.ascontiguousarray(waveform[:complete_samples], dtype=np.float32)
+            end_sample = int(track.last_seen_sample)
+            start_sample = max(0, end_sample - len(waveform))
+            digest = hashlib.sha256(waveform.tobytes()).hexdigest()
+            names = {
+                CENTER_RAW_TRACK_ID: "center_raw",
+                CENTER_IMCRA_TRACK_ID: "center_imcra",
+                HARDWARE_MIX_RAW_TRACK_ID: "hardware_mix_raw",
+                HARDWARE_MIX_IMCRA_TRACK_ID: "hardware_mix_imcra",
+            }
+            return Layer4LongAudioInput(
+                asset_id=(
+                    f"{self._stream[0]}:epoch{self._stream[1]}:{names[resolved_id]}:"
+                    f"start{start_sample}"
+                ),
+                sha256=digest,
+                session_id=self._stream[0],
+                stream_epoch=self._stream[1],
+                track_id=1,
+                theta_deg=0.0,
+                start_sample=start_sample,
+                sample_rate=48_000,
+                waveform=waveform,
+                l2_direction_counts=((start_sample, 2),),
+            )
 
     def close(self, *, delete_files: bool = True) -> None:
         with self._lock:

@@ -1246,7 +1246,7 @@ def test_complete_recording_mode_exposes_only_simulation_controls_and_name(monke
         app.processEvents()
 
 
-def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeypatch):
+def test_window_has_four_equal_l1_l3_l4_l6_cells_and_fixed_performance_bar(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import Qt
@@ -1258,9 +1258,9 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert window.windowState() & Qt.WindowState.WindowMaximized
         quadrants = window.findChild(object, "quadrants")
         layout = quadrants.layout()
-        assert layout.count() == 5
+        assert layout.count() == 4
         assert layout.rowStretch(0) == layout.rowStretch(1) == 1
-        assert all(layout.columnStretch(index) == 1 for index in range(6))
+        assert all(layout.columnStretch(index) == 1 for index in range(2))
         assert "L3" in window.bf_panel.title()
         assert "L4 / L5" in window.l4_panel.title()
         assert "L5" in window.cnn_panel.title()
@@ -1378,6 +1378,30 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         # A one-pixel difference is the intentional grid separator/odd-pixel remainder.
         assert abs(before[0][2] - before[1][2]) <= 1
         assert abs(before[0][3] - before[2][3]) <= 1
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_reference_l4_bypass_hides_l2_and_exposes_four_source_selector(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG, reference_l4_bypass=True)
+    try:
+        layout = window.findChild(object, "quadrants").layout()
+        assert layout.count() == 4
+        assert layout.indexOf(window._hidden_doa_panel) == -1
+        assert "RAW/IMCRA" in window.bf_panel.title()
+        assert not window.bf_panel.mode_switch.isEnabled()
+        assert not window.bf_panel.downstream_switch.isEnabled()
+        assert window.bf_panel.reference_source.isVisible()
+        assert window.bf_panel.reference_source.count() == 4
+        assert [
+            window.bf_panel.reference_source.itemData(index)
+            for index in range(4)
+        ] == [0, -1, -2, -3]
     finally:
         window.close()
         app.processEvents()

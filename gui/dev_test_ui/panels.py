@@ -18,7 +18,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .audio_id_tracker import CENTER_IMCRA_TRACK_ID, CENTER_RAW_TRACK_ID
+from .audio_id_tracker import (
+    CENTER_IMCRA_TRACK_ID,
+    CENTER_RAW_TRACK_ID,
+    HARDWARE_MIX_IMCRA_TRACK_ID,
+    HARDWARE_MIX_RAW_TRACK_ID,
+)
 from .srp_panel import track_colour_hex
 
 
@@ -291,6 +296,7 @@ class BeamformPanel(QGroupBox):
     downstream_processing_changed = Signal(bool)
     gain_compensation_changed = Signal(bool)
     send_requested = Signal()
+    reference_source_changed = Signal(int)
 
     def __init__(
         self, config, gain_compensation_enabled: bool = True,
@@ -333,7 +339,22 @@ class BeamformPanel(QGroupBox):
         self.send.setEnabled(False)
         self.send.setToolTip("停止采集并等待L3完全排空后，将Hub封存的长音频发送到L4。")
         self.send.clicked.connect(self.send_requested.emit)
+        self.reference_source = QComboBox()
+        for label, track_id in (
+            ("Center RAW", CENTER_RAW_TRACK_ID),
+            ("Center IMCRA", CENTER_IMCRA_TRACK_ID),
+            ("Mix RAW", HARDWARE_MIX_RAW_TRACK_ID),
+            ("Mix IMCRA", HARDWARE_MIX_IMCRA_TRACK_ID),
+        ):
+            self.reference_source.addItem(label, track_id)
+        self.reference_source.currentIndexChanged.connect(
+            lambda index: self.reference_source_changed.emit(
+                int(self.reference_source.itemData(index))
+            )
+        )
+        self.reference_source.setVisible(False)
         preview_controls.addWidget(self.preview_summary, 1)
+        preview_controls.addWidget(self.reference_source)
         preview_controls.addWidget(self.mode_switch)
         preview_controls.addWidget(self.downstream_switch)
         preview_controls.addWidget(self.gain_compensation)
@@ -356,6 +377,18 @@ class BeamformPanel(QGroupBox):
         self._track_stream: tuple[str, int] | None = None
         self._playing_track_id: int | None = None
         self._voice_threshold = 0.7
+
+    def set_reference_l4_bypass(self) -> None:
+        self.setTitle("L3 · RAW/IMCRA Reference Audio")
+        self.preview_summary.setText("L2/L3已停用；选择一条参考音轨发送到L4")
+        self.mode_switch.setEnabled(False)
+        self.mode_switch.setText("L3 OFF")
+        self.downstream_switch.setEnabled(False)
+        self.downstream_switch.setText("L2/L3 OFF")
+        self.downstream_switch.setStyleSheet("background:#8a4b3b;color:white")
+        self.gain_compensation.setEnabled(False)
+        self.reference_source.setVisible(True)
+        self.send.setToolTip("停止采集后，仅将下拉框选中的参考长音频发送到L4。")
 
     def _cycle_mode(self) -> None:
         modes = ("ds_baseline", "loaded_mvdr_baseline", "optimized")
@@ -510,7 +543,12 @@ class BeamformPanel(QGroupBox):
         tracks = tuple(
             item
             for item in all_tracks
-            if item.track_id in {CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID}
+            if item.track_id in {
+                CENTER_RAW_TRACK_ID,
+                CENTER_IMCRA_TRACK_ID,
+                HARDWARE_MIX_RAW_TRACK_ID,
+                HARDWARE_MIX_IMCRA_TRACK_ID,
+            }
             or item.duration_seconds >= self._minimum_listening_track_seconds
         )
         for track in tracks:
@@ -529,7 +567,9 @@ class BeamformPanel(QGroupBox):
                 {
                     CENTER_RAW_TRACK_ID: 0,
                     CENTER_IMCRA_TRACK_ID: 1,
-                }.get(track_id, 2),
+                    HARDWARE_MIX_RAW_TRACK_ID: 2,
+                    HARDWARE_MIX_IMCRA_TRACK_ID: 3,
+                }.get(track_id, 4),
                 -self._track_snapshots[track_id].duration_seconds,
                 track_id,
             ),
@@ -923,6 +963,12 @@ class AudioTrackRow(QWidget):
             label_style = "font-family:Consolas"
         elif snapshot.track_id == CENTER_IMCRA_TRACK_ID:
             text = "Center Mic IMCRA"
+            label_style = "font-family:Consolas"
+        elif snapshot.track_id == HARDWARE_MIX_RAW_TRACK_ID:
+            text = "Hardware Mix RAW"
+            label_style = "font-family:Consolas"
+        elif snapshot.track_id == HARDWARE_MIX_IMCRA_TRACK_ID:
+            text = "Hardware Mix IMCRA"
             label_style = "font-family:Consolas"
         else:
             full_text = (

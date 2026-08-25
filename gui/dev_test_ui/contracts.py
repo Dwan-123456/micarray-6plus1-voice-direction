@@ -133,7 +133,7 @@ class TrackedAudioSnapshot:
         if (
             not self.session_id
             or self.stream_epoch < 0
-            or self.track_id < -1
+            or self.track_id < -3
             or self.audio_sample_count < 0
         ):
             raise ValueError("tracked audio identity is invalid")

@@ -165,6 +165,7 @@ class ApplicationRuntime:
         ] | None = None,
         speaker_count_model: object | None = None,
         ephemeral_live_capture: bool = False,
+        development_center_l4_bypass: bool = False,
     ) -> None:
         self.config = config
         self.project_root = Path(project_root).resolve()
@@ -218,6 +219,8 @@ class ApplicationRuntime:
         # Live microphone sessions in Development Test UI are intentionally
         # temporary and never enter the formal RecordingStore.
         self._ephemeral_live_capture = bool(ephemeral_live_capture)
+        self._development_center_l4_bypass = bool(development_center_l4_bypass)
+        self._development_l4_reference_track_id = 0
         self._ephemeral_recording_active = False
         self._ephemeral_transition_lock = threading.RLock()
         self._recording_session_started = False
@@ -1318,6 +1321,13 @@ class ApplicationRuntime:
     def set_l5_input_gain_compensation_enabled(self, value: bool) -> bool:
         return self.track_audio_stream.set_gain_compensation_enabled(value)
 
+    def set_development_l4_reference_track(self, track_id: int) -> int:
+        resolved = int(track_id)
+        if resolved not in {0, -1, -2, -3}:
+            raise ValueError("unsupported Development UI L4 reference track")
+        self._development_l4_reference_track_id = resolved
+        return resolved
+
     @property
     def l3_processing_mode(self) -> str:
         with self._l3_mode_lock:
@@ -1972,11 +1982,15 @@ class ApplicationRuntime:
             and not (
                 self._ephemeral_live_capture
                 and self._ephemeral_recording_active
+                and not self._development_center_l4_bypass
             )
         ):
             try:
                 self.dev_audio_tracker.append_imcra_center_reference(
                     block, channel_index=6,
+                )
+                self.dev_audio_tracker.append_imcra_hardware_mix_reference(
+                    block, channel_index=7,
                 )
             except Exception as exc:
                 self.dev_audio_tracking_error = f"IMCRA center reference: {exc}"
@@ -2035,6 +2049,17 @@ class ApplicationRuntime:
                     message=f"{pipeline_status.message}; epoch_reset:{reset_reason}",
                 )
             frame = self._ui_aggregator.update_l1(snapshot, pipeline_status)
+            if self._development_center_l4_bypass and self.dev_audio_tracker is not None:
+                try:
+                    retained_audio = self.dev_audio_tracker.snapshots()
+                except Exception as exc:
+                    self.dev_audio_tracking_error = str(exc)
+                else:
+                    frame = self._ui_aggregator.update_l3(
+                        (),
+                        "L2/L3 disabled: reference audio goes directly to L4",
+                        tracked_audio=retained_audio,
+                    )
             if stream_changed and self.dev_audio_tracker is not None:
                 # A continuity break starts a new formal processing epoch, but
                 # the L3 listening cache belongs to the whole capture session.
@@ -2054,7 +2079,8 @@ class ApplicationRuntime:
             self._latest(self.latest_dev_ui, frame)
         for window in windows:
             self._latest(self.latest_windows, window)
-            self._admit_window(window)
+            if not self._development_center_l4_bypass:
+                self._admit_window(window)
 
     def _admit_window(self, window: DecisionWindow) -> bool:
         self._remember_confirmed_backfill_window(window)
@@ -2250,6 +2276,7 @@ class ApplicationRuntime:
                     and not (
                         self._ephemeral_live_capture
                         and self._ephemeral_recording_active
+                        and not self._development_center_l4_bypass
                     )
                 ):
                     try:
@@ -2257,6 +2284,9 @@ class ApplicationRuntime:
                         # is cached before optional L1 pre-denoise so the first
                         # L3 listening row is a true input reference.
                         self.dev_audio_tracker.append_center_reference(block, channel_index=6)
+                        self.dev_audio_tracker.append_hardware_mix_reference(
+                            block, channel_index=7,
+                        )
                     except Exception as exc:
                         self.dev_audio_tracking_error = f"center reference: {exc}"
                 received = monotonic()
@@ -4051,6 +4081,13 @@ class ApplicationRuntime:
 
         if self.running or any(thread.is_alive() for thread in self._processing_threads.values()):
             raise RuntimeError("offline L4 requires capture stop and complete processing drain")
+        if self._development_center_l4_bypass:
+            if self.dev_audio_tracker is None:
+                return ()
+            source = self.dev_audio_tracker.reference_l4_source(
+                self._development_l4_reference_track_id,
+            )
+            return () if source is None else (source,)
         return self.track_audio_stream.sealed_tracks
 
     def run_offline_l4(self, pipeline):

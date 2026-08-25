@@ -19,7 +19,17 @@
 2. 每次提交前必须记录本次实际变化；没有变化的模块明确写“无变化”，防止遗漏跨层影响。
 3. 每条记录至少包含日期、版本/标签、变更类型、涉及文件、各模块具体变化、接口或兼容性影响、验证结果和Git LFS资产变化。
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
-5. 本文件记录“发生了什么”；当前`1.3.3`正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
+5. 本文件记录“发生了什么”；当前开发版本为`1.3.4`，最近正式架构仍以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
+
+## 2026-08-25 — 建立1.3.4开发线并重构Development Test UI参考音频链路
+
+- **版本/分支边界**：从不可变发布基线`v1.3.3`建立`codex/develop-v1.3.4`，项目包版本更新为`1.3.4`；本次不创建、不移动任何发布标签，`v1.3.3`继续保持正式发布基线。
+- **Development Test UI运行链路**：仅在Development Test UI启用L1参考音频直送离线L4模式；L1继续采集并可执行IMCRA，Development UI不再把窗口送入L2/L3计算队列。`layer2_source_detection/`与`layer3_direction_signal/`源码、算法和其他运行入口均保持不变。
+- **参考音频与L4接口**：L3区域改为展示并试听`Center Mic RAW`、`Center Mic IMCRA`、`Hardware Mix RAW`、`Hardware Mix IMCRA`四条参考音频，用户一次选择其中一条，以48 kHz单声道长音频送入现有离线L4；为兼容当前双人分离入口，仅生成一条合成轨迹元数据并标记为双人候选。当前L1预降噪按既有边界不处理硬件Mix通道，因此`Hardware Mix IMCRA`与`Hardware Mix RAW`内容相同。
+- **界面布局**：Development Test UI重排为严格十字四等分：左上L1、右上参考音频L3、左下L4/L5、右下L6；L2面板不显示，L4、L5、L6算法本身不变。
+- **缓存与数据边界**：参考音频仅保存在Development Test UI运行时缓存中；UI关闭、重新采集或session重建时按既有生命周期清理，不接入正式录音存储系统。录音管理、Log UI、正式数据schema与资产均未修改。
+- **测试/资产**：新增四参考轨独立缓存、单选L4来源、2x2布局和隐藏L2面板的契约测试；未修改模型、测试音频或其他Git LFS资产。
+- **验证结果**：Runtime、Development UI及参考音频契约定向测试`89 passed`，Ruff、Python编译检查和`git diff --check`通过；全量测试两次分别为`561 passed/2个既有性能门限失败`与`562 passed/1个既有性能门限失败`，其中CountNet性能项复跑通过，可选DPD+IMCRA白化MUSIC的20 ms性能项独立复跑通过，整套测试并行负载下仍存在瞬时P95超时。本次未改动该L2算法或性能门限，也未进行真实麦克风试听验收。
 6. 更早的单次Test UI历史快照保留在`docs/DEV_TEST_UI_CHANGELOG_2026-08-14.md`，其过时算法描述不得覆盖当前实现。
 
 ---
