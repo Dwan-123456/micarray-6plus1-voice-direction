@@ -99,6 +99,11 @@ class _Embedder:
 
 
 _L6 = SimpleNamespace(
+    clustering_backend="multistage",
+    multistage_l=30,
+    multistage_u1=100,
+    multistage_u2=600,
+    multistage_fallback_distance=0.38,
     maximum_speakers=3,
     speaker_similarity_threshold=0.62,
     secondary_candidate_match_gap_max=1.0,
@@ -183,6 +188,7 @@ def test_two_source_pipeline_publishes_l5_stable_watermarks_and_flushes_20_secon
     assert final.l6_result.metadata["realtime_tail_flushed"] is True
     assert final.l6_result.metadata["finality_scope"] == "realtime_preview_tail_flushed"
     assert final.l6_result.metadata["retained_commit_dtos"] == 0
+    assert processor.layer6._streaming_clusterer is None
 
 
 def test_one_source_bypasses_mf2_and_can_upgrade_by_replaying_when_two_sources_appear():
@@ -197,20 +203,26 @@ def test_one_source_bypasses_mf2_and_can_upgrade_by_replaying_when_two_sources_a
     assert len(revised.l4_processed) == 2
     assert revised.valid_through_sample_48k == 835_200
     assert backend.calls == [10 * 16_000, 11 * 16_000]
+    assert revised.l6_result.metadata["realtime_l6_state_reset"] is True
 
 
 def test_voiceprint_embeddings_are_cached_across_revisions():
     embedder = _Embedder()
     processor = _processor(embedder=embedder)
-    processor.push(_source(0))
+    first = processor.push(_source(0))
     first_calls = embedder.calls
-    processor.push(_source(1))
+    second = processor.push(_source(1))
     second_calls = embedder.calls
     assert first_calls > 0
     # L6 now refreshes with every L4 block. Previously embedded, unchanged
     # 2 s evidence remains cached; only newly completed/changed evidence is
     # sent to CAMPPlus.
-    assert first_calls < second_calls < first_calls * 2
+    assert first_calls < second_calls <= first_calls * 2
+    assert first is not None and second is not None
+    assert (
+        second.l6_result.metadata["multistage"]["evidence_count"]
+        > first.l6_result.metadata["multistage"]["evidence_count"]
+    )
     assert processor.cached_embedder.cached_segments == second_calls
     final = processor.finalize()
     assert final is not None
@@ -218,6 +230,19 @@ def test_voiceprint_embeddings_are_cached_across_revisions():
     # final batch computes only changed/new complete-track evidence.
     assert embedder.calls < first_calls + 20
     assert final.l6_result.metadata["cached_voiceprint_segments"] == embedder.calls
+
+
+def test_abort_discards_multistage_state_without_flushing_audio_tails():
+    processor = _processor()
+    snapshot = processor.push(_source(0))
+
+    assert snapshot is not None
+    assert processor.layer6._streaming_clusterer is not None
+    processor.abort()
+
+    assert processor.layer6._streaming_clusterer is None
+    assert processor._last_l6_result is None
+    assert processor._finalized is True
 
 
 def test_stable_branch_identity_is_separate_from_cumulative_candidate_rank():
@@ -265,9 +290,12 @@ def test_long_odd_chunk_sequence_has_linear_state_and_throttled_l6():
         def __init__(self):
             self.calls = 0
 
-        def process(self, results):
+        def process_streaming(self, results, *, final=False):
             self.calls += 1
-            return real_l6.process(results)
+            return real_l6.process_streaming(results, final=final)
+
+        def reset_streaming(self):
+            real_l6.reset_streaming()
 
     counting_l6 = _CountingL6()
     processor.layer6 = counting_l6
@@ -310,9 +338,12 @@ def test_l6_refreshes_after_each_complete_l4_chunk():
         def __init__(self):
             self.calls = 0
 
-        def process(self, results):
+        def process_streaming(self, results, *, final=False):
             self.calls += 1
-            return real_l6.process(results)
+            return real_l6.process_streaming(results, final=final)
+
+        def reset_streaming(self):
+            real_l6.reset_streaming()
 
     counting_l6 = _CountingL6()
     processor.layer6 = counting_l6

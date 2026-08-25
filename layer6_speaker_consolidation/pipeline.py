@@ -415,6 +415,9 @@ class OfflineLayer6Pipeline:
         *,
         final: bool = False,
     ) -> Layer6Result:
+        backend = str(getattr(self.config, "clustering_backend", "complete_link"))
+        if backend != "multistage":
+            return self.process(results)
         results = self._validate_results(results)
         session_id = results[0].source.session_id
         if self._streaming_session_id not in {None, session_id}:

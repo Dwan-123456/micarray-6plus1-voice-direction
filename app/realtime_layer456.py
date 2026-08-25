@@ -934,9 +934,21 @@ class IncrementalLayer456Processor:
                 and last_l6_duration < 2 * 48_000 <= current_duration
             )
         )
+        l6_state_reset = False
         if run_l6:
             l6_started = perf_counter()
-            self._last_l6_result = self.layer6.process(tuple(l5_results))
+            if (
+                self._last_l6_result is not None
+                and self._last_l6_topology_revision != self._topology_revision
+            ):
+                reset_streaming = getattr(self.layer6, "reset_streaming", None)
+                if callable(reset_streaming):
+                    reset_streaming()
+                    l6_state_reset = True
+            self._last_l6_result = self.layer6.process_streaming(
+                tuple(l5_results),
+                final=is_final,
+            )
             self._stage_seconds["l6"] += perf_counter() - l6_started
             self._last_l6_watermark_48k = watermark
             self._last_l6_topology_revision = self._topology_revision
@@ -957,6 +969,7 @@ class IncrementalLayer456Processor:
             "finality_scope": "realtime_preview_tail_flushed" if is_final else "realtime_preview",
             "realtime_tail_flushed": is_final,
             "realtime_l6_reused": not run_l6,
+            "realtime_l6_state_reset": l6_state_reset,
             "realtime_l6_valid_through_sample_48k": self._last_l6_watermark_48k,
             "realtime_l5_valid_through_sample_48k": watermark,
             "realtime_l5_track_watermarks_48k": track_watermarks,
@@ -1000,4 +1013,24 @@ class IncrementalLayer456Processor:
             for branch in state.branches.values():
                 self._update_dnsmos(branch, final=True)
         self._finalized = True
-        return self._snapshot(is_final=True)
+        try:
+            return self._snapshot(is_final=True)
+        finally:
+            reset_streaming = getattr(self.layer6, "reset_streaming", None)
+            if callable(reset_streaming):
+                reset_streaming()
+
+    def abort(self) -> None:
+        """Discard provisional L6 identity state without flushing model tails."""
+
+        reset_streaming = getattr(self.layer6, "reset_streaming", None)
+        if callable(reset_streaming):
+            reset_streaming()
+        if self._finalized:
+            return
+        self._last_l6_result = None
+        self._last_l6_watermark_48k = None
+        self._last_l6_topology_revision = -1
+        self._last_l6_ready_keys = ()
+        self._last_published_signature = None
+        self._finalized = True

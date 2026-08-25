@@ -36,6 +36,7 @@ def _source(index: int = 0) -> Layer4LongAudioInput:
 class _Processor:
     def __init__(self) -> None:
         self.count = 0
+        self.aborted = False
 
     def _snapshot(self, source, *, final=False):
         return RealtimePostprocessingSnapshot(
@@ -53,13 +54,19 @@ class _Processor:
             self.count, (), (), None,
         )
 
+    def abort(self):
+        self.aborted = True
+
 
 def test_realtime_service_preloads_models_before_the_first_chunk() -> None:
     loaded = Event()
+    processors = []
 
     def factory():
         loaded.set()
-        return _Processor()
+        processor = _Processor()
+        processors.append(processor)
+        return processor
 
     service = RealtimePostprocessingService(factory, queue_chunks=1)
     service.start()
@@ -71,10 +78,12 @@ def test_realtime_service_preloads_models_before_the_first_chunk() -> None:
     assert service.status.state == "waiting"
     assert service.status.model_load_seconds >= 0.0
     assert service.abort(timeout=2.0)
+    assert processors[0].aborted is True
 
 
 def test_realtime_service_drains_chunks_and_publishes_replaceable_final_snapshot():
-    service = RealtimePostprocessingService(_Processor, queue_chunks=2)
+    processor = _Processor()
+    service = RealtimePostprocessingService(lambda: processor, queue_chunks=2)
     service.start()
     assert service.submit(_source(0))
     assert service.submit(_source(1))
@@ -86,6 +95,24 @@ def test_realtime_service_drains_chunks_and_publishes_replaceable_final_snapshot
     assert snapshot.valid_through_sample_48k == 960_000
     assert service.status.state == "final"
     assert service.status.submitted_blocks == 2
+    assert processor.aborted is False
+
+
+def test_realtime_service_aborts_processor_after_model_failure():
+    processor = _Processor()
+
+    def fail(_source, *, is_final_chunk=False):
+        raise RuntimeError("model failure")
+
+    processor.push = fail
+    service = RealtimePostprocessingService(lambda: processor, queue_chunks=1)
+    service.start()
+    assert service.submit(_source(0))
+    assert service._finished.wait(2.0)
+
+    assert service.status.state == "failed"
+    assert service.status.error == "model failure"
+    assert processor.aborted is True
 
 
 def test_realtime_service_queue_overflow_is_explicit_and_never_blocks_caller():

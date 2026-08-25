@@ -57,6 +57,8 @@ class RealtimePostprocessor(Protocol):
 
     def finalize(self) -> RealtimePostprocessingSnapshot | None: ...
 
+    def abort(self) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class _BlockWork:
@@ -318,6 +320,7 @@ class RealtimePostprocessingService:
                 self._state = "final" if value.is_final else "running"
 
     def _run(self) -> None:
+        finalized = False
         try:
             with self._lock:
                 self._state = "loading"
@@ -330,6 +333,10 @@ class RealtimePostprocessingService:
             while True:
                 work = self._mailbox.get()
                 if work is _ABORT:
+                    processor = self._processor
+                    if processor is not None:
+                        processor.abort()
+                    finalized = True
                     with self._lock:
                         self._state = "failed" if self._error is not None else "aborted"
                     return
@@ -337,6 +344,7 @@ class RealtimePostprocessingService:
                     processor = self._processor
                     if processor is not None:
                         snapshot = processor.finalize()
+                        finalized = True
                         if snapshot is not None:
                             self._publish(snapshot)
                     with self._lock:
@@ -355,6 +363,12 @@ class RealtimePostprocessingService:
                 if snapshot is not None:
                     self._publish(snapshot)
         except Exception as exc:
+            processor = self._processor
+            if processor is not None and not finalized:
+                try:
+                    processor.abort()
+                except Exception:
+                    pass
             with self._lock:
                 self._error = str(exc)
                 self._state = "failed"

@@ -21,6 +21,14 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-25 — L6 Multi-stage实时生命周期接入
+
+- **提交边界**：本提交承接前一笔独立L6内核提交，只修改Runtime、`app/realtime_layer456.py`、`app/realtime_postprocessing.py`、必要的Layer6兼容入口及直接测试；未混入主开发分支正在进行的逐轨final、短尾提前冲刷或ABORTED选择性复用改造。
+- **4秒增量更新**：Realtime L4～L6 sidecar不再每次用累计音频新建L6聚类器，而是按当前默认4秒刷新周期向同一会话级Multi-stage实例追加新的完整2秒CAMPPlus证据；历史证据去重且可接受后续谱聚类对历史标签的修正。仅当单人旁路升级为双人分离等轨道拓扑变化导致历史音频重算时，使用当前累计证据安全重建一次聚类状态；公共Realtime/L6 DTO保持不变并增加是否重建的诊断元数据。
+- **final与异常生命周期**：正常`finalize()`先冲刷L4/L5尾部，允许L6接纳至少500 ms的最终短尾证据，生成最终preview后释放聚类状态；主动ABORTED、队列失败或模型异常不运行尾部推理，直接丢弃该会话的临时声纹状态，下一次录音由工厂创建全新实例。Runtime最终封存校正仍以新建离线L6实例对完整结果做权威确认，并新增聚类后端诊断字段。
+- **兼容性**：缺少新配置字段或明确选择`complete_link`的调用方继续走旧完整聚类入口；L1、L2、L3、L4分离算法、L5 CNN、Test UI、录音及数据schema均无变化。
+- **验证**：Multi-stage、L6、Realtime处理器/服务、Runtime及final复用专项`65 passed`，修改文件Ruff通过；项目全量回归`659 passed, 1 warning`，唯一警告为既有CountNet `torch.jit.load`弃用提示。未执行30分钟实录负载或人工声纹听辨验收；无模型、音频fixture或Git LFS资产变化。
+
 ## 2026-08-25 — L6 Multi-stage流式声纹聚类内核与内部适配
 
 - **版本、分支与范围**：基于提交`6715db574a3beb4d320d02ecba567916315ab78c`在独立分支`codex/l6-multistage-clusterer`开发；本提交只包含L6聚类内核、配置、依赖、内部适配和独立测试，不修改Runtime或`app/`实时生命周期。

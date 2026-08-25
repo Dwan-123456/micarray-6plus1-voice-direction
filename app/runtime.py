@@ -4526,6 +4526,11 @@ class ApplicationRuntime:
             ),
             "exact_fast_path": plan.exact_fast_path,
             "rejected_reasons": plan.rejected,
+            "l6_clustering_backend": getattr(
+                self.config.layer6,
+                "clustering_backend",
+                "complete_link",
+            ),
             "cached_voiceprint_segments": (
                 0
                 if self._campplus_cached_embedder is None
