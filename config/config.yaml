@@ -214,13 +214,6 @@ layer3:
   condition_number_limit: 1000000.0
   constraint_tolerance: 0.002
   min_frequency_gain: 0.25
-  # Test-UI comparison only: five-band robust spatial/spectral baseline.
-  subband_frequency_edges_hz: [500.0, 900.0, 1500.0, 4000.0]
-  # WNG floors for 500-900 Hz, 900-1500 Hz and 1.5-4 kHz.
-  subband_wng_floors_db: [0.0, -3.0, -6.0]
-  subband_mild_interference_scale: 0.25
-  subband_wiener_min_gain: 0.25
-  subband_soft_null_steps: 8
 
 layer4:
   enabled: true

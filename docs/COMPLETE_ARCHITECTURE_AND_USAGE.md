@@ -91,7 +91,7 @@ flowchart TB
 | Windowing | 连续同epoch的`IngestedAudioBlock` | 环形累计；检查校准身份与sample连续；组合来源sequence | `DecisionWindow [7680,8]`；末端40 ms DOA区间；最近160 ms上下文；8个20 ms IMCRA hop | 160 ms上下文，每20 ms发布 |
 | Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/DOA/IMM-JPDA/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
 | Layer 2 | `DecisionWindow`、末尾两个20 ms声源概率、7麦几何、扫描配置 | 40 ms Probability Gate；MUSIC或GI-DOAEnet；圆周峰值与50° NMS；Circular IMM-JPDA方向ID；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；DOA诊断 | 每20 ms判断；定位历史按DOA后端 |
-| Layer 3 | `DecisionWindow`末尾40/80/160 ms、0–3个公共方向、7麦几何、IMCRA噪声 | 共享STFT与协方差缓存；steering；按`rho`逐频选择Dual LCMV / Soft-null loaded MVDR / Loaded MVDR；或DAS/loaded MVDR/五频段基线；数值保护；批量ISTFT | `Layer3Output`，其中每方向一个`EnhancedAudio`：48 kHz mono `[1920/3840/7680]`，携带`track_id/theta/algorithm/fallback` | 当前默认40 ms音频；每20 ms产生新重叠窗 |
+| Layer 3 | `DecisionWindow`末尾40/80/160 ms、0–3个公共方向、7麦几何、IMCRA噪声 | 共享STFT与协方差缓存；steering；按`rho`逐频选择Dual LCMV / Soft-null loaded MVDR / Loaded MVDR；或DAS/全频loaded MVDR；数值保护；批量ISTFT | `Layer3Output`，其中每方向一个`EnhancedAudio`：48 kHz mono `[1920/3840/7680]`，携带`track_id/theta/algorithm/fallback` | 当前默认40 ms音频；每20 ms产生新重叠窗 |
 | TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；2 ms模式切换淡化；IMCRA概率响度补偿；维护完整归档；仅在消费者明确请求时构造滚动上下文 | `TrackAudioBatch`：每窗`TrackAudioHop [960]`，ID首次确认可附最长3200 ms `ContinuousTrackAudio`；停机输出`Layer4LongAudioInput`完整48 kHz长轨 | 20 ms hop；目标均值-23 dBFS，峰值不超过-3 dBFS |
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
 | ResultJoiner | 同一`WindowKey`的L2/L3/L5阶段终态 | 校验ID与角度对齐；等待完整终态；按全局window顺序提交；保留失败/丢弃/取消原因 | `JoinedWindowResult`、`DecisionRecord v5`、`ResultWatermark`、UI快照 | 有序逐窗提交 |
@@ -152,7 +152,6 @@ DecisionWindow末尾音频 + TrackedDirection[0..3]
          数值不稳定       → DAS逐频回退
        ds_baseline             → 单声源Delay-and-Sum
        loaded_mvdr_baseline    → 全频loaded MVDR
-       subband_robust_baseline → 五频段鲁棒对照
   → 批量ISTFT
   → 每方向48 kHz mono EnhancedAudio
 ```
@@ -254,7 +253,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 2. 点击“启动采集”。等待160 ms窗口累计及IMCRA预热；L2的240 ms滚动定位历史会继续独立预热。
 3. 检查左上8路电平。依次轻敲麦克风，确认MIC0–MIC5、Center及HardwareMix映射没有镜像或错位。
 4. 在右上查看L2 Gate、360°MUSIC谱、手动MUSIC阶数、实际候选数和方向ID。初次测试保持DPD和IMCRA白化关闭；ID Tracking开启即使用完整IMM-JPDA。
-5. 在左下查看Center参考和按`track_id`排列的L3方向轨，可切换四种BF方法进行同源比较。
+5. 在左下查看Center参考和按`track_id`排列的L3方向轨，可切换三种BF方法进行同源比较。
 6. 需要正式数据时使用“正式录音开始/暂停”；只做临时试听时使用scratch录音。两者不要混作同一资产。
 7. 点击“停止采集”，等待L2/L3队列完全排空和Hub封存。未排空时不能提交L4。
 8. 在L4区选择MossFormer2或TIGER，点击“发送到L4”。短于2秒的方向轨不会成为有效L4输入。
@@ -331,7 +330,7 @@ run_offline_l4   ── 显式写入封存session，可长期审计
 1. 单人静止：验证通道方向、Gate、单峰、ID稳定和DAS基线。
 2. 单人缓慢移动：检查IMM静止/移动模型切换、角度滞后和ID连续性。
 3. 双人夹角≥50°轮流讲话：验证双峰、ID和优化BF串音。
-4. 双人同时讲话：比较optimized与五频段对照，并运行离线L4。
+4. 双人同时讲话：比较optimized与Loaded MVDR对照，并运行离线L4。
 5. 风扇/笔记本噪声：记录2–4 kHz异常声源造成的误峰和L5结果。
 6. 低频声源：确认80–1500 Hz不可可靠分离的物理边界，而不是用参数掩盖失败。
 7. 长时间运行：记录队列高水位、丢窗率、端到端延迟、GPU/内存和写盘状态。

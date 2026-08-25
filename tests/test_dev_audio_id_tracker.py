@@ -309,11 +309,11 @@ def test_mode_change_deletes_the_hidden_cache_partition(tmp_path):
     tracker = AudioIdTracker("cache", project_root=tmp_path)
     first = _direction(1, 7_680, 30.0)
     tracker.update(_window(7_680), (first,), (_preview(1, 7_680, 30.0),), active_tracks=(first,))
-    tracker.seal_mode("constant_beamwidth_baseline")
+    tracker.seal_mode("loaded_mvdr_baseline")
     second = _direction(1, 8_640, 30.0)
     tracker.update(
         _window(8_640), (second,),
-        (_preview(1, 8_640, 30.0, backend="constant_beamwidth_baseline"),),
+        (_preview(1, 8_640, 30.0, backend="loaded_mvdr_baseline"),),
         active_tracks=(second,),
     )
     tracker.update(_window(9_600), (), (), active_tracks=())

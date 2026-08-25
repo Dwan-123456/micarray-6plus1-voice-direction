@@ -41,7 +41,7 @@ Layer 2 worker：Probability Gate → SRP-PHAT → 私有ID/圆周卡尔曼
 Layer 3 worker：LogicalAudio [15360,8] + 候选角度
        ├── optimized（正式默认）：复用滚动STFT、IMCRA统计、协方差及有界静态查表
        ├── ds_baseline（对照）：固定7麦Delay-and-Sum
-       ├── constant_beamwidth_baseline（对照）：固定30° FNBW、WNG保护、失败频点回退DAS
+       ├── loaded_mvdr_baseline（对照）：全频diagonal-loaded MVDR、失败频点回退DAS
        └── 每候选输出theta_deg + EnhancedAudio 48 kHz mono [15360]
                             ↓ 有界L5 latest-wins队列
 Layer 5 worker：增强音频副本 + 对齐IMCRA概率 → 响度补偿 → 降采样 → CNN
@@ -300,17 +300,17 @@ p_table = load_p_table()
 
 ### 6.2 Test UI可切换三档L3模式
 
-Development Test UI提供`优化算法 / DS基线 / 恒定波束宽度30°`三档循环切换按键，启动采集前和采集运行中均可操作。默认始终为`optimized`，production入口不主动切换；运行中修改以L3开始处理某个新窗口时读取到的模式为准，不中断采集，不重算已经完成的窗口。
+Development Test UI提供`优化算法 / DS基线 / Loaded MVDR基线`三档循环切换按键，启动采集前和采集运行中均可操作。默认始终为`optimized`，production入口不主动切换；运行中修改以L3开始处理某个新窗口时读取到的模式为准，不中断采集，不重算已经完成的窗口。
 
 - `optimized`：保留本节定义的IMCRA噪声统计、全局`p`查表、Dual LCMV、soft-null loaded MVDR、loaded MVDR及逐频点DAS降级。
 - `ds_baseline`：使用同一320 ms窗口、同一前7个物理麦、同一候选角、同一STFT和steering vector，仅执行7通道Delay-and-Sum；不读取IMCRA、不查询`p`表、不应用自适应噪声权重。输出算法标识固定为`ds_baseline`。
-- `constant_beamwidth_baseline`：以固定30°第一零点波束宽度（FNBW，不是HPBW）为逐频点目标，按真实6+1 UCA流形执行正则化约束拟合，并用`-10 dB` WNG下限保护；受物理孔径限制或求解不安全的频点回退DAS。该档不读取IMCRA或`p`表，输出算法标识固定为`constant_beamwidth_baseline`。
+- `loaded_mvdr_baseline`：以同窗IMCRA噪声协方差对全部有效频点执行diagonal-loaded MVDR；数值不安全频点回退DAS。旧固定30°与五频段模式已经删除。
 
 被选模式产生的正式L3音频继续进入L5、正式320 ms预览和Test UI试听侧路，因此三种模式比较的是完整下游输入。切换后仅后续窗口采用新模式；界面必须停止当前播放、清空旧预览，并重置Test UI专用ID音频缓存。试听缓存还必须按输出模式自检，禁止把不同模式的hop追加到同一条ID音轨。该切换不改变`config.yaml`中的正式默认后端，也不删除或替换优化算法。
 
 Test UI试听sidecar在正式结果提交后消费现成候选与L3预览。存在L2私有ID时以其为首选关联键；ID换号只在3秒等待期内、20°以内且只有一个可续接旧轨时合并，同时出现的两个近角ID不得合并。每条音轨按48 kHz绝对decision sample拼接20 ms位置：可从当前320 ms预览恢复的跳窗补回真实音频，更老的缺口补等时静音，不压缩时间；连续边界交叉淡化。界面首行固定提供预降噪前LogicalAudio第7路Center Mic原音参考，其余方向轨累计至少2秒才显示，并按缓存时长降序排列。Gate暂时`UNAVAILABLE/WARMING_UP`以及同一session内的epoch连续性恢复只关闭当前方向段，不得删除已缓存文件或界面行；旧epoch轨道转为`ENDED`归档，新epoch重复的L2私有ID必须分配会话内唯一的Test UI试听ID，避免覆盖历史音频。播放时对稳定快照作一次目标`-28 dBFS`、最大`18 dB`的试听归一化；该处理不得改写L3正式波形、L5输入或录音。缓存按10秒分段、最多保留3段和8条已结束方向轨；新session、L3模式切换或关闭UI时才按职责重置或删除。
 
-当前恒定波束档是**固定30°对照基线**。项目尚未定义或实现L2公共方向不确定度输出，也未实现由不确定度驱动的L3动态波束宽度；不得用本档的完成状态替代该未实现能力。
+项目尚未定义或实现L2公共方向不确定度输出，也未实现由不确定度驱动的L3动态波束宽度。
 
 ## 7. Layer 5 目标契约
 
@@ -326,7 +326,7 @@ L2 Gate已开启且空间响应有效、但没有候选峰时，L3直接返回`C
 
 - 左上：显示MIC0～MIC5、Center、HardwareMix共8路电平；显示IMCRA预热、每麦噪声摘要及20 ms/40 ms声源概率。
 - 右上：删除NE后端选择；增加L2 Gate阈值滑动条，默认0.60，显示当前值、配置值、revision、40 ms概率及开/关状态；360°圆环显示原始`SpatialResponse`，候选点显示平滑角，因此允许点不严格位于峰顶。
-- 左下：显示/试听正式平滑候选对应的48 kHz增强音频，并可实时循环切换`optimized / ds_baseline / constant_beamwidth_baseline`。连续试听首行是预降噪前Center Mic原音参考；方向轨使用L2私有ID元数据优先关联，累计至少2秒后显示，缺失后等待3秒再结束，按绝对sample补洞并维护有界磁盘缓存。它不得滤波/改写角度、生成预测方向、触发额外L3波束形成或进入正式记录；`[33,169]`频谱不再是公共契约。
+- 左下：显示/试听正式平滑候选对应的48 kHz增强音频，并可实时循环切换`optimized / ds_baseline / loaded_mvdr_baseline`。连续试听首行是预降噪前Center Mic原音参考；方向轨使用L2私有ID元数据优先关联，累计至少2秒后显示，缺失后等待3秒再结束，按绝对sample补洞并维护有界磁盘缓存。它不得滤波/改写角度、生成预测方向、触发额外L3波束形成或进入正式记录；`[33,169]`频谱不再是公共契约。
 - 右下：显示L5逐方向CNN概率及Voice判断；L5阈值滑条与L2 Gate滑条必须明确分开。它优先消费容量1的`latest_l5_dev_ui`完成帧，以免前序窗口的有序commit等待压低可见刷新率；该帧本身仍是一个完整同窗快照，不能把新L5结果拼到其他窗口的L2/L3数据上。
 - L2/L3及正式终态诊断消费Joiner有序提交的ApplicationRuntime快照。L5即时显示是唯一例外且只属于UI side channel；正式结果、录音和watermark仍只认Joiner/commit。后续有序`DROPPED/SKIPPED`帧不得立即清除上一份有效CNN画面；只有超过`dev_test_ui.stale_after_ms`仍未收到新的L5完成帧时才显示`STALE`。
 - 全局状态栏只通过Runtime公开只读`processing_status`读取L2/L3/L5/completion队列深度与容量、worker存活、在途窗口、缓存字节、完成数和错误数；L5另显示`l5_actual_completed`、`l5_dropped`、`l5_skipped`、最近1秒`l5_actual_hz`以及显示邮箱深度/容量/覆盖数。UI不得再次访问`_processing_windows`等私有队列。该状态只用于诊断，不参与调度。

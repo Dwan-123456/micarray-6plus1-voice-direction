@@ -586,7 +586,6 @@ class AudioIdTracker:
         backend_modes = {
             "ds_baseline": "ds_baseline",
             "loaded_mvdr_baseline": "loaded_mvdr_baseline",
-            "subband_robust_baseline": "subband_robust_baseline",
         }
         preview_modes = {
             backend_modes.get(item.runtime_backend, "optimized") for item in previews

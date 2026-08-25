@@ -43,11 +43,6 @@ class SpatialSeparationConfig:
     condition_number_limit: float
     constraint_tolerance: float
     min_frequency_gain: float
-    subband_frequency_edges_hz: tuple[float, float, float, float]
-    subband_wng_floors_db: tuple[float, float, float]
-    subband_mild_interference_scale: float
-    subband_wiener_min_gain: float
-    subband_soft_null_steps: int
 
     @classmethod
     def from_project(cls, config: ProjectConfig) -> "SpatialSeparationConfig":
@@ -60,11 +55,6 @@ class SpatialSeparationConfig:
             value.alias_loading_multiplier, value.soft_null_strength,
             value.condition_number_limit, value.constraint_tolerance,
             value.min_frequency_gain,
-            value.subband_frequency_edges_hz,
-            value.subband_wng_floors_db,
-            value.subband_mild_interference_scale,
-            value.subband_wiener_min_gain,
-            value.subband_soft_null_steps,
         )
 
 

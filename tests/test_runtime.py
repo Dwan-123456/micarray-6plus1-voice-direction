@@ -23,7 +23,6 @@ from layer3_direction_signal import (
     L3_MODE_DS_BASELINE,
     L3_MODE_LOADED_MVDR,
     L3_MODE_OPTIMIZED,
-    L3_MODE_SUBBAND_ROBUST,
 )
 
 
@@ -437,7 +436,8 @@ def test_runtime_l3_mode_switch_is_available_before_and_during_capture(tmp_path)
     assert runtime.l3_processing_mode == L3_MODE_OPTIMIZED
     assert runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE) == L3_MODE_DS_BASELINE
     assert runtime.set_l3_processing_mode(L3_MODE_LOADED_MVDR) == L3_MODE_LOADED_MVDR
-    assert runtime.set_l3_processing_mode(L3_MODE_SUBBAND_ROBUST) == L3_MODE_SUBBAND_ROBUST
+    with pytest.raises(ValueError, match="unsupported L3 processing mode"):
+        runtime.set_l3_processing_mode("subband_robust_baseline")
     runtime.start()
     try:
         assert runtime.running
@@ -693,7 +693,6 @@ class _CapturingLayer3:
             algorithm = {
                 L3_MODE_DS_BASELINE: "ds_baseline",
                 L3_MODE_LOADED_MVDR: "loaded_mvdr_baseline",
-                L3_MODE_SUBBAND_ROBUST: "subband_robust_baseline",
             }.get(mode, "imcra_spatial_separation")
             outputs.append(SimpleNamespace(
                 session_id=window.session_id, stream_epoch=window.stream_epoch,
@@ -768,10 +767,9 @@ def test_runtime_mode_switch_never_changes_authoritative_l2_id():
         L3_MODE_OPTIMIZED,
         L3_MODE_DS_BASELINE,
         L3_MODE_LOADED_MVDR,
-        L3_MODE_SUBBAND_ROBUST,
     ):
         runtime.set_l3_processing_mode(mode)
         runtime._process_l3(window, (direction,))
 
-    assert [call[0][0].track_id for call in layer3.calls] == [7, 7, 7, 7]
-    assert [call[0][0].rank for call in layer3.calls] == [1, 1, 1, 1]
+    assert [call[0][0].track_id for call in layer3.calls] == [7, 7, 7]
+    assert [call[0][0].rank for call in layer3.calls] == [1, 1, 1]

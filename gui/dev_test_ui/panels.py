@@ -335,7 +335,7 @@ class BeamformPanel(QGroupBox):
         self.mode_switch = QPushButton("优化算法")
         self._processing_mode = "optimized"
         self.mode_switch.setToolTip(
-            "依次切换：优化算法 → DS基线 → 恒定波束宽度30°；只影响后续L3窗口"
+            "依次切换：优化算法 → DS基线 → Loaded MVDR基线；只影响后续L3窗口"
         )
         self.mode_switch.clicked.connect(self._cycle_mode)
         self.downstream_switch = QPushButton()
@@ -384,9 +384,7 @@ class BeamformPanel(QGroupBox):
         self._voice_threshold = 0.7
 
     def _cycle_mode(self) -> None:
-        modes = (
-            "optimized", "ds_baseline", "loaded_mvdr_baseline", "subband_robust_baseline",
-        )
+        modes = ("optimized", "ds_baseline", "loaded_mvdr_baseline")
         mode = modes[(modes.index(self._processing_mode) + 1) % len(modes)]
         self.set_processing_mode(mode)
         self.mode_change_requested.emit(mode)
@@ -404,7 +402,7 @@ class BeamformPanel(QGroupBox):
 
     def set_processing_mode(self, mode: str) -> None:
         if mode not in {
-            "optimized", "ds_baseline", "loaded_mvdr_baseline", "subband_robust_baseline",
+            "optimized", "ds_baseline", "loaded_mvdr_baseline",
         }:
             raise ValueError(f"unknown L3 processing mode: {mode}")
         self._processing_mode = mode
@@ -412,13 +410,11 @@ class BeamformPanel(QGroupBox):
             "optimized": "优化算法",
             "ds_baseline": "DS基线",
             "loaded_mvdr_baseline": "Loaded MVDR基线",
-            "subband_robust_baseline": "五频段鲁棒对照",
         }
         colors = {
             "optimized": "",
             "ds_baseline": "background:#9a6b00;color:white",
             "loaded_mvdr_baseline": "background:#6f4a8e;color:white",
-            "subband_robust_baseline": "background:#285f9a;color:white",
         }
         self.mode_switch.setText(labels[mode])
         self.mode_switch.setStyleSheet(colors[mode])

@@ -1092,7 +1092,6 @@ def build_window(
                 "optimized": "优化算法",
                 "ds_baseline": "DS基线",
                 "loaded_mvdr_baseline": "Loaded MVDR基线",
-                "subband_robust_baseline": "五频段鲁棒对照",
             }[applied]
             self.statusBar().showMessage(f"L3已切换为{label}；从下一个处理窗口生效", 5000)
 

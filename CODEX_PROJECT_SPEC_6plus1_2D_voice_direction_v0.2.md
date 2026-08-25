@@ -56,10 +56,10 @@ Layer 3：8ch音频 + 平滑候选角度 + 16个IMCRA hop
         ├──内部只用7物理麦：Dual LCMV / soft-null loaded MVDR / loaded MVDR / DAS回退
         ├──16个IMCRA hop组成BeamformerNoiseContext，生成逐频点7×7空间噪声协方差
         ├──双候选从全局spatial_separability只读表按频点、绝对朝向和有符号角差查询空间可分度p
-        ├──Test UI可在运行前/运行中切换三档：优化算法、7麦DS基线、固定30° FNBW恒定波束基线
-        ├──恒定波束基线按真实UCA流形逐频点正则拟合，受WNG下限保护，无法安全实现的频点回退DAS
-        ├──DS与恒定波束基线均不读取IMCRA或p表，只作对照；正式默认保持优化算法
-        ├──未实现L2方向不确定度输出或不确定度驱动的动态波束宽度，不得与固定30°对照档混淆
+        ├──Test UI可在运行前/运行中切换三档：优化算法、7麦DS基线、全频Loaded MVDR基线
+        ├──Loaded MVDR基线读取IMCRA噪声协方差，无法安全实现的频点回退DAS
+        ├──固定30°与五频段波束模式均已删除；正式默认保持优化算法
+        ├──未实现L2方向不确定度输出或不确定度驱动的动态波束宽度
         ├──每个候选输出EnhancedAudio：48 kHz mono float32 [15360]
         └──公共STFT、SpectrogramFeature与[33,169] FeatureExtractor已从主链删除
     CUDA/OOM、实机音质和实时性能门禁仍未完成

@@ -24,6 +24,18 @@
 
 ---
 
+## 2026-08-25 — 删除L3五频段与固定30°波束方法
+
+- **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。
+- **L3算法与契约**：删除`subband_robust_baseline`五频段实现、公开模式常量、后端分支及`DirectionalSignal`后端许可；移除其频段边界、WNG、干扰缩放、Wiener增益和soft-null配置字段。此前已经不存在核心实现的`constant_beamwidth_baseline`固定30°模式继续由L3与Runtime入口明确拒绝。
+- **Test UI**：BF切换按钮仅循环`optimized → ds_baseline → loaded_mvdr_baseline`，移除五频段选项并修正残留的固定30°提示；试听缓存不再识别已删除后端。
+- **删除与恢复**：`layer3_direction_signal/subband_robust.py`已移入Windows回收站；Git跟踪删除仍可从提交历史恢复。
+- **文档与测试**：当前架构、完整使用指南、L3说明和旧目标文档统一为三种保留模式；删除五频段算法测试，新增两种已删除模式的拒绝测试并更新Runtime/UI模式循环测试。
+- **验证**：L3、Runtime、Development Test UI及试听缓存聚焦回归`106 passed`，修改Python文件Ruff与`git diff --check`通过。完整回归为`542 passed, 2 failed, 1 warning`：未修改RecordingStore的3秒异步落盘用例随后隔离复跑通过；另一项失败由同工作区并行但未纳入本提交的L6聚类改动造成。本次未执行实机BF试听验收。
+- **未改变**：L1、L2、L3保留的优化/DS/Loaded MVDR算法、L4～L6、Runtime队列与时间轴、录音/数据管理和其他UI均无行为变化；无模型、音频或Git LFS资产变化。
+
+---
+
 ## 2026-08-24 — L6 UI按最终ID显示统一绝对时间线音频
 
 - **版本/标签**：项目仍为`1.3.3`开发线；不修改版本，不创建或移动发布标签。

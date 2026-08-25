@@ -557,7 +557,6 @@ class DirectionalSignal:
             raise ValueError("DirectionalSignal采样率或角度无效")
         if self.beamformer_backend not in {
             "frequency_hybrid", "imcra_spatial_separation", "das", "ds_baseline",
-            "subband_robust_baseline",
             "loaded_mvdr_baseline",
         }:
             raise ValueError("DirectionalSignal后端无效")
