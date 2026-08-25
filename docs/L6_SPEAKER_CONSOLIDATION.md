@@ -1,8 +1,8 @@
 # L6整轨声纹识别、MOS择优与静音压缩
 
-L6是L4、L5完成后的手动离线步骤，不参与实时采集，也不修改L2的
-`track_id`和角度。L4必须关闭“合并”，使A/B两条候选及其逐20 ms L5标注
-完整保留到L6。
+L6是每批L4、L5成功完成后自动运行的离线步骤，不参与实时采集，也不修改L2的
+`track_id`和角度。Test UI的L4固定不合并，A/B两条候选及其逐20 ms L5标注
+完整保留到L6；单人旁路作为该来源唯一A轨参与。
 
 ## 执行顺序
 
@@ -66,11 +66,11 @@ Q分不再参与选择，L6也不重复运行DNSMOS。
 - 声纹：`iic/speech_campplus_sv_zh_en_16k-common_advanced`，CPU，16 kHz，
   80-bin Kaldi fbank，192维归一化声纹。
 - MOS：复用L4已生成的DNSMOS综合分，L6不加载或重复计算DNSMOS。
-- L6仅在用户点击“运行L6”后加载CAMPPlus并执行。
+- L6在每批L4/L5完成后自动加载CAMPPlus并执行；重复运行L4会重跑并替换上一批L6结果。
 
 ## 公共接口
 
-- `ApplicationRuntime.build_offline_l6_pipeline()`：构建手动CPU L6，只加载CAMPPlus。
+- `ApplicationRuntime.build_offline_l6_pipeline()`：构建CPU L6，只加载CAMPPlus。
 - `OfflineLayer6Pipeline.process(tuple[Layer4OfflineResult, ...])`：返回
   `Layer6Result`。
 - `Layer6Result.outputs`：0～3条按声纹显示的`Layer6SpeakerAudio`，包含压缩后

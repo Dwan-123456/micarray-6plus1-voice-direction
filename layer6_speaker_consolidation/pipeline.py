@@ -209,7 +209,7 @@ def _compress_silence(
 
 
 class OfflineLayer6Pipeline:
-    """Manual offline complete-track voiceprint clustering and MOS-based merge."""
+    """Offline complete-track voiceprint clustering and MOS-based merge."""
 
     def __init__(self, embedder: CampPlusEmbedder, config: Layer6Configuration) -> None:
         self.embedder = embedder
@@ -221,11 +221,16 @@ class OfflineLayer6Pipeline:
     ) -> tuple[Layer4OfflineResult, ...]:
         results = tuple(results)
         if not results:
-            raise ValueError("manual L6 requires completed L4/L5 results")
+            raise ValueError("L6 requires completed L4/L5 results")
         if len({item.source.session_id for item in results}) != 1:
             raise ValueError("one L6 job cannot mix capture sessions")
-        if any(item.output_kind not in {"candidate_0", "candidate_1"} for item in results):
-            raise ValueError("L6 complete-track clustering requires unmerged L4 A/B outputs")
+        if any(
+            item.output_kind == "merged" and item.path != "single_speaker_bypass"
+            for item in results
+        ):
+            raise ValueError(
+                "L6 requires unmerged L4 A/B outputs or single-speaker bypasses"
+            )
         return results
 
     def _select_tracks(
@@ -234,7 +239,7 @@ class OfflineLayer6Pipeline:
     ) -> tuple[tuple[Layer4OfflineResult, int, float, float], ...]:
         groups: dict[tuple[str, int, str], dict[int, Layer4OfflineResult]] = {}
         for result in results:
-            branch = int(result.output_kind[-1])
+            branch = 0 if result.output_kind == "merged" else int(result.output_kind[-1])
             key = (
                 result.source.session_id,
                 result.source.stream_epoch,
@@ -250,7 +255,11 @@ class OfflineLayer6Pipeline:
             if 0 not in branches:
                 raise ValueError("L6 requires an A track for every L4 source")
             a = branches[0]
-            a_match = _score(a.metadata, "candidate_match_score", 0.0, 1.0)
+            a_match = (
+                1.0
+                if a.output_kind == "merged"
+                else _score(a.metadata, "candidate_match_score", 0.0, 1.0)
+            )
             a_mos = _score(a.metadata, "mos_score", 0.0, 1.0)
             selected.append((a, 0, a_match, a_mos))
             b = branches.get(1)

@@ -1,7 +1,10 @@
 # L6 speaker consolidation
 
-L6 is a manual offline stage that runs only after unmerged L4 A/B tracks have
-received aligned L5 decisions. It concatenates each selected track's L5 Voice
+L6 is an automatic offline stage that runs after every successful Test UI L4/L5
+batch and replaces the previous batch's displayed result. Repeating L4 for the
+same sealed test case therefore also reruns L5 and L6. It consumes unmerged L4
+A/B tracks plus any single-speaker bypass track that is the source's only A track.
+It concatenates each selected track's L5 Voice
 frames, divides that speech into fixed two-second segments, and extracts one
 CAMPPlus embedding per segment. A final residual is retained only when it has at
 least 500 ms of speech. Same-length segments are inferred in batches.

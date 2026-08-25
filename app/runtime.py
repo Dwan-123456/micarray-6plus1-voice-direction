@@ -4120,7 +4120,7 @@ class ApplicationRuntime:
         return self._dnsmos_scorer
 
     def build_offline_l6_pipeline(self) -> OfflineLayer6Pipeline:
-        """Load the CPU-only models for a manually triggered L6 job."""
+        """Load the CPU-only models for the next post-L4/L5 L6 job."""
 
         if not self.config.layer6.enabled:
             raise RuntimeError("Layer6 is disabled in project config")

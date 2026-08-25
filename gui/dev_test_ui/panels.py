@@ -629,7 +629,6 @@ class Layer4AudioPanel(QGroupBox):
     track_play_requested = Signal(int)
     track_stop_requested = Signal()
     backend_changed = Signal(str)
-    merge_changed = Signal(bool)
 
     BACKEND_LABELS = {
         "mossformer2_ss_16k": "MossFormer2",
@@ -658,16 +657,7 @@ class Layer4AudioPanel(QGroupBox):
             )
             self.backend_group.addButton(button)
             self.backend_buttons[backend] = button
-        self.merge_button = QPushButton("合并")
-        self.merge_button.setCheckable(True)
-        self.merge_button.setChecked(True)
-        self.merge_button.setToolTip(
-            "开启：按1–4 kHz匹配度从每组双输出中保留高分音频；"
-            "关闭：按匹配度排序并显示A/B两条候选，A分数更高。"
-        )
-        self.merge_button.clicked.connect(self._set_merge_from_button)
         header.addWidget(self.summary, 1)
-        header.addWidget(self.merge_button)
         for button in self.backend_buttons.values():
             header.addWidget(button)
         layout.addLayout(header)
@@ -687,10 +677,6 @@ class Layer4AudioPanel(QGroupBox):
         self._playing_track_id: int | None = None
         self._voice_threshold = 0.7
         self.set_backend(backend_id)
-        self._refresh_merge_style()
-        self.merge_button.setFixedSize(
-            self.backend_buttons["mossformer2_ss_16k"].sizeHint()
-        )
 
     @property
     def backend_id(self) -> str:
@@ -704,24 +690,6 @@ class Layer4AudioPanel(QGroupBox):
             raise ValueError("unsupported Layer 4 backend")
         self.backend_buttons[backend_id].setChecked(True)
         self._refresh_backend_styles()
-
-    @property
-    def merge_enabled(self) -> bool:
-        return self.merge_button.isChecked()
-
-    def set_merge_enabled(self, enabled: bool) -> None:
-        self.merge_button.setChecked(bool(enabled))
-        self._refresh_merge_style()
-
-    def _set_merge_from_button(self, checked: bool) -> None:
-        self.set_merge_enabled(checked)
-        self.merge_changed.emit(self.merge_enabled)
-
-    def _refresh_merge_style(self) -> None:
-        color = "#16794b" if self.merge_enabled else "#5b6570"
-        self.merge_button.setStyleSheet(
-            f"QPushButton {{ background:{color}; color:white; font-weight:600; }}"
-        )
 
     def _select_backend(self, backend_id: str) -> None:
         self.set_backend(backend_id)
@@ -811,7 +779,6 @@ class Layer4AudioPanel(QGroupBox):
 
 
 class Layer6AudioPanel(QGroupBox):
-    run_requested = Signal()
     track_play_requested = Signal(int)
     track_stop_requested = Signal()
 
@@ -819,12 +786,8 @@ class Layer6AudioPanel(QGroupBox):
         super().__init__("L6 · Speaker Audio Preview", parent)
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
-        self.summary = QLabel("等待L4双候选标注完成")
-        self.run = QPushButton("运行L6")
-        self.run.setEnabled(False)
-        self.run.clicked.connect(self.run_requested.emit)
+        self.summary = QLabel("等待L4/L5完成后自动运行")
         header.addWidget(self.summary, 1)
-        header.addWidget(self.run)
         layout.addLayout(header)
         layout.addWidget(QLabel(
             "按声纹显示合并音频；首尾静音删除，内部静音最长保留2秒。"
@@ -841,7 +804,7 @@ class Layer6AudioPanel(QGroupBox):
         self._rows: dict[int, AudioTrackRow] = {}
         self._playing_track_id: int | None = None
 
-    def clear_tracks(self, text: str = "等待L4双候选标注完成") -> None:
+    def clear_tracks(self, text: str = "等待L4/L5完成后自动运行") -> None:
         for row in self._rows.values():
             self.track_layout.removeWidget(row)
             row.deleteLater()
@@ -849,16 +812,11 @@ class Layer6AudioPanel(QGroupBox):
         self._playing_track_id = None
         self.summary.setText(text)
 
-    def set_run_enabled(self, enabled: bool) -> None:
-        self.run.setEnabled(bool(enabled))
-
     def set_processing(self) -> None:
-        self.run.setEnabled(False)
         self.summary.setText("L6处理中：完整音轨声纹、聚类、MOS择优与静音压缩…")
 
     def set_error(self, text: str) -> None:
         self.summary.setText(f"L6失败：{text}")
-        self.run.setEnabled(True)
 
     def set_tracks(self, tracks) -> None:
         self.clear_tracks()
@@ -871,7 +829,6 @@ class Layer6AudioPanel(QGroupBox):
             self._rows[track.track_id] = row
             self.track_layout.insertWidget(self.track_layout.count() - 1, row)
         self.summary.setText(f"L6完成：{len(self._rows)}个声纹")
-        self.run.setEnabled(True)
 
     def _toggle_track(self, track_id: int) -> None:
         if self._playing_track_id == track_id:

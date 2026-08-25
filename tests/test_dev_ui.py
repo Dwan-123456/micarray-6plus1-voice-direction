@@ -264,7 +264,7 @@ def test_operator_settings_reject_invalid_values(tmp_path):
         settings.save_layer4_backend("unknown")
 
 
-def test_layer4_model_buttons_are_exclusive_and_colour_coded(monkeypatch):
+def test_layer4_model_buttons_are_exclusive_colour_coded_and_have_no_merge_control(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
@@ -273,20 +273,12 @@ def test_layer4_model_buttons_are_exclusive_and_colour_coded(monkeypatch):
     app = QApplication.instance() or QApplication([])
     panel = Layer4AudioPanel("mossformer2_ss_16k")
     selected = []
-    merge_states = []
     panel.backend_changed.connect(selected.append)
-    panel.merge_changed.connect(merge_states.append)
     assert panel.backend_id == "mossformer2_ss_16k"
-    assert panel.merge_enabled is True
-    assert "#16794b" in panel.merge_button.styleSheet()
-    assert panel.merge_button.size() == panel.backend_buttons["mossformer2_ss_16k"].sizeHint()
+    assert not hasattr(panel, "merge_button")
+    assert not hasattr(panel, "merge_enabled")
     assert "#16794b" in panel.backend_buttons["mossformer2_ss_16k"].styleSheet()
     assert "#5b6570" in panel.backend_buttons["tiger_speech_16k"].styleSheet()
-
-    panel.merge_button.click()
-    assert panel.merge_enabled is False
-    assert merge_states == [False]
-    assert "#5b6570" in panel.merge_button.styleSheet()
 
     panel.backend_buttons["tiger_speech_16k"].click()
     assert panel.backend_id == "tiger_speech_16k"
@@ -1302,7 +1294,7 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         )
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 手动离线 | "
+            "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 自动离线 | "
             "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%    "
             "总处理时长 | L2 N/A | L3 N/A | L4 N/A | L5 N/A | L6 N/A"
         )
@@ -1391,7 +1383,7 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         app.processEvents()
 
 
-def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
+def test_l3_repeated_l4_runs_are_unmerged_and_each_automatically_refreshes_l6(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from gui.dev_test_ui.app import build_window
@@ -1400,22 +1392,31 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
     events: list[str] = []
     clock = iter((
         10.0, 12.5, 20.0, 24.0,
-        30.0, 31.0, 40.0, 42.0,
-        50.0, 53.0, 60.0, 65.0,
+        30.0, 33.0,
+        40.0, 41.0, 50.0, 52.0,
+        60.0, 64.0,
+        70.0, 73.0, 80.0, 85.0,
+        90.0, 96.0,
     ))
     monkeypatch.setattr("gui.dev_test_ui.app.perf_counter", lambda: next(clock))
     merge_modes: list[bool] = []
+    submissions: list[str] = []
+    l5_result = SimpleNamespace(
+        source=SimpleNamespace(theta_deg=10.0, end_sample=960),
+        l5_probability=0.9,
+        l5_model_id="l5",
+    )
 
     class FakeStore:
         def clear(self):
-            events.append("clear")
+            events.append("l4-clear")
 
         def set_processed(self, values):
             assert values == ()
-            events.append("write")
+            events.append("l4-write")
 
         def apply_l5(self, values):
-            assert values == ()
+            assert values == (l5_result,)
             events.append("l5-write")
 
         @staticmethod
@@ -1432,51 +1433,82 @@ def test_l3_can_replace_l4_outputs_repeatedly(monkeypatch):
         def process_l4_sealed(self, sources, *, merge_candidates=True):
             del sources
             merge_modes.append(merge_candidates)
-            events.append("process")
+            events.append("l4-process")
             return ()
 
         def process_l5_sealed(self, processed):
             assert processed == ()
             events.append("l5-process")
+            return (l5_result,)
+
+    class FakeL6Store:
+        def clear(self):
+            events.append("l6-clear")
+
+        def set_result(self, result):
+            assert result == "l6-result"
+            events.append("l6-write")
+
+        @staticmethod
+        def snapshots():
             return ()
 
+        @staticmethod
+        def close():
+            return None
+
+    class FakeL6Pipeline:
+        def process(self, results):
+            assert results == (l5_result,)
+            events.append("l6-process")
+            return "l6-result"
+
     def submit_immediately(name, command, on_success=None):
-        assert name == "L3发送到L4"
+        assert name in {"L3发送到L4", "自动运行L6"}
+        submissions.append(name)
         value = command()
         if on_success is not None:
             on_success(value)
 
     try:
         window._l4_store = FakeStore()
+        window._l6_store = FakeL6Store()
         monkeypatch.setattr(
             window._runtime,
             "build_offline_l4_pipeline",
             lambda _backend_id: FakePipeline(),
         )
+        monkeypatch.setattr(
+            window._runtime,
+            "build_offline_l6_pipeline",
+            lambda: FakeL6Pipeline(),
+        )
         monkeypatch.setattr(window, "_submit_command", submit_immediately)
         window.bf_panel.set_send_enabled(True)
 
         window._send_l3_to_l4()
-        assert events == ["clear", "process", "l5-process", "write", "l5-write"]
-        assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0, "l6": None}
-        assert "L4 2.50 s | L5 4.00 s" in window.performance_bar.text()
-        assert window.bf_panel.send.isEnabled()
-        assert window.l4_panel.summary.text() == "完成：0条"
-
-        window._send_l3_to_l4()
-        assert events == [
-            "clear", "process", "l5-process", "write", "l5-write",
-            "clear", "process", "l5-process", "write", "l5-write",
+        one_run = [
+            "l4-clear", "l6-clear", "l4-process", "l5-process", "l4-write",
+            "l5-write", "l6-clear", "l6-process", "l6-write",
         ]
-        assert window._offline_stage_durations_seconds == {"l4": 1.0, "l5": 2.0, "l6": None}
-        assert "L4 1.00 s | L5 2.00 s" in window.performance_bar.text()
+        assert events == one_run
+        assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0, "l6": 3.0}
+        assert "L4 2.50 s | L5 4.00 s | L6 3.00 s" in window.performance_bar.text()
+        assert window.bf_panel.send.isEnabled()
+        assert window.l4_panel.summary.text() == "完成：0条未合并候选"
+        assert window.l6_panel.summary.text() == "L6完成：0个声纹"
+
+        window._send_l3_to_l4()
+        assert events == one_run * 2
+        assert window._offline_stage_durations_seconds == {"l4": 1.0, "l5": 2.0, "l6": 4.0}
+        assert "L4 1.00 s | L5 2.00 s | L6 4.00 s" in window.performance_bar.text()
         assert window.bf_panel.send.isEnabled()
 
-        window.l4_panel.set_merge_enabled(False)
         window._send_l3_to_l4()
-        assert events[-5:] == ["clear", "process", "l5-process", "write", "l5-write"]
-        assert merge_modes == [True, True, False]
-        assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0, "l6": None}
+        assert events == one_run * 3
+        assert merge_modes == [False, False, False]
+        assert submissions == ["L3发送到L4", "自动运行L6"] * 3
+        assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0, "l6": 6.0}
         assert "未合并候选" in window.l4_panel.summary.text()
         assert window.l4_panel.summary.text() == "完成：0条未合并候选"
         assert window.bf_panel.send.isEnabled()

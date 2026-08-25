@@ -20,7 +20,7 @@
 6. Test UI 根据 L2 的权威 ID 拼接 L3 音频；删除 UI 自己的二次角度关联、别名合并和贪心补救。
 7. 录音管理和 Production UI 能按会话与 ID 查询方向时间线、L5 判断及增强音频，并提供逐 ID 试听。
 8. 新增与 L1～L5、Test UI、录音存储系统平行的独立 Pipeline Log UI，只通过公开只读接口统计和回看会话，不进入、控制或反压实时处理链。
-9. 手动离线L6消费L4 A/B候选及L5逐20 ms标注：A整轨必提声纹，B按匹配差、匹配度和MOS门限准入；整轨声纹聚为0～3人，重叠时间按MOS选择音频，最后删除首尾静音并把内部长静音压缩至2秒。
+9. Test UI每批L4/L5完成后自动运行离线L6：消费固定不合并的L4 A/B候选、单人旁路及L5逐20 ms标注；A整轨必提声纹，B按匹配差、匹配度和MOS门限准入；整轨声纹聚为0～3人，重叠时间按MOS选择音频，最后删除首尾静音并把内部长静音压缩至2秒。
 
 这里的 `track_id` 是**阵列方向轨迹 ID**，不是人的生物身份或说话人身份。在两个声源处于同一方向、近距离交叉或空间证据不足时，系统不能承诺保持真实人物身份不交换。
 
@@ -267,9 +267,9 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - L5离线入口只接收L4完整16 kHz长音频，不执行重采样；NVIDIA Frame-VAD原始softmax输出必须裁齐为与输入每个320样本hop一一对应的概率和Voice判断。结果返回L4预览条标黄，整轨摘要不得覆盖逐20 ms时间线。
 - 讲话人数按`min(2, 封存时间范围内L2方向输出数量最大值)`路由。最大值1旁路分离；最大值2或3均按当前双人上限进入所选MossFormer2或TIGER后端，同时保留原始最大值与实际人数供审计。
 - `Layer4LongAudioInput`固定接收带SHA-256、`session_id/stream_epoch/track_id/theta_deg/start_sample`的48 kHz单声道完整20 ms hop音频；后端输入固定16 kHz并必须返回恰好两条匿名、等长、finite `float32`候选。
-- 每条L3输入的两候选最多发布一个。原L3 BF参考经相同重采样后，以512点Hann STFT、160点hop在1～4 kHz计算逐帧复频谱相干度并按参考频带能量加权；复内积保留相位和时序身份，同时以绝对值容忍全局极性翻转。可靠高分候选继承原ID和角度。音轨短于2秒、最高相干度低于0.50或两分数差小于0.025时，不发布不可靠模型候选，改用同一条L3参考音频并记录回退原因；其他平分仍固定候选索引0。
+- Test UI的每条双人L3输入固定发布两条L4候选。原L3 BF参考经相同重采样后，以512点Hann STFT、160点hop在1～4 kHz计算逐帧复频谱相干度并按参考频带能量加权；匹配度只用于把两候选降序标记为A/B，不丢弃低分候选。单人L3输入保留唯一旁路音频。
 - 官方MossFormer2/TIGER源码和权重作为可选对比模型，以manifest固定revision、SHA-256与许可证。模型适配器用重叠分块稳定匿名输出排列；匹配器只对两条完整候选做一次整段选择。
-- Runtime同时提供一键离线接口和分离的`process_l4_sealed/process_l5_sealed`接口。`process_l4_sealed(..., merge_candidates=True)`保持每父轨一条输出；传入`False`时双人轨返回A/B两条`candidate_0/candidate_1`。Test UI只保留“发送到L4”：L3全部封存后才能进入L4，整批L4输出完成后由同一后台作业自动进入L5；关闭合并时A/B候选分别进入L5，并把逐20 ms判断返回各自波形。
+- Runtime同时提供一键离线接口和分离的`process_l4_sealed/process_l5_sealed`接口。`process_l4_sealed(..., merge_candidates=True)`作为非Test UI历史对照接口继续保留；Test UI固定传入`False`，双人轨返回A/B两条`candidate_0/candidate_1`。L3全部封存后才能进入L4；整批L4自动进入L5，每批L5成功完成后立即自动运行L6并替换上一批展示。
 
 ## 11. Runtime、时间线与并行管理
 

@@ -355,7 +355,6 @@ def build_window(
             self.l4_panel.track_play_requested.connect(self._toggle_l4_audio)
             self.l4_panel.track_stop_requested.connect(self._pause_track_audio)
             self.l4_panel.backend_changed.connect(ui_settings.save_layer4_backend)
-            self.l6_panel.run_requested.connect(self._run_l6)
             self.l6_panel.track_play_requested.connect(self._toggle_l6_audio)
             self.l6_panel.track_stop_requested.connect(self._pause_track_audio)
             self.l4_panel.set_voice_threshold(config.layer5.voice_probability_limit)
@@ -787,8 +786,9 @@ def build_window(
                 elif name == "L3发送到L4":
                     self.bf_panel.set_send_enabled(True)
                     self.l4_panel.set_processing(f"L4失败：{exc}")
-                elif name == "运行L6":
+                elif name == "自动运行L6":
                     self.l6_panel.set_error(str(exc))
+                    self.bf_panel.set_send_enabled(True)
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -819,7 +819,6 @@ def build_window(
             self._l6_result = None
             self._l6_store.clear()
             self.l6_panel.clear_tracks()
-            self.l6_panel.set_run_enabled(False)
             self._offline_stage_durations_seconds = {"l4": None, "l5": None, "l6": None}
             self.srp_header.setText("WARMING | session — | epoch 0 | window — | sample — | age —")
             self.l1_header.setText("WARMING | waiting for the first audio block")
@@ -1220,16 +1219,13 @@ def build_window(
             self._l6_result = None
             self._l6_store.clear()
             self.l6_panel.clear_tracks()
-            self.l6_panel.set_run_enabled(False)
             self._offline_stage_durations_seconds = {"l4": None, "l5": None, "l6": None}
             self._refresh_total_duration_text()
             self.cnn_panel.set_unavailable("等待L4完成后自动处理")
             backend_id = self.l4_panel.backend_id
             backend_label = self.l4_panel.BACKEND_LABELS[backend_id]
-            merge_candidates = self.l4_panel.merge_enabled
-            merge_label = "合并" if merge_candidates else "保留双候选"
             self.l4_panel.set_processing(
-                f"正在加载{backend_label}并处理全部L3长音频（{merge_label}）…"
+                f"正在加载{backend_label}并处理全部L3长音频（保留A/B双候选）…"
             )
 
             def process_l4_and_l5():
@@ -1238,7 +1234,7 @@ def build_window(
                 processed = tuple(
                     pipeline.process_l4_sealed(
                         runtime.offline_l4_sources,
-                        merge_candidates=merge_candidates,
+                        merge_candidates=False,
                     )
                 )
                 l4_elapsed = perf_counter() - l4_started
@@ -1248,17 +1244,17 @@ def build_window(
                 except Exception as exc:
                     return (
                         pipeline, processed, (), exc, l4_elapsed,
-                        perf_counter() - l5_started, merge_candidates,
+                        perf_counter() - l5_started,
                     )
                 return (
                     pipeline, processed, l5_results, None, l4_elapsed,
-                    perf_counter() - l5_started, merge_candidates,
+                    perf_counter() - l5_started,
                 )
 
             def completed(value):
                 (
                     pipeline, processed, l5_results, l5_error,
-                    l4_elapsed, l5_elapsed, merged,
+                    l4_elapsed, l5_elapsed,
                 ) = value
                 self._offline_l4_pipeline = pipeline
                 self._l4_processed = processed
@@ -1271,7 +1267,7 @@ def build_window(
                 self._l4_store.set_processed(self._l4_processed)
                 if l5_error is not None:
                     self.l4_panel.set_tracks(
-                        self._l4_store.snapshots(), unmerged=not merged,
+                        self._l4_store.snapshots(), unmerged=True,
                     )
                     self.l4_panel.set_l5_error(str(l5_error))
                     self.cnn_panel.set_unavailable(f"L5失败：{l5_error}")
@@ -1280,7 +1276,7 @@ def build_window(
                 self._l4_store.apply_l5(l5_results)
                 self._l5_results = tuple(l5_results)
                 self.l4_panel.set_tracks(
-                    self._l4_store.snapshots(), l5_complete=True, unmerged=not merged,
+                    self._l4_store.snapshots(), l5_complete=True, unmerged=True,
                 )
                 detections = tuple(SimpleNamespace(
                     theta_deg=item.source.theta_deg,
@@ -1294,18 +1290,17 @@ def build_window(
                     ),
                     threshold=pipeline.layer5.threshold,
                 ))
-                self.l6_panel.clear_tracks(
-                    "L4已合并；关闭“合并”并重新发送后才能运行L6"
-                    if merged else "L4双候选标注完成；可手动运行L6"
-                )
-                self.l6_panel.set_run_enabled(not merged and bool(l5_results))
-                self.bf_panel.set_send_enabled(True)
+                self._start_automatic_l6(tuple(l5_results))
 
             self._submit_command("L3发送到L4", process_l4_and_l5, completed)
 
-        def _run_l6(self):
-            if not self._l5_results:
-                self.l6_panel.set_error("没有可用的L4双候选标注")
+        def _start_automatic_l6(self, l5_results):
+            l5_results = tuple(l5_results)
+            if not l5_results:
+                self._offline_stage_durations_seconds["l6"] = 0.0
+                self.l6_panel.clear_tracks("L6完成：0个声纹（无L4/L5候选）")
+                self._refresh_total_duration_text()
+                self.bf_panel.set_send_enabled(True)
                 return
             self.preview_player.close()
             self._audio_source_key = None
@@ -1316,7 +1311,7 @@ def build_window(
             def process_l6():
                 pipeline = runtime.build_offline_l6_pipeline()
                 started = perf_counter()
-                return pipeline.process(self._l5_results), perf_counter() - started
+                return pipeline.process(l5_results), perf_counter() - started
 
             def completed(value):
                 result, elapsed = value
@@ -1325,8 +1320,9 @@ def build_window(
                 self._l6_store.set_result(result)
                 self.l6_panel.set_tracks(self._l6_store.snapshots())
                 self._refresh_total_duration_text()
+                self.bf_panel.set_send_enabled(True)
 
-            self._submit_command("运行L6", process_l6, completed)
+            self._submit_command("自动运行L6", process_l6, completed)
 
         def _refresh(self):
             self._poll_command()
@@ -1830,7 +1826,7 @@ def build_window(
         def _set_performance(self, perf):
             if perf is None:
                 text = (
-                    "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 手动离线 | "
+                    "上一秒性能 | L2 N/A | L3 N/A | L4 离线 | L5 离线 | L6 自动离线 | "
                     "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%"
                 )
             else:
@@ -1838,7 +1834,7 @@ def build_window(
                     "上一秒性能 | "
                     f"L2 {_time(perf.l2_time_ms_last_second_avg)} | "
                     f"L3 {_time(perf.l3_time_ms_last_second_avg)} | "
-                    "L4 离线 | L5 离线 | L6 手动离线 | "
+                    "L4 离线 | L5 离线 | L6 自动离线 | "
                     f"20ms窗口 {perf.processed_windows_last_second} | "
                     f"丢窗 {perf.dropped_windows_last_second} | "
                     f"丢窗率 {perf.drop_rate_last_second * 100.0:.1f}%"
@@ -1868,7 +1864,7 @@ def build_window(
             self.performance_bar.setToolTip(
                 "左侧只统计实时L2/L3窗口性能；总处理时长中，L2、L3分别从首个20 ms"
                 "窗口入队至各自排空，L3包含长音频拼接；L4、L5在点击发送后按整批"
-                "顺序独立计时，L6仅在手动点击后计时。模拟输入手动暂停期间不计实时阶段时长。"
+                "顺序独立计时，每批L4/L5完成后自动运行并独立计时L6。模拟输入手动暂停期间不计实时阶段时长。"
             )
             self.performance_bar.setText(text)
 

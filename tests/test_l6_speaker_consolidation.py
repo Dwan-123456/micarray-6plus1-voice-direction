@@ -165,6 +165,57 @@ def _config() -> SimpleNamespace:
     )
 
 
+def test_l6_accepts_single_speaker_bypass_as_the_only_a_track() -> None:
+    frames = 100
+    waveform = np.full(frames * 320, 0.2, np.float32)
+    source_audio = np.zeros(frames * 960, np.float32)
+    source = Layer4LongAudioInput(
+        "single-source",
+        _sha(source_audio),
+        "session",
+        0,
+        7,
+        45.0,
+        0,
+        48_000,
+        source_audio,
+        ((0, 1),),
+    )
+    decisions = (True,) * frames
+    result = Layer4OfflineResult(
+        "single-request",
+        source,
+        SpeakerCountDecision(source.asset_id, 1, 1.0, "test", {}),
+        "single_speaker_bypass",
+        None,
+        0.9,
+        True,
+        "l5",
+        (0.9,) * frames,
+        decisions,
+        "single-output",
+        _sha(waveform),
+        {
+            "mos_score": 0.7,
+            "dnsmos_sig": 4.0,
+            "dnsmos_bak": 4.0,
+            "dnsmos_ovrl": 4.0,
+            "l5_threshold": 0.5,
+            "output_waveform_16k": waveform,
+        },
+        "merged",
+    )
+    embedder = _Embedder()
+
+    consolidated = OfflineLayer6Pipeline(embedder, _config()).process((result,))
+
+    assert consolidated.speaker_count == 1
+    assert len(consolidated.fragments) == 1
+    assert consolidated.fragments[0].branch_index == 0
+    assert consolidated.fragments[0].match_score == 1.0
+    assert len(embedder.calls) == 1
+
+
 def test_l6_embeds_only_l5_voice_from_a_and_b_passing_all_three_gates() -> None:
     embedder = _Embedder()
     results = (

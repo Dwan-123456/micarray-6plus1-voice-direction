@@ -1,4 +1,4 @@
-"""Manual offline L6 speaker clustering, quality selection and timeline stitching."""
+"""Offline L6 speaker clustering, quality selection and timeline stitching."""
 
 from .contracts import Layer6Fragment, Layer6QualityScore, Layer6Result, Layer6SpeakerAudio
 from .models import CampPlusEmbedder, DnsMosScorer

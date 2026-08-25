@@ -96,9 +96,9 @@ flowchart TB
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
 | ResultJoiner | 同一`WindowKey`的L2/L3/L5阶段终态 | 校验ID与角度对齐；等待完整终态；按全局window顺序提交；保留失败/丢弃/取消原因 | `JoinedWindowResult`、`DecisionRecord v5`、`ResultWatermark`、UI快照 | 有序逐窗提交 |
 | RecordingStore | 原生/逻辑音频、IMCRA、Joined结果、Hub hop | 异步有界写盘；60秒切块；逐ID hop合并；SHA-256；journal事务；崩溃恢复；Catalog投影 | WAV/NPZ/JSONL/manifest/Catalog；逐ID连续48 kHz增强WAV | 不反压采集 |
-| Layer 4 | Hub封存的`Layer4LongAudioInput`：完整48 kHz mono、ID、角度、L2方向数历史 | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；30秒分块/1秒重叠；排列修复；交叉淡化；合并开启时1–4 kHz复相干匹配和低可信回退，关闭时原样发布A/B候选 | 合并开启：每父轨一条`Layer4ProcessedAudio`；关闭：每双人父轨两条16 kHz候选，保留父`track_id/theta`及A/B标识 | 离线整轨处理；每条L4输出分别进入L5 |
+| Layer 4 | Hub封存的`Layer4LongAudioInput`：完整48 kHz mono、ID、角度、L2方向数历史 | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；30秒分块/1秒重叠；排列修复；交叉淡化；1–4 kHz复相干匹配度仅用于A/B排序 | Test UI固定不合并：每双人父轨两条16 kHz候选，保留父`track_id/theta`及A/B标识；单人父轨一条旁路 | 离线整轨处理；每条L4输出分别进入L5 |
 | Layer 5 | L4原生16 kHz完整波形 | NVIDIA MarbleNet Frame-VAD；每320 sample直接推理；阈值比较；连续3帧均值取整轨最大值 | `Layer5LongAudioResult`：每20 ms概率/布尔值、摘要概率/判断、模型与耗时；并入`Layer4OfflineResult` | 16 kHz；20 ms一帧；默认阈值0.70 |
-| Layer 6 | L4未合并A/B候选、父L2 ID/角度、匹配度、MOS、绝对时间线及L5逐20 ms概率/bool | A整轨声纹；B按匹配差/匹配度/MOS门限准入；整轨声纹两两相似度与平均链接AHC聚为0～3人；重叠按MOS择优；首尾静音删除、内部静音最长2秒 | `Layer6Result`：按声纹显示的Speaker A/B/C压缩16 kHz音频、来源L2 ID、声纹到完整音轨的一对多审计 | 用户手动离线执行；不参与实时链 |
+| Layer 6 | L4 A/B候选或单人旁路、父L2 ID/角度、匹配度、MOS、绝对时间线及L5逐20 ms概率/bool | A整轨声纹；B按匹配差/匹配度/MOS门限准入；整轨声纹两两相似度与平均链接AHC聚为0～3人；重叠按MOS择优；首尾静音删除、内部静音最长2秒 | `Layer6Result`：按声纹显示的Speaker A/B/C压缩16 kHz音频、来源L2 ID、声纹到完整音轨的一对多审计 | 每批L4/L5后自动离线执行；不参与实时链 |
 
 ### 3.1 Layer 1内部图
 
@@ -257,8 +257,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 6. 需要正式数据时使用“正式录音开始/暂停”；只做临时试听时使用scratch录音。两者不要混作同一资产。
 7. 点击“停止采集”，等待L2/L3队列完全排空和Hub封存。未排空时不能提交L4。
 8. 在L4区选择MossFormer2或TIGER，点击“发送到L4”。短于2秒的方向轨不会成为有效L4输入。
-9. 若需L6，在L4关闭“合并”以保留A/B候选；L4整批完成后L5自动对每条候选运行一次，L4栏试听16 kHz结果并查看黄色Voice区间。
-10. 点击下右“运行L6”，等待整轨声纹聚类、MOS择优时间线拼接和静音压缩；完成后按声纹试听Speaker A/B/C音频条。L6不回写L2 ID或角度。
+9. L4固定保留A/B候选并自动对每条运行L5，L4栏可试听16 kHz结果并查看黄色Voice区间。
+10. L4/L5完成后L6会自动运行整轨声纹聚类、MOS择优时间线拼接和静音压缩；完成后按声纹试听Speaker A/B/C音频条。重复发送L4会重跑L5/L6并替换展示；L6不回写L2 ID或角度。
 
 再次“发送到L4”会替换当前UI内的上一批离线结果。Test UI离线缓存不是长期归档。
 
