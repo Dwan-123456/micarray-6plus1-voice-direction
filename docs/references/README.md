@@ -11,6 +11,22 @@
 
 ## 报告索引
 
+### 低源数安静声场的MUSIC伪峰与旁瓣双层抑制
+
+文件：[`music_pseudo_peak_sidelobe_suppression_6plus1.md`](music_pseudo_peak_sidelobe_suppression_6plus1.md)
+
+原题：《面向低源数安静声场的 MUSIC 伪峰与旁瓣双层抑制研究报告》。
+
+重点覆盖：
+
+- 针对当前半径4 cm、六环形麦加中心麦的7麦平面阵列，分析模型阶数、有限快拍、有色噪声、阵列流形失配和混响导致的MUSIC伪峰；
+- 论证将合法声源数严格限制为0～2，并停止使用原始特征值95%累计能量直接估计声源数；
+- 建议利用静音段噪声协方差实施预白化或GEVD，并以1～4 kHz为宽证据频带、2.5～4 kHz为高空间分辨权重频带；
+- 提出第一声源高召回、第二声源接受跨频/跨时间/子空间联合验证的非对称判决，以及必要时使用候选区SBL或残差模型复核；
+- 给出仿真、真实阵列、不同SNR/快拍/混响/通道误差和双源功率差的测试矩阵与验收指标。
+
+适配边界：报告是外部研究参考，不是当前实现契约。当前主线仍以48 kHz输入、2～4 kHz Rolling NormMUSIC、Test UI手动1/2/3阶和现有Circular IMM-JPDA为准；报告提出的0～2自动阶数、1～4 kHz加权融合、第二峰复核和SBL尚未因此文件入库而实现。
+
 ### DOA短时消失与ID连续性工程方案
 
 文件：[`doa_tracking_hungarian_kalman_short_dropout.pdf`](doa_tracking_hungarian_kalman_short_dropout.pdf)
