@@ -11,6 +11,22 @@
 
 ## 报告索引
 
+### 6+1阵列MUSIC伪峰抑制工程报告（中文版PDF）
+
+文件：[`music_false_peak_suppression_6plus1_cn.pdf`](music_false_peak_suppression_6plus1_cn.pdf)
+
+原文件：`MUSIC_false_peak_suppression_report_CN.pdf`。
+
+重点覆盖：
+
+- 按当前48 kHz、NFFT 1024、20 ms更新和半径4 cm的6+1阵列，计算不同频率及50°～180°夹角的最坏阵列流形相关度；
+- 建议将2.0～3.8 kHz作为低阈值候选带，将2.7～3.6 kHz作为一源/两源白化残差核验带，并对3.8～4.0 kHz降权；
+- 将完整噪声协方差白化、频点SPP/Eigen-SNR/几何权重、跨频支持和一源/两源残差下降组合为第二候选的证据；
+- 建议对仅使用六个环麦与使用完整6+1阵列进行A/B测试，验证中心麦对方向流形相关度和实测谱的影响；
+- 给出静音、单源、双源和功率不平衡场景的错误第二源率、False births/min、召回率、确认延迟与轨迹碎片率标定方法。
+
+与当前讨论的采用边界：继续允许最多3个候选和更多内部ID，保持50°硬NMS与稳定阶段宽松第二峰规则；优先研究Gate刚开启时的新ID预热和白化残差复核。报告中的最多2个输出、30～35° NMS、严格第二峰跨频门禁和320～480 ms窗口不直接成为当前实现要求。
+
 ### 低源数安静声场的MUSIC伪峰与旁瓣双层抑制
 
 文件：[`music_pseudo_peak_sidelobe_suppression_6plus1.md`](music_pseudo_peak_sidelobe_suppression_6plus1.md)
