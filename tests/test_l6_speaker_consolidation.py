@@ -139,7 +139,7 @@ def _config() -> SimpleNamespace:
     )
 
 
-def test_l6_always_embeds_full_a_and_only_admits_b_passing_all_three_gates() -> None:
+def test_l6_embeds_only_l5_voice_from_a_and_b_passing_all_three_gates() -> None:
     embedder = _Embedder()
     results = (
         *_pair(1, b_match=0.70, b_mos=0.40),
@@ -162,6 +162,24 @@ def test_l6_always_embeds_full_a_and_only_admits_b_passing_all_three_gates() -> 
         "asset-5:branch-0",
         "asset-5:branch-1",
     )
+
+
+def test_l6_concatenates_only_l5_voice_frames_for_one_track_embedding() -> None:
+    embedder = _Embedder()
+    decisions = (False,) * 10 + (True,) * 30 + (False,) * 10
+    frames = np.full((50, 320), -0.5, np.float32)
+    frames[10:40] = 0.25
+    source = _result(1, 0, frames.reshape(-1), decisions)
+
+    result = OfflineLayer6Pipeline(embedder, _config()).process((source,))
+
+    assert result.speaker_count == 1
+    assert len(embedder.calls) == 1
+    assert len(embedder.calls[0]) == 9_600
+    assert np.allclose(embedder.calls[0], 0.25)
+    assert result.metadata["voiceprint_voice_sample_counts"] == {
+        "asset-1:branch-0": 9_600,
+    }
 
 
 def test_l6_clusters_complete_tracks_and_records_one_voiceprint_to_many_audio() -> None:
@@ -189,8 +207,8 @@ def test_l6_forces_four_distinct_complete_track_voiceprints_down_to_three() -> N
         _result(
             track_id,
             0,
-            np.full(3_200, 0.1 * track_id, np.float32),
-            (True,) * 10,
+            np.full(8_000, 0.1 * track_id, np.float32),
+            (True,) * 25,
         )
         for track_id in range(1, 5)
     )
@@ -202,12 +220,12 @@ def test_l6_forces_four_distinct_complete_track_voiceprints_down_to_three() -> N
 
 
 def test_l6_overlap_keeps_the_audio_with_higher_l4_mos() -> None:
-    decisions = (True,) * 20
+    decisions = (True,) * 25
     low = _result(
-        1, 0, np.full(6_400, 0.2, np.float32), decisions, match=0.95, mos=0.40,
+        1, 0, np.full(8_000, 0.2, np.float32), decisions, match=0.95, mos=0.40,
     )
     high = _result(
-        2, 0, np.full(6_400, 0.8, np.float32), decisions, match=0.60, mos=0.90,
+        2, 0, np.full(8_000, 0.8, np.float32), decisions, match=0.60, mos=0.90,
     )
 
     result = OfflineLayer6Pipeline(_Embedder(), _config()).process((low, high))
@@ -222,23 +240,23 @@ def test_l6_overlap_keeps_the_audio_with_higher_l4_mos() -> None:
 def test_l6_trims_edge_silence_and_caps_internal_silence_at_two_seconds() -> None:
     decisions = (
         (False,) * 50
-        + (True,) * 20
+        + (True,) * 25
         + (False,) * 150
-        + (True,) * 20
+        + (True,) * 25
         + (False,) * 50
     )
     frames = np.zeros((len(decisions), 320), np.float32)
-    frames[50:70] = 0.25
-    frames[220:240] = 0.25
+    frames[50:75] = 0.25
+    frames[225:250] = 0.25
     a = _result(1, 0, frames.reshape(-1), decisions, match=0.8, mos=0.7)
 
     result = OfflineLayer6Pipeline(_Embedder(), _config()).process((a,))
 
     output = result.outputs[0].waveform_16k.reshape(-1, 320)
-    assert len(output) == 20 + 100 + 20
-    assert np.allclose(output[:20], 0.25)
-    assert not np.any(output[20:120])
-    assert np.allclose(output[120:], 0.25)
+    assert len(output) == 25 + 100 + 25
+    assert np.allclose(output[:25], 0.25)
+    assert not np.any(output[25:125])
+    assert np.allclose(output[125:], 0.25)
 
 
 def test_l6_returns_zero_speakers_when_selected_tracks_have_no_l5_voice() -> None:
@@ -256,8 +274,26 @@ def test_l6_returns_zero_speakers_when_selected_tracks_have_no_l5_voice() -> Non
 
     assert result.speaker_count == 0
     assert result.outputs == ()
-    assert len(embedder.calls) == 1
-    assert result.metadata["silent_voiceprint_audio_ids"] == ("asset-1:branch-0",)
+    assert len(embedder.calls) == 0
+    assert result.metadata["insufficient_voice_audio_ids"] == ("asset-1:branch-0",)
+
+
+def test_l6_skips_tracks_with_less_than_half_a_second_of_l5_voice() -> None:
+    embedder = _Embedder()
+    short = _result(
+        1,
+        0,
+        np.full(24 * 320, 0.25, np.float32),
+        (True,) * 24,
+        match=0.8,
+        mos=0.7,
+    )
+
+    result = OfflineLayer6Pipeline(embedder, _config()).process((short,))
+
+    assert result.speaker_count == 0
+    assert len(embedder.calls) == 0
+    assert result.metadata["insufficient_voice_audio_ids"] == ("asset-1:branch-0",)
 
 
 def test_l6_ui_displays_each_silence_compressed_voiceprint_directly() -> None:

@@ -16,6 +16,9 @@ from .contracts import (
 from .models import CampPlusEmbedder
 
 
+_MINIMUM_VOICEPRINT_SAMPLES = 8_000
+
+
 class Layer6Configuration(Protocol):
     maximum_speakers: int
     speaker_similarity_threshold: float
@@ -33,6 +36,7 @@ class _VoiceprintAudio:
     mos_score: float
     waveform: np.ndarray
     embedding: np.ndarray
+    voice_sample_count: int
 
     @property
     def audio_id(self) -> str:
@@ -200,7 +204,7 @@ class OfflineLayer6Pipeline:
         branch_index: int,
         match_score: float,
         mos_score: float,
-    ) -> _VoiceprintAudio:
+    ) -> _VoiceprintAudio | None:
         waveform = np.asarray(result.metadata.get("output_waveform_16k"))
         if (
             waveform.dtype != np.float32
@@ -209,7 +213,16 @@ class OfflineLayer6Pipeline:
             or len(waveform) != len(result.l5_probabilities_20ms) * 320
         ):
             raise ValueError("L6 requires each L4 result to retain aligned 16 kHz audio")
-        embedding = np.ascontiguousarray(self.embedder.embed(waveform), dtype=np.float32)
+        voice_mask = np.asarray(result.l5_is_voice_20ms, dtype=bool)
+        voice_waveform = np.ascontiguousarray(
+            waveform.reshape(-1, 320)[voice_mask].reshape(-1),
+            dtype=np.float32,
+        )
+        if len(voice_waveform) < _MINIMUM_VOICEPRINT_SAMPLES:
+            return None
+        embedding = np.ascontiguousarray(
+            self.embedder.embed(voice_waveform), dtype=np.float32,
+        )
         return _VoiceprintAudio(
             result=result,
             branch_index=branch_index,
@@ -217,6 +230,7 @@ class OfflineLayer6Pipeline:
             mos_score=mos_score,
             waveform=np.ascontiguousarray(waveform, dtype=np.float32),
             embedding=embedding,
+            voice_sample_count=len(voice_waveform),
         )
 
     @staticmethod
@@ -247,10 +261,15 @@ class OfflineLayer6Pipeline:
         ):
             raise ValueError("L6 source timelines must align to absolute 20 ms frames")
         selected = self._select_tracks(results)
-        voiceprints = tuple(
-            self._voiceprint_audio(result, branch, match_score, mos_score)
-            for result, branch, match_score, mos_score in selected
-        )
+        extracted: list[_VoiceprintAudio] = []
+        insufficient_voice_audio_ids: list[str] = []
+        for result, branch, match_score, mos_score in selected:
+            voiceprint = self._voiceprint_audio(result, branch, match_score, mos_score)
+            if voiceprint is None:
+                insufficient_voice_audio_ids.append(result.output_asset_id)
+            else:
+                extracted.append(voiceprint)
+        voiceprints = tuple(extracted)
 
         similarities = _pairwise_similarities(voiceprints)
         raw_assignments = _cluster(
@@ -267,13 +286,17 @@ class OfflineLayer6Pipeline:
         if not order:
             matrix = tuple(tuple(float(value) for value in row) for row in similarities)
             return Layer6Result(session_id, 0, (), (), {
-                "algorithm": "campplus_complete_track_ahc_mos_timeline_v3",
+                "algorithm": "campplus_l5_voice_only_track_ahc_mos_timeline_v4",
                 "recording_start_sample_48k": recording_start,
                 "recording_end_sample_48k": recording_end,
                 "extracted_audio_ids": tuple(item.audio_id for item in voiceprints),
                 "pairwise_audio_ids": tuple(item.audio_id for item in voiceprints),
                 "pairwise_similarity_matrix": matrix,
+                "voiceprint_voice_sample_counts": {
+                    item.audio_id: item.voice_sample_count for item in voiceprints
+                },
                 "silent_voiceprint_audio_ids": tuple(item.audio_id for item in voiceprints),
+                "insufficient_voice_audio_ids": tuple(insufficient_voice_audio_ids),
                 "elapsed_ms": (perf_counter() - started) * 1_000.0,
             })
         remap = {raw: index + 1 for index, raw in enumerate(order)}
@@ -329,7 +352,7 @@ class OfflineLayer6Pipeline:
             raise ValueError("L6 voiceprint cluster contains no active audio")
         matrix = tuple(tuple(float(value) for value in row) for row in similarities)
         return Layer6Result(session_id, len(outputs), outputs, tuple(assignments), {
-            "algorithm": "campplus_complete_track_ahc_mos_timeline_v3",
+            "algorithm": "campplus_l5_voice_only_track_ahc_mos_timeline_v4",
             "recording_start_sample_48k": recording_start,
             "recording_end_sample_48k": recording_end,
             "secondary_candidate_gate": {
@@ -339,6 +362,10 @@ class OfflineLayer6Pipeline:
             },
             "maximum_internal_silence_ms": self.config.maximum_internal_silence_ms,
             "extracted_audio_ids": tuple(item.audio_id for item in voiceprints),
+            "voiceprint_voice_sample_counts": {
+                item.audio_id: item.voice_sample_count for item in voiceprints
+            },
+            "insufficient_voice_audio_ids": tuple(insufficient_voice_audio_ids),
             "silent_voiceprint_audio_ids": tuple(
                 item.audio_id
                 for item, speaker_id in zip(voiceprints, speaker_ids)

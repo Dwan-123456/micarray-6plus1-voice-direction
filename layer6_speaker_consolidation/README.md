@@ -1,8 +1,9 @@
 # L6 speaker consolidation
 
 L6 is a manual offline stage that runs only after unmerged L4 A/B tracks have
-received aligned L5 decisions. It performs complete-track voiceprint clustering;
-it no longer divides tracks into 1.5-second speaker-analysis fragments.
+received aligned L5 decisions. It concatenates each selected track's L5 Voice
+frames and performs one voiceprint extraction for that complete speech-only
+track. It no longer divides tracks into 1.5-second speaker-analysis fragments.
 
 For every L4 source, candidate A is always selected for complete-track CAMPPlus
 embedding. Candidate B is embedded only when all three gates
