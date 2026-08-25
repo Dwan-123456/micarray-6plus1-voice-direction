@@ -36,6 +36,8 @@ def _source(index: int = 0) -> Layer4LongAudioInput:
 class _Processor:
     def __init__(self) -> None:
         self.count = 0
+        self.track_final_count = 0
+        self.last_source = None
 
     def _snapshot(self, source, *, final=False):
         return RealtimePostprocessingSnapshot(
@@ -45,7 +47,15 @@ class _Processor:
 
     def push(self, source, *, is_final_chunk=False):
         self.count += 1
+        self.last_source = source
         return self._snapshot(source)
+
+    def finalize_track(self, identity):
+        assert self.last_source is not None
+        assert identity == ("session", 0, 1)
+        self.track_final_count += 1
+        value = self._snapshot(self.last_source)
+        return replace(value, revision=value.revision + self.track_final_count)
 
     def finalize(self):
         return RealtimePostprocessingSnapshot(
@@ -86,6 +96,26 @@ def test_realtime_service_drains_chunks_and_publishes_replaceable_final_snapshot
     assert snapshot.valid_through_sample_48k == 960_000
     assert service.status.state == "final"
     assert service.status.submitted_blocks == 2
+
+
+def test_realtime_service_retains_per_track_checkpoint_before_global_finish():
+    service = RealtimePostprocessingService(_Processor, queue_chunks=2)
+    service.start()
+    assert service.submit(_source(0))
+    assert service.submit_track_final(("session", 0, 1))
+
+    deadline = monotonic() + 2.0
+    while service.status.latest_revision < 2 and monotonic() < deadline:
+        Event().wait(0.01)
+
+    checkpoint = service.reuse_snapshot
+    assert checkpoint is not None
+    assert not checkpoint.is_final
+    assert service.final_snapshot is None
+    assert service.status.submitted_blocks == 2
+    assert service.status.processed_blocks == 2
+    assert service.abort(timeout=2.0)
+    assert service.reuse_snapshot is checkpoint
 
 
 def test_realtime_service_queue_overflow_is_explicit_and_never_blocks_caller():

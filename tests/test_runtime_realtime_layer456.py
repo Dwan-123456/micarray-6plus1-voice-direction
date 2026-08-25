@@ -150,6 +150,60 @@ def test_runtime_marks_only_short_flush_block_as_final_input(tmp_path):
     assert resolutions == [(tail, True)]
 
 
+def test_runtime_submits_tail_then_independent_track_finalization(tmp_path):
+    runtime = _runtime(tmp_path)
+    tail = _source(seconds=3)
+    identity = ("session", 0, 1)
+    submitted = []
+    resolved_chunks = []
+    resolved_finalizations = []
+
+    class Hub:
+        def claim_streaming_chunks(self, **_kwargs):
+            return (tail,)
+
+        def resolve_streaming_chunk(self, value, *, accepted):
+            resolved_chunks.append((value, accepted))
+
+        def claim_streaming_finalizations(self, **kwargs):
+            assert kwargs == {
+                "ready_track_keys": {identity},
+                "flush": True,
+                "max_tracks": 1,
+            }
+            return (identity,)
+
+        def resolve_streaming_finalization(self, value, *, accepted):
+            resolved_finalizations.append((value, accepted))
+
+    class Service:
+        enabled = True
+        available_slots = 2
+
+        def submit(self, value, *, is_final_chunk=False):
+            submitted.append(("audio", value, is_final_chunk))
+            return True
+
+        def submit_track_final(self, value):
+            submitted.append(("final", value))
+            return True
+
+    runtime.track_audio_stream = Hub()
+    runtime.realtime_postprocessing = Service()
+    runtime._confirmed_backfill_ready_ids.add(identity)
+
+    assert runtime._offer_realtime_postprocessing_chunks(
+        flush=True,
+        max_chunks=2,
+    ) == 2
+    assert submitted == [
+        ("audio", tail, False),
+        ("final", identity),
+    ]
+    assert resolved_chunks == [(tail, True)]
+    assert resolved_finalizations == [(identity, True)]
+
+
 def test_runtime_releases_rejected_claim_without_offering_later_chunks(tmp_path):
     runtime = _runtime(tmp_path)
     first = _source()

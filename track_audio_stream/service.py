@@ -53,6 +53,9 @@ class _L2TrackTimeline:
     theta_deg: float
     ever_formal: bool = False
     direction_counts: dict[int, int] = field(default_factory=dict)
+    active: bool = True
+    inactive_since_sample: int | None = None
+    observed_through_sample: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +95,7 @@ class TrackAudioStreamHub:
         *,
         context_ms: int = 3_200,
         minimum_output_seconds: float = 0.0,
+        ended_track_grace_ms: int = 1_000,
     ) -> None:
         if context_ms < 60 or context_ms % 20:
             raise ValueError("continuous track context must be >=60 ms on the 20 ms grid")
@@ -101,6 +105,13 @@ class TrackAudioStreamHub:
         if not np.isfinite(minimum_seconds) or minimum_seconds < 0.0:
             raise ValueError("minimum output duration must be finite and non-negative")
         self.minimum_output_samples = round(minimum_seconds * 48_000)
+        if (
+            type(ended_track_grace_ms) is not int
+            or ended_track_grace_ms < 0
+            or ended_track_grace_ms % 20
+        ):
+            raise ValueError("ended track grace must be a non-negative 20 ms multiple")
+        self.ended_track_grace_samples = ended_track_grace_ms * 48
         self._tracks: dict[tuple[str, int, int], _TrackState] = {}
         self._archive: dict[tuple[str, int, int], list[_ArchivedHop]] = {}
         self._archive_modes: dict[tuple[str, int, int], str] = {}
@@ -110,6 +121,8 @@ class TrackAudioStreamHub:
         self._streaming_claims: dict[
             tuple[str, int, int], tuple[int, int, str]
         ] = {}
+        self._streaming_finalization_claims: set[tuple[str, int, int]] = set()
+        self._streaming_finalized_tracks: set[tuple[str, int, int]] = set()
         self._sealed: tuple[Layer4LongAudioInput, ...] = ()
         self._lock = threading.RLock()
 
@@ -122,6 +135,8 @@ class TrackAudioStreamHub:
             self._emitted_ends.clear()
             self._streaming_cursors.clear()
             self._streaming_claims.clear()
+            self._streaming_finalization_claims.clear()
+            self._streaming_finalized_tracks.clear()
             self._sealed = ()
 
     def observe_l2(
@@ -145,15 +160,39 @@ class TrackAudioStreamHub:
         end_sample = decision_sample - _HOP_SAMPLES
         if start_sample < 0:
             return
+        observed: list[tuple[str, int, float]] = []
+        for track in active_tracks:
+            track_state = str(getattr(track, "track_state", ""))
+            if track_state not in {"tentative", "confirmed", "coasting"}:
+                raise ValueError("invalid authoritative L2 track state")
+            track_id = int(getattr(track, "track_id"))
+            theta_deg = float(getattr(track, "theta_deg"))
+            if track_id <= 0 or not np.isfinite(theta_deg) or not 0.0 <= theta_deg < 360.0:
+                raise ValueError("invalid authoritative L2 track")
+            observed.append((track_state, track_id, theta_deg))
+        if len({track_id for _, track_id, _ in observed}) != len(observed):
+            raise ValueError("authoritative L2 track IDs must be unique")
+
+        active_keys = {
+            (session_id, stream_epoch, track_id)
+            for _, track_id, _ in observed
+        }
         with self._lock:
-            for track in active_tracks:
-                track_state = str(getattr(track, "track_state", ""))
-                if track_state not in {"tentative", "confirmed", "coasting"}:
-                    raise ValueError("invalid authoritative L2 track state")
-                track_id = int(getattr(track, "track_id"))
-                theta_deg = float(getattr(track, "theta_deg"))
-                if track_id <= 0 or not np.isfinite(theta_deg) or not 0.0 <= theta_deg < 360.0:
-                    raise ValueError("invalid authoritative L2 track")
+            for key, timeline in self._l2_timelines.items():
+                if (
+                    key[:2] != (session_id, stream_epoch)
+                    or timeline.processing_mode != processing_mode
+                ):
+                    continue
+                timeline.observed_through_sample = max(
+                    timeline.observed_through_sample,
+                    decision_sample,
+                )
+                if key not in active_keys and timeline.active:
+                    timeline.active = False
+                    timeline.inactive_since_sample = decision_sample
+
+            for track_state, track_id, theta_deg in observed:
                 key = (session_id, stream_epoch, track_id)
                 timeline = self._l2_timelines.get(key)
                 if timeline is None or timeline.processing_mode != processing_mode:
@@ -163,9 +202,12 @@ class TrackAudioStreamHub:
                     # hide the beginning of the replacement stream.
                     self._streaming_cursors.pop(key, None)
                     self._streaming_claims.pop(key, None)
+                    self._streaming_finalization_claims.discard(key)
+                    self._streaming_finalized_tracks.discard(key)
                     timeline = _L2TrackTimeline(
                         processing_mode, start_sample, end_sample, theta_deg,
                         track_state in {"confirmed", "coasting"},
+                        observed_through_sample=decision_sample,
                     )
                     self._l2_timelines[key] = timeline
                 else:
@@ -174,6 +216,9 @@ class TrackAudioStreamHub:
                     timeline.end_sample = end_sample
                     timeline.theta_deg = theta_deg
                     timeline.ever_formal |= track_state in {"confirmed", "coasting"}
+                    timeline.active = True
+                    timeline.inactive_since_sample = None
+                    timeline.observed_through_sample = decision_sample
                 timeline.direction_counts[end_sample] = l2_direction_count
 
     @property
@@ -342,6 +387,8 @@ class TrackAudioStreamHub:
                     self._emitted_ends.pop(key, None)
                     self._streaming_cursors.pop(key, None)
                     self._streaming_claims.pop(key, None)
+                    self._streaming_finalization_claims.discard(key)
+                    self._streaming_finalized_tracks.discard(key)
                 previous = state.last_source_decision
                 if previous is not None and window.decision_sample <= previous:
                     raise ValueError("track-audio windows must be strictly ordered per ID")
@@ -615,6 +662,17 @@ class TrackAudioStreamHub:
             l2_direction_counts=tuple(direction_counts),
         )
 
+    def _timeline_ready_for_early_finalization(
+        self,
+        timeline: _L2TrackTimeline,
+    ) -> bool:
+        return (
+            not timeline.active
+            and timeline.inactive_since_sample is not None
+            and timeline.observed_through_sample - timeline.inactive_since_sample
+            >= self.ended_track_grace_samples
+        )
+
     def claim_streaming_chunks(
         self,
         *,
@@ -697,6 +755,7 @@ class TrackAudioStreamHub:
                 processed_end = self._emitted_ends.get(
                     key, timeline.first_start_sample,
                 )
+                ended_ready = self._timeline_ready_for_early_finalization(timeline)
                 available_end = (
                     timeline.end_sample
                     if flush
@@ -707,7 +766,7 @@ class TrackAudioStreamHub:
 
                 if available_end - cursor >= chunk_samples:
                     chunk_end = cursor + chunk_samples
-                elif flush and available_end > cursor:
+                elif (flush or ended_ready) and available_end > cursor:
                     chunk_end = available_end
                 else:
                     continue
@@ -793,6 +852,82 @@ class TrackAudioStreamHub:
                     raise ValueError("accepted streaming chunk does not start at its cursor")
                 self._streaming_cursors[key] = source.end_sample
             self._streaming_claims.pop(key, None)
+
+    def claim_streaming_finalizations(
+        self,
+        *,
+        ready_track_keys: set[tuple[str, int, int]] | None = None,
+        flush: bool = False,
+        max_tracks: int = 1,
+    ) -> tuple[tuple[str, int, int], ...]:
+        """Claim tracks whose complete audio cursor can now be finalized.
+
+        Normal operation finalizes an ended ID after a short inactivity grace,
+        spreading sub-chunk tail work across capture time. ``flush=True`` also
+        includes the tracks that remain active at global stop. Claims use the
+        same admission/ack discipline as audio chunks.
+        """
+
+        if type(flush) is not bool:
+            raise ValueError("streaming flush must be bool")
+        if type(max_tracks) is not int or max_tracks <= 0:
+            raise ValueError("streaming max_tracks must be a positive integer")
+        ready = None if ready_track_keys is None else frozenset(ready_track_keys)
+        claimed: list[tuple[str, int, int]] = []
+        with self._lock:
+            for key, timeline in sorted(self._l2_timelines.items()):
+                if len(claimed) >= max_tracks:
+                    break
+                if (
+                    not timeline.ever_formal
+                    or (ready is not None and key not in ready)
+                    or key in self._streaming_finalized_tracks
+                    or key in self._streaming_finalization_claims
+                    or key in self._streaming_claims
+                ):
+                    continue
+                if not flush and not self._timeline_ready_for_early_finalization(timeline):
+                    continue
+                if not self._archive.get(key):
+                    continue
+                if self._archive_modes.get(key) != timeline.processing_mode:
+                    continue
+                cursor = self._streaming_cursors.get(
+                    key,
+                    timeline.first_start_sample,
+                )
+                if cursor < timeline.end_sample:
+                    continue
+                if cursor > timeline.end_sample:
+                    raise ValueError("streaming finalization cursor exceeds track end")
+                self._streaming_finalization_claims.add(key)
+                claimed.append(key)
+        return tuple(claimed)
+
+    def resolve_streaming_finalization(
+        self,
+        key: tuple[str, int, int],
+        *,
+        accepted: bool,
+    ) -> None:
+        """Commit one admitted per-track finalization or release it for retry."""
+
+        if (
+            not isinstance(key, tuple)
+            or len(key) != 3
+            or not isinstance(key[0], str)
+            or type(key[1]) is not int
+            or type(key[2]) is not int
+        ):
+            raise ValueError("invalid streaming finalization identity")
+        if type(accepted) is not bool:
+            raise ValueError("streaming finalization accepted state must be bool")
+        with self._lock:
+            if key not in self._streaming_finalization_claims:
+                raise ValueError("streaming track is not claimed for finalization")
+            self._streaming_finalization_claims.remove(key)
+            if accepted:
+                self._streaming_finalized_tracks.add(key)
 
     def take_streaming_chunks(
         self,
@@ -943,6 +1078,8 @@ class TrackAudioStreamHub:
                 self._emitted_ends.pop(key, None)
                 self._streaming_cursors.pop(key, None)
                 self._streaming_claims.pop(key, None)
+                self._streaming_finalization_claims.discard(key)
+                self._streaming_finalized_tracks.discard(key)
                 self._tracks.pop(key, None)
             self._sealed = tuple(outputs)
             return self._sealed

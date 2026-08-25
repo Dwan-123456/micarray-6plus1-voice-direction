@@ -55,6 +55,11 @@ class RealtimePostprocessor(Protocol):
         is_final_chunk: bool = False,
     ) -> RealtimePostprocessingSnapshot | None: ...
 
+    def finalize_track(
+        self,
+        identity: tuple[str, int, int],
+    ) -> RealtimePostprocessingSnapshot | None: ...
+
     def finalize(self) -> RealtimePostprocessingSnapshot | None: ...
 
 
@@ -62,6 +67,11 @@ class RealtimePostprocessor(Protocol):
 class _BlockWork:
     source: Layer4LongAudioInput
     is_final_chunk: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _TrackFinalWork:
+    identity: tuple[str, int, int]
 
 
 _FINISH = object()
@@ -102,6 +112,7 @@ class RealtimePostprocessingService:
         self._error: str | None = None
         self._model_load_seconds = 0.0
         self._final_snapshot: RealtimePostprocessingSnapshot | None = None
+        self._reuse_snapshot: RealtimePostprocessingSnapshot | None = None
         self._accepting = False
         self._finished = threading.Event()
 
@@ -149,6 +160,13 @@ class RealtimePostprocessingService:
         with self._lock:
             return self._final_snapshot
 
+    @property
+    def reuse_snapshot(self) -> RealtimePostprocessingSnapshot | None:
+        """Newest checkpoint, including safe per-track finals before a global abort."""
+
+        with self._lock:
+            return self._reuse_snapshot
+
     def _clear_mailboxes(self) -> None:
         for mailbox in (self._mailbox, self.latest):
             while True:
@@ -173,6 +191,7 @@ class RealtimePostprocessingService:
             self._error = None
             self._model_load_seconds = 0.0
             self._final_snapshot = None
+            self._reuse_snapshot = None
             self._accepting = True
             self._finished.clear()
             self._thread = threading.Thread(
@@ -204,6 +223,44 @@ class RealtimePostprocessingService:
                 return False
             try:
                 self._mailbox.put_nowait(_BlockWork(source, bool(is_final_chunk)))
+            except queue.Full:
+                self._dropped_blocks += 1
+                self._error = "realtime_layer456_queue_overflow"
+                self._state = "failed"
+                self._accepting = False
+                return False
+            self._submitted_blocks += 1
+            self._state = "queued"
+            return True
+
+    def submit_track_final(self, identity: tuple[str, int, int]) -> bool:
+        """Queue one ended track's tail flush without closing the session."""
+
+        if not self._enabled:
+            return False
+        if (
+            not isinstance(identity, tuple)
+            or len(identity) != 3
+            or not isinstance(identity[0], str)
+            or not identity[0]
+            or type(identity[1]) is not int
+            or identity[1] < 0
+            or type(identity[2]) is not int
+            or identity[2] <= 0
+        ):
+            raise ValueError("realtime track finalization identity is invalid")
+        with self._lock:
+            if (
+                not self._accepting
+                or self._thread is None
+                or not self._thread.is_alive()
+            ):
+                return False
+            if self._error is not None:
+                self._dropped_blocks += 1
+                return False
+            try:
+                self._mailbox.put_nowait(_TrackFinalWork(identity))
             except queue.Full:
                 self._dropped_blocks += 1
                 self._error = "realtime_layer456_queue_overflow"
@@ -255,7 +312,7 @@ class RealtimePostprocessingService:
         while True:
             try:
                 item = self._mailbox.get_nowait()
-                if isinstance(item, _BlockWork):
+                if isinstance(item, (_BlockWork, _TrackFinalWork)):
                     with self._lock:
                         self._dropped_blocks += 1
             except queue.Empty:
@@ -267,7 +324,7 @@ class RealtimePostprocessingService:
             # after removing the value that raced into the single mailbox.
             try:
                 item = self._mailbox.get_nowait()
-                if isinstance(item, _BlockWork):
+                if isinstance(item, (_BlockWork, _TrackFinalWork)):
                     with self._lock:
                         self._dropped_blocks += 1
             except queue.Empty:
@@ -310,8 +367,8 @@ class RealtimePostprocessingService:
                 except queue.Empty:
                     pass
                 self.latest.put_nowait(value)
-            self._processed_blocks = max(self._processed_blocks, value.processed_blocks)
             self._latest_revision = value.revision
+            self._reuse_snapshot = value
             if value.is_final:
                 self._final_snapshot = value
             if self._error is None:
@@ -346,12 +403,21 @@ class RealtimePostprocessingService:
                             self._state = "finished"
                     return
                 if not isinstance(work, _BlockWork):
+                    if isinstance(work, _TrackFinalWork):
+                        assert self._processor is not None
+                        snapshot = self._processor.finalize_track(work.identity)
+                        with self._lock:
+                            self._processed_blocks += 1
+                        if snapshot is not None:
+                            self._publish(snapshot)
                     continue
                 assert self._processor is not None
                 snapshot = self._processor.push(
                     work.source,
                     is_final_chunk=work.is_final_chunk,
                 )
+                with self._lock:
+                    self._processed_blocks += 1
                 if snapshot is not None:
                     self._publish(snapshot)
         except Exception as exc:
@@ -362,7 +428,7 @@ class RealtimePostprocessingService:
             while True:
                 try:
                     waiting = self._mailbox.get_nowait()
-                    if isinstance(waiting, _BlockWork):
+                    if isinstance(waiting, (_BlockWork, _TrackFinalWork)):
                         with self._lock:
                             self._dropped_blocks += 1
                 except queue.Empty:

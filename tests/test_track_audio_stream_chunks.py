@@ -294,6 +294,75 @@ def test_streaming_flush_uses_seal_gap_rules_and_emits_a_complete_hop_tail() -> 
     assert hub.take_streaming_chunks(chunk_samples=2 * _HOP, flush=True) == ()
 
 
+def test_ended_short_track_is_flushed_and_finalized_before_global_stop() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False),
+        context_ms=160,
+        ended_track_grace_ms=40,
+    )
+    track = _track(7)
+    key = ("session", 0, 7)
+    for index, decision in enumerate((7_680, 8_640, 9_600)):
+        _observe(hub, decision, (track,))
+        hub.process(
+            (_window(decision, 7, level=0.01 + index * 0.01),),
+            active_track_ids=(7,),
+            identity=_identity(decision),
+            l2_direction_count=1,
+        )
+
+    for decision in (10_560, 11_520, 12_480):
+        _observe(hub, decision, ())
+        hub.process(
+            (), active_track_ids=(), identity=_identity(decision),
+            l2_direction_count=0,
+        )
+
+    tail = hub.claim_streaming_chunks(
+        chunk_samples=4 * _HOP,
+        ready_track_keys={key},
+        max_chunks=1,
+    )
+    assert len(tail) == 1
+    assert len(tail[0].waveform) == 3 * _HOP
+    hub.resolve_streaming_chunk(tail[0], accepted=True)
+
+    finalizations = hub.claim_streaming_finalizations(
+        ready_track_keys={key}, max_tracks=1,
+    )
+    assert finalizations == (key,)
+    hub.resolve_streaming_finalization(key, accepted=True)
+    assert hub.claim_streaming_finalizations(
+        ready_track_keys={key}, max_tracks=1,
+    ) == ()
+
+
+def test_temporary_track_absence_inside_grace_does_not_finalize() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False),
+        context_ms=160,
+        ended_track_grace_ms=60,
+    )
+    track = _track(7)
+    key = ("session", 0, 7)
+    _observe(hub, 7_680, (track,))
+    hub.process(
+        (_window(7_680, 7, level=0.01),),
+        active_track_ids=(7,), identity=_identity(7_680), l2_direction_count=1,
+    )
+    _observe(hub, 8_640, ())
+    _observe(hub, 9_600, (track,))
+
+    assert hub.claim_streaming_chunks(
+        chunk_samples=4 * _HOP,
+        ready_track_keys={key},
+        max_chunks=1,
+    ) == ()
+    assert hub.claim_streaming_finalizations(
+        ready_track_keys={key}, max_tracks=1,
+    ) == ()
+
+
 def test_streaming_cursor_is_cleared_by_mode_reset_reset_and_seal_discard() -> None:
     hub = TrackAudioStreamHub(
         InputGainCompensationSettings(enabled=False), context_ms=160,

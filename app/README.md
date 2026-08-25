@@ -12,7 +12,7 @@ Development Test UI的L2面板使用容量1的`latest_l2_dev_ui`旁路：L2 work
 
 `ResultJoiner`接收乱序完成的L2/L3/L5终态，只在同一WindowKey完整后生成一个`JoinedWindowResult`。L2与L3完成结果携带有序公共`(track_id, theta_deg)`并逐项校验；当前实时L5是没有检测输出的`offline_after_l4`跳过终态。commit阶段按全局window ID有序调用RecordingStore的原子`append_result_with_watermark`，之后再做Test UI投影；stage worker不得绕过Joiner直接发布正式结果。Gate阻断产生L3/L5 `SKIPPED`；任一阶段`FAILED/TIMED_OUT/DROPPED/CANCELLED`都产生唯一`error` DecisionRecord v5；仅完整成功但使用声明回退的结果为`degraded`。旧DecisionRecord v3仅支持只读，不原地改写。
 
-`latest_l5_dev_ui` side channel为正式逐窗兼容性保留，不发布CNN结果。L4-L6旁路使用独立的latest-only revision邮箱；队列、模型或停机失败不会反压L1-L3，也不能把不完整前缀标成final。Development Test UI采集中显示渐进preview，封存后的完整canonical成功时才一次性替换。
+`latest_l5_dev_ui` side channel为正式逐窗兼容性保留，不发布CNN结果。L4-L6旁路使用独立的latest-only revision邮箱；队列、模型或停机失败不会反压L1-L3，也不能把不完整前缀标成final。权威ID消失后按1秒sample时间轴防抖，确认结束便提交不足块长的尾段和独立逐轨final控制；服务保留最新逐轨完成检查点，全局排空中止后最终校正仍可精确复用安全轨道。Development Test UI采集中显示渐进preview，封存后的完整canonical成功时才一次性替换。
 
 ResultJoiner注册前若在途窗口/字节容量已满，Runtime不保留新窗口的160 ms音频，只在有界范围审计中压缩保留身份、sample边界与原因；commit遇到对应window ID时展开为轻量`error` DecisionRecord和watermark。这条pre-joiner拒绝路径不会把容量异常抛回L1采集循环。
 

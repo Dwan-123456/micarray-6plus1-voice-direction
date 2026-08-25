@@ -205,6 +205,7 @@ class _TrackState:
     preview_start_sample_48k: int | None = None
     preview_degraded_reason: str | None = None
     replay_dropped_samples_48k: int = 0
+    finalized: bool = False
 
     @property
     def identity(self) -> tuple[str, int, int]:
@@ -688,6 +689,8 @@ class IncrementalLayer456Processor:
             state.preview_start_sample_48k = source.start_sample
             self._tracks[key] = state
             self._topology_revision += 1
+        elif state.finalized:
+            raise RuntimeError("realtime L4 track received audio after per-track finalization")
         elif state.inputs:
             self._validate_next_source(state, source)
         state.inputs.append(source)
@@ -696,6 +699,8 @@ class IncrementalLayer456Processor:
             self._upgrade_and_replay(state, final_last=is_final_chunk)
         else:
             self._stream_input(state, source, is_final=is_final_chunk)
+        if is_final_chunk:
+            state.finalized = True
         return self._snapshot(is_final=False)
 
     @staticmethod
@@ -790,6 +795,7 @@ class IncrementalLayer456Processor:
                 "realtime_preview_degraded": state.preview_degraded_reason is not None,
                 "realtime_preview_degraded_reason": state.preview_degraded_reason,
                 "realtime_replay_dropped_samples_48k": state.replay_dropped_samples_48k,
+                "realtime_track_final": state.finalized,
             }
             kind = "merged" if state.speaker_count == 1 else f"candidate_{rank}"
             output_id = (
@@ -894,6 +900,7 @@ class IncrementalLayer456Processor:
                     end,
                     state.speaker_count,
                     tuple(sorted(state.branches)),
+                    state.finalized,
                 )
                 for state, end in state_ends
             ),
@@ -987,17 +994,37 @@ class IncrementalLayer456Processor:
             stage_durations_seconds=tuple(self._stage_seconds.items()),
         )
 
+    def _finalize_state(self, state: _TrackState) -> None:
+        if state.finalized:
+            return
+        if not state.session.closed:
+            l4_started = perf_counter()
+            outputs = state.session.flush()
+            self._stage_seconds["l4"] += perf_counter() - l4_started
+            self._consume_outputs(state, outputs)
+        self._advance_l5(state, final=True)
+        for branch in state.branches.values():
+            self._update_dnsmos(branch, final=True)
+        state.finalized = True
+
+    def finalize_track(
+        self,
+        identity: tuple[str, int, int],
+    ) -> RealtimePostprocessingSnapshot | None:
+        """Flush one ended ID without closing the capture-wide processor."""
+
+        if self._finalized:
+            raise RuntimeError("realtime L4/L5/L6 processor is already finalized")
+        state = self._tracks.get(identity)
+        if state is None:
+            raise ValueError("realtime L4 track finalization identity is unknown")
+        self._finalize_state(state)
+        return self._snapshot(is_final=False)
+
     def finalize(self) -> RealtimePostprocessingSnapshot | None:
         if self._finalized:
             raise RuntimeError("realtime L4/L5/L6 processor is already finalized")
         for state in self._tracks.values():
-            if not state.session.closed:
-                l4_started = perf_counter()
-                outputs = state.session.flush()
-                self._stage_seconds["l4"] += perf_counter() - l4_started
-                self._consume_outputs(state, outputs)
-            self._advance_l5(state, final=True)
-            for branch in state.branches.values():
-                self._update_dnsmos(branch, final=True)
+            self._finalize_state(state)
         self._finalized = True
         return self._snapshot(is_final=True)

@@ -147,8 +147,6 @@ def plan_final_reuse(
     empty_keys = tuple(_key(source) for source in sources)
     if snapshot is None:
         return FinalReusePlan((), (), sources, (), tuple((key, "no_final_snapshot") for key in empty_keys))
-    if not snapshot.is_final:
-        return FinalReusePlan((), (), sources, (), tuple((key, "snapshot_not_final") for key in empty_keys))
     if any(source.session_id != snapshot.session_id for source in sources):
         return FinalReusePlan((), (), sources, (), tuple((key, "session_mismatch") for key in empty_keys))
 
@@ -176,6 +174,11 @@ def plan_final_reuse(
             reason = "l4_branch_set_incomplete"
         elif {item.output_kind for item in results} != expected:
             reason = "l5_branch_set_incomplete"
+        elif not snapshot.is_final and any(
+            not bool(item.metadata.get("realtime_track_final"))
+            for item in processed + results
+        ):
+            reason = "track_not_final"
         elif any(not _source_matches(item.source, source) for item in processed + results):
             reason = "source_coverage_or_hash_mismatch"
         elif any(str(item.metadata.get("backend")) != backend_id for item in processed):

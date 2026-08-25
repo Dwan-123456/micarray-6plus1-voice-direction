@@ -2784,7 +2784,7 @@ class ApplicationRuntime:
         max_chunks: int | None = None,
         allowed_track_keys: set[tuple[str, int, int]] | None = None,
     ) -> int:
-        """Claim a bounded batch and commit cursors only after admission."""
+        """Admit bounded audio chunks and per-track finalization controls."""
 
         if not self.realtime_postprocessing.enabled:
             return 0
@@ -2798,6 +2798,26 @@ class ApplicationRuntime:
             ready.intersection_update(allowed_track_keys)
         chunk_samples = self._realtime_chunk_seconds * 48_000
         with self._realtime_mode_submission_lock:
+            claim_finalizations = getattr(
+                self.track_audio_stream,
+                "claim_streaming_finalizations",
+                None,
+            )
+            resolve_finalization = getattr(
+                self.track_audio_stream,
+                "resolve_streaming_finalization",
+                None,
+            )
+            submit_finalization = getattr(
+                self.realtime_postprocessing,
+                "submit_track_final",
+                None,
+            )
+            supports_track_finalization = all(callable(value) for value in (
+                claim_finalizations,
+                resolve_finalization,
+                submit_finalization,
+            ))
             chunks = self.track_audio_stream.claim_streaming_chunks(
                 chunk_samples=chunk_samples,
                 ready_track_keys=ready,
@@ -2805,9 +2825,14 @@ class ApplicationRuntime:
                 max_chunks=max_chunks,
             )
             accepted = 0
+            chunks_admitted = True
             for index, source in enumerate(chunks):
                 try:
-                    is_tail = flush and len(source.waveform) < chunk_samples
+                    is_tail = (
+                        not supports_track_finalization
+                        and flush
+                        and len(source.waveform) < chunk_samples
+                    )
                     admitted = self.realtime_postprocessing.submit(
                         source,
                         is_final_chunk=is_tail,
@@ -2831,7 +2856,30 @@ class ApplicationRuntime:
                     self.track_audio_stream.resolve_streaming_chunk(
                         waiting, accepted=False,
                     )
+                chunks_admitted = False
                 break
+            remaining = max_chunks - accepted
+            if supports_track_finalization and chunks_admitted and remaining > 0:
+                identities = claim_finalizations(
+                    ready_track_keys=ready,
+                    flush=flush,
+                    max_tracks=remaining,
+                )
+                for index, identity in enumerate(identities):
+                    try:
+                        admitted = submit_finalization(identity)
+                    except BaseException:
+                        resolve_finalization(identity, accepted=False)
+                        for waiting in identities[index + 1:]:
+                            resolve_finalization(waiting, accepted=False)
+                        raise
+                    resolve_finalization(identity, accepted=admitted)
+                    if admitted:
+                        accepted += 1
+                        continue
+                    for waiting in identities[index + 1:]:
+                        resolve_finalization(waiting, accepted=False)
+                    break
         return accepted
 
     def _complete_l3_work(
@@ -4459,7 +4507,9 @@ class ApplicationRuntime:
             raise RuntimeError("TrackAudioStreamHub has no sealed long audio")
         selected = backend_id or self.config.layer4.default_backend
         pipeline = self.build_offline_l4_pipeline(selected)
-        snapshot = self.realtime_postprocessing.final_snapshot
+        snapshot = getattr(self.realtime_postprocessing, "reuse_snapshot", None)
+        if snapshot is None:
+            snapshot = self.realtime_postprocessing.final_snapshot
         plan = plan_final_reuse(snapshot, sources, backend_id=selected)
 
         l4_started = perf_counter()
@@ -4525,6 +4575,9 @@ class ApplicationRuntime:
                 for source in plan.missing_sources
             ),
             "exact_fast_path": plan.exact_fast_path,
+            "reuse_snapshot_is_global_final": bool(
+                snapshot is not None and snapshot.is_final
+            ),
             "rejected_reasons": plan.rejected,
             "cached_voiceprint_segments": (
                 0

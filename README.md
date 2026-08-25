@@ -213,7 +213,7 @@ WindowWorkItem
 
 ### 渐进L4-L6与采集后权威校正
 
-L4/L5/L6不进入正式20 ms `WindowKey`审计。采集中由独立旁路按默认4秒、可调3～15秒的连续ID块渐进运行：单人旁路，双人MF2使用1秒重叠修复换序；L5保留跨块上下文，只发布稳定帧；L6缓存跨块2秒CAMPPlus证据，并把刷新周期绑定到同一个块长变量，默认每4秒新结果后重聚类。Preview可被后续revision替换，不写DecisionRecord或RecordingStore。停止采集并排空L3后，旁路冲刷尾部，`TrackAudioStreamHub.seal()`封存完整ID长音频。Test UI逐ID核验实时final与封存源的精确身份、时间范围、SHA、后端、分支和水位；一致的L4/L5直接转为canonical，只对缺失或降级轨道补算，最后用共享的CAMPPlus片段缓存做一次全局L6确认并原子替换preview。迟到preview不能回写。双人轨的两条原生16 kHz候选按累计1～4 kHz复频谱相干度标记A/B并分别进入L5；单人轨保留唯一旁路。
+L4/L5/L6不进入正式20 ms `WindowKey`审计。采集中由独立旁路按默认4秒、可调3～15秒的连续ID块渐进运行：单人旁路，双人MF2使用1秒重叠修复换序；L5保留跨块上下文，只发布稳定帧；L6缓存跨块2秒CAMPPlus证据，并把刷新周期绑定到同一个块长变量，默认每4秒新结果后重聚类。某个权威ID消失1秒且未恢复后，其不足块长的尾段会提前提交，并用独立控制逐轨冲刷L4/L5/DNSMOS尾部；其他ID和采集会话保持开放。Preview可被后续revision替换，不写DecisionRecord或RecordingStore。停止采集并排空L3后，旁路冲刷仍活动的尾部，`TrackAudioStreamHub.seal()`封存完整ID长音频。Test UI逐ID核验实时final或已完成逐轨检查点与封存源的精确身份、时间范围、SHA、后端、分支和水位；一致的L4/L5直接转为canonical，只对缺失、未完成或降级轨道补算，即使全局旁路中止也不丢弃此前安全完成的轨道。最后用共享的CAMPPlus片段缓存做一次全局L6确认并原子替换preview。迟到preview不能回写。双人轨的两条原生16 kHz候选按累计1～4 kHz复频谱相干度标记A/B并分别进入L5；单人轨保留唯一旁路。
 
 ## 算法流程说明
 

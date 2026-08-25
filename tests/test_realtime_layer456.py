@@ -379,6 +379,32 @@ def test_non_overlapping_tracks_keep_independent_final_watermarks():
     ) == {10 * 48_000, 20 * 48_000}
 
 
+def test_one_track_can_finalize_while_the_capture_processor_stays_open():
+    processor = _processor(
+        chunk_samples_48k=4 * 48_000,
+        overlap_samples_48k=48_000,
+    )
+    identity = ("session", 0, 1)
+    assert processor.push(
+        _source(0, 1, duration_seconds=4, track_id=1),
+    ) is not None
+
+    checkpoint = processor.finalize_track(identity)
+
+    assert checkpoint is not None and not checkpoint.is_final
+    assert checkpoint.valid_through_sample_48k == 4 * 48_000
+    assert all(
+        item.metadata["realtime_track_final"]
+        for item in (*checkpoint.l4_processed, *checkpoint.l5_results)
+    )
+    assert processor.push(
+        _source(1, 1, duration_seconds=4, track_id=2),
+    ) is not None
+    final = processor.finalize()
+    assert final is not None and final.is_final
+    assert {item.source.track_id for item in final.l4_processed} == {1, 2}
+
+
 def test_pending_track_does_not_hide_an_already_stable_preview():
     processor = _processor()
     assert processor.push(_source(0, 1, track_id=1)) is not None

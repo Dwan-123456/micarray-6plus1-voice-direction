@@ -35,7 +35,12 @@ def _source(*, track_id: int = 1, start: int = 0, seconds: int = 4):
     )
 
 
-def _realtime_values(source: Layer4LongAudioInput, *, degraded: bool = False):
+def _realtime_values(
+    source: Layer4LongAudioInput,
+    *,
+    degraded: bool = False,
+    track_final: bool = True,
+):
     realtime_source = Layer4LongAudioInput(
         asset_id=f"{source.asset_id}:realtime",
         sha256=source.sha256,
@@ -62,6 +67,7 @@ def _realtime_values(source: Layer4LongAudioInput, *, degraded: bool = False):
         "realtime_l5_valid_through_sample_48k": source.end_sample,
         "l5_threshold": 0.7,
         "mos_score": 0.5,
+        "realtime_track_final": track_final,
     }
     processed = Layer4ProcessedAudio(
         "realtime", realtime_source, decision, "single_speaker_bypass", None,
@@ -77,11 +83,11 @@ def _realtime_values(source: Layer4LongAudioInput, *, degraded: bool = False):
     return processed, result
 
 
-def _snapshot(*values):
+def _snapshot(*values, is_final: bool = True):
     l4 = tuple(value[0] for value in values)
     l5 = tuple(value[1] for value in values)
     return RealtimePostprocessingSnapshot(
-        "session", 3, True,
+        "session", 3, is_final,
         max(item.source.end_sample for item in l4),
         len(values), l4, l5, object(),
     )
@@ -120,6 +126,26 @@ def test_degraded_track_is_the_only_track_selected_for_fallback():
     assert plan.reused_track_keys == (("session", 0, 1),)
     assert plan.missing_sources == (degraded,)
     assert plan.rejected == ((('session', 0, 2), "realtime_preview_degraded"),)
+
+
+def test_nonfinal_checkpoint_reuses_only_individually_finalized_tracks():
+    completed = _source(track_id=1)
+    unfinished = _source(track_id=2)
+    checkpoint = _snapshot(
+        _realtime_values(completed),
+        _realtime_values(unfinished, track_final=False),
+        is_final=False,
+    )
+
+    plan = plan_final_reuse(
+        checkpoint,
+        (completed, unfinished),
+        backend_id="mossformer2_ss_16k",
+    )
+
+    assert plan.reused_track_keys == (("session", 0, 1),)
+    assert plan.missing_sources == (unfinished,)
+    assert plan.rejected == ((('session', 0, 2), "track_not_final"),)
 
 
 def test_runtime_exact_fast_path_never_calls_offline_l4_or_l5():
@@ -161,6 +187,53 @@ def test_runtime_exact_fast_path_never_calls_offline_l4_or_l5():
     assert outcome.exact_fast_path
     assert outcome.recomputed_track_keys == ()
     assert outcome.diagnostics["additional_mf2_track_count"] == 0
+
+
+def test_runtime_uses_completed_track_checkpoint_after_global_abort():
+    source = _source()
+    checkpoint = _snapshot(
+        _realtime_values(source, track_final=True),
+        is_final=False,
+    )
+    calls: list[str] = []
+
+    class Pipeline:
+        def process_l4_sealed(self, *_args, **_kwargs):
+            calls.append("l4")
+            raise AssertionError("completed checkpoint must avoid offline L4")
+
+        def process_l5_sealed(self, *_args, **_kwargs):
+            calls.append("l5")
+            raise AssertionError("completed checkpoint must avoid offline L5")
+
+    class L6:
+        def process(self, results):
+            calls.append("l6")
+            assert len(results) == 1
+            return "l6-final"
+
+    runtime = SimpleNamespace(
+        offline_l4_sources=(source,),
+        config=SimpleNamespace(
+            layer4=SimpleNamespace(default_backend="mossformer2_ss_16k"),
+            layer6=SimpleNamespace(enabled=True),
+        ),
+        realtime_postprocessing=SimpleNamespace(
+            reuse_snapshot=checkpoint,
+            final_snapshot=None,
+        ),
+        build_offline_l4_pipeline=lambda _selected: Pipeline(),
+        build_offline_l6_pipeline=lambda: L6(),
+        _realtime_chunk_seconds=4,
+        _campplus_cached_embedder=None,
+    )
+
+    outcome = ApplicationRuntime.reconcile_final_layer456(runtime)
+
+    assert calls == ["l6"]
+    assert outcome.exact_fast_path
+    assert outcome.recomputed_track_keys == ()
+    assert outcome.diagnostics["reuse_snapshot_is_global_final"] is False
 
 
 def test_runtime_recomputes_only_the_rejected_track():
