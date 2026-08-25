@@ -15,8 +15,8 @@ create a voiceprint.
 
 Within one track, every segment's median similarity to the other segments is its
 centrality. Robust low-centrality outliers are discarded, while at least the two
-most central segments remain. On the experimental branch, two tracks' segment
-embeddings are paired globally one-to-one with the Hungarian algorithm. The track score is the weakest of
+most central segments remain. Two tracks' segment embeddings are paired globally
+one-to-one with the Hungarian algorithm. The track score is the weakest of
 the top evidence set, where the evidence set contains at least one pair and at
 least 30 percent of the shorter track's retained segments. A one-segment short
 track can therefore merge when that segment reaches the same threshold. Complete-link AHC

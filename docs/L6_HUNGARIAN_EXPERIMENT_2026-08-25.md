@@ -1,5 +1,9 @@
 # L6 Hungarian matching experiment — 2026-08-25
 
+> The evaluated implementation, including the one-segment follow-up, was later
+> adopted on `codex/develop-v1.3.3`. This document retains the experiment's
+> measurements and limitations as its audit record.
+
 ## Follow-up: allow one-segment short tracks
 
 The hard minimum of two matched segments was removed after the initial
