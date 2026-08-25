@@ -132,7 +132,7 @@ class MusicDiagnostics:
 class RollingNormMusicScanner:
     """Incremental frequency-normalized MUSIC owned by the single L2 worker."""
 
-    algorithm_version = "frequency_normalized_music_manual_order_v8"
+    algorithm_version = "frequency_normalized_music_manual_order_v9"
 
     def __init__(self) -> None:
         self._stream_key: tuple[str, int] | None = None
@@ -233,6 +233,43 @@ class RollingNormMusicScanner:
             self._prepare_frequency_axis(config)
         assert self._frequencies_hz is not None
         return self._frequencies_hz
+
+    @staticmethod
+    def _geometry_frequency_weights(frequencies_hz: np.ndarray) -> np.ndarray:
+        """Return the fixed 2--4 kHz weights for this 4 cm array geometry."""
+        frequencies = np.asarray(frequencies_hz, dtype=np.float64)
+        weights = np.zeros_like(frequencies)
+        weights[(frequencies >= 2_000.0) & (frequencies < 2_300.0)] = 0.35
+        weights[(frequencies >= 2_300.0) & (frequencies < 2_500.0)] = 0.55
+        weights[(frequencies >= 2_500.0) & (frequencies < 2_700.0)] = 0.75
+        weights[(frequencies >= 2_700.0) & (frequencies < 3_000.0)] = 0.90
+        weights[(frequencies >= 3_000.0) & (frequencies < 3_600.0)] = 1.00
+        falling_36_38 = (frequencies >= 3_600.0) & (frequencies < 3_800.0)
+        weights[falling_36_38] = (
+            1.00 - 0.25 * (frequencies[falling_36_38] - 3_600.0) / 200.0
+        )
+        falling_38_40 = (frequencies >= 3_800.0) & (frequencies <= 4_000.0)
+        weights[falling_38_40] = (
+            0.75 - 0.30 * (frequencies[falling_38_40] - 3_800.0) / 200.0
+        )
+        return weights
+
+    @classmethod
+    def _geometry_weighted_mean(
+        cls,
+        per_frequency: np.ndarray,
+        frequencies_hz: np.ndarray,
+    ) -> np.ndarray:
+        """Fuse independently normalized MUSIC spectra using fixed weights."""
+        spectra = np.asarray(per_frequency, dtype=np.float64)
+        frequencies = np.asarray(frequencies_hz, dtype=np.float64)
+        if spectra.ndim != 2 or spectra.shape[0] != frequencies.size:
+            raise ValueError("MUSIC frequency spectra and frequency axis do not match")
+        weights = cls._geometry_frequency_weights(frequencies)
+        total_weight = float(np.sum(weights))
+        if not np.isfinite(total_weight) or total_weight <= 0.0:
+            raise DirectionScanError("MUSIC fixed frequency weights have no support")
+        return np.sum(spectra * weights[:, None], axis=0) / total_weight
 
     @staticmethod
     def _interpolate_imcra(
@@ -353,6 +390,7 @@ class RollingNormMusicScanner:
         window: DecisionWindow,
         config: DirectionScanConfig,
         frequency_mask: np.ndarray,
+        geometry_weights: np.ndarray,
         imcra_metrics: tuple[np.ndarray, np.ndarray, np.ndarray | None] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         noise = eigenvectors[:, :, :6]
@@ -385,7 +423,13 @@ class RollingNormMusicScanner:
             1.0,
         )
         snr_weight = prior_snr / (1.0 + prior_snr)
-        weights = eig_weight * plane_fit * np.maximum(spp, 0.05) * np.maximum(snr_weight, 0.05)
+        weights = (
+            eig_weight
+            * plane_fit
+            * np.maximum(spp, 0.05)
+            * np.maximum(snr_weight, 0.05)
+            * geometry_weights
+        )
         selected = (
             (eigen_ratio >= config.dpd_min_eigenvalue_ratio)
             & (plane_fit >= config.dpd_min_plane_wave_fit)
@@ -746,6 +790,8 @@ class RollingNormMusicScanner:
         eigenvalues = eigenvalues[valid]
         eigenvectors = eigenvectors[valid]
         steering = steering[valid]
+        valid_frequencies = self._target_frequencies(config)[valid]
+        geometry_weights = self._geometry_frequency_weights(valid_frequencies)
         manual_order = config.effective_order_limit
         # Keep the established ModelOrderEstimate DTO for downstream recording
         # compatibility. Its order is now the explicit operator selection and
@@ -758,7 +804,8 @@ class RollingNormMusicScanner:
         plane_fit = np.zeros(int(valid.sum()), dtype=np.float64)
         if config.dpd_rank1_enabled:
             raw, per_frequency, selected, weights, plane_fit = self._dpd_rank1_spectrum(
-                eigenvalues, eigenvectors, steering, window, config, valid, imcra_metrics,
+                eigenvalues, eigenvectors, steering, window, config, valid,
+                geometry_weights, imcra_metrics,
             )
             limit = config.effective_order_limit
             fallback_reason = (
@@ -776,7 +823,7 @@ class RollingNormMusicScanner:
             denominator = np.sum(np.abs(projection) ** 2, axis=2)
             per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
             per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
-            raw = per_frequency.mean(axis=0)
+            raw = self._geometry_weighted_mean(per_frequency, valid_frequencies)
             stop_reason = "manual_order_greedy_peak_search"
             fallback_reason = (
                 "imcra_noise_covariance_unavailable"
@@ -799,7 +846,6 @@ class RollingNormMusicScanner:
         )
         support_by_index: dict[int, _DpdVoteCluster] = {}
         if config.dpd_rank1_enabled:
-            valid_frequencies = self._target_frequencies(config)[valid]
             qualified_clusters = self._dpd_vote_clusters(
                 normalized,
                 per_frequency,

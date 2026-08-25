@@ -136,6 +136,36 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     assert scan.noise_whitening_enabled
 
 
+def test_music_fixed_geometry_frequency_weights_match_2_to_4khz_contract() -> None:
+    frequencies = np.asarray(
+        (2_000, 2_299, 2_300, 2_500, 2_700, 3_000, 3_600, 3_700, 3_800, 3_900, 4_000),
+        dtype=np.float64,
+    )
+
+    weights = RollingNormMusicScanner._geometry_frequency_weights(frequencies)
+
+    np.testing.assert_allclose(
+        weights,
+        (0.35, 0.35, 0.55, 0.75, 0.90, 1.00, 1.00, 0.875, 0.75, 0.60, 0.45),
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+
+
+def test_music_cross_frequency_fusion_uses_fixed_geometry_weights() -> None:
+    frequencies = np.asarray((2_100.0, 3_300.0), dtype=np.float64)
+    per_frequency = np.zeros((2, 360), dtype=np.float64)
+    per_frequency[0, 20] = 1.0
+    per_frequency[1, 140] = 1.0
+
+    fused = RollingNormMusicScanner._geometry_weighted_mean(
+        per_frequency, frequencies,
+    )
+
+    assert fused[140] > fused[20]
+    np.testing.assert_allclose(fused[[20, 140]], (0.35 / 1.35, 1.0 / 1.35))
+
+
 @pytest.mark.parametrize("context_ms, expected_frames", ((160, 15), (240, 23), (320, 31)))
 def test_music_history_candidates_preserve_direction(context_ms: int, expected_frames: int) -> None:
     scan = replace(
