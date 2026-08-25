@@ -6,12 +6,12 @@ import wave
 
 import numpy as np
 
+from gui.dev_test_ui.offline_l6_store import OfflineLayer6UiStore
 from layer4_speech_separation import (
     Layer4LongAudioInput,
     Layer4OfflineResult,
     SpeakerCountDecision,
 )
-from gui.dev_test_ui.offline_l6_store import OfflineLayer6UiStore
 from layer6_speaker_consolidation import (
     Layer6Result,
     Layer6SpeakerAudio,
@@ -20,59 +20,111 @@ from layer6_speaker_consolidation import (
 
 
 class _Embedder:
+    def __init__(self) -> None:
+        self.calls: list[np.ndarray] = []
+
     def embed(self, waveform: np.ndarray) -> np.ndarray:
-        return np.array([1.0, 0.0], np.float32) if float(np.mean(waveform)) >= 0 else np.array([0.0, 1.0], np.float32)
+        self.calls.append(waveform)
+        if float(np.mean(waveform)) >= 0:
+            return np.array([1.0, 0.0], np.float32)
+        return np.array([0.0, 1.0], np.float32)
 
 
-class _DnsMos:
-    def score(self, _waveform: np.ndarray) -> tuple[float, float, float]:
-        return 4.0, 4.0, 4.0
+class _DistinctEmbedder:
+    def __init__(self) -> None:
+        self.index = 0
+
+    def embed(self, _waveform: np.ndarray) -> np.ndarray:
+        embedding = np.eye(4, dtype=np.float32)[self.index]
+        self.index += 1
+        return embedding
 
 
 def _sha(audio: np.ndarray) -> str:
     return hashlib.sha256(audio.tobytes()).hexdigest()
 
 
-def _results(track_id: int) -> tuple[Layer4OfflineResult, Layer4OfflineResult]:
-    samples = 96_000
-    source_audio = np.zeros(samples, np.float32)
-    source = Layer4LongAudioInput(
-        f"asset-{track_id}", _sha(source_audio), "session", 0, track_id, float(track_id * 90),
-        0, 48_000, source_audio, ((0, 2),),
-    )
-    values = (
-        np.full(samples // 3, 0.10, np.float32),
-        np.full(samples // 3, -0.10, np.float32),
-    )
-    probabilities = ((0.90,) * 100, (0.60,) * 100)
-    count = SpeakerCountDecision(source.asset_id, 2, 1.0, "test", {})
-    return tuple(Layer4OfflineResult(
-        f"request-{track_id}", source, count, "two_speaker_separation", None,
-        max(probabilities[index]), True, "l5", probabilities[index], (True,) * 100,
-        f"asset-{track_id}:branch-{index}", _sha(values[index]),
-        {"l5_threshold": 0.5, "output_waveform_16k": values[index]},
-        ("candidate_0", "candidate_1")[index],
-    ) for index in range(2))  # type: ignore[return-value]
-
-
-def _one_candidate(
-    waveform_16k: np.ndarray,
+def _result(
+    track_id: int,
+    branch: int,
+    waveform: np.ndarray,
     decisions: tuple[bool, ...],
+    *,
+    start_sample_48k: int = 0,
+    match: float = 0.8,
+    mos: float = 0.6,
 ) -> Layer4OfflineResult:
-    source_audio = np.zeros(len(waveform_16k) * 3, np.float32)
+    waveform = np.ascontiguousarray(waveform, dtype=np.float32)
+    source_audio = np.zeros(len(waveform) * 3, np.float32)
     source = Layer4LongAudioInput(
-        "asset-segmented", _sha(source_audio), "session", 0, 1, 0.0,
-        0, 48_000, source_audio,
-        tuple((sample, 1) for sample in range(960, len(source_audio) + 1, 960)),
+        f"asset-{track_id}",
+        _sha(source_audio),
+        "session",
+        0,
+        track_id,
+        float(track_id * 45 % 360),
+        start_sample_48k,
+        48_000,
+        source_audio,
+        ((start_sample_48k, 2),),
     )
     count = SpeakerCountDecision(source.asset_id, 2, 1.0, "test", {})
     probabilities = tuple(0.9 if active else 0.1 for active in decisions)
     return Layer4OfflineResult(
-        "request-segmented", source, count, "two_speaker_separation", None,
-        0.9, True, "l5", probabilities, decisions,
-        "asset-segmented:branch-0", _sha(waveform_16k),
-        {"l5_threshold": 0.5, "output_waveform_16k": waveform_16k},
-        "candidate_0",
+        f"request-{track_id}",
+        source,
+        count,
+        "two_speaker_separation",
+        None,
+        max(probabilities),
+        any(decisions),
+        "l5",
+        probabilities,
+        decisions,
+        f"asset-{track_id}:branch-{branch}",
+        _sha(waveform),
+        {
+            "candidate_match_score": match,
+            "mos_score": mos,
+            "dnsmos_sig": 4.0,
+            "dnsmos_bak": 4.0,
+            "dnsmos_ovrl": 4.0,
+            "l5_threshold": 0.5,
+            "output_waveform_16k": waveform,
+        },
+        ("candidate_0", "candidate_1")[branch],
+    )
+
+
+def _pair(
+    track_id: int,
+    *,
+    a_value: float = 0.2,
+    b_value: float = 0.1,
+    frames: int = 100,
+    a_match: float = 0.8,
+    b_match: float = 0.7,
+    a_mos: float = 0.6,
+    b_mos: float = 0.5,
+) -> tuple[Layer4OfflineResult, Layer4OfflineResult]:
+    decisions = (True,) * frames
+    return (
+        _result(
+            track_id,
+            0,
+            np.full(frames * 320, a_value, np.float32),
+            decisions,
+            match=a_match,
+            mos=a_mos,
+        ),
+        _result(
+            track_id,
+            1,
+            np.full(frames * 320, b_value, np.float32),
+            decisions,
+            match=b_match,
+            mos=b_mos,
+        ),
     )
 
 
@@ -80,78 +132,173 @@ def _config() -> SimpleNamespace:
     return SimpleNamespace(
         maximum_speakers=3,
         speaker_similarity_threshold=0.62,
-        minimum_embedding_speech_ms=1_500,
-        minimum_voice_fragment_ms=200,
-        merge_voice_gap_ms=200,
-        selection_switch_margin=0.05,
-        crossfade_ms=2,
+        secondary_candidate_match_gap_max=0.20,
+        secondary_candidate_match_min=0.50,
+        secondary_candidate_mos_min=0.30,
+        maximum_internal_silence_ms=2_000,
     )
 
 
-def test_l6_clusters_candidates_and_keeps_one_quality_winner_per_speaker_timeline() -> None:
-    result = OfflineLayer6Pipeline(_Embedder(), _DnsMos(), _config()).process((*_results(1), *_results(2)))
+def test_l6_always_embeds_full_a_and_only_admits_b_passing_all_three_gates() -> None:
+    embedder = _Embedder()
+    results = (
+        *_pair(1, b_match=0.70, b_mos=0.40),
+        *_pair(2, a_match=0.90, b_match=0.60, b_mos=0.80),
+        *_pair(3, a_match=0.70, b_match=0.50, b_mos=0.80),
+        *_pair(4, a_match=0.70, b_match=0.60, b_mos=0.30),
+        *_pair(5, a_match=0.71, b_match=0.51, b_mos=0.31),
+    )
+
+    result = OfflineLayer6Pipeline(embedder, _config()).process(results)
+
+    assert len(embedder.calls) == 7
+    assert all(len(waveform) == 32_000 for waveform in embedder.calls)
+    assert result.metadata["extracted_audio_ids"] == (
+        "asset-1:branch-0",
+        "asset-1:branch-1",
+        "asset-2:branch-0",
+        "asset-3:branch-0",
+        "asset-4:branch-0",
+        "asset-5:branch-0",
+        "asset-5:branch-1",
+    )
+
+
+def test_l6_clusters_complete_tracks_and_records_one_voiceprint_to_many_audio() -> None:
+    embedder = _Embedder()
+    result = OfflineLayer6Pipeline(embedder, _config()).process((
+        *_pair(1, a_value=0.2, b_value=0.1),
+        *_pair(2, a_value=-0.2, b_value=-0.1, b_match=0.4),
+    ))
+
     assert result.speaker_count == 2
     assert tuple(item.label for item in result.outputs) == ("Speaker A", "Speaker B")
-    assert all(item.sample_rate == 16_000 and len(item.waveform_16k) == 32_000 for item in result.outputs)
-    assert len(result.fragments) == 8
-    assert all(np.max(np.abs(item.waveform_16k)) <= 0.1 for item in result.outputs)
+    assert len(result.fragments) == 3
+    assert result.metadata["voiceprint_audio_ids"] == {
+        1: ("asset-1:branch-0", "asset-1:branch-1"),
+        2: ("asset-2:branch-0",),
+    }
+    matrix = np.asarray(result.metadata["pairwise_similarity_matrix"])
+    assert matrix.shape == (3, 3)
+    assert np.allclose(matrix, matrix.T)
+    assert np.allclose(np.diag(matrix), 1.0)
 
 
-def test_l6_splits_one_uninterrupted_l2_track_when_the_speaker_embedding_changes() -> None:
-    waveform = np.concatenate((
-        np.full(24_000, 0.1, np.float32),
-        np.full(24_000, -0.1, np.float32),
-    ))
-    result = OfflineLayer6Pipeline(_Embedder(), _DnsMos(), _config()).process((
-        _one_candidate(waveform, (True,) * 150),
-    ))
-    assert result.speaker_count == 2
-    assert tuple(item.speaker_id for item in result.fragments) == (1, 2)
-    assert tuple((item.start_sample_48k, item.end_sample_48k) for item in result.fragments) == (
-        (0, 72_000), (72_000, 144_000),
+def test_l6_forces_four_distinct_complete_track_voiceprints_down_to_three() -> None:
+    inputs = tuple(
+        _result(
+            track_id,
+            0,
+            np.full(3_200, 0.1 * track_id, np.float32),
+            (True,) * 10,
+        )
+        for track_id in range(1, 5)
+    )
+
+    result = OfflineLayer6Pipeline(_DistinctEmbedder(), _config()).process(inputs)
+
+    assert result.speaker_count == 3
+    assert len(result.metadata["voiceprint_audio_ids"]) == 3
+
+
+def test_l6_overlap_keeps_the_audio_with_higher_l4_mos() -> None:
+    decisions = (True,) * 20
+    low = _result(
+        1, 0, np.full(6_400, 0.2, np.float32), decisions, match=0.95, mos=0.40,
+    )
+    high = _result(
+        2, 0, np.full(6_400, 0.8, np.float32), decisions, match=0.60, mos=0.90,
+    )
+
+    result = OfflineLayer6Pipeline(_Embedder(), _config()).process((low, high))
+
+    assert result.speaker_count == 1
+    assert np.allclose(result.outputs[0].waveform_16k, 0.8)
+    assert result.outputs[0].fragment_ids == (
+        "asset-1:branch-0", "asset-2:branch-0",
     )
 
 
-def test_l6_short_residual_voice_cannot_create_a_phantom_speaker() -> None:
-    waveform = np.concatenate((
-        np.full(24_000, 0.1, np.float32),
-        np.zeros(4_800, np.float32),
-        np.full(6_400, -0.1, np.float32),
-    ))
-    decisions = (True,) * 75 + (False,) * 15 + (True,) * 20
-    result = OfflineLayer6Pipeline(_Embedder(), _DnsMos(), _config()).process((
-        _one_candidate(waveform, decisions),
-    ))
-    assert result.speaker_count == 1
-    assert len(result.fragments) == 2
-    assert {item.speaker_id for item in result.fragments} == {1}
+def test_l6_trims_edge_silence_and_caps_internal_silence_at_two_seconds() -> None:
+    decisions = (
+        (False,) * 50
+        + (True,) * 20
+        + (False,) * 150
+        + (True,) * 20
+        + (False,) * 50
+    )
+    frames = np.zeros((len(decisions), 320), np.float32)
+    frames[50:70] = 0.25
+    frames[220:240] = 0.25
+    a = _result(1, 0, frames.reshape(-1), decisions, match=0.8, mos=0.7)
+
+    result = OfflineLayer6Pipeline(_Embedder(), _config()).process((a,))
+
+    output = result.outputs[0].waveform_16k.reshape(-1, 320)
+    assert len(output) == 20 + 100 + 20
+    assert np.allclose(output[:20], 0.25)
+    assert not np.any(output[20:120])
+    assert np.allclose(output[120:], 0.25)
 
 
-def test_l6_ui_aligns_each_final_id_to_one_shared_absolute_timeline() -> None:
+def test_l6_returns_zero_speakers_when_selected_tracks_have_no_l5_voice() -> None:
+    embedder = _Embedder()
+    silent = _result(
+        1,
+        0,
+        np.zeros(3_200, np.float32),
+        (False,) * 10,
+        match=0.8,
+        mos=0.7,
+    )
+
+    result = OfflineLayer6Pipeline(embedder, _config()).process((silent,))
+
+    assert result.speaker_count == 0
+    assert result.outputs == ()
+    assert len(embedder.calls) == 1
+    assert result.metadata["silent_voiceprint_audio_ids"] == ("asset-1:branch-0",)
+
+
+def test_l6_ui_displays_each_silence_compressed_voiceprint_directly() -> None:
     first = Layer6SpeakerAudio(
-        1, "Speaker A", 16_000, 0, 1_920,
-        np.full(640, 0.25, np.float32), (7,), ("a",), 0.8,
+        1,
+        "Speaker A",
+        16_000,
+        0,
+        9_600,
+        np.full(640, 0.25, np.float32),
+        (7,),
+        ("a", "b"),
+        0.8,
     )
     second = Layer6SpeakerAudio(
-        2, "Speaker B", 16_000, 1_920, 3_840,
-        np.full(640, -0.25, np.float32), (9,), ("b",), 0.7,
+        2,
+        "Speaker B",
+        16_000,
+        0,
+        9_600,
+        np.full(960, -0.25, np.float32),
+        (9,),
+        ("c",),
+        0.7,
     )
     store = OfflineLayer6UiStore()
     try:
         store.set_result(Layer6Result("session", 2, (first, second), (), {}))
-        rendered = []
-        for speaker_id in (1, 2):
+        for speaker_id, frames in ((1, 640), (2, 960)):
             path = store.audio_path(speaker_id)
             assert path is not None
             with wave.open(str(path), "rb") as reader:
                 assert reader.getframerate() == 16_000
-                assert reader.getnframes() == 1_280
-                rendered.append(np.frombuffer(reader.readframes(1_280), dtype="<i2"))
-        assert np.any(rendered[0][:640]) and not np.any(rendered[0][640:])
-        assert not np.any(rendered[1][:640]) and np.any(rendered[1][640:])
+                assert reader.getnframes() == frames
         snapshots = store.snapshots()
-        assert tuple(item.audio_sample_count for item in snapshots) == (3_840, 3_840)
-        assert snapshots[0].display_label == "L6 ID 1 · Speaker A · 来源L2 ID 7 · Q0.80"
-        assert snapshots[1].display_label == "L6 ID 2 · Speaker B · 来源L2 ID 9 · Q0.70"
+        assert tuple(item.audio_sample_count for item in snapshots) == (1_920, 2_880)
+        assert snapshots[0].display_label == (
+            "声纹 1 · Speaker A · 关联音轨 2 · 来源L2 ID 7 · MOS 0.80"
+        )
+        assert snapshots[1].display_label == (
+            "声纹 2 · Speaker B · 关联音轨 1 · 来源L2 ID 9 · MOS 0.70"
+        )
     finally:
         store.close()

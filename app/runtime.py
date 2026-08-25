@@ -4128,7 +4128,7 @@ class ApplicationRuntime:
         if not campplus.is_absolute():
             campplus = self.project_root / campplus
         return OfflineLayer6Pipeline(
-            CampPlusEmbedder(campplus), self._get_dnsmos_scorer(), self.config.layer6,
+            CampPlusEmbedder(campplus), self.config.layer6,
         )
 
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:

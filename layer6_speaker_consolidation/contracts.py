@@ -48,6 +48,7 @@ class Layer6QualityScore:
 
 @dataclass(frozen=True, slots=True)
 class Layer6Fragment:
+    """One complete L4 A/B track assigned to one clustered voiceprint."""
     fragment_id: str
     source_asset_id: str
     source_track_id: int
@@ -61,7 +62,9 @@ class Layer6Fragment:
     voice_is_active_20ms: tuple[bool, ...]
     embedding: NDArray[np.float32]
     speaker_id: int
-    quality: Layer6QualityScore
+    match_score: float
+    mos_score: float
+    speaker_similarity: float
 
     def __post_init__(self) -> None:
         if not self.fragment_id or not self.source_asset_id or self.source_track_id <= 0:
@@ -81,6 +84,11 @@ class Layer6Fragment:
             raise ValueError("L6 fragment voice decisions must align to 20 ms audio")
         if self.speaker_id not in {1, 2, 3}:
             raise ValueError("L6 speaker IDs are session-local values 1..3")
+        if any(
+            not np.isfinite(value) or not 0.0 <= value <= 1.0
+            for value in (self.match_score, self.mos_score, self.speaker_similarity)
+        ):
+            raise ValueError("L6 complete-track scores must be in [0,1]")
         object.__setattr__(self, "waveform_16k", waveform)
         object.__setattr__(self, "voice_probabilities_20ms", probabilities)
         object.__setattr__(self, "voice_is_active_20ms", decisions)
@@ -103,8 +111,16 @@ class Layer6SpeakerAudio:
         waveform = _audio(self.waveform_16k, "L6 speaker output")
         if self.speaker_id not in {1, 2, 3} or self.label != f"Speaker {chr(64 + self.speaker_id)}":
             raise ValueError("L6 speaker label is invalid")
-        if self.sample_rate != 16_000 or len(waveform) * 3 != self.end_sample_48k - self.start_sample_48k:
-            raise ValueError("L6 speaker output must preserve the authoritative timeline")
+        if (
+            self.sample_rate != 16_000
+            or self.start_sample_48k < 0
+            or self.end_sample_48k <= self.start_sample_48k
+            or not len(waveform)
+            or len(waveform) % 320
+        ):
+            raise ValueError("L6 speaker output or source timeline bounds are invalid")
+        if len(waveform) * 3 > self.end_sample_48k - self.start_sample_48k:
+            raise ValueError("L6 silence compression cannot lengthen the source timeline")
         if not np.isfinite(self.mean_quality) or not 0.0 <= self.mean_quality <= 1.0:
             raise ValueError("L6 speaker mean quality must be in [0,1]")
         object.__setattr__(self, "waveform_16k", waveform)

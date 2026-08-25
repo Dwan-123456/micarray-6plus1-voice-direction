@@ -826,7 +826,9 @@ class Layer6AudioPanel(QGroupBox):
         header.addWidget(self.summary, 1)
         header.addWidget(self.run)
         layout.addLayout(header)
-        layout.addWidget(QLabel("按L6 ID显示绝对时间线长音频；未讲话区保留等时静音。"))
+        layout.addWidget(QLabel(
+            "按声纹显示合并音频；首尾静音删除，内部静音最长保留2秒。"
+        ))
         self.track_scroll = QScrollArea()
         self.track_scroll.setWidgetResizable(True)
         self.track_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -852,7 +854,7 @@ class Layer6AudioPanel(QGroupBox):
 
     def set_processing(self) -> None:
         self.run.setEnabled(False)
-        self.summary.setText("L6处理中：声纹、聚类、质量评分与拼接…")
+        self.summary.setText("L6处理中：完整音轨声纹、聚类、MOS择优与静音压缩…")
 
     def set_error(self, text: str) -> None:
         self.summary.setText(f"L6失败：{text}")
@@ -861,13 +863,14 @@ class Layer6AudioPanel(QGroupBox):
     def set_tracks(self, tracks) -> None:
         self.clear_tracks()
         for track in tracks:
-            row = AudioTrackRow(track.track_id, show_voice_highlights=False)
-            row.label.setFixedWidth(210)
+            row = AudioTrackRow(
+                track.track_id, show_voice_highlights=False, label_width=220,
+            )
             row.toggle_requested.connect(self._toggle_track)
             row.set_snapshot(track, playing=False)
             self._rows[track.track_id] = row
             self.track_layout.insertWidget(self.track_layout.count() - 1, row)
-        self.summary.setText(f"L6完成：{len(self._rows)}个ID时间线")
+        self.summary.setText(f"L6完成：{len(self._rows)}个声纹")
         self.run.setEnabled(True)
 
     def _toggle_track(self, track_id: int) -> None:

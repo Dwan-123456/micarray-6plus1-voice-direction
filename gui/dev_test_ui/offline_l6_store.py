@@ -33,14 +33,9 @@ class OfflineLayer6UiStore:
         if not result.outputs:
             self._snapshots = ()
             return
-        timeline_start = min(output.start_sample_48k for output in result.outputs)
-        timeline_end = max(output.end_sample_48k for output in result.outputs)
-        timeline_samples_16k = (timeline_end - timeline_start) // 3
         snapshots = []
         for output in result.outputs:
-            timeline = np.zeros(timeline_samples_16k, dtype=np.float32)
-            offset = (output.start_sample_48k - timeline_start) // 3
-            timeline[offset:offset + len(output.waveform_16k)] = output.waveform_16k
+            timeline = np.asarray(output.waveform_16k, dtype=np.float32)
             path = Path(self._temporary.name) / f"l6_id_{output.speaker_id}.wav"
             pcm = np.clip(np.rint(timeline * 32768.0), -32768, 32767).astype("<i2")
             with wave.open(str(path), "wb") as writer:
@@ -55,11 +50,12 @@ class OfflineLayer6UiStore:
             ids = ",".join(str(value) for value in output.source_track_ids)
             snapshots.append(TrackedAudioSnapshot(
                 result.session_id, 0, output.speaker_id, "ended", 0.0,
-                output.mean_quality, timeline_end - timeline_start,
+                output.mean_quality, len(timeline) * 3,
                 waveform_envelope=envelope,
                 display_label=(
-                    f"L6 ID {output.speaker_id} · {output.label} · "
-                    f"来源L2 ID {ids} · Q{output.mean_quality:.2f}"
+                    f"声纹 {output.speaker_id} · {output.label} · "
+                    f"关联音轨 {len(output.fragment_ids)} · "
+                    f"来源L2 ID {ids} · MOS {output.mean_quality:.2f}"
                 ),
                 parent_track_id=output.source_track_ids[0],
             ))

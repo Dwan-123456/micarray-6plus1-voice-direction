@@ -98,7 +98,7 @@ flowchart TB
 | RecordingStore | 原生/逻辑音频、IMCRA、Joined结果、Hub hop | 异步有界写盘；60秒切块；逐ID hop合并；SHA-256；journal事务；崩溃恢复；Catalog投影 | WAV/NPZ/JSONL/manifest/Catalog；逐ID连续48 kHz增强WAV | 不反压采集 |
 | Layer 4 | Hub封存的`Layer4LongAudioInput`：完整48 kHz mono、ID、角度、L2方向数历史 | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；30秒分块/1秒重叠；排列修复；交叉淡化；合并开启时1–4 kHz复相干匹配和低可信回退，关闭时原样发布A/B候选 | 合并开启：每父轨一条`Layer4ProcessedAudio`；关闭：每双人父轨两条16 kHz候选，保留父`track_id/theta`及A/B标识 | 离线整轨处理；每条L4输出分别进入L5 |
 | Layer 5 | L4原生16 kHz完整波形 | NVIDIA MarbleNet Frame-VAD；每320 sample直接推理；阈值比较；连续3帧均值取整轨最大值 | `Layer5LongAudioResult`：每20 ms概率/布尔值、摘要概率/判断、模型与耗时；并入`Layer4OfflineResult` | 16 kHz；20 ms一帧；默认阈值0.70 |
-| Layer 6 | L4未合并A/B候选、父L2 ID/角度、绝对时间线及L5逐20 ms概率/bool | 有效人声切分；CAMPPlus声纹；平均链接AHC聚为0～3人；DNSMOS/SNR/连续性质量评分；重叠择优 | `Layer6Result`：Speaker A/B/C 16 kHz长音频、来源L2 ID、片段声纹类别与五项质量审计 | 用户手动离线执行；不参与实时链 |
+| Layer 6 | L4未合并A/B候选、父L2 ID/角度、匹配度、MOS、绝对时间线及L5逐20 ms概率/bool | A整轨声纹；B按匹配差/匹配度/MOS门限准入；整轨声纹两两相似度与平均链接AHC聚为0～3人；重叠按MOS择优；首尾静音删除、内部静音最长2秒 | `Layer6Result`：按声纹显示的Speaker A/B/C压缩16 kHz音频、来源L2 ID、声纹到完整音轨的一对多审计 | 用户手动离线执行；不参与实时链 |
 
 ### 3.1 Layer 1内部图
 
@@ -258,7 +258,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 7. 点击“停止采集”，等待L2/L3队列完全排空和Hub封存。未排空时不能提交L4。
 8. 在L4区选择MossFormer2或TIGER，点击“发送到L4”。短于2秒的方向轨不会成为有效L4输入。
 9. 若需L6，在L4关闭“合并”以保留A/B候选；L4整批完成后L5自动对每条候选运行一次，L4栏试听16 kHz结果并查看黄色Voice区间。
-10. 点击下右“运行L6”，等待声纹聚类、质量评分和时间线拼接；完成后试听Speaker A/B/C音频条。L6不回写L2 ID或角度。
+10. 点击下右“运行L6”，等待整轨声纹聚类、MOS择优时间线拼接和静音压缩；完成后按声纹试听Speaker A/B/C音频条。L6不回写L2 ID或角度。
 
 再次“发送到L4”会替换当前UI内的上一批离线结果。Test UI离线缓存不是长期归档。
 
@@ -270,7 +270,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 | 右上L2 | Gate、360°谱、候选/ID、MDL、ID Tracking、DPD/白化设置 | `Layer2PipelineResult` | Gate、阶数和试验开关会更新后续L2配置 |
 | 下左L3 | Center参考、各ID增强音频、BF模式、发送L4 | Hub连续音频与L3诊断 | BF模式影响后续L3；发送L4仅在封存后运行 |
 | 下中L4 | 16 kHz结果、时长、波形、播放、黄色Voice区间 | `Layer4ProcessedAudio/OfflineResult` | 选择离线后端；不反向修改实时结果 |
-| 下右L6 | Speaker A/B/C、来源L2 ID、质量、时长、波形、试听 | L4双候选及L5逐20 ms结果 | 仅手动执行；不反向修改实时结果 |
+| 下右L6 | 声纹Speaker A/B/C、关联音轨数、来源L2 ID、平均MOS、压缩后时长、波形、试听 | L4双候选及L5逐20 ms结果 | 仅手动执行；不反向修改实时结果 |
 | 顶部性能栏 | 队列深度、worker、完成/错误/丢窗、缓存 | Runtime公开只读状态 | 只观察，不反压处理链 |
 
 ## 7. 其他入口

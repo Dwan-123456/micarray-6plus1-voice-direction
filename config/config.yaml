@@ -258,13 +258,10 @@ layer6:
   dnsmos_artifact: models/dnsmos_p835_v1
   maximum_speakers: 3
   speaker_similarity_threshold: 0.62
-  minimum_embedding_speech_ms: 1500
-  minimum_voice_fragment_ms: 200
-  merge_voice_gap_ms: 200
-  quality_context_ms: 1000
-  selection_hop_ms: 200
-  selection_switch_margin: 0.05
-  crossfade_ms: 2
+  secondary_candidate_match_gap_max: 0.20
+  secondary_candidate_match_min: 0.50
+  secondary_candidate_mos_min: 0.30
+  maximum_internal_silence_ms: 2000
 
 runtime:
   mode: development

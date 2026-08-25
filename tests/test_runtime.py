@@ -161,7 +161,7 @@ def test_offline_l4_builder_uses_its_independent_device(tmp_path, monkeypatch):
     assert pipeline.backends["mossformer2_ss_16k"].backend_id == "mossformer2_ss_16k"
     assert pipeline.quality_scorer is quality_scorer
     assert runtime.build_offline_l4_pipeline().quality_scorer is quality_scorer
-    assert runtime.build_offline_l6_pipeline().dnsmos is quality_scorer
+    assert runtime.build_offline_l6_pipeline().config is runtime.config.layer6
     assert len(quality_artifacts) == 1
     runtime.close()
 
