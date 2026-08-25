@@ -368,7 +368,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 - 前两行是`Center Mic RAW`与`Center Mic IMCRA`：前者为校准后、预降噪前原音，后者仅缓存预降噪开启期间实际采用的Center降噪输出；
 - 方向轨严格按L2权威`track_id`缓存和显示，Test UI不再按角度创建第二套ID；
 - confirmed方向短时漏检时可进入coasting并在2秒TTL内沿用同一ID；
-- L3按键显示为`MVDR`、`LCMV`和`DS`，默认使用MVDR；内部仍分别对应`loaded_mvdr_baseline`、`optimized`和`ds_baseline`；
+- L3按键显示为`DS`、`MVDR`和`LCMV`，默认使用DS；内部仍分别对应`ds_baseline`、`loaded_mvdr_baseline`和`optimized`；
 - 切换L3模式会清空旧模式的方向试听缓存；
 
 #### 下中与下右：离线Layer 4 / Layer 5 / Layer 6

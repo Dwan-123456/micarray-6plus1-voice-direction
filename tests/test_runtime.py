@@ -505,7 +505,7 @@ def test_runtime_l3_mode_switch_is_available_before_and_during_capture(tmp_path)
         pipeline=PushPipeline(),
         serial_device=StubSerial(),
     )
-    assert runtime.l3_processing_mode == L3_MODE_LOADED_MVDR
+    assert runtime.l3_processing_mode == L3_MODE_DS_BASELINE
     assert runtime.set_l3_processing_mode(L3_MODE_DS_BASELINE) == L3_MODE_DS_BASELINE
     assert runtime.set_l3_processing_mode(L3_MODE_LOADED_MVDR) == L3_MODE_LOADED_MVDR
     with pytest.raises(ValueError, match="unsupported L3 processing mode"):

@@ -308,10 +308,10 @@ class BeamformPanel(QGroupBox):
         preview_controls = QHBoxLayout()
         self.preview_summary = QLabel("L3 formal preview: waiting for an open Gate and candidate")
         self.preview_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.mode_switch = QPushButton("MVDR")
-        self._processing_mode = "loaded_mvdr_baseline"
+        self.mode_switch = QPushButton("DS")
+        self._processing_mode = "ds_baseline"
         self.mode_switch.setToolTip(
-            "依次切换：MVDR → LCMV → DS；只影响后续L3窗口"
+            "依次切换：DS → MVDR → LCMV；只影响后续L3窗口"
         )
         self.mode_switch.clicked.connect(self._cycle_mode)
         self.downstream_switch = QPushButton()
@@ -360,7 +360,7 @@ class BeamformPanel(QGroupBox):
         self._voice_threshold = 0.7
 
     def _cycle_mode(self) -> None:
-        modes = ("optimized", "ds_baseline", "loaded_mvdr_baseline")
+        modes = ("ds_baseline", "loaded_mvdr_baseline", "optimized")
         mode = modes[(modes.index(self._processing_mode) + 1) % len(modes)]
         self.set_processing_mode(mode)
         self.mode_change_requested.emit(mode)

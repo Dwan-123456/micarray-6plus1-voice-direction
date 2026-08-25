@@ -53,7 +53,7 @@ L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和I
 - Test UI试听ID不产生正式候选之外的L3预测波束批次，普通Runtime不创建该旁路；Center Mic参考、2秒显示门槛、3秒等待、唯一换号续接、近角双ID隔离、跳窗等时补洞和关闭清理均有回归测试；
 - L3只有音频视图，无内部`[17,169]`依赖；
 - L3三档循环切换、Runtime模式透传、模式切换后试听缓存隔离；按钮显示为`MVDR`、`LCMV`、`DS`，
-  默认使用全频Loaded MVDR，三种模式均保持独立试听分区；五频段与固定30°波束模式已删除；
+  默认使用DS，三种模式均保持独立试听分区；五频段与固定30°波束模式已删除；
 - 实时L5固定以`offline_after_l4`跳过，兼容完成邮箱不发布CNN结果；DROPPED/SKIPPED画面保留到stale超时；
 - L5丢弃/跳过诊断、空候选L3免prepare，以及离线L4完成后自动L5的独立工作流；
 - latest-value邮箱、不卡采集、scratch与正式录音隔离。
