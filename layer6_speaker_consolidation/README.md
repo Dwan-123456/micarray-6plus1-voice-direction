@@ -15,8 +15,8 @@ create a voiceprint.
 
 Within one track, every segment's median similarity to the other segments is its
 centrality. Robust low-centrality outliers are discarded, while at least the two
-most central segments remain. Between two tracks, segment embeddings are paired
-one-to-one from highest similarity downward. The track score is the weakest of
+most central segments remain. On the experimental branch, two tracks' segment
+embeddings are paired globally one-to-one with the Hungarian algorithm. The track score is the weakest of
 the top evidence set, where the evidence set contains at least two pairs and at
 least 30 percent of the shorter track's retained segments. Complete-link AHC
 requires every cross-track pair in two clusters to pass the configured cosine
@@ -24,8 +24,12 @@ threshold (`0.62`), preventing a B track from bridging two incompatible people.
 The result is forcibly limited to at most three session-local voiceprints. Each
 voiceprint owns one or more complete L4 audio tracks;
 `Layer6Result.metadata.voiceprint_audio_ids` records this one-to-many relation,
-while segment counts, evidence counts and the symmetric track-score matrix remain
-available for audit.
+while segment counts, evidence counts, the symmetric track-score matrix and each
+pair's median, 25th percentile, threshold coverage, mutual-nearest-neighbour
+coverage, representative cosine, MAD and standard deviation remain available
+for audit. `LogisticCalibration` can convert these features to an interpretable
+same-speaker probability only after fitting with real speaker-identity labels;
+L6 does not manufacture labels or ship an unverified probability calibration.
 
 For each voiceprint, associated tracks are projected onto the recording's
 absolute 48 kHz capture bounds. Only L5-active 20 ms frames are inserted. Tracks

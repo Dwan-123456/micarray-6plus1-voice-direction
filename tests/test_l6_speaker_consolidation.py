@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import wave
 
 import numpy as np
+import pytest
 import torch
 
 from gui.dev_test_ui.offline_l6_store import OfflineLayer6UiStore
@@ -20,6 +21,11 @@ from layer6_speaker_consolidation import (
 )
 from layer6_speaker_consolidation.pipeline import _cluster, _track_similarity
 from layer6_speaker_consolidation.campplus import CAMPPlus
+from layer6_speaker_consolidation.matching import (
+    LogisticCalibration,
+    fit_logistic_calibration,
+    hungarian_track_features,
+)
 
 
 class _Embedder:
@@ -298,6 +304,64 @@ def test_l6_track_similarity_requires_repeated_one_to_one_segment_evidence() -> 
     assert repeated_required == one_required == 2
     assert repeated_score == 1.0
     assert one_score == 0.0
+
+
+def test_l6_hungarian_matching_avoids_greedy_pairing_trap() -> None:
+    left = np.eye(2, dtype=np.float32)
+    right = np.array([
+        [0.90, 0.85],
+        [0.80, 0.10],
+    ], dtype=np.float32)
+
+    features = hungarian_track_features(
+        left,
+        right,
+        threshold=0.62,
+        minimum_match_count=2,
+        required_coverage=0.30,
+    )
+
+    assert features.decision_score == pytest.approx(0.80)
+    assert features.median == pytest.approx(0.825)
+    assert features.q25 == pytest.approx(0.8125)
+    assert features.coverage_above_threshold == 1.0
+    assert features.matched_count == features.required_count == 2
+
+
+def test_l6_logistic_calibration_returns_interpretable_probability() -> None:
+    features = hungarian_track_features(
+        np.eye(2, dtype=np.float32),
+        np.eye(2, dtype=np.float32),
+        threshold=0.62,
+        minimum_match_count=2,
+        required_coverage=0.30,
+    )
+    calibration = LogisticCalibration(
+        feature_names=("median", "coverage_above_threshold"),
+        coefficients=(2.0, 1.0),
+        intercept=-1.0,
+    )
+
+    assert calibration.predict(features) == pytest.approx(1.0 / (1.0 + np.exp(-2.0)))
+
+
+def test_l6_logistic_calibration_can_be_fitted_from_labeled_pairs() -> None:
+    same = hungarian_track_features(
+        np.eye(2, dtype=np.float32), np.eye(2, dtype=np.float32),
+        threshold=0.62, minimum_match_count=2, required_coverage=0.30,
+    )
+    different = hungarian_track_features(
+        np.eye(2, dtype=np.float32), -np.eye(2, dtype=np.float32),
+        threshold=0.62, minimum_match_count=2, required_coverage=0.30,
+    )
+    calibration = fit_logistic_calibration(
+        (same, same, different, different),
+        (True, True, False, False),
+        feature_names=("median", "coverage_above_threshold"),
+        l2_regularization=0.1,
+    )
+
+    assert calibration.predict(same) > calibration.predict(different)
 
 
 def test_l6_complete_link_does_not_allow_one_track_to_bridge_two_people() -> None:

@@ -14,6 +14,7 @@ from .contracts import (
     Layer6SpeakerAudio,
 )
 from .models import CampPlusEmbedder
+from .matching import TrackMatchFeatures, hungarian_track_features
 
 
 _MINIMUM_VOICEPRINT_SAMPLES = 8_000
@@ -93,43 +94,54 @@ def _retain_consistent_segments(embeddings: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(embeddings[keep], dtype=np.float32)
 
 
-def _track_similarity(left: np.ndarray, right: np.ndarray) -> tuple[float, int, int]:
-    """Return the weakest required one-to-one 2 s match and its evidence counts."""
-
-    similarities = left @ right.T
-    available = np.asarray(similarities, dtype=np.float32).copy()
-    matched: list[float] = []
-    for _ in range(min(available.shape)):
-        flat_index = int(np.argmax(available))
-        left_index, right_index = np.unravel_index(flat_index, available.shape)
-        matched.append(float(available[left_index, right_index]))
-        available[left_index, :] = -np.inf
-        available[:, right_index] = -np.inf
-    required = max(
-        _MINIMUM_TRACK_MATCH_COUNT,
-        int(np.ceil(_TRACK_MATCH_COVERAGE * min(len(left), len(right)))),
+def _track_match_features(
+    left: np.ndarray,
+    right: np.ndarray,
+    threshold: float = 0.62,
+) -> TrackMatchFeatures:
+    return hungarian_track_features(
+        left,
+        right,
+        threshold=threshold,
+        minimum_match_count=_MINIMUM_TRACK_MATCH_COUNT,
+        required_coverage=_TRACK_MATCH_COVERAGE,
     )
-    if len(matched) < required:
-        return -1.0, len(matched), required
-    return float(matched[required - 1]), len(matched), required
+
+
+def _track_similarity(left: np.ndarray, right: np.ndarray) -> tuple[float, int, int]:
+    """Compatibility wrapper returning the Hungarian decision score and counts."""
+
+    features = _track_match_features(left, right)
+    return features.decision_score, features.matched_count, features.required_count
 
 
 def _pairwise_similarities(
     items: tuple[_VoiceprintAudio, ...],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    threshold: float,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    tuple[tuple[dict[str, float | int] | None, ...], ...],
+]:
     matrix = np.eye(len(items), dtype=np.float32)
     matched_counts = np.zeros((len(items), len(items)), dtype=np.int32)
     required_counts = np.zeros((len(items), len(items)), dtype=np.int32)
+    features: list[list[dict[str, float | int] | None]] = [
+        [None] * len(items) for _ in items
+    ]
     for left in range(len(items)):
         for right in range(left + 1, len(items)):
-            value, matched, required = _track_similarity(
+            pair = _track_match_features(
                 items[left].segment_embeddings,
                 items[right].segment_embeddings,
+                threshold,
             )
-            matrix[left, right] = matrix[right, left] = value
-            matched_counts[left, right] = matched_counts[right, left] = matched
-            required_counts[left, right] = required_counts[right, left] = required
-    return matrix, matched_counts, required_counts
+            matrix[left, right] = matrix[right, left] = pair.decision_score
+            matched_counts[left, right] = matched_counts[right, left] = pair.matched_count
+            required_counts[left, right] = required_counts[right, left] = pair.required_count
+            features[left][right] = features[right][left] = pair.as_dict()
+    return matrix, matched_counts, required_counts, tuple(tuple(row) for row in features)
 
 
 def _cluster(
@@ -349,7 +361,9 @@ class OfflineLayer6Pipeline:
                 extracted.append(voiceprint)
         voiceprints = tuple(extracted)
 
-        similarities, matched_counts, required_counts = _pairwise_similarities(voiceprints)
+        similarities, matched_counts, required_counts, match_features = _pairwise_similarities(
+            voiceprints, self.config.speaker_similarity_threshold,
+        )
         raw_assignments = _cluster(
             similarities,
             self.config.speaker_similarity_threshold,
@@ -364,7 +378,7 @@ class OfflineLayer6Pipeline:
         if not order:
             matrix = tuple(tuple(float(value) for value in row) for row in similarities)
             return Layer6Result(session_id, 0, (), (), {
-                "algorithm": "campplus_2s_segment_consistency_complete_link_v5",
+                "algorithm": "campplus_2s_hungarian_features_complete_link_experiment_v6",
                 "recording_start_sample_48k": recording_start,
                 "recording_end_sample_48k": recording_end,
                 "extracted_audio_ids": tuple(item.audio_id for item in voiceprints),
@@ -376,6 +390,7 @@ class OfflineLayer6Pipeline:
                 "pairwise_required_segment_counts": tuple(
                     tuple(int(value) for value in row) for row in required_counts
                 ),
+                "pairwise_match_features": match_features,
                 "voiceprint_voice_sample_counts": {
                     item.audio_id: item.voice_sample_count for item in voiceprints
                 },
@@ -442,7 +457,7 @@ class OfflineLayer6Pipeline:
             raise ValueError("L6 voiceprint cluster contains no active audio")
         matrix = tuple(tuple(float(value) for value in row) for row in similarities)
         return Layer6Result(session_id, len(outputs), outputs, tuple(assignments), {
-            "algorithm": "campplus_2s_segment_consistency_complete_link_v5",
+            "algorithm": "campplus_2s_hungarian_features_complete_link_experiment_v6",
             "recording_start_sample_48k": recording_start,
             "recording_end_sample_48k": recording_end,
             "secondary_candidate_gate": {
@@ -475,6 +490,7 @@ class OfflineLayer6Pipeline:
             "pairwise_required_segment_counts": tuple(
                 tuple(int(value) for value in row) for row in required_counts
             ),
+            "pairwise_match_features": match_features,
             "voiceprint_audio_ids": {
                 speaker_id: tuple(
                     item.audio_id
