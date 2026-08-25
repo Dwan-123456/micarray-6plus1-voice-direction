@@ -8,7 +8,7 @@
 
 系统估计的是相对于麦克风面的水平角`theta_deg ∈ [0°,360°)`：`MIC0=0°`，逆时针为正。系统不估计距离、俯仰角、说话内容、声压级或人物身份。`track_id`只代表一条空间方向轨迹。
 
-正式20 ms审计链只运行到L3和按ID连续音频Hub；实时L5位置仍写入`offline_after_l4`跳过状态，不运行CNN。与审计链隔离的旁路按默认10秒、可调3～15秒的连续ID块渐进运行L4-L6并发布可替换preview；停止后完整封存批次仍会重新运行并成为权威结果。
+正式20 ms审计链只运行到L3和按ID连续音频Hub；实时L5位置仍写入`offline_after_l4`跳过状态，不运行CNN。与审计链隔离的旁路按默认4秒、可调3～15秒的连续ID块渐进运行L4-L6并发布可替换preview；停止后完整封存批次仍会重新运行并成为权威结果。
 
 ## 2. 完整系统架构图
 
@@ -107,7 +107,7 @@ flowchart TB
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
 | ResultJoiner | 同一`WindowKey`的L2/L3/L5阶段终态 | 校验ID与角度对齐；等待完整终态；按全局window顺序提交；保留失败/丢弃/取消原因 | `JoinedWindowResult`、`DecisionRecord v5`、`ResultWatermark`、UI快照 | 有序逐窗提交 |
 | RecordingStore | 原生/逻辑音频、IMCRA、Joined结果、Hub hop | 异步有界写盘；60秒切块；逐ID hop合并；SHA-256；journal事务；崩溃恢复；Catalog投影 | WAV/NPZ/JSONL/manifest/Catalog；逐ID连续48 kHz增强WAV | 不反压采集 |
-| 渐进Layer 4 | Hub已确认连续块 | 1人旁路；2人MF2；上一块1秒输入尾+新块；输出重叠换序与淡化；stable branch与累计A/B rank分离 | 可替换L4 revision与稳定水位 | 默认10秒，可调3～15秒；MF2 CUDA |
+| 渐进Layer 4 | Hub已确认连续块 | 1人旁路；2人MF2；上一块1秒输入尾+新块；输出重叠换序与淡化；stable branch与累计A/B rank分离 | 可替换L4 revision与稳定水位 | 默认4秒，可调3～15秒；MF2 CUDA |
 | 渐进Layer 5/6 | 稳定L4片段 | MarbleNet跨块上下文并延迟右端；DNSMOS降频；2秒CAMPPlus余量跨块；L6首次/拓扑变化/固定周期更新 | 可替换L5帧与provisional L6 speaker revision | CPU；latest-only；不入正式审计 |
 | 权威Layer 4 | Hub封存的完整`Layer4LongAudioInput` | 48→16 kHz；人数路由；1人旁路；2人MossFormer2/TIGER；完整排列修复、匹配和DNSMOS | 双人父轨两条16 kHz A/B候选；单人一条旁路 | 停止后完整整轨处理 |
 | 权威Layer 5 | L4原生16 kHz完整波形 | NVIDIA MarbleNet Frame-VAD；每320 sample推理；阈值比较；连续3帧均值摘要 | `Layer5LongAudioResult`和`Layer4OfflineResult` | 16 kHz；20 ms一帧；默认阈值0.70 |

@@ -71,7 +71,7 @@ def _runtime(tmp_path):
 def test_realtime_chunk_seconds_can_change_before_formal_recording(tmp_path):
     runtime = _runtime(tmp_path)
 
-    assert runtime.realtime_chunk_seconds == 10
+    assert runtime.realtime_chunk_seconds == 4
     assert runtime.set_realtime_chunk_seconds(3) == 3
     assert runtime.realtime_chunk_seconds == 3
     assert runtime.set_realtime_chunk_seconds(15) == 15

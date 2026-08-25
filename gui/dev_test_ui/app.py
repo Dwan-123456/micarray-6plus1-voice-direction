@@ -529,7 +529,7 @@ def build_window(
             self.realtime_chunk_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
             self.realtime_chunk_slider.setValue(runtime.realtime_chunk_seconds)
             self.realtime_chunk_slider.setToolTip(
-                "默认10秒；支持3–15秒整数。松开后自动应用，正式录音期间不可调整。"
+                "默认4秒；支持3–15秒整数。松开后自动应用，正式录音期间不可调整。"
             )
             self.realtime_chunk_slider.valueChanged.connect(
                 self._preview_realtime_chunk_seconds

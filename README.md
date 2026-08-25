@@ -140,7 +140,7 @@ WindowWorkItem
     每个方向维护最长3200 ms连续48 kHz缓冲
     同一补偿后样本供L3试听、RecordingStore逐ID长WAV和完整轨停机封存
     ├── 独立chunk producer：轻量唤醒、后台claim；接纳成功后才推进每ID游标
-    └── L4-L6伪实时旁路：默认10秒，可调3～15秒；失败不阻塞正式20 ms审计链
+    └── L4-L6伪实时旁路：默认4秒，可调3～15秒；失败不阻塞正式20 ms审计链
     ↓ 有界L5审计队列
 【已完成】实时L5审计占位
     不执行CNN；每个成功L3窗口提交SKIPPED(reason=offline_after_l4)
@@ -213,7 +213,7 @@ WindowWorkItem
 
 ### 渐进L4-L6与采集后权威校正
 
-L4/L5/L6不进入正式20 ms `WindowKey`审计。采集中由独立旁路按默认10秒、可调3～15秒的连续ID块渐进运行：单人旁路，双人MF2使用1秒重叠修复换序；L5保留跨块上下文，只发布稳定帧；L6缓存跨块2秒CAMPPlus证据并节流更新。Preview可被后续revision替换，不写DecisionRecord或RecordingStore。停止采集并排空L3后，旁路在有限期限内冲刷尾部，`TrackAudioStreamHub.seal()`再封存完整ID长音频和L2方向数量。Test UI随后运行完整L4/L5/L6；该canonical批次成功后一次性替换preview，迟到preview不能回写。双人轨的两条原生16 kHz候选按累计1～4 kHz复频谱相干度标记A/B并分别进入L5；单人轨保留唯一旁路。完整批次执行精确DNSMOS、MarbleNet和CAMPPlus/L6，仍是最终权威结果。
+L4/L5/L6不进入正式20 ms `WindowKey`审计。采集中由独立旁路按默认4秒、可调3～15秒的连续ID块渐进运行：单人旁路，双人MF2使用1秒重叠修复换序；L5保留跨块上下文，只发布稳定帧；L6缓存跨块2秒CAMPPlus证据并节流更新。Preview可被后续revision替换，不写DecisionRecord或RecordingStore。停止采集并排空L3后，旁路在有限期限内冲刷尾部，`TrackAudioStreamHub.seal()`再封存完整ID长音频和L2方向数量。Test UI随后运行完整L4/L5/L6；该canonical批次成功后一次性替换preview，迟到preview不能回写。双人轨的两条原生16 kHz候选按累计1～4 kHz复频谱相干度标记A/B并分别进入L5；单人轨保留唯一旁路。完整批次执行精确DNSMOS、MarbleNet和CAMPPlus/L6，仍是最终权威结果。
 
 ## 算法流程说明
 

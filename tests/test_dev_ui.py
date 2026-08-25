@@ -1325,8 +1325,8 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert window._runtime.l1_pre_denoise_enabled is False
         assert window.realtime_chunk_slider.minimum() == 3
         assert window.realtime_chunk_slider.maximum() == 15
-        assert window.realtime_chunk_slider.value() == 10
-        assert "L1→L6 可调分块伪实时链: 10 秒" in (
+        assert window.realtime_chunk_slider.value() == 4
+        assert "L1→L6 可调分块伪实时链: 4 秒" in (
             window.realtime_chunk_label.text()
         )
         window.realtime_chunk_slider.setValue(7)
@@ -1365,7 +1365,7 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         )
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
-            "上一秒性能 | L2 N/A | L3 N/A | L4-6 10s伪实时 | "
+            "上一秒性能 | L2 N/A | L3 N/A | L4-6 4s伪实时 | "
             "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%    "
             "总处理时长 | L2 N/A | L3 N/A | L4 N/A | L5 N/A | L6 N/A"
         )

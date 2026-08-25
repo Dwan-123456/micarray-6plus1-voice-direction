@@ -223,8 +223,8 @@ layer4:
   tiger_artifact: models/tiger_speech_16k_v1
   streaming:
     enabled: true
-    # Tunable benchmark variable. Compare 3/5/8/10/15 s; 10 s is the baseline.
-    chunk_seconds: 10
+    # Tunable benchmark variable. The Test UI defaults to the measured 4 s balance point.
+    chunk_seconds: 4
     overlap_seconds: 1
     queue_chunks: 2
 
