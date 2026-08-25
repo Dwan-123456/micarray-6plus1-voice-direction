@@ -128,9 +128,11 @@ WindowWorkItem
     物理上限：低频波长远大于阵列孔径，80～1500 Hz方向分离效果差
     ↓
 【已完成】TrackAudioStreamHub：公共逐ID连续补偿音频流
-    在L3 worker内同步执行，不是Layer 3.5，也没有独立等待队列
+    实时拼接在L3 worker内同步执行；仅首次confirmed回填使用独立有界任务
     按(session_id, stream_epoch, track_id)从每个L3重叠窗只追加一个20 ms hop
     去除重叠重复；缺口按绝对sample审计；处理模式变化时安全重建该轨上下文
+    新ID首次confirmed时，用确认时平滑角回溯最多1秒补做ID出生前缺失BF
+    回填按绝对sample前插；已有实时BF槽位优先且不会被覆盖
     每个hop使用自己的IMCRA概率执行imcra_probability_rms_v1（默认开启，可实时切换）
     RMS目标-23 dBFS、只放大；新增增益受-3 dBFS峰值保护
     每个方向维护最长3200 ms连续48 kHz缓冲

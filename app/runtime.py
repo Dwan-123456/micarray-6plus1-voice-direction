@@ -78,6 +78,8 @@ from .result_joiner import JoinerCapacityError, ResultDeliveryError, ResultJoine
 
 _PIPELINE_EOS = object()
 _CONFIGURED_DRAIN_TIMEOUT = object()
+_CONFIRMED_BACKFILL_SAMPLES = 48_000
+_CONFIRMED_BACKFILL_HISTORY_WINDOWS = 60
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,14 @@ class _L5Work:
     l3: L3StageResult
 
 
+@dataclass(frozen=True, slots=True)
+class _ConfirmedBackfillWork:
+    track: object
+    windows: tuple[DecisionWindow, ...]
+    processing_mode: str
+    l2_direction_count: int
+
+
 @dataclass(slots=True)
 class _RejectedAdmissionRange:
     """A compact, bounded audit trail for windows rejected before registration."""
@@ -148,6 +158,7 @@ class ApplicationRuntime:
         serial_device: SerialDevice | None = None,
         recording_store: RecordingStore | None = None,
         layer5_engine: Layer5Engine | None = None,
+        layer3_backfill_processor: object | None = None,
         dev_audio_tracker: object | None = None,
         source_probability_provider: Callable[
             [DecisionWindow], tuple[SourceProbability20ms, ...]
@@ -240,6 +251,7 @@ class ApplicationRuntime:
         self._l3_prepared_windows: queue.Queue[object]
         self._l3_host_windows: queue.Queue[object]
         self._l5_windows: queue.Queue[object]
+        self._confirmed_backfill_work: queue.Queue[object]
         self._completion_results: queue.Queue[object]
         self._completion_backlog: deque[JoinedWindowResult]
         self._completion_backlog_lock = threading.Lock()
@@ -309,6 +321,14 @@ class ApplicationRuntime:
         self._l3_cuda_stream = torch.cuda.Stream() if self.l3_device == "cuda" else None
         self._l5_cuda_stream = torch.cuda.Stream() if self.l5_device == "cuda" else None
         self._layer3 = Layer3Processor(config, device=self.l3_device)
+        # Historical recovery owns an independent processor/cache so it never
+        # mutates the realtime L3 rolling state. It is intentionally one
+        # low-throughput worker because it runs only once per newly confirmed ID.
+        self._layer3_backfill = (
+            layer3_backfill_processor
+            if layer3_backfill_processor is not None
+            else Layer3Processor(config, device=self.l3_device)
+        )
         self.downstream_window_spec = config.downstream_audio_window
         self._l3_cache_snapshot: object | None = None
         if layer5_engine is None:
@@ -370,6 +390,11 @@ class ApplicationRuntime:
         self._thread: threading.Thread | None = None
         self._processing_thread: threading.Thread | None = None
         self._processing_threads: dict[str, threading.Thread] = {}
+        self._confirmed_backfill_lock = threading.RLock()
+        self._confirmed_backfill_history: deque[DecisionWindow] = deque(
+            maxlen=_CONFIRMED_BACKFILL_HISTORY_WINDOWS
+        )
+        self._confirmed_backfill_ids: set[tuple[str, int, int]] = set()
         self._stage_errors: dict[str, str | None] = {
             "l2": None, "l3": None, "l5": None, "commit": None,
         }
@@ -436,6 +461,10 @@ class ApplicationRuntime:
             maxsize=2 * runtime.l3_cuda_microbatch_windows
         )
         self._l5_windows = queue.Queue(maxsize=runtime.l5_queue_windows)
+        # At most three authoritative directions are published per L2 window.
+        # One bounded slot per possible first-confirmed ID is sufficient and
+        # prevents historical work from becoming an unbounded side queue.
+        self._confirmed_backfill_work = queue.Queue(maxsize=3)
         self._completion_results = queue.Queue(maxsize=runtime.completion_queue_windows)
         self._completion_backlog = deque()
         self._completion_backlog_capacity = runtime.completion_queue_windows
@@ -857,6 +886,7 @@ class ApplicationRuntime:
             self._l3_prepared_windows,
             self._l3_host_windows,
             self._l5_windows,
+            self._confirmed_backfill_work,
             self._completion_results,
         ):
             try:
@@ -1728,7 +1758,11 @@ class ApplicationRuntime:
             self.imcra = Layer1Imcra.from_project(self.config)
             self.pre_denoiser = ImcraWienerPreDenoiser.from_project(self.config)
             self._layer3.clear_cache()
+            self._layer3_backfill.clear_cache()
             self.track_audio_stream.reset()
+            with self._confirmed_backfill_lock:
+                self._confirmed_backfill_history.clear()
+                self._confirmed_backfill_ids.clear()
             self._l3_cache_snapshot = None
             self._reset_processing_graph()
             self._stage_errors = {"l2": None, "l3": None, "l5": None, "commit": None}
@@ -1833,6 +1867,11 @@ class ApplicationRuntime:
                 "l5": threading.Thread(
                     target=self._run_l5, name="application-runtime-l5", daemon=True
                 ),
+                "backfill": threading.Thread(
+                    target=self._run_confirmed_backfill,
+                    name="application-runtime-l3-backfill",
+                    daemon=True,
+                ),
                 "commit": threading.Thread(
                     target=self._run_commit, name="application-runtime-commit", daemon=True
                 ),
@@ -1851,7 +1890,7 @@ class ApplicationRuntime:
             # Compatibility for callers that previously observed one terminal
             # processing thread.  The commit worker remains that owner.
             self._processing_thread = self._processing_threads["commit"]
-            start_order = ["commit", "l5"]
+            start_order = ["commit", "l5", "backfill"]
             start_order.append("l3_host")
             start_order.append("l3")
             if "l3_prepare" in self._processing_threads:
@@ -2027,6 +2066,7 @@ class ApplicationRuntime:
             self._admit_window(window)
 
     def _admit_window(self, window: DecisionWindow) -> bool:
+        self._remember_confirmed_backfill_window(window)
         work_item = WindowWorkItem(
             WindowKey.from_window(window),
             window,
@@ -2037,6 +2077,7 @@ class ApplicationRuntime:
         if self._processing_abort.is_set():
             self._record_admission_rejection(work_item, "processing_aborted")
             return False
+
         with self._rejected_admission_lock:
             permanently_closed = self._admission_permanently_closed
         if permanently_closed:
@@ -2122,6 +2163,72 @@ class ApplicationRuntime:
             )
             self._record_processing_drop(work_item.key)
             return False
+
+    def _remember_confirmed_backfill_window(self, window: DecisionWindow) -> None:
+        """Retain only 1.2 s of immutable L1 windows for confirmed-ID recovery."""
+
+        stream = (window.session_id, window.stream_epoch)
+        with self._confirmed_backfill_lock:
+            if self._confirmed_backfill_history and (
+                self._confirmed_backfill_history[-1].session_id,
+                self._confirmed_backfill_history[-1].stream_epoch,
+            ) != stream:
+                self._confirmed_backfill_history.clear()
+            self._confirmed_backfill_history.append(window)
+
+    def _schedule_confirmed_backfill(
+        self,
+        item: WindowWorkItem,
+        active_tracks: tuple[object, ...],
+        *,
+        processing_mode: str,
+        l2_direction_count: int,
+    ) -> None:
+        """Queue one historical BF request at an ID's first confirmed result."""
+
+        if not self.downstream_processing_enabled:
+            return
+        for track in active_tracks:
+            if str(getattr(track, "track_state", "")) != "confirmed":
+                continue
+            key = (item.key.session_id, item.key.stream_epoch, int(track.track_id))
+            with self._confirmed_backfill_lock:
+                if key in self._confirmed_backfill_ids:
+                    continue
+                target_start = max(
+                    0, item.key.decision_sample - _CONFIRMED_BACKFILL_SAMPLES
+                )
+                windows = tuple(
+                    window
+                    for window in self._confirmed_backfill_history
+                    if (window.session_id, window.stream_epoch) == key[:2]
+                    and window.decision_sample <= item.key.decision_sample
+                    # Realtime L3 already owns every slot from the ID's first
+                    # tentative observation onward. Historical recovery only
+                    # fills audio before that authoritative ID existed.
+                    and window.decision_sample
+                    < int(getattr(track, "first_seen_sample"))
+                    and window.decision_sample - 2 * self.config.timing.decision_hop_samples
+                    >= target_start
+                )
+                self._confirmed_backfill_ids.add(key)
+            if not windows:
+                continue
+            work = _ConfirmedBackfillWork(
+                track,
+                windows,
+                processing_mode,
+                max(1, min(3, int(l2_direction_count))),
+            )
+            while not self._processing_abort.is_set():
+                try:
+                    self._confirmed_backfill_work.put(work, timeout=0.05)
+                    break
+                except queue.Full:
+                    worker = self._processing_threads.get("backfill")
+                    if worker is not None and worker.ident is not None and not worker.is_alive():
+                        self._processing_abort.set()
+                        break
 
     def _run(self) -> None:
         try:
@@ -2271,6 +2378,9 @@ class ApplicationRuntime:
                         getattr(stage.output, "directions", ())
                         or stage.output.candidates
                     )
+                    active_tracks = tuple(
+                        getattr(stage.output, "active_tracks", ())
+                    )
                     try:
                         self.track_audio_stream.observe_l2(
                             identity=(
@@ -2279,9 +2389,13 @@ class ApplicationRuntime:
                                 item.key.window_id,
                                 item.key.decision_sample,
                             ),
-                            active_tracks=tuple(
-                                getattr(stage.output, "active_tracks", ())
-                            ),
+                            active_tracks=active_tracks,
+                            processing_mode=str(values["l3_mode"]),
+                            l2_direction_count=len(l2_directions),
+                        )
+                        self._schedule_confirmed_backfill(
+                            item,
+                            active_tracks,
                             processing_mode=str(values["l3_mode"]),
                             l2_direction_count=len(l2_directions),
                         )
@@ -2321,7 +2435,104 @@ class ApplicationRuntime:
         finally:
             if drained:
                 self._mark_pipeline_stage_finished("l2")
+            self._put_eos_interruptibly(self._confirmed_backfill_work, "backfill")
             self._put_eos_interruptibly(self._l3_windows, "l3")
+
+    def _run_confirmed_backfill(self) -> None:
+        """Recover only missing pre-confirmation L3 slots on a side worker."""
+
+        try:
+            while True:
+                try:
+                    item = self._confirmed_backfill_work.get(timeout=0.1)
+                except queue.Empty:
+                    if self._processing_abort.is_set():
+                        break
+                    continue
+                if item is _PIPELINE_EOS:
+                    break
+                if not isinstance(item, _ConfirmedBackfillWork):
+                    continue
+                try:
+                    self._process_confirmed_backfill(item)
+                except Exception as exc:
+                    # Historical recovery is additive. A failure must remain
+                    # visible, but cannot invalidate realtime L1-L3 or stop a
+                    # later ID from attempting its own recovery.
+                    self.dev_audio_tracking_error = f"confirmed L3 backfill: {exc}"
+                finally:
+                    self._layer3_backfill.clear_cache()
+        finally:
+            try:
+                self._layer3_backfill.clear_cache()
+            except Exception:
+                pass
+
+    def _process_confirmed_backfill(self, item: _ConfirmedBackfillWork) -> None:
+        track = item.track
+        decisions = self.track_audio_stream.missing_backfill_decisions(
+            session_id=str(getattr(track, "session_id")),
+            stream_epoch=int(getattr(track, "stream_epoch")),
+            track_id=int(getattr(track, "track_id")),
+            processing_mode=item.processing_mode,
+            decision_samples=tuple(window.decision_sample for window in item.windows),
+        )
+        wanted = set(decisions)
+        audio_windows: list[TrackAudioWindow] = []
+        for window in item.windows:
+            if self._processing_abort.is_set():
+                break
+            if window.decision_sample not in wanted:
+                continue
+            theta = float(getattr(track, "theta_deg"))
+            candidate = replace(
+                track,
+                window_id=window.window_id,
+                decision_sample=window.decision_sample,
+                doa_start_sample=window.doa_start_sample,
+                doa_end_sample=window.doa_end_sample,
+                rank=1,
+                measured_theta_deg=theta,
+                theta_deg=theta,
+                track_state="confirmed",
+                is_observed=True,
+                is_new_track=False,
+                first_seen_sample=min(
+                    int(getattr(track, "first_seen_sample")), window.decision_sample,
+                ),
+                last_observed_sample=window.decision_sample,
+                missed_samples=0,
+            )
+            output = self._layer3_backfill.process(
+                window, (candidate,), self._geometry, mode=item.processing_mode,
+            )
+            self._validate_direction_outputs(
+                "L3 backfill", (candidate,), output.enhanced_audio
+            )
+            enhanced = output.enhanced_audio[0]
+            audio_windows.append(TrackAudioWindow(
+                enhanced.session_id,
+                enhanced.stream_epoch,
+                enhanced.window_id,
+                enhanced.decision_sample,
+                int(enhanced.track_id),
+                enhanced.theta_deg,
+                enhanced.enhanced_audio,
+                self._context_probabilities_20ms(window),
+                item.processing_mode,
+            ))
+        missing = self.track_audio_stream.missing_backfill_windows(
+            tuple(audio_windows)
+        )
+        inserted = self.track_audio_stream.insert_backfill(
+            missing, l2_direction_count=item.l2_direction_count,
+        )
+        if inserted and self.dev_audio_tracker is not None:
+            self.dev_audio_tracker.prepend_backfill_hops(
+                inserted,
+                authoritative_track=track,
+                processing_mode=missing[0].processing_mode,
+            )
 
     def _complete_l3_work(
         self,
@@ -2350,7 +2561,7 @@ class ApplicationRuntime:
                     enhanced.theta_deg,
                     enhanced.enhanced_audio,
                     probability_slots,
-                    enhanced.algorithm,
+                    str(item.work_item.config.values["l3_mode"]),
                 )
                 for enhanced in output.enhanced_audio
             )
@@ -3556,6 +3767,14 @@ class ApplicationRuntime:
             with self._layer2_state_lock:
                 self._layer2.reset()
             self.track_audio_stream.reset()
+            with self._confirmed_backfill_lock:
+                self._confirmed_backfill_history.clear()
+                self._confirmed_backfill_ids.clear()
+            while True:
+                try:
+                    self._confirmed_backfill_work.get_nowait()
+                except queue.Empty:
+                    break
             if self.dev_audio_tracker is not None:
                 self.dev_audio_tracker.reset()
             self._downstream_processing_enabled.set()
@@ -3610,7 +3829,7 @@ class ApplicationRuntime:
             )
 
         join_until(thread)
-        for name in ("l2", "l3_prepare", "l3", "l3_host", "l5", "commit"):
+        for name in ("l2", "backfill", "l3_prepare", "l3", "l3_host", "l5", "commit"):
             join_until(workers.get(name))
         alive = {
             name: worker for name, worker in workers.items() if worker.is_alive()
@@ -3638,7 +3857,7 @@ class ApplicationRuntime:
             # complete configured shutdown interval instead of a fixed one
             # second, then report failure only if a worker is still alive.
             forced_deadline = monotonic() + timeout
-            for name in ("l2", "l3_prepare", "l3", "l3_host", "l5", "commit"):
+            for name in ("l2", "backfill", "l3_prepare", "l3", "l3_host", "l5", "commit"):
                 worker = workers.get(name)
                 if worker is not None and worker is not threading.current_thread() and worker.is_alive():
                     worker.join(timeout=max(0.0, forced_deadline - monotonic()))
@@ -3678,6 +3897,7 @@ class ApplicationRuntime:
                 self._l3_prepared_windows,
                 self._l3_host_windows,
                 self._l5_windows,
+                self._confirmed_backfill_work,
                 self._completion_results,
             ):
                 while True:
@@ -3747,6 +3967,7 @@ class ApplicationRuntime:
             "l2": 0,
             "l3": 0,
             "l5": 0,
+            "backfill": 0,
             "completion": 0,
             "completion_backlog": 0,
             "joiner_pending": len(self._result_joiner.pending_keys()),
@@ -3759,6 +3980,7 @@ class ApplicationRuntime:
                 ("l3", self._l3_prepared_windows),
                 ("l3", self._l3_host_windows),
                 ("l5", self._l5_windows),
+                ("backfill", self._confirmed_backfill_work),
                 ("completion", self._completion_results),
             ):
                 while True:
@@ -3790,7 +4012,7 @@ class ApplicationRuntime:
             worker.join(timeout=max(0.0, deadline - monotonic()))
 
         join_until(thread)
-        for name in ("l2", "l3_prepare", "l3", "l3_host", "l5", "commit"):
+        for name in ("l2", "backfill", "l3_prepare", "l3", "l3_host", "l5", "commit"):
             join_until(workers.get(name))
         alive = {
             name: worker for name, worker in workers.items() if worker.is_alive()
@@ -3814,7 +4036,11 @@ class ApplicationRuntime:
             self._processing_thread = None
         self._compute_cache.clear("replay_restart_discard")
         self._layer3.clear_cache()
+        self._layer3_backfill.clear_cache()
         self.track_audio_stream.reset()
+        with self._confirmed_backfill_lock:
+            self._confirmed_backfill_history.clear()
+            self._confirmed_backfill_ids.clear()
         if self.dev_audio_tracker is not None:
             self.dev_audio_tracker.reset()
         if self._recording_session_started:
@@ -3942,6 +4168,7 @@ class ApplicationRuntime:
                 self._l2_windows, self._l3_windows, self._l3_prepared_windows,
                 self._l3_host_windows,
                 self._l5_windows,
+                self._confirmed_backfill_work,
                 self._completion_results,
             ):
                 while True:
@@ -3955,7 +4182,11 @@ class ApplicationRuntime:
         if not self._processing_threads:
             self._compute_cache.clear("runtime_close")
             self._layer3.clear_cache()
+            self._layer3_backfill.clear_cache()
             self.track_audio_stream.reset()
+            with self._confirmed_backfill_lock:
+                self._confirmed_backfill_history.clear()
+                self._confirmed_backfill_ids.clear()
         if self.dev_audio_tracker is not None:
             try:
                 self.dev_audio_tracker.close(delete_files=delete_dev_test_ui_audio)

@@ -730,6 +730,116 @@ class AudioIdTracker:
             self._remove_filtered_ended_tracks()
             return self.snapshots()
 
+    def prepend_backfill_hops(
+        self,
+        hops: tuple[TrackAudioHop, ...],
+        *,
+        authoritative_track: object,
+        processing_mode: str,
+    ) -> tuple[TrackedAudioSnapshot, ...]:
+        """Prepend confirmed-ID historical BF slots to the playable L3 row."""
+
+        hops = tuple(sorted(hops, key=lambda item: item.start_sample))
+        if not hops:
+            return self.snapshots()
+        track_id = int(getattr(authoritative_track, "track_id"))
+        stream = (hops[0].session_id, hops[0].stream_epoch)
+        if any(
+            (item.session_id, item.stream_epoch, item.track_id)
+            != (stream[0], stream[1], track_id)
+            for item in hops
+        ):
+            raise ValueError("Test UI backfill hops must belong to one exact ID")
+        if any(
+            right.start_sample != left.end_sample
+            for left, right in zip(hops, hops[1:])
+        ):
+            raise ValueError("Test UI backfill hops must be contiguous")
+
+        with self._lock:
+            self._ensure_stream(stream)
+            track = self._tracks.get(track_id)
+            if track is None:
+                track = _Track(
+                    track_id,
+                    float(getattr(authoritative_track, "theta_deg")),
+                    float(getattr(authoritative_track, "normalized_score")),
+                    int(getattr(authoritative_track, "decision_sample", hops[-1].end_sample)),
+                    authoritative_id=True,
+                    stream_key=stream,
+                    processing_mode=processing_mode,
+                )
+                self._tracks[track_id] = track
+                self._next_track_id = max(self._next_track_id, track_id + 1)
+            elif track.processing_mode != processing_mode:
+                return self.snapshots()
+
+            cached_samples = self._cached_samples(track)
+            existing_end = track.last_emitted_decision_sample
+            existing_start = (
+                None if existing_end is None else int(existing_end) - cached_samples
+            )
+            prefix = tuple(
+                item
+                for item in hops
+                if existing_start is None or item.end_sample <= existing_start
+            )
+            if not prefix:
+                return self.snapshots()
+
+            existing_audio = np.empty(0, dtype=np.float32)
+            existing_annotations = tuple(track.voice_annotations)
+            if cached_samples:
+                chunks = [
+                    np.fromfile(path, dtype=np.float32)
+                    for path in track.segments
+                    if path.exists() and path.stat().st_size
+                ]
+                if chunks:
+                    existing_audio = np.ascontiguousarray(np.concatenate(chunks), dtype=np.float32)
+
+            prefix_audio = [
+                np.zeros(_HOP_SAMPLES, dtype=np.float32)
+                if item.waveform is None
+                else np.asarray(item.waveform, dtype=np.float32)
+                for item in prefix
+            ]
+            prefix_observed = [bool(item.observed) for item in prefix]
+            if existing_start is not None and prefix[-1].end_sample < existing_start:
+                gap = existing_start - prefix[-1].end_sample
+                if gap % _HOP_SAMPLES:
+                    raise ValueError("Test UI backfill gap must align to 20 ms")
+                prefix_audio.extend(
+                    np.zeros(_HOP_SAMPLES, dtype=np.float32)
+                    for _ in range(gap // _HOP_SAMPLES)
+                )
+                prefix_observed.extend(False for _ in range(gap // _HOP_SAMPLES))
+
+            self._delete_track_segments(track)
+            track.total_hops = 0
+            track.sound_hops = 0
+            self._append_audio(
+                track,
+                np.ascontiguousarray(np.concatenate(prefix_audio), dtype=np.float32),
+                observed_hops=tuple(prefix_observed),
+            )
+            if len(existing_audio):
+                self._append_audio(track, existing_audio)
+                prefix_annotations = len(prefix_audio)
+                track.voice_annotations = deque(
+                    (None,) * prefix_annotations + existing_annotations
+                )
+                track.last_emitted_decision_sample = existing_end
+            else:
+                track.last_emitted_decision_sample = prefix[-1].end_sample
+            track.theta_deg = float(getattr(authoritative_track, "theta_deg"))
+            track.score = float(getattr(authoritative_track, "normalized_score"))
+            track.last_seen_sample = int(
+                getattr(authoritative_track, "decision_sample", prefix[-1].end_sample)
+            )
+            track.state = "active"
+            return self.snapshots()
+
     def required_context_track_ids(
         self,
         session_id: str,

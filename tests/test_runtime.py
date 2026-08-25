@@ -218,6 +218,63 @@ def test_runtime_has_no_obsolete_iterative_peak_search_switch(tmp_path):
     assert not hasattr(runtime, "set_iterative_peak_search_enabled")
 
 
+def test_first_confirmed_id_queues_only_pre_birth_one_second_backfill(tmp_path):
+    runtime = ApplicationRuntime(
+        load_config(CONFIG, environ={}), project_root=tmp_path,
+        pipeline=StubPipeline([]), serial_device=StubSerial(),
+    )
+    windows = tuple(
+        DecisionWindow(
+            "backfill-session", 0, index, decision,
+            decision - 1_920, decision, decision - 7_680, decision,
+            48_000, np.zeros((7_680, 8), np.float32), (index,),
+        )
+        for index, decision in enumerate((7_680, 8_640, 9_600, 10_560))
+    )
+    for window in windows:
+        runtime._remember_confirmed_backfill_window(window)
+    track = TrackedDirection(
+        "backfill-session", 0, 3, 10_560, 8_640, 10_560,
+        7, 1, 32.0, 30.0, 1.0, 0.9, "confirmed", True, False,
+        9_600, 10_560, 0, True,
+    )
+    item = SimpleNamespace(key=SimpleNamespace(
+        session_id="backfill-session", stream_epoch=0, decision_sample=10_560,
+    ))
+
+    runtime._schedule_confirmed_backfill(
+        item, (track,), processing_mode=L3_MODE_OPTIMIZED,
+        l2_direction_count=1,
+    )
+    queued = runtime._confirmed_backfill_work.get_nowait()
+    runtime._schedule_confirmed_backfill(
+        item, (track,), processing_mode=L3_MODE_OPTIMIZED,
+        l2_direction_count=1,
+    )
+
+    assert tuple(window.decision_sample for window in queued.windows) == (7_680, 8_640)
+    assert queued.track is track
+    assert runtime._confirmed_backfill_work.empty()
+    layer3 = _CapturingLayer3()
+    runtime._layer3_backfill = layer3
+    runtime.downstream_window_spec = SimpleNamespace(samples=7_680, decision_hops=8)
+    runtime.track_audio_stream.observe_l2(
+        identity=("backfill-session", 0, 3, 10_560),
+        active_tracks=(track,), processing_mode=L3_MODE_OPTIMIZED,
+        l2_direction_count=1,
+    )
+    runtime._process_confirmed_backfill(queued)
+    sealed = runtime.track_audio_stream.seal()[0]
+
+    assert tuple(
+        candidate.theta_deg
+        for candidates, _mode in layer3.calls
+        for candidate in candidates
+    ) == (30.0, 30.0)
+    assert sealed.start_sample == 5_760
+    runtime.close()
+
+
 def test_processing_status_exposes_input_discontinuity_reason(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
@@ -698,6 +755,10 @@ class _CapturingLayer3:
     def __init__(self, *, fail=False):
         self.calls = []
         self.fail = fail
+
+    @staticmethod
+    def clear_cache():
+        return None
 
     def process(self, window, candidates, geometry, *, mode):
         self.calls.append((tuple(candidates), mode))

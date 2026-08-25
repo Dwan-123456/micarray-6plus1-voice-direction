@@ -126,6 +126,71 @@ def test_tentative_l3_audio_is_hidden_then_backfilled_when_same_id_confirms(tmp_
     assert hub.seal(allowed_track_keys=set()) == ()
 
 
+def test_confirmed_backfill_inserts_only_missing_absolute_hops_and_live_wins() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+    )
+    confirmed = _active(state="confirmed")
+    hub.observe_l2(
+        identity=_identity(7_680), active_tracks=(confirmed,),
+        processing_mode="optimized", l2_direction_count=1,
+    )
+    live = hub.process(
+        (_window(7_680, level=0.03),), active_track_ids=(7,),
+        identity=_identity(7_680), l2_direction_count=1,
+    )
+    historical = (_window(5_760, level=0.01), _window(6_720, level=0.02))
+
+    inserted = hub.insert_backfill(
+        (*historical, _window(7_680, level=0.99)),
+        l2_direction_count=1,
+    )
+    sealed = hub.seal()[0]
+
+    assert tuple((item.start_sample, item.end_sample) for item in inserted) == (
+        (3_840, 4_800), (4_800, 5_760),
+    )
+    assert sealed.start_sample == 3_840
+    assert len(sealed.waveform) == 3 * 960
+    np.testing.assert_array_equal(sealed.waveform[-960:], live.emitted_hops[0].waveform)
+
+
+def test_test_ui_prepends_confirmed_backfill_to_existing_id_track(tmp_path) -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False), context_ms=160,
+    )
+    tracker = AudioIdTracker(
+        "cache", project_root=tmp_path, downstream_window_samples=3_840,
+    )
+    confirmed = _active(state="confirmed")
+    hub.observe_l2(
+        identity=_identity(7_680), active_tracks=(confirmed,),
+        processing_mode="optimized", l2_direction_count=1,
+    )
+    live = hub.process(
+        (_window(7_680, level=0.03),), active_track_ids=(7,),
+        identity=_identity(7_680), l2_direction_count=1,
+    )
+    tracker.consume_stream_batch(live, active_tracks=(confirmed,))
+    inserted = hub.insert_backfill(
+        (_window(5_760, level=0.01), _window(6_720, level=0.02)),
+        l2_direction_count=1,
+    )
+
+    rows = tracker.prepend_backfill_hops(
+        inserted, authoritative_track=confirmed, processing_mode="optimized",
+    )
+    playback = np.asarray(
+        np.memmap(tracker.audio_cache_path(7), dtype=np.float32, mode="r")
+    )
+
+    assert rows[0].audio_sample_count == 3 * 960
+    np.testing.assert_array_equal(playback[:2 * 960], np.concatenate([
+        item.waveform for item in inserted
+    ]))
+    np.testing.assert_array_equal(playback[-960:], live.emitted_hops[0].waveform)
+
+
 def test_hub_seals_complete_long_audio_with_aligned_l2_direction_counts() -> None:
     hub = TrackAudioStreamHub(InputGainCompensationSettings(enabled=False), context_ms=60)
     for index, decision in enumerate((7_680, 8_640, 9_600, 10_560)):

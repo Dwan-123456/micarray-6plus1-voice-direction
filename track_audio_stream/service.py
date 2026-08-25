@@ -395,6 +395,136 @@ class TrackAudioStreamHub:
             tuple(emitted), tuple(contexts), active,
         )
 
+    def missing_backfill_windows(
+        self,
+        windows: tuple[TrackAudioWindow, ...],
+    ) -> tuple[TrackAudioWindow, ...]:
+        """Return only historical canonical slots not already produced live."""
+
+        windows = tuple(sorted(windows, key=lambda item: item.decision_sample))
+        if not windows:
+            return ()
+        key = (windows[0].session_id, windows[0].stream_epoch, windows[0].track_id)
+        mode = windows[0].processing_mode
+        if any(
+            (item.session_id, item.stream_epoch, item.track_id) != key
+            or item.processing_mode != mode
+            for item in windows
+        ):
+            raise ValueError("backfill windows must belong to one exact ID and L3 mode")
+        with self._lock:
+            existing = {
+                item.start_sample
+                for item in self._archive.get(key, ())
+                if self._archive_modes.get(key, mode) == mode
+            }
+            return tuple(
+                item
+                for item in windows
+                if item.decision_sample - 2 * _HOP_SAMPLES not in existing
+            )
+
+    def missing_backfill_decisions(
+        self,
+        *,
+        session_id: str,
+        stream_epoch: int,
+        track_id: int,
+        processing_mode: str,
+        decision_samples: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        """Filter raw historical decisions before the expensive BF pass."""
+
+        key = (str(session_id), int(stream_epoch), int(track_id))
+        if not processing_mode:
+            raise ValueError("backfill L3 mode must be non-empty")
+        with self._lock:
+            occupied = {item.start_sample for item in self._archive.get(key, ())}
+            return tuple(
+                int(decision)
+                for decision in decision_samples
+                if int(decision) - 2 * _HOP_SAMPLES not in occupied
+            )
+
+    def insert_backfill(
+        self,
+        windows: tuple[TrackAudioWindow, ...],
+        *,
+        l2_direction_count: int,
+    ) -> tuple[TrackAudioHop, ...]:
+        """Insert missing historical BF hops without replacing live results.
+
+        Backfill uses the same absolute 20 ms grid as realtime stitching.  An
+        already archived live hop always wins an overlap; only absent slots are
+        compensated and inserted before final L4 sealing.
+        """
+
+        if type(l2_direction_count) is not int or l2_direction_count not in {0, 1, 2, 3}:
+            raise ValueError("L2 direction count must be 0, 1, 2 or 3")
+        windows = tuple(sorted(windows, key=lambda item: item.decision_sample))
+        if not windows:
+            return ()
+        key = (windows[0].session_id, windows[0].stream_epoch, windows[0].track_id)
+        mode = windows[0].processing_mode
+        if any(
+            (item.session_id, item.stream_epoch, item.track_id) != key
+            or item.processing_mode != mode
+            for item in windows
+        ):
+            raise ValueError("backfill windows must belong to one exact ID and L3 mode")
+
+        emitted: list[TrackAudioHop] = []
+        with self._lock:
+            timeline = self._l2_timelines.get(key)
+            if timeline is None or not timeline.ever_formal:
+                raise ValueError("backfill requires an already confirmed authoritative ID")
+            if self._archive.get(key) and self._archive_modes.get(key) != mode:
+                return ()
+            archive = self._archive.setdefault(key, [])
+            occupied = {item.start_sample for item in archive}
+            previous_gain_db = 0.0
+            previous_end: int | None = None
+            for window in windows:
+                source_decision = window.decision_sample
+                start_sample = source_decision - 2 * _HOP_SAMPLES
+                end_sample = source_decision - _HOP_SAMPLES
+                if start_sample in occupied:
+                    continue
+                recovered = self._extract_hop(window, source_decision)
+                if recovered is None:
+                    continue
+                audio, probability = recovered
+                if previous_end is not None and start_sample != previous_end:
+                    previous_gain_db = 0.0
+                compensated, diagnostic = compensate_l5_input(
+                    audio,
+                    (probability,),
+                    self.settings,
+                    segment_count=1,
+                    initial_gain_db=previous_gain_db,
+                )
+                previous_gain_db = diagnostic.final_gain_db
+                archived = _ArchivedHop(
+                    start_sample,
+                    end_sample,
+                    window.theta_deg,
+                    l2_direction_count,
+                    np.frombuffer(compensated.tobytes(), dtype=np.float32),
+                )
+                archive.append(archived)
+                occupied.add(start_sample)
+                previous_end = end_sample
+                timeline.first_start_sample = min(timeline.first_start_sample, start_sample)
+                timeline.direction_counts.setdefault(end_sample, l2_direction_count)
+                emitted.append(TrackAudioHop(
+                    key[0], key[1], key[2], start_sample, end_sample,
+                    compensated, probability, True,
+                ))
+            archive.sort(key=lambda item: item.start_sample)
+            if archive:
+                self._archive_modes[key] = mode
+            return tuple(emitted)
+
     def finalize_missing_hops(self) -> tuple[TrackAudioHop, ...]:
         """Emit exact-duration silent tail slots through each L2-authoritative end."""
 
