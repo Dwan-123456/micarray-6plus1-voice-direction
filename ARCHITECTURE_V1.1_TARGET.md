@@ -70,7 +70,7 @@ ResultJoiner：按WindowKey有序合并L2/L3/L5审计终态
 
 停止采集并完全排空实时队列
     ↓ TrackAudioStreamHub.seal()：每个权威ID一条完整48 kHz长轨
-L4：Test UI手动提交，统一48→16 kHz并完成一/二人路由、分离和匹配
+L4：L3长轨封存后由Test UI自动提交，统一48→16 kHz并完成一/二人路由、分离和匹配
     → 人数=min(2, 整轨L2方向数最大值)
     → 一人旁路；二人使用MossFormer2或TIGER
     → 合并开启：1～4 kHz复频谱相干匹配或低可信回退L3参考
@@ -105,7 +105,7 @@ flowchart LR
     HUB --> TRACK["同一补偿后连续48 kHz轨"]
     TRACK --> UI["Test UI试听"]
     TRACK --> REC["Recording/Data按ID轨"]
-    TRACK -->|"停机封存后手动发送"| L4["L4 48→16 kHz<br/>分离与匹配"]
+    TRACK -->|"停机封存后自动提交"| L4["L4 48→16 kHz<br/>分离与匹配"]
     L4 --> L4UI["16 kHz WAV试听"]
     L4 -->|"整批完成后自动"| NV["16 kHz直接进入<br/>NVIDIA Frame-VAD"]
     NV --> L5["逐20 ms原始概率<br/>返回L4预览标黄"]
@@ -284,7 +284,7 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 ## 12. Development Test UI 与逐 ID 试听
 
 - Test UI不拥有独立的音频窗口配置；面板文字、单窗试听波形和按ID恢复范围全部使用Runtime注入的同一40/80/160 ms派生规格。当前按钮显示40 ms。
-- 下半区按L3、L4、L5三等分。L3栏播放Hub长音频并提供“发送到L4”；L4栏保存输出WAV，以原ID/角度提供同样的波形和试听，整批完成后自动运行L5；L5栏显示该次自动CNN处理结果。
+- 下半区按L3、L4/L5、L6三等分。L3栏播放Hub长音频且不提供手动发送按钮；L3完全排空并由Hub封存后，Test UI按L4栏预选模型自动提交。L4栏保存输出WAV并提供波形和试听，整批完成后自动运行L5及L6；L6栏显示本批自动声纹归并结果。
 - L3方向轨不得再绘制L5语义颜色。使用当前Test UI阈值重判后，Voice黄色背景只绘制在对应L4音频条；Non-Voice和未发送L5的L4音频保持默认底色。滑块只读取已有概率，不重跑CNN。
 
 - 删除 “Iterative Multiple Peak” 开关。Development Test UI保留一个默认开启、持久化的`ID Tracking`诊断开关：开启时显示并发布L2权威ID；关闭时只显示360点MUSIC伪谱和原始峰值灰色小点，清空追踪状态，并将该窗L3/L5正常标记为`SKIPPED`，不得把原始峰值当作下游ID。重新开启后从新的权威ID状态开始。

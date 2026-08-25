@@ -291,6 +291,7 @@ def build_window(
             self._eof_stop_submitted = False
             self._audio_source_key = None
             self._offline_l4_pipeline = None
+            self._offline_l4_auto_submitted = False
             self._l4_processed = ()
             self._l5_results = ()
             self._l6_result = None
@@ -339,7 +340,6 @@ def build_window(
             self.bf_panel.gain_compensation_changed.connect(
                 self._set_l5_input_gain_compensation
             )
-            self.bf_panel.send_requested.connect(self._send_l3_to_l4)
             self.bf_panel.set_processing_mode(runtime.l3_processing_mode)
             self.bf_panel.set_downstream_processing_enabled(
                 runtime.downstream_processing_enabled
@@ -557,13 +557,6 @@ def build_window(
                 "QLabel { background:#202a34; color:#9fb2c5; padding:0 8px; "
                 "font-family:Consolas; font-weight:600; }"
             )
-            self.doa_method = QLabel("DOA方法：MUSIC")
-            self.doa_method.setMinimumHeight(38)
-            self.doa_method.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.doa_method.setStyleSheet(
-                "QLabel { background:#245c99; color:white; font-weight:600; }"
-            )
-            right_layout.addWidget(self.doa_method)
             right_layout.addWidget(self.gate_threshold)
             processing_switches = QHBoxLayout()
             processing_switches.setContentsMargins(0, 0, 0, 0)
@@ -764,12 +757,10 @@ def build_window(
             except Exception as exc:
                 if name in {"灯光开", "灯光关"}:
                     self.light_label.setText("状态: Error")
-                elif name == "L3发送到L4":
-                    self.bf_panel.set_send_enabled(True)
+                elif name == "自动运行L4/L5":
                     self.l4_panel.set_processing(f"L4失败：{exc}")
                 elif name == "自动运行L6":
                     self.l6_panel.set_error(str(exc))
-                    self.bf_panel.set_send_enabled(True)
                 self.statusBar().showMessage(f"{name}失败: {exc}", 10000)
             self._update_control_states()
 
@@ -791,7 +782,7 @@ def build_window(
             self.gate_readout.set_unavailable("WARMING")
             self.music_status.setText("MUSIC order=—  output=—  valid=—  status=WARMING")
             self.cnn_panel.set_unavailable("WARMING: waiting for completed L5 window")
-            self.bf_panel.set_send_enabled(False)
+            self._offline_l4_auto_submitted = False
             self.l4_panel.clear_tracks()
             self._l4_store.clear()
             self._offline_l4_pipeline = None
@@ -822,10 +813,6 @@ def build_window(
                     status = status[:-6]
                 self.music_status.setText(f"{status} STOPPED")
             self.cnn_panel.set_unavailable("STOPPED")
-            try:
-                self.bf_panel.set_send_enabled(bool(runtime.offline_l4_sources))
-            except RuntimeError:
-                self.bf_panel.set_send_enabled(False)
             self.l1_header.setText("STOPPED | capture closed | age —")
             if self._l2_frame is not None and self._l2_frame.spatial_response is not None:
                 response = self._l2_frame.spatial_response
@@ -835,6 +822,7 @@ def build_window(
                 )
             else:
                 self.srp_header.setText("STOPPED | no completed SRP window | age —")
+            self._start_automatic_l4_if_ready()
 
         def _light_command(self, enabled: bool):
             self.light_label.setText("状态: Pending")
@@ -939,8 +927,8 @@ def build_window(
             self._clear_replay_results()
             # Every replay pass must submit its own EOF drain/stop.  Keeping
             # the previous pass' marker leaves Runtime active after the next
-            # EOF, so TrackAudioStreamHub never seals and Send to L4 remains
-            # disabled indefinitely.
+            # EOF, so TrackAudioStreamHub never seals and automatic L4 cannot
+            # start.
             self._eof_stop_submitted = False
             runtime.reset_pipeline_total_durations()
             # Stop new L1 admission before the background command discards all
@@ -1185,10 +1173,26 @@ def build_window(
                 self.l6_panel.sync_track_playback_stopped()
                 self.statusBar().showMessage(f"L6试听失败：{error}", 5000)
 
-        def _send_l3_to_l4(self):
+        def _start_automatic_l4_if_ready(self) -> bool:
+            if (
+                self._offline_l4_auto_submitted
+                or self._pending_command is not None
+                or runtime.active
+            ):
+                return False
+            try:
+                sources = runtime.offline_l4_sources
+            except RuntimeError:
+                return False
+            if not sources:
+                return False
+            self._offline_l4_auto_submitted = True
+            self._start_automatic_l4()
+            return True
+
+        def _start_automatic_l4(self):
             self.preview_player.close()
             self._audio_source_key = None
-            self.bf_panel.set_send_enabled(False)
             # A submission is a complete replacement, not an append.  Clear
             # both the visible rows and their backing preview files before the
             # selected offline L4 backend starts another pass over sealed L3.
@@ -1252,7 +1256,6 @@ def build_window(
                     )
                     self.l4_panel.set_l5_error(str(l5_error))
                     self.cnn_panel.set_unavailable(f"L5失败：{l5_error}")
-                    self.bf_panel.set_send_enabled(True)
                     return
                 self._l4_store.apply_l5(l5_results)
                 self._l5_results = tuple(l5_results)
@@ -1273,7 +1276,7 @@ def build_window(
                 ))
                 self._start_automatic_l6(tuple(l5_results))
 
-            self._submit_command("L3发送到L4", process_l4_and_l5, completed)
+            self._submit_command("自动运行L4/L5", process_l4_and_l5, completed)
 
         def _start_automatic_l6(self, l5_results):
             l5_results = tuple(l5_results)
@@ -1281,7 +1284,6 @@ def build_window(
                 self._offline_stage_durations_seconds["l6"] = 0.0
                 self.l6_panel.clear_tracks("L6完成：0个声纹（无L4/L5候选）")
                 self._refresh_total_duration_text()
-                self.bf_panel.set_send_enabled(True)
                 return
             self.preview_player.close()
             self._audio_source_key = None
@@ -1301,7 +1303,6 @@ def build_window(
                 self._l6_store.set_result(result)
                 self.l6_panel.set_tracks(self._l6_store.snapshots())
                 self._refresh_total_duration_text()
-                self.bf_panel.set_send_enabled(True)
 
             self._submit_command("自动运行L6", process_l6, completed)
 

@@ -1273,7 +1273,7 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert len(window.meter_bars) == 8
         assert all(bar.minimum() == -60 and bar.maximum() == 0 for bar in window.meter_bars)
         assert all(bar.value() == -60 for bar in window.meter_bars)
-        assert window.bf_panel.send.text() == "发送到L4"
+        assert not hasattr(window.bf_panel, "send")
         assert not hasattr(window.l4_panel, "send")
         assert set(window.l4_panel.backend_buttons) == {
             "mossformer2_ss_16k", "tiger_speech_16k",
@@ -1289,7 +1289,6 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
                 window.bf_panel.mode_switch,
                 window.bf_panel.downstream_switch,
                 window.bf_panel.gain_compensation,
-                window.bf_panel.send,
             )
         )
         assert window.performance_bar.height() == 56
@@ -1305,15 +1304,14 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert not hasattr(window, "calibration_label")
         assert window.srp_threshold.parentWidget() is not window.srp_polar
         right_layout = window.srp_threshold.parentWidget().layout()
-        assert right_layout.indexOf(window.doa_method) == 0
-        assert window.doa_method.text() == "DOA方法：MUSIC"
-        assert right_layout.indexOf(window.gate_threshold) == 1
+        assert not hasattr(window, "doa_method")
+        assert right_layout.indexOf(window.gate_threshold) == 0
         assert not hasattr(window, "srp_iterative")
         assert window.srp_id_tracking.text() == "ID Tracking"
         expected_id_colour = "#16794b" if window.srp_id_tracking.isChecked() else "#5b6570"
         assert expected_id_colour in window.srp_id_tracking.styleSheet()
         assert not hasattr(window, "direction_table")
-        processing_switches = right_layout.itemAt(2).layout()
+        processing_switches = right_layout.itemAt(1).layout()
         assert processing_switches is not None
         assert processing_switches.indexOf(window.srp_id_tracking) == 0
         assert processing_switches.indexOf(window.music_dpd_rank1) == 1
@@ -1333,15 +1331,15 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
             assert expected_colour in switch.styleSheet()
         assert not hasattr(window, "srp_kalman_q")
         assert not hasattr(window, "srp_kalman_r")
-        assert right_layout.indexOf(window.gate_readout) == 3
-        assert right_layout.indexOf(window.music_status) == 4
-        order_tracking_row = right_layout.itemAt(5).layout()
+        assert right_layout.indexOf(window.gate_readout) == 2
+        assert right_layout.indexOf(window.music_status) == 3
+        order_tracking_row = right_layout.itemAt(4).layout()
         assert order_tracking_row is not None
         assert order_tracking_row.indexOf(window.music_order_limit) == 0
         assert order_tracking_row.count() == 1
         assert window.music_order_limit.maximumWidth() == 185
         assert window.music_order_limit.combo.width() == 64
-        assert right_layout.indexOf(window.srp_threshold) == 6
+        assert right_layout.indexOf(window.srp_threshold) == 5
         decision = ProbabilityGateDecision(
             "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
             0.55, 0.75, 0.65, 0.60, 4, True, "probability_at_or_above_threshold",
@@ -1384,7 +1382,7 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         app.processEvents()
 
 
-def test_l3_repeated_l4_runs_are_unmerged_and_each_automatically_refreshes_l6(monkeypatch):
+def test_l3_repeated_automatic_l4_runs_are_unmerged_and_each_refreshes_l6(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from gui.dev_test_ui.app import build_window
@@ -1465,7 +1463,7 @@ def test_l3_repeated_l4_runs_are_unmerged_and_each_automatically_refreshes_l6(mo
             return "l6-result"
 
     def submit_immediately(name, command, on_success=None):
-        assert name in {"L3发送到L4", "自动运行L6"}
+        assert name in {"自动运行L4/L5", "自动运行L6"}
         submissions.append(name)
         value = command()
         if on_success is not None:
@@ -1485,9 +1483,7 @@ def test_l3_repeated_l4_runs_are_unmerged_and_each_automatically_refreshes_l6(mo
             lambda: FakeL6Pipeline(),
         )
         monkeypatch.setattr(window, "_submit_command", submit_immediately)
-        window.bf_panel.set_send_enabled(True)
-
-        window._send_l3_to_l4()
+        window._start_automatic_l4()
         one_run = [
             "l4-clear", "l6-clear", "l4-process", "l5-process", "l4-write",
             "l5-write", "l6-clear", "l6-process", "l6-write",
@@ -1495,24 +1491,50 @@ def test_l3_repeated_l4_runs_are_unmerged_and_each_automatically_refreshes_l6(mo
         assert events == one_run
         assert window._offline_stage_durations_seconds == {"l4": 2.5, "l5": 4.0, "l6": 3.0}
         assert "L4 2.50 s | L5 4.00 s | L6 3.00 s" in window.performance_bar.text()
-        assert window.bf_panel.send.isEnabled()
         assert window.l4_panel.summary.text() == "完成：0条未合并候选"
         assert window.l6_panel.summary.text() == "L6完成：0个声纹"
 
-        window._send_l3_to_l4()
+        window._start_automatic_l4()
         assert events == one_run * 2
         assert window._offline_stage_durations_seconds == {"l4": 1.0, "l5": 2.0, "l6": 4.0}
         assert "L4 1.00 s | L5 2.00 s | L6 4.00 s" in window.performance_bar.text()
-        assert window.bf_panel.send.isEnabled()
 
-        window._send_l3_to_l4()
+        window._start_automatic_l4()
         assert events == one_run * 3
         assert merge_modes == [False, False, False]
-        assert submissions == ["L3发送到L4", "自动运行L6"] * 3
+        assert submissions == ["自动运行L4/L5", "自动运行L6"] * 3
         assert window._offline_stage_durations_seconds == {"l4": 3.0, "l5": 5.0, "l6": 6.0}
         assert "未合并候选" in window.l4_panel.summary.text()
         assert window.l4_panel.summary.text() == "完成：0条未合并候选"
-        assert window.bf_panel.send.isEnabled()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_stopped_sealed_l3_automatically_submits_l4_once_per_batch(monkeypatch):
+    pytest.importorskip("PySide6")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    submissions = []
+    monkeypatch.setattr(
+        type(window._runtime),
+        "offline_l4_sources",
+        property(lambda _self: (object(),)),
+    )
+    monkeypatch.setattr(
+        window,
+        "_start_automatic_l4",
+        lambda: submissions.append("l4"),
+    )
+    try:
+        window._enter_stopped_state()
+        window._enter_stopped_state()
+        assert submissions == ["l4"]
+
+        window._enter_starting_state()
+        window._enter_stopped_state()
+        assert submissions == ["l4", "l4"]
     finally:
         window.close()
         app.processEvents()

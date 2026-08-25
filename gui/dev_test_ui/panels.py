@@ -290,7 +290,6 @@ class BeamformPanel(QGroupBox):
     mode_change_requested = Signal(str)
     downstream_processing_changed = Signal(bool)
     gain_compensation_changed = Signal(bool)
-    send_requested = Signal()
 
     def __init__(
         self, config, gain_compensation_enabled: bool = True,
@@ -329,15 +328,10 @@ class BeamformPanel(QGroupBox):
         self.gain_compensation.enabled_changed.connect(
             self.gain_compensation_changed.emit
         )
-        self.send = QPushButton("发送到L4")
-        self.send.setEnabled(False)
-        self.send.setToolTip("停止采集并等待L3完全排空后，将Hub封存的长音频发送到L4。")
-        self.send.clicked.connect(self.send_requested.emit)
         preview_controls.addWidget(self.preview_summary, 1)
         preview_controls.addWidget(self.mode_switch)
         preview_controls.addWidget(self.downstream_switch)
         preview_controls.addWidget(self.gain_compensation)
-        preview_controls.addWidget(self.send)
         self._equalize_header_control_sizes()
         layout.addLayout(preview_controls)
         self.track_scroll = QScrollArea()
@@ -368,7 +362,6 @@ class BeamformPanel(QGroupBox):
             self.mode_switch,
             self.downstream_switch,
             self.gain_compensation,
-            self.send,
         )
         action_size = _l1_action_button_size(self)
         for control in controls:
@@ -573,10 +566,6 @@ class BeamformPanel(QGroupBox):
         for row in self._track_rows.values():
             row.set_voice_threshold(value)
 
-    def set_send_enabled(self, enabled: bool) -> None:
-        self.send.setEnabled(bool(enabled))
-
-
 class Layer4AudioPanel(QGroupBox):
     track_play_requested = Signal(int)
     track_stop_requested = Signal()
@@ -603,7 +592,7 @@ class Layer4AudioPanel(QGroupBox):
         for backend, label in self.BACKEND_LABELS.items():
             button = QPushButton(label)
             button.setCheckable(True)
-            button.setToolTip(f"下一次发送到L4时使用{label}模型")
+            button.setToolTip(f"下一批L3封存后自动使用{label}模型")
             button.clicked.connect(
                 lambda checked=False, value=backend: self._select_backend(value)
             )
