@@ -697,6 +697,7 @@ def test_gate_blocked_frame_clears_previous_polar_snapshot(monkeypatch, tmp_path
     config_path.write_text(CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
     app, window = build_window(config_path)
     try:
+        assert not window.isVisible()
         window.srp_polar._snapshot = object()
         window._last_rendered_window = ("old-session", 0, 7)
 

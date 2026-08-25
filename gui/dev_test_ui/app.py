@@ -142,6 +142,7 @@ def build_window(
     input_wav: str | Path | None = None,
     replay_recording: str | Path | None = None,
     auto_start: bool = False,
+    show_window: bool = False,
 ):
     try:
         from PySide6.QtCore import QSignalBlocker, QTimer, Qt
@@ -1873,7 +1874,13 @@ def build_window(
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MainWindow()
-    window.showFullScreen() if config.dev_test_ui.start_fullscreen else window.showMaximized()
+    window.setWindowState(
+        Qt.WindowState.WindowFullScreen
+        if config.dev_test_ui.start_fullscreen
+        else Qt.WindowState.WindowMaximized
+    )
+    if show_window:
+        window.show()
     if auto_start:
         QTimer.singleShot(0, window._start_capture)
     return app, window
@@ -1891,6 +1898,7 @@ def main() -> int:
         input_wav=args.input_wav,
         replay_recording=args.replay_recording,
         auto_start=args.auto_start,
+        show_window=True,
     )
     return app.exec()
 
