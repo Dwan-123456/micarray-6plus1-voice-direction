@@ -1162,9 +1162,10 @@ def build_window(
                 # Release a possibly mapped playback snapshot first on Windows.
                 self.preview_player.close()
                 self._audio_source_key = None
-                self.bf_panel.clear_tracks()
 
             def started(_result):
+                if live_microphone_mode:
+                    self.bf_panel.clear_tracks()
                 self.bf_panel.set_downstream_processing_enabled(
                     runtime.downstream_processing_enabled
                 )
@@ -1983,7 +1984,10 @@ def build_window(
                 self._last_rendered_window = None
 
         def _render_frame(self, frame, *, render_l2=True, render_l5=True):
-            self.bf_panel.set_tracks(getattr(frame, "tracked_audio", ()))
+            self.bf_panel.set_tracks(
+                getattr(frame, "tracked_audio", ()),
+                show_center_references=not runtime.runtime_recording_active,
+            )
             self.bf_panel.set_previews(
                 frame.previews if runtime.downstream_processing_enabled else (),
                 missing_reason=(

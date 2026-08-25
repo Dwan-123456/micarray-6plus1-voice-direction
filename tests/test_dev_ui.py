@@ -1976,6 +1976,15 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         assert set(window.bf_panel._track_rows) == {-1, 0, 3}
         assert set(window.bf_panel._track_snapshots) == {-1, 0, 3}
 
+        # Formal recording hides both Center listening references while
+        # retaining the directional tracks produced after the boundary.
+        window.bf_panel.set_tracks(
+            (longer, reference, imcra), show_center_references=False,
+        )
+        app.processEvents()
+        assert set(window.bf_panel._track_rows) == {3}
+        assert set(window.bf_panel._track_snapshots) == {3}
+
         next_session = TrackedAudioSnapshot(
             "next", 0, 0, "active", 0.0, 0.0, 48_000,
         )

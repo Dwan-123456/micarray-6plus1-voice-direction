@@ -472,8 +472,14 @@ class BeamformPanel(QGroupBox):
     def set_unavailable(self, reason: str) -> None:
         self.preview_summary.setText(reason)
 
-    def set_tracks(self, tracks) -> None:
+    def set_tracks(self, tracks, *, show_center_references: bool = True) -> None:
         all_tracks = tuple(tracks)
+        if not show_center_references:
+            all_tracks = tuple(
+                item
+                for item in all_tracks
+                if item.track_id not in {CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID}
+            )
         streams = {
             (item.session_id, item.stream_epoch) for item in all_tracks
         }
@@ -490,7 +496,7 @@ class BeamformPanel(QGroupBox):
         # filtered together with their cache files, so their previously drawn
         # waveform rows must not remain as unplayable UI ghosts.  Empty/error
         # projections still retain the last good rows.
-        if CENTER_RAW_TRACK_ID in incoming_ids:
+        if not show_center_references or CENTER_RAW_TRACK_ID in incoming_ids:
             removed_ids = set(self._track_rows) - incoming_ids
             if self._playing_track_id in removed_ids:
                 self._playing_track_id = None
