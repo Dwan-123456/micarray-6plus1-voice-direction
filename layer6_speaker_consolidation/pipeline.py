@@ -15,6 +15,7 @@ from .contracts import (
 )
 from .models import CampPlusEmbedder
 from .matching import TrackMatchFeatures, hungarian_track_features
+from .multistage import MultiStageSnapshot, MultiStageVoiceprintClusterer, SegmentEvidence
 
 
 _MINIMUM_VOICEPRINT_SAMPLES = 8_000
@@ -32,6 +33,11 @@ class Layer6Configuration(Protocol):
     secondary_candidate_match_min: float
     secondary_candidate_mos_min: float
     maximum_internal_silence_ms: int
+    clustering_backend: str
+    multistage_fallback_distance: float
+    multistage_l: int
+    multistage_u1: int
+    multistage_u2: int
 
 
 @dataclass(slots=True)
@@ -42,7 +48,9 @@ class _VoiceprintAudio:
     mos_score: float
     waveform: np.ndarray
     embedding: np.ndarray
+    all_segment_embeddings: np.ndarray
     segment_embeddings: np.ndarray
+    segment_sample_counts: tuple[int, ...]
     voice_sample_count: int
     segment_count: int
     retained_segment_count: int
@@ -214,6 +222,8 @@ class OfflineLayer6Pipeline:
     def __init__(self, embedder: CampPlusEmbedder, config: Layer6Configuration) -> None:
         self.embedder = embedder
         self.config = config
+        self._streaming_clusterer: MultiStageVoiceprintClusterer | None = None
+        self._streaming_session_id: str | None = None
 
     @staticmethod
     def _validate_results(
@@ -282,6 +292,8 @@ class OfflineLayer6Pipeline:
         branch_index: int,
         match_score: float,
         mos_score: float,
+        *,
+        include_partial_segment: bool,
     ) -> _VoiceprintAudio | None:
         waveform = np.asarray(result.metadata.get("output_waveform_16k"))
         if (
@@ -299,6 +311,7 @@ class OfflineLayer6Pipeline:
         if len(voice_waveform) < _MINIMUM_VOICEPRINT_SAMPLES:
             return None
         segments = []
+        segment_sample_counts: list[int] = []
         for start in range(0, len(voice_waveform), _VOICEPRINT_SEGMENT_SAMPLES):
             segment = np.ascontiguousarray(
                 voice_waveform[start:start + _VOICEPRINT_SEGMENT_SAMPLES],
@@ -306,7 +319,10 @@ class OfflineLayer6Pipeline:
             )
             if len(segment) < _MINIMUM_VOICEPRINT_SAMPLES:
                 continue
+            if len(segment) < _VOICEPRINT_SEGMENT_SAMPLES and not include_partial_segment:
+                continue
             segments.append(segment)
+            segment_sample_counts.append(len(segment))
         if not segments:
             return None
         batch_embed = getattr(self.embedder, "embed_batch", None)
@@ -326,10 +342,95 @@ class OfflineLayer6Pipeline:
             mos_score=mos_score,
             waveform=np.ascontiguousarray(waveform, dtype=np.float32),
             embedding=embedding,
+            all_segment_embeddings=all_embeddings,
             segment_embeddings=retained_embeddings,
+            segment_sample_counts=tuple(segment_sample_counts),
             voice_sample_count=len(voice_waveform),
             segment_count=len(all_embeddings),
             retained_segment_count=len(retained_embeddings),
+        )
+
+    @staticmethod
+    def _multistage_evidence(
+        items: tuple[_VoiceprintAudio, ...],
+    ) -> tuple[SegmentEvidence, ...]:
+        evidence: list[tuple[tuple[int, int, int, int], SegmentEvidence]] = []
+        for item in items:
+            source = item.result.source
+            track_key = (
+                f"{source.session_id}:epoch{source.stream_epoch}:"
+                f"track{source.track_id}:branch{item.branch_index}"
+            )
+            for segment_index, (embedding, sample_count) in enumerate(zip(
+                item.all_segment_embeddings,
+                item.segment_sample_counts,
+                strict=True,
+            )):
+                evidence_id = f"{track_key}:segment{segment_index}"
+                order = (
+                    item.start_sample_48k,
+                    source.track_id,
+                    item.branch_index,
+                    segment_index,
+                )
+                evidence.append((order, SegmentEvidence(
+                    evidence_id,
+                    track_key,
+                    embedding,
+                    sample_count,
+                )))
+        return tuple(value for _, value in sorted(evidence, key=lambda pair: pair[0]))
+
+    @staticmethod
+    def _multistage_track_assignments(
+        items: tuple[_VoiceprintAudio, ...],
+        snapshot: MultiStageSnapshot,
+    ) -> tuple[int, ...]:
+        assignments: list[int] = []
+        for item in items:
+            source = item.result.source
+            track_key = (
+                f"{source.session_id}:epoch{source.stream_epoch}:"
+                f"track{source.track_id}:branch{item.branch_index}"
+            )
+            weighted: dict[int, int] = {}
+            first_index: dict[int, int] = {}
+            for segment_index, sample_count in enumerate(item.segment_sample_counts):
+                label = snapshot.labels_by_evidence_id[f"{track_key}:segment{segment_index}"]
+                weighted[label] = weighted.get(label, 0) + sample_count
+                first_index.setdefault(label, segment_index)
+            assignments.append(max(
+                weighted,
+                key=lambda label: (weighted[label], -first_index[label], -label),
+            ))
+        return tuple(assignments)
+
+    def reset_streaming(self) -> None:
+        self._streaming_clusterer = None
+        self._streaming_session_id = None
+
+    def process_streaming(
+        self,
+        results: tuple[Layer4OfflineResult, ...],
+        *,
+        final: bool = False,
+        finalized_track_keys: frozenset[tuple[str, int, int]] = frozenset(),
+    ) -> Layer6Result:
+        backend = str(getattr(self.config, "clustering_backend", "complete_link"))
+        if backend != "multistage":
+            return self.process(results)
+        results = self._validate_results(results)
+        session_id = results[0].source.session_id
+        if self._streaming_session_id not in {None, session_id}:
+            raise ValueError("streaming L6 pipeline cannot mix capture sessions")
+        if self._streaming_clusterer is None:
+            self._streaming_clusterer = MultiStageVoiceprintClusterer(self.config)
+            self._streaming_session_id = session_id
+        return self._process(
+            results,
+            multistage=self._streaming_clusterer,
+            include_partial_segment=final,
+            partial_segment_track_keys=finalized_track_keys,
         )
 
     @staticmethod
@@ -349,6 +450,27 @@ class OfflineLayer6Pipeline:
         )))
 
     def process(self, results: tuple[Layer4OfflineResult, ...]) -> Layer6Result:
+        backend = str(getattr(self.config, "clustering_backend", "complete_link"))
+        multistage = (
+            MultiStageVoiceprintClusterer(self.config)
+            if backend == "multistage"
+            else None
+        )
+        return self._process(
+            results,
+            multistage=multistage,
+            include_partial_segment=True,
+            partial_segment_track_keys=frozenset(),
+        )
+
+    def _process(
+        self,
+        results: tuple[Layer4OfflineResult, ...],
+        *,
+        multistage: MultiStageVoiceprintClusterer | None,
+        include_partial_segment: bool,
+        partial_segment_track_keys: frozenset[tuple[str, int, int]],
+    ) -> Layer6Result:
         started = perf_counter()
         results = self._validate_results(results)
         session_id = results[0].source.session_id
@@ -363,7 +485,20 @@ class OfflineLayer6Pipeline:
         extracted: list[_VoiceprintAudio] = []
         insufficient_voice_audio_ids: list[str] = []
         for result, branch, match_score, mos_score in selected:
-            voiceprint = self._voiceprint_audio(result, branch, match_score, mos_score)
+            voiceprint = self._voiceprint_audio(
+                result,
+                branch,
+                match_score,
+                mos_score,
+                include_partial_segment=(
+                    include_partial_segment
+                    or (
+                        result.source.session_id,
+                        result.source.stream_epoch,
+                        result.source.track_id,
+                    ) in partial_segment_track_keys
+                ),
+            )
             if voiceprint is None:
                 insufficient_voice_audio_ids.append(result.output_asset_id)
             else:
@@ -373,11 +508,21 @@ class OfflineLayer6Pipeline:
         similarities, matched_counts, required_counts, match_features = _pairwise_similarities(
             voiceprints, self.config.speaker_similarity_threshold,
         )
-        raw_assignments = _cluster(
-            similarities,
-            self.config.speaker_similarity_threshold,
-            self.config.maximum_speakers,
-        )
+        multistage_snapshot: MultiStageSnapshot | None = None
+        if multistage is None:
+            raw_assignments = _cluster(
+                similarities,
+                self.config.speaker_similarity_threshold,
+                self.config.maximum_speakers,
+            )
+            algorithm = "campplus_2s_hungarian_features_complete_link_experiment_v6"
+        else:
+            multistage_snapshot = multistage.update(self._multistage_evidence(voiceprints))
+            raw_assignments = self._multistage_track_assignments(
+                voiceprints,
+                multistage_snapshot,
+            ) if voiceprints else ()
+            algorithm = "campplus_2s_multistage_streaming_v1"
         active_clusters = {
             raw
             for item, raw in zip(voiceprints, raw_assignments)
@@ -387,7 +532,14 @@ class OfflineLayer6Pipeline:
         if not order:
             matrix = tuple(tuple(float(value) for value in row) for row in similarities)
             return Layer6Result(session_id, 0, (), (), {
-                "algorithm": "campplus_2s_hungarian_features_complete_link_experiment_v6",
+                "algorithm": algorithm,
+                "multistage": (
+                    None if multistage_snapshot is None else {
+                        "evidence_count": multistage_snapshot.evidence_count,
+                        "cluster_count": multistage_snapshot.cluster_count,
+                        "stage": multistage_snapshot.stage,
+                    }
+                ),
                 "recording_start_sample_48k": recording_start,
                 "recording_end_sample_48k": recording_end,
                 "extracted_audio_ids": tuple(item.audio_id for item in voiceprints),
@@ -466,7 +618,14 @@ class OfflineLayer6Pipeline:
             raise ValueError("L6 voiceprint cluster contains no active audio")
         matrix = tuple(tuple(float(value) for value in row) for row in similarities)
         return Layer6Result(session_id, len(outputs), outputs, tuple(assignments), {
-            "algorithm": "campplus_2s_hungarian_features_complete_link_experiment_v6",
+            "algorithm": algorithm,
+            "multistage": (
+                None if multistage_snapshot is None else {
+                    "evidence_count": multistage_snapshot.evidence_count,
+                    "cluster_count": multistage_snapshot.cluster_count,
+                    "stage": multistage_snapshot.stage,
+                }
+            ),
             "recording_start_sample_48k": recording_start,
             "recording_end_sample_48k": recording_end,
             "secondary_candidate_gate": {

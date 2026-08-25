@@ -4579,6 +4579,11 @@ class ApplicationRuntime:
                 snapshot is not None and snapshot.is_final
             ),
             "rejected_reasons": plan.rejected,
+            "l6_clustering_backend": getattr(
+                self.config.layer6,
+                "clustering_backend",
+                "complete_link",
+            ),
             "cached_voiceprint_segments": (
                 0
                 if self._campplus_cached_embedder is None

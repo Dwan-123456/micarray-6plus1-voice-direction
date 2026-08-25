@@ -21,6 +21,15 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-25 — 合并L6 Multi-stage与逐轨提前final开发线
+
+- **合并范围**：将基于`6715db5`独立开发并已分成两笔提交的`codex/l6-multistage-clusterer`合并到当前`codex/develop-v1.3.5`；保留主线`6540db4`的逐轨提前final、短尾冲刷及ABORTED后选择性复用，不改写两个功能提交的历史。
+- **冲突适配**：L6继续每4秒向会话级Multi-stage聚类器增量追加完整2秒声纹证据；单条轨道提前final后，仅该已结束轨道允许提交至少500 ms短尾，仍在录制的其他轨道不会被提前截尾。全局final释放聚类状态，ABORT或异常只清理临时L6状态，主线已经发布的逐轨L4/L5复用检查点继续保留供最终校正使用。
+- **配置、接口与兼容性**：默认启用Multi-stage后端并保留`complete_link`兼容入口；公共L6输出DTO和UI格式不变。L1、L2、L3、L4分离模型、L5 CNN、正式录音及数据schema无变化。
+- **验证与资产**：合并专项`71 passed`，Ruff通过；合并后全量回归`667 passed, 1 warning`，唯一警告为既有CountNet `torch.jit.load`弃用提示。未执行30分钟实录负载或人工声纹听辨验收；无模型、录音、音频fixture或Git LFS资产变化。
+
+---
+
 ## 2026-08-25 — 碎片轨逐轨提前封存与中止后选择性复用
 
 - **问题定位**：真实麦克风缓存约58秒内形成16条封存轨，其中8条短于4秒、累计约81.88轨道秒；实时旁路在停止前未收到这些短轨尾部，停止后的10秒排空期限内无法完成全部L4，最终显示`ABORTED`并对16轨全部补算，造成最终L4约60.59秒的缓慢变化。
@@ -32,6 +41,23 @@
 - **未改变与资产**：L1采集/校准/IMCRA、L2 MUSIC与ID数学、L3 DS/BF算法、L4 MossFormer2模型、L5/L6模型与聚类内核、UI输出格式、正式RecordingStore/Catalog/data schema均无变化；模型、录音、测试音频fixture和Git LFS对象无新增或修改。
 
 ---
+
+## 2026-08-25 — L6 Multi-stage实时生命周期接入
+
+- **提交边界**：本提交承接前一笔独立L6内核提交，只修改Runtime、`app/realtime_layer456.py`、`app/realtime_postprocessing.py`、必要的Layer6兼容入口及直接测试；未混入主开发分支正在进行的逐轨final、短尾提前冲刷或ABORTED选择性复用改造。
+- **4秒增量更新**：Realtime L4～L6 sidecar不再每次用累计音频新建L6聚类器，而是按当前默认4秒刷新周期向同一会话级Multi-stage实例追加新的完整2秒CAMPPlus证据；历史证据去重且可接受后续谱聚类对历史标签的修正。仅当单人旁路升级为双人分离等轨道拓扑变化导致历史音频重算时，使用当前累计证据安全重建一次聚类状态；公共Realtime/L6 DTO保持不变并增加是否重建的诊断元数据。
+- **final与异常生命周期**：单条轨道提前final或全局`finalize()`冲刷L4/L5尾部后，允许L6接纳该已结束轨道至少500 ms的声纹短尾证据；仍在录制的轨道只提交完整2秒证据。全局final生成最终preview后释放聚类状态；主动ABORTED、队列失败或模型异常不运行尾部推理，直接丢弃该会话的临时声纹状态，下一次录音由工厂创建全新实例。Runtime最终封存校正仍以新建离线L6实例对完整结果做权威确认，并新增聚类后端诊断字段。
+- **兼容性**：缺少新配置字段或明确选择`complete_link`的调用方继续走旧完整聚类入口；L1、L2、L3、L4分离算法、L5 CNN、Test UI、录音及数据schema均无变化。
+- **验证**：Multi-stage、L6、Realtime处理器/服务、Runtime及final复用专项`65 passed`，修改文件Ruff通过；项目全量回归`659 passed, 1 warning`，唯一警告为既有CountNet `torch.jit.load`弃用提示。未执行30分钟实录负载或人工声纹听辨验收；无模型、音频fixture或Git LFS资产变化。
+
+## 2026-08-25 — L6 Multi-stage流式声纹聚类内核与内部适配
+
+- **版本、分支与范围**：基于提交`6715db574a3beb4d320d02ecba567916315ab78c`在独立分支`codex/l6-multistage-clusterer`开发；本提交只包含L6聚类内核、配置、依赖、内部适配和独立测试，不修改Runtime或`app/`实时生命周期。
+- **L6聚类内核**：引入固定版本`spectralcluster==0.2.22`，增加会话级`MultiStageVoiceprintClusterer`。每个不可变2秒CAMPPlus声纹作为独立证据增量提交；短样本使用AHC，达到`L`后使用谱聚类，超过`U1`后预聚类，达到`U2`时动态压缩；历史标签使用Hungarian deflicker稳定并允许后续证据修正。
+- **Layer6内部适配**：保留L4候选门禁、L5有效人声筛选、CAMPPlus、内容缓存、音质择优和现有Speaker音轨输出；新增Multi-stage后端选择。实时模式只提交已完成2秒证据，final允许至少500 ms尾段；同一L4轨内多个声纹标签按有效样本数投票，第一版不修改公共L6 DTO和UI格式。原匈牙利分段匹配与complete-link保留为兼容后端和诊断证据。
+- **配置与依赖**：默认`clustering_backend: multistage`，初始参数为`L=30`、`U1=100`、`U2=600`、AHC余弦距离门限`0.38`、最多3人；配置校验要求`maximum_speakers < U1 < U2`且`L <= U1`。更新项目依赖输入和哈希锁文件；无模型或Git LFS资产变化。
+- **验证**：新增增量去重、历史标签修正、阶段切换、证据不可变、完整2秒门禁和final短尾测试；L6、配置及新Multi-stage专项共`58 passed`，Ruff和`git diff --check`通过。未执行真实录音、长期30分钟负载或人工声纹验收。
+- **未改变范围**：L1采集/IMCRA、L2 MUSIC/ID、L3 BF、L4分离、L5 CNN、Development Test UI、Production UI、正式录音、数据管理和Runtime调度均无变化。
 
 ## 2026-08-25 — L4～L6实时final直接转正、选择性补算与4秒L6刷新
 

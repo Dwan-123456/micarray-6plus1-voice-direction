@@ -18,6 +18,7 @@ dependencies = [
   "pydantic>=2.12,<3",
   "kaldi-native-fbank==1.22.3",
   "onnxruntime==1.29.0",
+  "spectralcluster==0.2.22",
 ]
 
 [project.optional-dependencies]
