@@ -17,3 +17,4 @@ pytest-cov==7.0.0
 ruff==0.15.7
 kaldi-native-fbank==1.22.3
 onnxruntime==1.29.0
+spectralcluster==0.2.22

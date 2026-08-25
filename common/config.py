@@ -396,6 +396,11 @@ class Layer6Config(StrictModel):
     secondary_candidate_match_min: float = Field(default=0.50, ge=0.0, le=1.0)
     secondary_candidate_mos_min: float = Field(default=0.30, ge=0.0, le=1.0)
     maximum_internal_silence_ms: int = Field(default=2_000, ge=0)
+    clustering_backend: Literal["complete_link", "multistage"] = "multistage"
+    multistage_l: int = Field(default=30, ge=1)
+    multistage_u1: int = Field(default=100, ge=2)
+    multistage_u2: int = Field(default=600, ge=3)
+    multistage_fallback_distance: float = Field(default=0.38, gt=0.0, le=2.0)
 
     @model_validator(mode="after")
     def validate_layer6(self) -> "Layer6Config":
@@ -403,6 +408,10 @@ class Layer6Config(StrictModel):
             raise ValueError("Layer6 model artifact paths must be non-empty")
         if self.maximum_internal_silence_ms % 20:
             raise ValueError("Layer6 maximum_internal_silence_ms must align to 20 ms")
+        if self.multistage_l > self.multistage_u1:
+            raise ValueError("Layer6 multi-stage L must not exceed U1")
+        if not self.maximum_speakers < self.multistage_u1 < self.multistage_u2:
+            raise ValueError("Layer6 multi-stage limits must satisfy maximum_speakers < U1 < U2")
         return self
 
 

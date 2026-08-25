@@ -21,6 +21,15 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-25 — L6 Multi-stage流式声纹聚类内核与内部适配
+
+- **版本、分支与范围**：基于提交`6715db574a3beb4d320d02ecba567916315ab78c`在独立分支`codex/l6-multistage-clusterer`开发；本提交只包含L6聚类内核、配置、依赖、内部适配和独立测试，不修改Runtime或`app/`实时生命周期。
+- **L6聚类内核**：引入固定版本`spectralcluster==0.2.22`，增加会话级`MultiStageVoiceprintClusterer`。每个不可变2秒CAMPPlus声纹作为独立证据增量提交；短样本使用AHC，达到`L`后使用谱聚类，超过`U1`后预聚类，达到`U2`时动态压缩；历史标签使用Hungarian deflicker稳定并允许后续证据修正。
+- **Layer6内部适配**：保留L4候选门禁、L5有效人声筛选、CAMPPlus、内容缓存、音质择优和现有Speaker音轨输出；新增Multi-stage后端选择。实时模式只提交已完成2秒证据，final允许至少500 ms尾段；同一L4轨内多个声纹标签按有效样本数投票，第一版不修改公共L6 DTO和UI格式。原匈牙利分段匹配与complete-link保留为兼容后端和诊断证据。
+- **配置与依赖**：默认`clustering_backend: multistage`，初始参数为`L=30`、`U1=100`、`U2=600`、AHC余弦距离门限`0.38`、最多3人；配置校验要求`maximum_speakers < U1 < U2`且`L <= U1`。更新项目依赖输入和哈希锁文件；无模型或Git LFS资产变化。
+- **验证**：新增增量去重、历史标签修正、阶段切换、证据不可变、完整2秒门禁和final短尾测试；L6、配置及新Multi-stage专项共`58 passed`，Ruff和`git diff --check`通过。未执行真实录音、长期30分钟负载或人工声纹验收。
+- **未改变范围**：L1采集/IMCRA、L2 MUSIC/ID、L3 BF、L4分离、L5 CNN、Development Test UI、Production UI、正式录音、数据管理和Runtime调度均无变化。
+
 ## 2026-08-25 — L4～L6实时final直接转正、选择性补算与4秒L6刷新
 
 - **版本、分支与恢复点**：项目保持`1.3.5`开发线，不创建或移动发布标签；实施前将`d2d5c588a13fc8873ade39ac4174c60b89be1ba3`保存并推送到`codex/develop-v1.3.5-pre-canonical-reuse-20260825`，用于完整恢复改动前状态。
