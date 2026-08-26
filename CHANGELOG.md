@@ -21,6 +21,11 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.6`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.5`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — Test UI L1顶部显示录音时长
+
+- **界面与时间轴**：L1顶部状态栏新增`录音时长 HH:MM:SS`，直接由当前session的累计采样位置和原生48 kHz采样率计算，从启动采集开始推进，新session自动归零，不依赖UI刷新间隔或系统墙钟。
+- **范围与验证**：不改变采集、scratch/正式录音写盘、IMCRA、Gate、MUSIC、ID Tracking、L2～L6或录音schema；新增跨小时格式和采样时间轴换算回归并执行Development Test UI专项检查。无Git LFS对象修改。
+
 ## 2026-08-26 — Test UI顶部状态行移除MUSIC诊断后缀
 
 - **显示修复**：删除L2顶部状态行中持续变化且在窄窗口被截断为`FREQUENCY_NORMALIZED_`的MUSIC搜索诊断后缀，只保留运行状态、session、epoch、window、sample和age，避免文字来回闪动。

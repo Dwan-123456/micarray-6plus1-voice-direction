@@ -798,6 +798,29 @@ def test_simulation_l2_frame_renders_doa_polar_snapshot(monkeypatch, tmp_path):
         app.processEvents()
 
 
+def test_l1_header_shows_sample_timeline_recording_duration(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    l1 = _aggregator_meter(end_sample=3_661 * 48_000)
+    frame = SimpleNamespace(
+        tracked_audio=(), previews=(), missing_reasons={}, l1=l1,
+        performance=None,
+        pipeline_status=PipelineStatus(
+            "running", l1.session_id, l1.stream_epoch,
+            l1.end_sample, 15_360, "Ready",
+        ),
+    )
+    try:
+        window._render_frame(frame, render_l2=False, render_l5=False)
+        assert "录音时长 01:01:01" in window.l1_header.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_gate_closed_frame_keeps_polar_ring_and_live_ids_without_music_curve(
     monkeypatch, tmp_path,
 ):

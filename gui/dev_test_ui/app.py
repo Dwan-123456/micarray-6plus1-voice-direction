@@ -1182,6 +1182,13 @@ def build_window(
             value = max(0, int(seconds * 10))
             return f"{value // 600:02d}:{(value % 600) / 10:04.1f}"
 
+        @staticmethod
+        def _format_recording_duration(seconds: float) -> str:
+            value = max(0, int(seconds))
+            hours, remainder = divmod(value, 3_600)
+            minutes, seconds = divmod(remainder, 60)
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
         def _refresh_replay_controls(self):
             if replay_source is None:
                 return
@@ -2197,6 +2204,7 @@ def build_window(
                 self._set_text(self.l1_header,
                     f"{frame.pipeline_status.state.upper()} | session {l1.session_id[:8]} | epoch {l1.stream_epoch} | "
                     f"sample {l1.end_sample:012d} | seq {l1.sequence_id:08d} | age 000 ms"
+                    f" | 录音时长 {self._format_recording_duration(l1.end_sample / config.device.sample_rate)}"
                 )
                 light_suffix = " (commanded)" if l1.light_state in {"on", "off"} else ""
                 self.light_label.setText(f"状态: {l1.light_state.title()}{light_suffix}")
