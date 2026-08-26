@@ -24,7 +24,7 @@ Center RAW/IMCRA试听缓存是Development Test UI旁路：L1每个20 ms块只�
 
 按ID累计试听每个决策只追加`TrackAudioStreamHub`产生的同一稳定20 ms hop；GUI不再自行交叉淡化、拼接或做响度增强。声卡输出仅保留必要的衰减型峰值安全和首尾播放淡化，不会提高或改写缓存、L5输入或录音资产。
 
-顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2、L3原始/准备/host、L5审计、completion及L4-L6旁路的队列/状态、完成数、丢块、错误、在途窗口和缓存MiB。每次UI刷新只读取一次快照；UI不得访问私有队列或反向改变调度。L4-L6 mailbox只保留最新revision；canonical已开始或成功后，迟到preview不得覆盖权威结果。
+顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2、L3原始/准备/host、L5审计、completion及L4-L6旁路的队列/状态、完成数、丢块、错误、在途窗口和缓存MiB；`IN ov/hd/ep`分别显示输入overflow、handoff丢块和连续性断点数，提示中显示最近原因。每次UI刷新只读取一次快照；UI不得访问私有队列或反向改变调度。L4-L6 mailbox只保留最新revision；canonical已开始或成功后，迟到preview不得覆盖权威结果。
 
 ## 上二栏与下三栏
 
@@ -35,7 +35,7 @@ Center RAW/IMCRA试听缓存是Development Test UI旁路：L1每个20 ms块只�
 - 下中L4/L5：逐轨保存L4输出WAV并提供与L3一致的ID、角度、时长、波形和播放控件；不提供手动“发送到L5”按钮。L5自动一次读取完整长音频并为每个20 ms hop返回独立概率。
 - 下右L6：采集中跟随L4块长显示暂定声纹revision，默认每4秒更新；2秒CAMPPlus片段余量可以跨任意3～15秒上游块，旧片段命中缓存。Preview人物编号可随新证据修订。停止后统一L6确认才给出权威Speaker A～E，MultiStage最多5簇；每条A提取声纹，B仍按匹配差、匹配度和MOS门限准入。DTO保留1～100的扩展编号空间。
 
-L2 Gate滑条范围`0.00～1.00`、建议步长`0.01`。拖动后在下一完整DecisionWindow生效并显示新的`config_revision`，默认不写回`config.yaml`。L5阈值滑条只重判缓存的CNN概率。两个滑条必须用“L2声源Gate”和“L5人声判断”清晰区分。
+L2 Gate滑条范围`0.00～1.00`、步长`0.01`。拖动期间阈值立即送入Runtime，下一完整DecisionWindow生效并显示新的`config_revision`；松手时才原子保存一次Test UI本地设置，避免每个滑动刻度都同步写盘导致卡顿，且始终不写回`config.yaml`。L5阈值滑条只重判缓存的CNN概率。两个滑条必须用“L2声源Gate”和“L5人声判断”清晰区分。
 
 L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3，并直接决定普通路径的信号子空间阶数与最多搜峰数；DPD路径将它作为最多候选数。右侧状态条显示当前手动阶数和实际输出候选数。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不启用逐频支持或可靠性加权门禁。
 

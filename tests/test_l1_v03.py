@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from common.config import load_config
-from common.data_types import IngestedAudioBlock
+from common.data_types import CalibrationMetadata, IngestedAudioBlock
 from ingest import IngestCoordinator
 from layer1_input.calibration import ChannelCalibrator
 from layer1_input.configuration import CalibrationConfig
@@ -14,10 +14,19 @@ from layer1_input.sources import map_logical_channels
 from windowing import WindowAssembler
 
 
-def _block(samples: np.ndarray, *, epoch: int, start: int, sequence: int) -> IngestedAudioBlock:
+def _block(
+    samples: np.ndarray,
+    *,
+    epoch: int,
+    start: int,
+    sequence: int,
+    session: str = "session",
+    calibration: CalibrationMetadata | None = None,
+) -> IngestedAudioBlock:
     return IngestedAudioBlock(
-        "session", epoch, start, start + len(samples), 48_000, sequence,
+        session, epoch, start, start + len(samples), 48_000, sequence,
         start / 48_000, samples,
+        calibration=calibration or CalibrationMetadata.unverified_identity(),
     )
 
 
@@ -127,9 +136,9 @@ def test_cohen_posterior_spp_detects_a_strong_tonal_component_after_minimum_warm
     assert np.all(hop.spp[:, tone_bin] > 0.99)
 
 
-def test_imcra_resets_on_epoch_and_ignores_hardware_mix():
+def test_imcra_preserves_ready_statistics_across_epoch_and_ignores_hardware_mix():
     config = load_config("config/config.yaml")
-    short = config.layer1_imcra.model_copy(update={"warmup_seconds": 0.02})
+    short = config.layer1_imcra.model_copy(update={"warmup_seconds": 0.04})
     left, right = Layer1Imcra(short), Layer1Imcra(short)
     rng = np.random.default_rng(11)
     physical = rng.normal(0.0, 0.01, (960, 7)).astype(np.float32)
@@ -139,9 +148,65 @@ def test_imcra_resets_on_epoch_and_ignores_hardware_mix():
     hop_b = right.process(_block(b, epoch=0, start=0, sequence=0))[0]
     assert np.array_equal(hop_a.noise_psd, hop_b.noise_psd)
     assert np.array_equal(hop_a.spp, hop_b.spp)
-    reset = left.process(_block(a, epoch=1, start=0, sequence=1))[0]
-    assert reset.start_sample == 0
-    assert np.all(reset.spp == 0.0)
+    assert left.process(_block(a, epoch=0, start=960, sequence=1))[0].state == "ready"
+
+    recovered = left.process(_block(a, epoch=1, start=0, sequence=2))[0]
+
+    assert recovered.start_sample == 0
+    assert recovered.state == "ready"
+    assert recovered.array_source_probability_20ms is not None
+
+
+def test_imcra_new_session_still_requires_a_fresh_warmup():
+    config = load_config("config/config.yaml").layer1_imcra.model_copy(
+        update={"warmup_seconds": 0.04}
+    )
+    estimator = Layer1Imcra(config)
+    samples = np.zeros((960, 8), dtype=np.float32)
+    estimator.process(_block(samples, epoch=0, start=0, sequence=0))
+    assert estimator.process(
+        _block(samples, epoch=0, start=960, sequence=1)
+    )[0].state == "ready"
+
+    new_session = estimator.process(
+        _block(samples, epoch=0, start=0, sequence=0, session="new-session")
+    )[0]
+
+    assert new_session.state == "warming_up"
+    assert new_session.array_source_probability_20ms is None
+    assert np.all(new_session.spp == 0.0)
+
+
+def test_imcra_calibration_change_still_requires_a_fresh_warmup():
+    config = load_config("config/config.yaml").layer1_imcra.model_copy(
+        update={"warmup_seconds": 0.04}
+    )
+    estimator = Layer1Imcra(config)
+    samples = np.zeros((960, 8), dtype=np.float32)
+    estimator.process(_block(samples, epoch=0, start=0, sequence=0))
+    assert estimator.process(
+        _block(samples, epoch=0, start=960, sequence=1)
+    )[0].state == "ready"
+    changed_calibration = CalibrationMetadata(
+        status="verified",
+        version="calibration-v2",
+        calibration_hash="1" * 64,
+        correction_model="gain_polarity_integer_delay_v1",
+    )
+
+    changed = estimator.process(
+        _block(
+            samples,
+            epoch=1,
+            start=0,
+            sequence=2,
+            calibration=changed_calibration,
+        )
+    )[0]
+
+    assert changed.state == "warming_up"
+    assert changed.array_source_probability_20ms is None
+    assert np.all(changed.spp == 0.0)
 
 
 def test_coordinator_imcra_and_window_share_one_sample_axis():
@@ -166,36 +231,37 @@ def test_coordinator_imcra_and_window_share_one_sample_axis():
     ]
 
 
-def test_one_sequence_gap_resets_once_then_imcra_stays_ready_after_warmup():
+def test_one_sequence_gap_preserves_ready_imcra_and_probability_recovers_immediately():
     config = load_config("config/config.yaml")
     coordinator = IngestCoordinator(session_id="single-gap-warmup")
     estimator = Layer1Imcra(config.layer1_imcra)
     assembler = WindowAssembler()
     samples = np.zeros((960, 8), dtype=np.float32)
 
-    first = coordinator.ingest(DecodedAudio(samples, 48_000, 0, 0.0))
-    first_hop = estimator.process(first)
-    assembler.add(first, first_hop)
-    assert first_hop[0].state == "warming_up"
-
-    states: list[str] = []
-    epochs: list[int] = []
-    # Sequence 1 is genuinely absent.  The matching timestamp also advances
-    # by 40 ms, but both observations describe the same one discontinuity.
-    for sequence in range(2, 132):
+    warmup_hops = int(np.ceil(config.layer1_imcra.warmup_seconds / 0.02))
+    for sequence in range(warmup_hops):
         decoded = DecodedAudio(samples, 48_000, sequence, sequence * 0.02)
         block = coordinator.ingest(decoded)
         hops = estimator.process(block)
         assembler.add(block, hops)
-        states.append(hops[0].state)
-        epochs.append(block.stream_epoch)
+    assert hops[0].state == "ready"
 
-    warmup_hops = int(np.ceil(config.layer1_imcra.warmup_seconds / 0.02))
+    recovered_states: list[str] = []
+    recovered_windows = []
+    # One block is genuinely absent.  The sequence and timestamp gaps describe
+    # the same discontinuity; the next epoch starts at sample zero.
+    for sequence in range(warmup_hops + 1, warmup_hops + 10):
+        decoded = DecodedAudio(samples, 48_000, sequence, sequence * 0.02)
+        block = coordinator.ingest(decoded)
+        hops = estimator.process(block)
+        recovered_windows.extend(assembler.add(block, hops))
+        recovered_states.append(hops[0].state)
+
     assert coordinator.stream_epoch == 1
     assert len(coordinator.discontinuities) == 1
     assert coordinator.discontinuities[0].reason == "sequence_gap"
-    assert set(epochs) == {1}
-    assert states[: warmup_hops - 1] == ["warming_up"] * (warmup_hops - 1)
-    assert states[warmup_hops - 1 :] == ["ready"] * (len(states) - warmup_hops + 1)
+    assert recovered_states == ["ready"] * len(recovered_states)
+    assert recovered_windows
+    assert all(hop.state == "ready" for hop in recovered_windows[0].imcra_hops[-2:])
     assert assembler.status.stream_epoch == 1
     assert assembler.status.state == "running"

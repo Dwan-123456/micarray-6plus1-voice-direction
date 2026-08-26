@@ -46,6 +46,12 @@ class _ParallelRuntime:
         "error_counts": {"l2": 0, "l3": 1, "l5": 0, "commit": 0},
         "latest_errors": {"l2": None, "l3": "test failure", "l5": None, "commit": None},
         "processing_drops": 2,
+        "input_health": {
+            "input_overflow_count": 3,
+            "handoff_drop_count": 4,
+            "discontinuity_count": 2,
+            "last_discontinuity": {"reason": "health_event:input_overflow"},
+        },
         "dev_center_reference_writer": {
             "queue_depth": 4,
             "queue_capacity": 128,
@@ -69,9 +75,12 @@ def test_parallel_pipeline_status_uses_only_public_snapshot():
     assert "JOIN 3/8 RUN #8" in text
     assert "flight 5" in text
     assert "cache 3.0/64.0 MiB" in text
+    assert "IN ov3 hd4 ep2" in text
     assert "入口丢窗累计：2" in tooltip
     assert "Center试听旁路：排队 4/128" in tooltip
     assert "仅试听丢块 1" in tooltip
+    assert "overflow 3，handoff丢块 4，epoch重置 2" in tooltip
+    assert "最近原因 health_event:input_overflow" in tooltip
     assert "l3: test failure" in tooltip
 
 
