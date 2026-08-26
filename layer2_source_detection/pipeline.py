@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from math import isfinite
 from threading import Lock
+from time import perf_counter
 
 from common.angle import circular_distance_deg
 from common.config import ProjectConfig
@@ -86,10 +87,15 @@ class Layer2PipelineResult:
     model_order: ModelOrderEstimate | None = None
     music_state: MusicStateDiagnostic | None = None
     direction_id_tracking_enabled: bool = True
+    id_tracking_ms: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.direction_id_tracking_enabled) is not bool:
             raise TypeError("L2 direction ID tracking flag must be bool")
+        if self.id_tracking_ms is not None and (
+            not isfinite(self.id_tracking_ms) or self.id_tracking_ms < 0.0
+        ):
+            raise ValueError("L2 ID tracking timing must be non-negative finite or None")
         identity = (self.gate_decision.session_id, self.gate_decision.stream_epoch,
                     self.gate_decision.window_id, self.gate_decision.decision_sample)
         candidates, directions, active = tuple(self.candidates), tuple(self.directions), tuple(self.active_tracks)
@@ -268,6 +274,8 @@ class Layer2Pipeline:
         # IMM prediction is intrinsic to ID tracking and cannot be toggled or
         # tuned through the removed standalone Kalman controls.
         del direction_kalman_enabled, direction_kalman_q_scale, direction_kalman_r_scale
+        id_tracking_ms: float | None = 0.0 if direction_id_tracking_enabled else None
+        id_started = perf_counter() if direction_id_tracking_enabled else None
         if type(direction_id_tracking_enabled) is not bool:
             raise TypeError("L2 direction ID tracking switch must be bool")
         if direction_id_tracking_enabled != self._direction_id_tracking_enabled:
@@ -288,6 +296,9 @@ class Layer2Pipeline:
             )
         else:
             voice_confirmed_ids = ()
+        if id_started is not None:
+            assert id_tracking_ms is not None
+            id_tracking_ms += (perf_counter() - id_started) * 1_000.0
         decision = self.gate.evaluate(window, probabilities, threshold=gate_threshold,
                                       config_revision=gate_config_revision)
         if voice_confirmed_ids and decision.state is ProbabilityGateState.CLOSED:
@@ -332,12 +343,16 @@ class Layer2Pipeline:
                 model_order=getattr(self.scanner, "model_order", None),
                 music_state=getattr(self.scanner, "last_state_diagnostic", None),
                 direction_id_tracking_enabled=False,
+                id_tracking_ms=None,
             )
+        id_started = perf_counter()
         observed_directions, active = self.id_tracker.update(
             window.session_id, window.stream_epoch, window.decision_sample, observations,
             window_id=window.window_id, doa_start_sample=window.doa_start_sample,
             doa_end_sample=window.doa_end_sample,
             allow_births=True if diagnostics is None else diagnostics.births_allowed)
+        assert id_tracking_ms is not None
+        id_tracking_ms += (perf_counter() - id_started) * 1_000.0
         self.last_id_tracking_error = None
         directions = _select_l3_directions(observed_directions, active)
         candidates = tuple(CandidateDirection(
@@ -358,4 +373,5 @@ class Layer2Pipeline:
             tuple(item.kalman_applied for item in directions), directions, active,
             getattr(self.scanner, "model_order", None),
             getattr(self.scanner, "last_state_diagnostic", None),
-            True)
+            True,
+            id_tracking_ms=id_tracking_ms)

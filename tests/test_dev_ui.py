@@ -1453,7 +1453,9 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert window.performance_bar.height() == 56
         assert window.performance_bar.text() == (
             "上一秒性能 | L2 N/A | L3 N/A | L4-6 4s伪实时 | "
-            "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%    "
+            "20ms窗口 0 | 丢窗 0 | 丢窗率 0.0%\n"
+            "分段耗时 avg/p95 ms | OPEN n0 I — M — ID — T — | "
+            "CLOSED n0 I — M — ID — T —    "
             "总处理时长 | L2 N/A | L3 N/A | L4 N/A | L5 N/A | L6 N/A"
         )
         assert window.start_button.text() == "启动采集"

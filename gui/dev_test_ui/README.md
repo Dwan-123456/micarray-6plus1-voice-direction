@@ -20,17 +20,17 @@ L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但�
 
 主界面按配置中L1仪表、极坐标和波形的最高刷新率启动精确定时器；L1仪表和L2极坐标保持20 ms/50 Hz，整轨波形投影独立限制为10 Hz。L2面板独占容量1的`latest_l2_dev_ui`，在L2 worker完成时立即更新；正式`latest_dev_ui`仍只接收ResultJoiner按`WindowKey`有序提交的快照。正式L5固定写入`offline_after_l4`，兼容邮箱`latest_l5_dev_ui`不发布CNN。渐进/离线L5使用独立latest revision直接更新L4/L5面板，不进入DecisionRecord或watermark。算法正式窗口仍为20 ms；SKIPPED/FAILED由有序审计表达真实终态。
 
-Center RAW/IMCRA试听缓存是Development Test UI旁路：L1每个20 ms块只把选中的单路Center复制到容量500的非阻塞邮箱，独立writer负责分段写盘。旁路满或写盘失败只显示在顶部诊断，不触发正式输入健康事件或epoch重置；已知缺口按等时静音补位。完整PCM和权威样本数继续保留，显示包络则使用最多约1024点的分层max-pool缩略图，因此长时录制的DTO与绘制成本不随音频秒数增长。点击试听时，完整缓存快照也在后台线程准备，不阻塞Qt刷新或L1/L2。
+Development Test UI不再创建`Center Mic RAW`或`Center Mic IMCRA`试听轨：L1不向Center试听旁路投递，不为这两路创建PCM缓存、播放快照或分段文件，L3面板固定过滤历史兼容快照中的Center轨。L1电平、IMCRA概率/噪声统计、预降噪与正式录音契约不变；方向ID的L3音频仍按权威时间轴缓存和试听。
 
 按ID累计试听每个决策只追加`TrackAudioStreamHub`产生的同一稳定20 ms hop；GUI不再自行交叉淡化、拼接或做响度增强。声卡输出仅保留必要的衰减型峰值安全和首尾播放淡化，不会提高或改写缓存、L5输入或录音资产。
 
-顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2、L3原始/准备/host、L5审计、completion及L4-L6旁路的队列/状态、完成数、丢块、错误、在途窗口和缓存MiB；`IN ov/hd/ep`分别显示输入overflow、handoff丢块和连续性断点数，提示中显示最近原因。每次UI刷新只读取一次快照；UI不得访问私有队列或反向改变调度。L4-L6 mailbox只保留最新revision；canonical已开始或成功后，迟到preview不得覆盖权威结果。
+顶部状态栏通过ApplicationRuntime公开只读`processing_status`显示L2、L3原始/准备/host、L5审计、completion及L4-L6旁路的队列/状态、完成数、丢块、错误、在途窗口和缓存MiB；`IN ov/hd/ep`分别显示输入overflow、handoff丢块和连续性断点数，提示中显示最近原因。底部第二行按Gate `OPEN/CLOSED`分别显示IMCRA、MUSIC原始扫描、ID Tracking和L2整体的累计`avg/p95 ms`；MUSIC在Gate关闭时不执行并显示`—`。该遥测最多保留30,000个纯数值窗口，不保存音频。每次UI刷新只读取一次快照；UI不得访问私有队列或反向改变调度。L4-L6 mailbox只保留最新revision；canonical已开始或成功后，迟到preview不得覆盖权威结果。
 
 ## 上二栏与下三栏
 
 - 左上L1：MIC0～MIC5、Center、HardwareMix共8路电平；显示IMCRA预热状态与7个物理麦的0～10000 Hz噪声dB摘要，并提供仅对本次运行生效的“IMCRA预降噪”开关和当前采集流的历史平均频率增益；每次启动都按YAML默认关闭，旧本地设置不得覆盖。另提供独立CountNet开关和100 ms人数读数，其中2表示2人或以上。CountNet行的`end`每100 ms推进，`input/gain`用于确认安静阵列输入已进入预训练模型的有效电平范围；不在L1显示20/40 ms IMCRA概率；保留灯控与scratch录音。
 - 右上L2：显示500～4000 Hz Gate概率、状态和原始MUSIC 360°伪谱；删除无操作能力的`DOA方法：MUSIC`装饰显示，紧凑的`MUSIC阶数`下拉框右侧提供`ID Tracking`按钮。追踪开启时，候选点严格使用L2最终输出角度：首次出现为灰色小点，临时ID观测为灰色大点、预测为灰色小点，正式ID使用稳定颜色且观测为大点、预测为小点。追踪关闭时只显示原始MUSIC峰值对应的灰色小点，不显示彩色ID，L3与实时L5审计按正常跳过终态停止运行而不报错。
-- 下左L3：连续试听前两行依次为`Center Mic RAW`和`Center Mic IMCRA`；RAW保存校准后、预降噪前的Center，IMCRA行仅在预降噪开启且该20 ms hop确实采用降噪输出时追加。其余方向轨显示L2权威ID和角度。停止采集并等待L3排空后，Hub封存的完整长音频会自动整体提交到L4，不提供手动发送按钮。L3波形不再读取或绘制L5黄色人声区间。
+- 下左L3：只显示L2权威方向ID和角度，不显示、不缓存也不写入`Center Mic RAW/IMCRA`。停止采集并等待L3排空后，Hub封存的完整方向ID长音频会自动整体提交到L4，不提供手动发送按钮。L3波形不再读取或绘制L5黄色人声区间。
 - 下中L4/L5：采集中显示可替换revision和稳定水位；停止后的完整批次成功时一次性替换。两层共用一个音频面板，固定保留双人两条16 kHz候选；`stable_branch_id`负责跨块连续，累计1～4 kHz匹配度负责A/B排序。单人轨保留唯一旁路。渐进DNSMOS降频采样，canonical运行精确评分；所有L4输出进入带跨块上下文的L5，稳定的逐20 ms人声区间标黄。试听缓存是16 kHz单声道PCM16 WAV，播放端不做16→48 kHz重采样。
 - 下中L4/L5：逐轨保存L4输出WAV并提供与L3一致的ID、角度、时长、波形和播放控件；不提供手动“发送到L5”按钮。L5自动一次读取完整长音频并为每个20 ms hop返回独立概率。
 - 下右L6：采集中跟随L4块长显示暂定声纹revision，默认每4秒更新；2秒CAMPPlus片段余量可以跨任意3～15秒上游块，旧片段命中缓存。Preview人物编号可随新证据修订。停止后统一L6确认才给出权威Speaker A～E，MultiStage最多5簇；每条A提取声纹，B仍按匹配差、匹配度和MOS门限准入。DTO保留1～100的扩展编号空间。

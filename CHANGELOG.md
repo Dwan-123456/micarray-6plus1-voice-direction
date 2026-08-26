@@ -21,6 +21,16 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — L1/L2 Gate分段耗时遥测与Center试听移除
+
+- **版本与范围**：保持`1.3.5`开发线，不创建或移动标签；为Development Test UI的L1/L2实时性长测增加纯数值分段遥测，并停止创建、显示或写入Center RAW/IMCRA试听轨。
+- **分段耗时**：每个20 ms窗口按Gate `OPEN/CLOSED`分类，精确记录IMCRA、MUSIC原始扫描、ID Tracking和L2整体耗时；Runtime公开累计样本数及各段`avg/p95/max ms`，底部性能栏显示OPEN/CLOSED的`avg/p95`。Gate关闭时MUSIC不执行且显示`—`，不伪造0 ms计算样本。缓存最多30,000个纯数值窗口，session/epoch变更即清空，不持久化。
+- **Center数据边界**：L1不再向Development Test UI的Center旁路投递原始或预降噪音频，因此不创建PCM缓存、分段文件或播放快照；L3面板固定过滤兼容快照中的Center轨。L1电平/IMCRA算法、方向ID的L3音频、正式录音及L4～L6契约不变。
+- **验证**：新增Gate分类、IMCRA endpoint关联、跨stream清空、ID追踪计时、底栏格式和Center不投递回归；Ruff通过，相关Runtime/L2/Test UI扩展回归`226 passed`。全量回归`729 passed, 2 failed, 1 warning`，两个失败仍为本次未修改的墙钟门槛：CountNet中位`110 ms > 100 ms`与DPD+Whitening P95 `19.63 ms > 15 ms`；紧接着独立复测`2 passed`，未放宽标准。尚未执行新遥测版本的真麦实机长测。
+- **未改变与资产**：Gate/MUSIC/ID数学、调度、队列、L3 BF、L4～L6、录音/data schema、模型和资产均无变化；无Git LFS对象新增或修改，不提交音频、缓存、日志、本机设置或秘密。
+
+---
+
 ## 2026-08-26 — 灯面朝上阵列坐标与角度映射统一
 
 - **几何与角度**：设备观察面改为灯面朝上；从灯面正上方向下观察，Center为原点，Center→MIC0固定为`+x/0°`，角度逆时针依次为MIC5=60°、MIC4=120°、MIC3=180°、MIC2=240°、MIC1=300°。公共7麦坐标已按该物理编号镜像修正，几何身份升级为`r6plus1_led_face_mic0_posx_ccw_54321_v2`。
