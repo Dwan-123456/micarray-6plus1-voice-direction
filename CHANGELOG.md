@@ -21,6 +21,11 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.6`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.5`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — Test UI顶部状态行移除MUSIC诊断后缀
+
+- **显示修复**：删除L2顶部状态行中持续变化且在窄窗口被截断为`FREQUENCY_NORMALIZED_`的MUSIC搜索诊断后缀，只保留运行状态、session、epoch、window、sample和age，避免文字来回闪动。
+- **范围与验证**：MUSIC诊断数据、MUSIC状态栏、DPD、Whitening、Gate、ID Tracking、L1及L3～L6均不改变；增加顶部状态行不再包含算法后缀的Development Test UI回归。无Git LFS对象修改。
+
 ## 2026-08-26 — Test UI Gate门限改为显式应用
 
 - **界面与交互**：L2右侧门限控件文字缩短为`Gate`，保留0～1、步长0.01的滑动条和当前待应用数值，并在右侧增加固定小宽度`应用`按钮。

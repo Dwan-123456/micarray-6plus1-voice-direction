@@ -2080,19 +2080,6 @@ def build_window(
                     f"valid={frame.spatial_response.valid_frequency_bins}  "
                     f"status={frame.spatial_response.numerical_status}  {panel_state}",
                 )
-                diagnostics = frame.search_diagnostics
-                search_suffix = ""
-                if diagnostics is not None:
-                    search_suffix = (
-                        f" | {diagnostics.mode.upper()} {diagnostics.model_order.estimated_sources}"
-                        f" / output {diagnostics.effective_model_order}"
-                        f" | valid bins {diagnostics.valid_frequency_bins}"
-                        f" | DPD {'ON' if diagnostics.dpd_rank1_enabled else 'OFF'}"
-                        f" {diagnostics.selected_frequency_bins} bins"
-                        f" | WHITE {diagnostics.whitening_status.upper()}"
-                        f" | {diagnostics.covariance_quality.upper()}"
-                        " | ASSOC HUNGARIAN"
-                    )
                 dropped_reason = frame.missing_reasons.get("srp")
                 state_prefix = (
                     f"STALE | {dropped_reason} | last completed"
@@ -2105,7 +2092,7 @@ def build_window(
                     f"epoch {frame.spatial_response.stream_epoch} | "
                     f"window {frame.spatial_response.window_id:08d} | "
                     f"sample {frame.spatial_response.decision_sample:012d} | "
-                    f"age {snapshot.age_ms:03.0f} ms{search_suffix}",
+                    f"age {snapshot.age_ms:03.0f} ms",
                 )
             elif (
                 frame.gate_decision is not None

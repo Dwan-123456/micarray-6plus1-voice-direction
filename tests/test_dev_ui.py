@@ -791,6 +791,8 @@ def test_simulation_l2_frame_renders_doa_polar_snapshot(monkeypatch, tmp_path):
         assert window.srp_polar._snapshot is not None
         assert window.srp_polar._snapshot.response is response
         assert "DOA UNAVAILABLE" not in window.srp_header.text()
+        assert "FREQUENCY_NORMALIZED" not in window.srp_header.text()
+        assert "ASSOC HUNGARIAN" not in window.srp_header.text()
     finally:
         window.close()
         app.processEvents()
