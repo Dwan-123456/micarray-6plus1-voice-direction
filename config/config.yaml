@@ -318,7 +318,7 @@ dev_test_ui:
   sample_rate_window_seconds: 5
   l1_meter_refresh_hz: 50
   polar_refresh_hz: 50
-  waveform_refresh_hz: 50
+  waveform_refresh_hz: 10
   snapshot_mailbox_capacity: 1
   scratch_root: data/dev_test_ui/scratch/current
   autoplay: true

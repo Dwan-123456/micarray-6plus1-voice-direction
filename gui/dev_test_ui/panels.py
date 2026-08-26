@@ -350,6 +350,8 @@ class BeamformPanel(QGroupBox):
         self._track_stream: tuple[str, int] | None = None
         self._playing_track_id: int | None = None
         self._voice_threshold = 0.7
+        self._last_tracks_input: tuple | None = None
+        self._last_tracks_show_center_references: bool | None = None
 
     def _cycle_mode(self) -> None:
         modes = ("ds_baseline", "loaded_mvdr_baseline", "optimized")
@@ -405,6 +407,8 @@ class BeamformPanel(QGroupBox):
         self._track_snapshots.clear()
         self._track_stream = None
         self._playing_track_id = None
+        self._last_tracks_input = None
+        self._last_tracks_show_center_references = None
 
     @staticmethod
     def _preview_key(preview) -> tuple[int, float]:
@@ -473,8 +477,20 @@ class BeamformPanel(QGroupBox):
         self.preview_summary.setText(reason)
 
     def set_tracks(self, tracks, *, show_center_references: bool = True) -> None:
+        # Runtime's rate-limited UI projection deliberately reuses one
+        # immutable tuple between waveform refreshes.  L1 meters and L2 DOA
+        # may still repaint at 50 Hz, but there is no reason to rebuild every
+        # waveform row for the exact same projection.
+        input_tuple = tracks if isinstance(tracks, tuple) else None
+        show_references = bool(show_center_references)
+        if (
+            input_tuple is not None
+            and input_tuple is self._last_tracks_input
+            and show_references == self._last_tracks_show_center_references
+        ):
+            return
         all_tracks = tuple(tracks)
-        if not show_center_references:
+        if not show_references:
             all_tracks = tuple(
                 item
                 for item in all_tracks
@@ -496,7 +512,7 @@ class BeamformPanel(QGroupBox):
         # filtered together with their cache files, so their previously drawn
         # waveform rows must not remain as unplayable UI ghosts.  Empty/error
         # projections still retain the last good rows.
-        if not show_center_references or CENTER_RAW_TRACK_ID in incoming_ids:
+        if not show_references or CENTER_RAW_TRACK_ID in incoming_ids:
             removed_ids = set(self._track_rows) - incoming_ids
             if self._playing_track_id in removed_ids:
                 self._playing_track_id = None
@@ -537,6 +553,9 @@ class BeamformPanel(QGroupBox):
             row = self._track_rows[track_id]
             self.track_layout.removeWidget(row)
             self.track_layout.insertWidget(index, row)
+        self._last_tracks_input = input_tuple
+        self._last_tracks_show_center_references = show_references
+
     def _toggle_track(self, track_id: int) -> None:
         if self._playing_track_id == track_id:
             self._playing_track_id = None

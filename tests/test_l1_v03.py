@@ -164,3 +164,38 @@ def test_coordinator_imcra_and_window_share_one_sample_axis():
         (window.doa_start_sample, window.doa_start_sample + 960),
         (window.doa_start_sample + 960, window.doa_end_sample),
     ]
+
+
+def test_one_sequence_gap_resets_once_then_imcra_stays_ready_after_warmup():
+    config = load_config("config/config.yaml")
+    coordinator = IngestCoordinator(session_id="single-gap-warmup")
+    estimator = Layer1Imcra(config.layer1_imcra)
+    assembler = WindowAssembler()
+    samples = np.zeros((960, 8), dtype=np.float32)
+
+    first = coordinator.ingest(DecodedAudio(samples, 48_000, 0, 0.0))
+    first_hop = estimator.process(first)
+    assembler.add(first, first_hop)
+    assert first_hop[0].state == "warming_up"
+
+    states: list[str] = []
+    epochs: list[int] = []
+    # Sequence 1 is genuinely absent.  The matching timestamp also advances
+    # by 40 ms, but both observations describe the same one discontinuity.
+    for sequence in range(2, 132):
+        decoded = DecodedAudio(samples, 48_000, sequence, sequence * 0.02)
+        block = coordinator.ingest(decoded)
+        hops = estimator.process(block)
+        assembler.add(block, hops)
+        states.append(hops[0].state)
+        epochs.append(block.stream_epoch)
+
+    warmup_hops = int(np.ceil(config.layer1_imcra.warmup_seconds / 0.02))
+    assert coordinator.stream_epoch == 1
+    assert len(coordinator.discontinuities) == 1
+    assert coordinator.discontinuities[0].reason == "sequence_gap"
+    assert set(epochs) == {1}
+    assert states[: warmup_hops - 1] == ["warming_up"] * (warmup_hops - 1)
+    assert states[warmup_hops - 1 :] == ["ready"] * (len(states) - warmup_hops + 1)
+    assert assembler.status.stream_epoch == 1
+    assert assembler.status.state == "running"

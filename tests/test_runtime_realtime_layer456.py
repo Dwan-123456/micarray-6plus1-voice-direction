@@ -364,7 +364,8 @@ def test_confirmed_backfill_failure_degrades_and_releases_realtime_gate(
 
     class Tracker:
         @staticmethod
-        def prepend_backfill_hops(*_args, **_kwargs):
+        def prepend_backfill_hops(*_args, **kwargs):
+            assert kwargs["return_snapshot"] is False
             raise RuntimeError(failure)
 
     runtime.track_audio_stream = Hub()
@@ -408,6 +409,174 @@ def test_runtime_processing_status_exposes_sidecar_without_changing_window_queue
     assert status["layer456_stream"]["state"] in {"idle", "disabled"}
     assert status["layer456_stream"]["queued_blocks"] == 0
     assert status["stage_alive"]["layer456_stream"] is False
+
+
+@pytest.mark.parametrize(
+    ("outcome", "denoised", "writer_status", "expected_error"),
+    (
+        (
+            "accepted_pending",
+            False,
+            {
+                "active": True,
+                "queue_depth": 1,
+                "queue_capacity": 128,
+                "accepted": 1,
+                "completed": 0,
+                "dropped": 0,
+                "error": None,
+            },
+            None,
+        ),
+        (
+            "accepted_pending",
+            True,
+            {
+                "active": True,
+                "queue_depth": 1,
+                "queue_capacity": 128,
+                "accepted": 1,
+                "completed": 0,
+                "dropped": 0,
+                "error": None,
+            },
+            None,
+        ),
+        (
+            "rejected",
+            False,
+            {
+                "active": True,
+                "queue_depth": 128,
+                "queue_capacity": 128,
+                "accepted": 128,
+                "completed": 0,
+                "dropped": 7,
+                "error": None,
+            },
+            "sidecar queue full; dropped=7",
+        ),
+        (
+            "raises",
+            True,
+            {
+                "active": True,
+                "queue_depth": 0,
+                "queue_capacity": 128,
+                "accepted": 0,
+                "completed": 0,
+                "dropped": 0,
+                "error": "writer exploded",
+            },
+            "IMCRA center reference: writer exploded",
+        ),
+    ),
+)
+def test_dev_center_reference_sidecar_never_changes_formal_input_health(
+    tmp_path,
+    outcome,
+    denoised,
+    writer_status,
+    expected_error,
+):
+    runtime = _runtime(tmp_path)
+    original_tracker = runtime.dev_audio_tracker
+    calls = []
+    block = object()
+
+    class Tracker:
+        @property
+        def reference_writer_status(self):
+            return writer_status
+
+        def submit_center_reference(self, value, **kwargs):
+            calls.append((value, kwargs))
+            if outcome == "raises":
+                raise RuntimeError("writer exploded")
+            return outcome == "accepted_pending"
+
+    runtime.dev_audio_tracker = Tracker()
+    runtime.processing_error = "preexisting processing state"
+    before_health = runtime._input_health_snapshot()
+    before_epoch = runtime.coordinator.stream_epoch
+    before_discontinuities = tuple(runtime.coordinator.discontinuities)
+
+    try:
+        runtime._submit_dev_center_reference(block, denoised=denoised)
+        after_status = runtime.processing_status
+
+        assert calls == [(
+            block,
+            {"denoised": denoised, "channel_index": 6},
+        )]
+        assert runtime.processing_error == "preexisting processing state"
+        assert runtime.coordinator.stream_epoch == before_epoch
+        assert tuple(runtime.coordinator.discontinuities) == before_discontinuities
+        assert runtime._input_health_snapshot() == before_health
+        assert after_status["input_health"] == before_health
+        assert after_status["dev_center_reference_writer"] == writer_status
+        assert after_status["latest_errors"]["dev_audio"] == (
+            runtime.dev_audio_tracking_error
+        )
+        if expected_error is None:
+            assert runtime.dev_audio_tracking_error is None
+        else:
+            assert expected_error in str(runtime.dev_audio_tracking_error)
+    finally:
+        runtime.dev_audio_tracker = original_tracker
+        runtime.close()
+
+
+def test_dev_audio_ui_projection_prefers_throttled_snapshot_api(tmp_path):
+    runtime = _runtime(tmp_path)
+    original_tracker = runtime.dev_audio_tracker
+    projected = (object(),)
+    calls = []
+
+    class Tracker:
+        def ui_snapshots(self, **kwargs):
+            calls.append(kwargs)
+            return projected
+
+        @staticmethod
+        def snapshots():
+            raise AssertionError("legacy full snapshots must not run")
+
+    runtime.dev_audio_tracker = Tracker()
+    expected_interval = 1.0 / runtime.config.dev_test_ui.waveform_refresh_hz
+
+    try:
+        assert runtime._dev_audio_snapshots() is projected
+        assert runtime._dev_audio_snapshots(force=True) is projected
+        assert calls == [
+            {"min_interval_seconds": expected_interval, "force": False},
+            {"min_interval_seconds": expected_interval, "force": True},
+        ]
+    finally:
+        runtime.dev_audio_tracker = original_tracker
+        runtime.close()
+
+
+def test_dev_audio_ui_projection_falls_back_for_legacy_tracker(tmp_path):
+    runtime = _runtime(tmp_path)
+    original_tracker = runtime.dev_audio_tracker
+    projected = (object(),)
+    calls = []
+
+    class LegacyTracker:
+        @staticmethod
+        def snapshots():
+            calls.append("snapshots")
+            return projected
+
+    runtime.dev_audio_tracker = LegacyTracker()
+
+    try:
+        assert runtime._dev_audio_snapshots(force=True) is projected
+        assert calls == ["snapshots"]
+    finally:
+        runtime.dev_audio_tracker = original_tracker
+        runtime.close()
 
 
 def test_l3_handoff_only_signals_the_async_chunk_owner(tmp_path):

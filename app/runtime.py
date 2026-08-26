@@ -1123,6 +1123,89 @@ class ApplicationRuntime:
             "last_error": capture_status.get("last_error"),
         }
 
+    def _reference_writer_status_snapshot(self) -> dict[str, object]:
+        """Return best-effort Test-UI sidecar telemetry without touching L1 health."""
+
+        tracker = self.dev_audio_tracker
+        if tracker is None:
+            return {}
+        try:
+            status = getattr(tracker, "reference_writer_status", None)
+            if callable(status):
+                status = status()
+            return {} if status is None else dict(status)
+        except Exception as exc:
+            # This cache is a Development Test UI sidecar. Its diagnostics must
+            # never create a formal input discontinuity or fail processing.
+            return {"error": f"reference writer status unavailable: {exc}"}
+
+    def _dev_audio_snapshots(self, *, force: bool = False):
+        """Project throttled Test-UI audio rows, with legacy tracker compatibility."""
+
+        tracker = self.dev_audio_tracker
+        if tracker is None:
+            return ()
+        refresh_hz = max(
+            1.0,
+            float(getattr(self.config.dev_test_ui, "waveform_refresh_hz", 10.0)),
+        )
+        ui_snapshots = getattr(tracker, "ui_snapshots", None)
+        if callable(ui_snapshots):
+            return ui_snapshots(
+                min_interval_seconds=1.0 / refresh_hz,
+                force=force,
+            )
+        return tracker.snapshots()
+
+    def _submit_dev_center_reference(self, block, *, denoised: bool) -> None:
+        """Submit one Center reference without coupling sidecar load to L1 health."""
+
+        tracker = self.dev_audio_tracker
+        if tracker is None:
+            return
+        label = "IMCRA center reference" if denoised else "center reference"
+        # begin_runtime_recording() resets the tracker under the same barrier.
+        # Holding it through submission prevents an old temporary block from
+        # entering the fresh formal-recording generation after that reset.
+        with self._ephemeral_transition_lock:
+            if self._ephemeral_live_capture and self._ephemeral_recording_active:
+                return
+            try:
+                submit = getattr(tracker, "submit_center_reference", None)
+                if callable(submit):
+                    accepted = bool(
+                        submit(
+                            block,
+                            denoised=denoised,
+                            channel_index=6,
+                        )
+                    )
+                    status = self._reference_writer_status_snapshot()
+                    if not accepted:
+                        self.dev_audio_tracking_error = (
+                            f"{label} sidecar queue full; "
+                            f"dropped={int(status.get('dropped', 0))}"
+                        )
+                    elif status.get("error"):
+                        self.dev_audio_tracking_error = (
+                            f"{label} sidecar writer: {status['error']}"
+                        )
+                    return
+
+                # Compatibility for external/mocked trackers implementing the
+                # previous synchronous Development Test UI API.
+                fallback_name = (
+                    "append_imcra_center_reference"
+                    if denoised
+                    else "append_center_reference"
+                )
+                getattr(tracker, fallback_name)(block, channel_index=6)
+            except Exception as exc:
+                # Sidecar failures stay visible to Development Test UI only.
+                # They do not become processing_error/InputHealthEvent and do
+                # not advance the coordinator stream epoch.
+                self.dev_audio_tracking_error = f"{label}: {exc}"
+
     @property
     def processing_status(self) -> dict[str, object]:
         snapshots = self._compute_cache.snapshots()
@@ -1172,6 +1255,7 @@ class ApplicationRuntime:
                 "layer456_stream": realtime.error,
                 "recording": self.recording_result_error,
                 "ui": self.dev_ui_error,
+                "dev_audio": self.dev_audio_tracking_error,
             },
             "processing_drops": self.processing_drops,
             "completion_congested": self._completion_congested.is_set(),
@@ -1186,6 +1270,7 @@ class ApplicationRuntime:
             "timeline_gap_count": self._timeline_gap_count,
             "last_timeline_gap": self._last_timeline_gap,
             "input_health": self._input_health_snapshot(),
+            "dev_center_reference_writer": self._reference_writer_status_snapshot(),
             "l5_actual_completed": l5_diagnostics["actual_completed"],
             "l5_dropped": l5_diagnostics["dropped"],
             "l5_skipped": l5_diagnostics["skipped"],
@@ -1585,7 +1670,7 @@ class ApplicationRuntime:
         tracked_audio = ()
         if self.dev_audio_tracker is not None:
             try:
-                tracked_audio = self.dev_audio_tracker.snapshots()
+                tracked_audio = self._dev_audio_snapshots()
             except Exception as exc:
                 self.dev_audio_tracking_error = str(exc)
         frame = DevUiFrame(
@@ -2071,12 +2156,7 @@ class ApplicationRuntime:
                 and self._ephemeral_recording_active
             )
         ):
-            try:
-                self.dev_audio_tracker.append_imcra_center_reference(
-                    block, channel_index=6,
-                )
-            except Exception as exc:
-                self.dev_audio_tracking_error = f"IMCRA center reference: {exc}"
+            self._submit_dev_center_reference(block, denoised=True)
         self._publish_l1_block(block, received)
 
     def _publish_l1_block(self, block, received: float) -> None:
@@ -2139,7 +2219,7 @@ class ApplicationRuntime:
                 # otherwise the UI looks as if Gate recovery deleted the
                 # recordings until the first new L3 result arrives.
                 try:
-                    retained_audio = self.dev_audio_tracker.snapshots()
+                    retained_audio = self._dev_audio_snapshots(force=True)
                 except Exception as exc:
                     self.dev_audio_tracking_error = str(exc)
                 else:
@@ -2352,13 +2432,11 @@ class ApplicationRuntime:
                         and self._ephemeral_recording_active
                     )
                 ):
-                    try:
-                        # Raw logical channel 6 is the Center microphone.  It
-                        # is cached before optional L1 pre-denoise so the first
-                        # L3 listening row is a true input reference.
-                        self.dev_audio_tracker.append_center_reference(block, channel_index=6)
-                    except Exception as exc:
-                        self.dev_audio_tracking_error = f"center reference: {exc}"
+                    # Raw logical channel 6 is the Center microphone. It is
+                    # queued before optional L1 pre-denoise so the first L3
+                    # listening row remains a true input reference, without
+                    # making disk/UI sidecar latency part of L1 acquisition.
+                    self._submit_dev_center_reference(block, denoised=False)
                 received = monotonic()
                 for selected, denoised in self._select_pre_denoise_with_mode(block):
                     self._publish_l1_selection(selected, received, denoised=denoised)
@@ -2648,6 +2726,7 @@ class ApplicationRuntime:
                 inserted,
                 authoritative_track=track,
                 processing_mode=missing[0].processing_mode,
+                return_snapshot=False,
             )
 
     def _signal_realtime_postprocessing_chunks(self) -> None:
@@ -2949,7 +3028,9 @@ class ApplicationRuntime:
             if self.dev_audio_tracker is not None:
                 try:
                     self.dev_audio_tracker.consume_stream_batch(
-                        audio_batch, active_tracks=active_tracks
+                        audio_batch,
+                        active_tracks=active_tracks,
+                        return_snapshot=False,
                     )
                     self.dev_audio_tracking_error = None
                 except Exception as exc:
@@ -3861,12 +3942,12 @@ class ApplicationRuntime:
                 # The formal stream hub already fed the exact compensated hops
                 # to this cache in the L3 worker. Commit only projects its
                 # immutable playback state; it never reassembles L3 windows.
-                tracked_audio = self.dev_audio_tracker.snapshots()
+                tracked_audio = self._dev_audio_snapshots()
                 self.dev_audio_tracking_error = None
             except Exception as exc:
                 self.dev_audio_tracking_error = str(exc)
                 try:
-                    tracked_audio = self.dev_audio_tracker.snapshots()
+                    tracked_audio = self._dev_audio_snapshots()
                 except Exception:
                     tracked_audio = ()
         try:
@@ -4271,7 +4352,8 @@ class ApplicationRuntime:
                 allowed_l4_track_keys = set()
                 try:
                     self.dev_audio_tracker.append_terminal_hops(
-                        self.track_audio_stream.finalize_missing_hops()
+                        self.track_audio_stream.finalize_missing_hops(),
+                        return_snapshot=False,
                     )
                     retained = self.dev_audio_tracker.finalize_capture()
                     allowed_l4_track_keys = {

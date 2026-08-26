@@ -46,6 +46,14 @@ class _ParallelRuntime:
         "error_counts": {"l2": 0, "l3": 1, "l5": 0, "commit": 0},
         "latest_errors": {"l2": None, "l3": "test failure", "l5": None, "commit": None},
         "processing_drops": 2,
+        "dev_center_reference_writer": {
+            "queue_depth": 4,
+            "queue_capacity": 128,
+            "accepted": 300,
+            "completed": 296,
+            "dropped": 1,
+            "error": None,
+        },
     }
 
 
@@ -62,6 +70,8 @@ def test_parallel_pipeline_status_uses_only_public_snapshot():
     assert "flight 5" in text
     assert "cache 3.0/64.0 MiB" in text
     assert "入口丢窗累计：2" in tooltip
+    assert "Center试听旁路：排队 4/128" in tooltip
+    assert "仅试听丢块 1" in tooltip
     assert "l3: test failure" in tooltip
 
 

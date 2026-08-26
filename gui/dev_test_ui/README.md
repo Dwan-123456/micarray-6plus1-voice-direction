@@ -18,7 +18,9 @@ L3单窗仍由`timing.downstream_audio_window_ms`控制（当前40 ms），但�
 
 只有完整模拟输入模式会在L1显示操作者填写的音频名称以及“开始/继续、暂停、从头重播”控件。暂停不推进sample，也不在继续时追赶；播放到EOF后进入`FINALIZING`并等待L2/L3/L5/Commit数据完整排空，随后保留最后结果和各层总运行时长并进入`stopped`等待重播。播放途中点击重播会立即暂停输入并清空上一轮所有尚未执行的L2/L3/L5/Commit队列、L1～L5画面、试听缓存和旧结果邮箱；若一个BF kernel已经开始，只等待该调用安全返回并丢弃其迟到结果，之后从sample 0建立全新Runtime处理图并重新预热。普通真实设备模式不创建这些控件。
 
-主界面按配置中L1仪表、极坐标和波形的最高刷新率启动精确定时器，正式配置为20 ms/50 Hz。L2面板独占容量1的`latest_l2_dev_ui`，在L2 worker完成时立即更新；正式`latest_dev_ui`仍只接收ResultJoiner按`WindowKey`有序提交的快照。正式L5固定写入`offline_after_l4`，兼容邮箱`latest_l5_dev_ui`不发布CNN。渐进/离线L5使用独立latest revision直接更新L4/L5面板，不进入DecisionRecord或watermark。算法正式窗口仍为20 ms；SKIPPED/FAILED由有序审计表达真实终态。
+主界面按配置中L1仪表、极坐标和波形的最高刷新率启动精确定时器；L1仪表和L2极坐标保持20 ms/50 Hz，整轨波形投影独立限制为10 Hz。L2面板独占容量1的`latest_l2_dev_ui`，在L2 worker完成时立即更新；正式`latest_dev_ui`仍只接收ResultJoiner按`WindowKey`有序提交的快照。正式L5固定写入`offline_after_l4`，兼容邮箱`latest_l5_dev_ui`不发布CNN。渐进/离线L5使用独立latest revision直接更新L4/L5面板，不进入DecisionRecord或watermark。算法正式窗口仍为20 ms；SKIPPED/FAILED由有序审计表达真实终态。
+
+Center RAW/IMCRA试听缓存是Development Test UI旁路：L1每个20 ms块只把选中的单路Center复制到容量500的非阻塞邮箱，独立writer负责分段写盘。旁路满或写盘失败只显示在顶部诊断，不触发正式输入健康事件或epoch重置；已知缺口按等时静音补位。完整PCM和权威样本数继续保留，显示包络则使用最多约1024点的分层max-pool缩略图，因此长时录制的DTO与绘制成本不随音频秒数增长。点击试听时，完整缓存快照也在后台线程准备，不阻塞Qt刷新或L1/L2。
 
 按ID累计试听每个决策只追加`TrackAudioStreamHub`产生的同一稳定20 ms hop；GUI不再自行交叉淡化、拼接或做响度增强。声卡输出仅保留必要的衰减型峰值安全和首尾播放淡化，不会提高或改写缓存、L5输入或录音资产。
 
@@ -57,3 +59,4 @@ L2公共`TrackedDirection`直接携带权威`track_id`、观测/预测状态和I
 - 实时L5固定以`offline_after_l4`跳过，兼容完成邮箱不发布CNN结果；DROPPED/SKIPPED画面保留到stale超时；
 - L5丢弃/跳过诊断、空候选L3免prepare，以及离线L4完成后自动L5的独立工作流；
 - latest-value邮箱、不卡采集、scratch与正式录音隔离。
+- 10分钟/30,000-hop连续输入不产生虚假epoch；Center缩略图固定容量、完整样本数O(1)统计、异步writer满队列/错误/reset代际与迟到epoch均有确定性回归。

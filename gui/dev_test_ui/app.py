@@ -139,6 +139,19 @@ def _format_processing_pipeline_tooltip(
             f"已处理 {max(0, int(realtime.get('processed_blocks', 0)))}，"
             f"丢块 {max(0, int(realtime.get('dropped_blocks', 0)))}"
         )
+    center_sidecar = status.get("dev_center_reference_writer", {})
+    center_sidecar_line = "Center试听旁路：无遥测"
+    if isinstance(center_sidecar, Mapping):
+        center_sidecar_line = (
+            "Center试听旁路："
+            f"排队 {max(0, int(center_sidecar.get('queue_depth', 0)))}/"
+            f"{max(0, int(center_sidecar.get('queue_capacity', 0)))}，"
+            f"已接纳 {max(0, int(center_sidecar.get('accepted', 0)))}，"
+            f"已完成 {max(0, int(center_sidecar.get('completed', 0)))}，"
+            f"仅试听丢块 {max(0, int(center_sidecar.get('dropped', 0)))}"
+        )
+        if center_sidecar.get("error"):
+            center_sidecar_line += f"，错误 {center_sidecar['error']}"
     return (
         "分层队列格式为 当前深度/容量；# 后为该阶段完成窗口数。\n"
         f"当前流水中窗口：{max(0, int(status.get('inflight_windows', 0)))}\n"
@@ -153,6 +166,7 @@ def _format_processing_pipeline_tooltip(
         f"L5显示邮箱：{max(0, int(status.get('l5_ui_mailbox_depth', 0)))}/"
         f"{max(0, int(status.get('l5_ui_mailbox_capacity', 0)))}，"
         f"latest-only覆盖：{max(0, int(status.get('l5_ui_mailbox_overwrites', 0)))}\n"
+        f"{center_sidecar_line}\n"
         f"{realtime_line}\n"
         f"最近阶段错误：{error_text}"
     )
@@ -311,6 +325,8 @@ def build_window(
             self._last_runtime_state = "stopped"
             self._eof_stop_submitted = False
             self._audio_source_key = None
+            self._track_audio_request_revision = 0
+            self._pending_track_audio_id: int | None = None
             self._offline_l4_pipeline = None
             self._offline_l4_auto_submitted = False
             self._canonical_auto_attempted = False
@@ -837,10 +853,11 @@ def build_window(
         def _submit_command(self, name, command, on_success=None):
             if self._pending_command is not None:
                 self.statusBar().showMessage("上一条命令仍在执行，请稍候", 3000)
-                return
+                return False
             self._pending_command = (name, self._commands.submit(command), on_success)
             self.statusBar().showMessage(f"{name}…")
             self._update_control_states()
+            return True
 
         def _poll_command(self):
             pending = self._pending_command
@@ -1060,7 +1077,10 @@ def build_window(
                         break
             self.preview_player.close()
             self._audio_source_key = None
-            audio_id_tracker.reset()
+            # Do not reset the shared tracker from the Qt thread while the
+            # input worker may still be submitting Center references.  The
+            # background discard/start lifecycle owns the writer barrier and
+            # performs the authoritative reset after every worker is stopped.
             self.bf_panel.clear_tracks()
             self._frame = None
             self._l2_frame = None
@@ -1257,44 +1277,98 @@ def build_window(
             self.statusBar().showMessage(message, 5000)
 
         def _pause_track_audio(self):
+            self._track_audio_request_revision += 1
+            self._pending_track_audio_id = None
             self.preview_player.pause()
 
         def _toggle_track_audio(self, track_id: int):
+            track_id = int(track_id)
             if (
                 self._audio_source_key is not None
                 and self._audio_source_key[0] == "track"
-                and int(self._audio_source_key[1]) == int(track_id)
+                and int(self._audio_source_key[1]) == track_id
             ):
                 if not self.preview_player.play():
                     error = self.preview_player.take_error() or "unknown audio output error"
                     self.bf_panel.sync_track_playback_stopped()
                     self.statusBar().showMessage(f"试听失败：{error}", 5000)
                 return
-            cache_path = audio_id_tracker.audio_cache_path(track_id)
-            if cache_path is None:
-                if track_id == CENTER_RAW_TRACK_ID:
-                    label = "Center Mic RAW"
-                elif track_id == CENTER_IMCRA_TRACK_ID:
-                    label = "Center Mic IMCRA"
-                else:
-                    label = f"ID-{track_id:03d}"
-                self.statusBar().showMessage(f"{label} 暂无可播放缓存", 3000)
-                self.bf_panel.sync_track_playback_stopped()
-                return
+
+            if track_id == CENTER_RAW_TRACK_ID:
+                label = "Center Mic RAW"
+            elif track_id == CENTER_IMCRA_TRACK_ID:
+                label = "Center Mic IMCRA"
+            else:
+                label = f"ID-{track_id:03d}"
+
+            # Flushing and copying a long live cache is disk-bound and may
+            # take substantially longer than one UI frame.  Keep it on the
+            # existing command worker; only load the immutable result from
+            # the Qt-thread success callback.
+            self._track_audio_request_revision += 1
+            request_revision = self._track_audio_request_revision
+            self._pending_track_audio_id = track_id
             self.preview_player.stop()
-            # Play the exact TrackAudioStreamHub waveform used by L5.  The
-            # preview backend may still apply attenuation-only output safety,
-            # but must never add a second listening-only loudness boost.
-            self.preview_player.set_volume(1.0)
-            self.preview_player.load_file(
-                cache_path,
-                delete_on_release=True,
+            self._audio_source_key = None
+
+            def prepare_cache():
+                try:
+                    return audio_id_tracker.audio_cache_path(track_id), None
+                except Exception as exc:
+                    # Return the failure to the Qt-thread callback so button
+                    # state is restored together with the status message.
+                    return None, exc
+
+            def prepared(result):
+                cache_path, preparation_error = result
+                if (
+                    self._closing
+                    or request_revision != self._track_audio_request_revision
+                ):
+                    if cache_path is not None:
+                        try:
+                            Path(cache_path).unlink(missing_ok=True)
+                        except OSError:
+                            # Runtime session cleanup owns this disposable
+                            # snapshot if an external scanner still holds it.
+                            pass
+                    return
+                self._pending_track_audio_id = None
+                if preparation_error is not None:
+                    self.bf_panel.sync_track_playback_stopped()
+                    raise RuntimeError(str(preparation_error)) from preparation_error
+                if cache_path is None:
+                    self.bf_panel.sync_track_playback_stopped()
+                    raise RuntimeError(f"{label} 暂无可播放缓存")
+                try:
+                    # Play the exact TrackAudioStreamHub waveform used by L5.
+                    # Output safety may attenuate but never boost it.
+                    self.preview_player.set_volume(1.0)
+                    self.preview_player.load_file(
+                        cache_path,
+                        delete_on_release=True,
+                    )
+                    self._audio_source_key = ("track", track_id, str(cache_path))
+                    if not self.preview_player.play():
+                        error = (
+                            self.preview_player.take_error()
+                            or "unknown audio output error"
+                        )
+                        raise RuntimeError(error)
+                except Exception:
+                    self.preview_player.close()
+                    self._audio_source_key = None
+                    self.bf_panel.sync_track_playback_stopped()
+                    raise
+
+            accepted = self._submit_command(
+                f"准备{label}试听缓存",
+                prepare_cache,
+                prepared,
             )
-            self._audio_source_key = ("track", int(track_id), str(cache_path))
-            if not self.preview_player.play():
-                error = self.preview_player.take_error() or "unknown audio output error"
+            if not accepted:
+                self._pending_track_audio_id = None
                 self.bf_panel.sync_track_playback_stopped()
-                self.statusBar().showMessage(f"试听失败：{error}", 5000)
 
         def _toggle_l4_audio(self, track_id: int):
             if (
@@ -1592,7 +1666,10 @@ def build_window(
             self._refresh_replay_controls()
             self._refresh_total_duration_text()
             self.preview_player.validate_output()
-            if not self.preview_player.playing:
+            if (
+                not self.preview_player.playing
+                and self._pending_track_audio_id is None
+            ):
                 self.bf_panel.sync_track_playback_stopped()
             if self._audio_source_key is not None and self._audio_source_key[0] == "track":
                 progress = self.preview_player.playback_progress
