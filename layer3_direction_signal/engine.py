@@ -101,11 +101,12 @@ class Layer3Processor:
     ) -> PendingLayer3Output:
         """Keep beamforming and ISTFT on the selected compute device."""
         batch = self.beamformer.process_prepared_batch(prepared, candidates, geometry)
-        band_limited = batch.spectra_mft * prepared.passband_f[None, :, None]
         inverse_kwargs = {"length": self.window_spec.samples}
         if prepared.device_validation_deferred:
             inverse_kwargs["validate_values"] = False
-        waveforms = inverse_stft(band_limited, prepared.stft, **inverse_kwargs)
+        # The beamformer publishes an already passband-masked spectrum.  Reuse
+        # it directly so each 20 ms window avoids a second complex tensor.
+        waveforms = inverse_stft(batch.spectra_mft, prepared.stft, **inverse_kwargs)
         return PendingLayer3Output(prepared, batch, waveforms.detach())
 
     @staticmethod
@@ -212,7 +213,7 @@ class Layer3Processor:
             prepared,
             batch,
             inverse_stft(
-                batch.spectra_mft * prepared.passband_f[None, :, None],
+                batch.spectra_mft,
                 prepared.stft,
                 length=self.window_spec.samples,
             ).detach(),

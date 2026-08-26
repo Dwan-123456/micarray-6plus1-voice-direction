@@ -157,6 +157,16 @@ class Layer4StreamSession:
         self.overlap_samples_48k = overlap_samples_48k
         self.batch_samples_16k = batch_samples_48k // 3
         self.overlap_samples_16k = overlap_samples_48k // 3
+        self._crossfade_ramp_16k = np.linspace(
+            0.0,
+            1.0,
+            self.overlap_samples_16k,
+            endpoint=False,
+            dtype=np.float32,
+        )
+        self._crossfade_inverse_16k = np.float32(1.0) - self._crossfade_ramp_16k
+        self._crossfade_ramp_16k.flags.writeable = False
+        self._crossfade_inverse_16k.flags.writeable = False
 
         self._identity: tuple[str, int, int] | None = None
         self._next_input_sample_48k: int | None = None
@@ -247,12 +257,11 @@ class Layer4StreamSession:
         current: tuple[np.ndarray, np.ndarray],
     ) -> tuple[np.ndarray, np.ndarray]:
         assert self._previous_output_tails_16k is not None
-        ramp = np.linspace(
-            0.0, 1.0, self.overlap_samples_16k, endpoint=False, dtype=np.float32,
-        )
-        inverse = np.float32(1.0) - ramp
         return tuple(
-            np.ascontiguousarray(previous * inverse + source[: self.overlap_samples_16k] * ramp)
+            np.ascontiguousarray(
+                previous * self._crossfade_inverse_16k
+                + source[: self.overlap_samples_16k] * self._crossfade_ramp_16k
+            )
             for previous, source in zip(self._previous_output_tails_16k, current, strict=True)
         )  # type: ignore[return-value]
 
@@ -359,22 +368,31 @@ class Layer4StreamSession:
             raise RuntimeError("L4 stream session is already closed")
         self._accept_identity(item)
         self._theta_deg = item.theta_deg
-        self._pending_48k = np.ascontiguousarray(
-            np.concatenate((self._pending_48k, item.waveform_48k)), dtype=np.float32,
-        )
-        self._next_input_sample_48k = item.end_sample_48k
-
         outputs: list[Layer4StreamOutputChunk] = []
-        while len(self._pending_48k) >= self.batch_samples_48k:
-            block = np.ascontiguousarray(
-                self._pending_48k[: self.batch_samples_48k], dtype=np.float32,
-            )
-            self._pending_48k = np.ascontiguousarray(
-                self._pending_48k[self.batch_samples_48k :], dtype=np.float32,
-            )
+        if (
+            not len(self._pending_48k)
+            and len(item.waveform_48k) == self.batch_samples_48k
+        ):
+            # Runtime normally hands over one complete configured batch. Avoid
+            # copying it into and immediately back out of an empty accumulator.
             assert self._pending_start_sample_48k is not None
             self._pending_start_sample_48k += self.batch_samples_48k
-            outputs.extend(self._process_regular_batch(block))
+            outputs.extend(self._process_regular_batch(item.waveform_48k))
+        else:
+            self._pending_48k = np.ascontiguousarray(
+                np.concatenate((self._pending_48k, item.waveform_48k)), dtype=np.float32,
+            )
+            while len(self._pending_48k) >= self.batch_samples_48k:
+                block = np.ascontiguousarray(
+                    self._pending_48k[: self.batch_samples_48k], dtype=np.float32,
+                )
+                self._pending_48k = np.ascontiguousarray(
+                    self._pending_48k[self.batch_samples_48k :], dtype=np.float32,
+                )
+                assert self._pending_start_sample_48k is not None
+                self._pending_start_sample_48k += self.batch_samples_48k
+                outputs.extend(self._process_regular_batch(block))
+        self._next_input_sample_48k = item.end_sample_48k
 
         if item.is_final:
             outputs.extend(self._finish())

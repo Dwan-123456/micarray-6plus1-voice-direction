@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from app.realtime_layer456 import CachingEmbeddingBackend, IncrementalLayer456Processor
+from common.disk_audio import DiskFloat32Spool
 from layer4_speech_separation import Layer4CandidatePair, Layer4LongAudioInput
 from layer5_voice_classifier.gain_compensation import InputGainCompensationSettings
 
@@ -189,6 +190,31 @@ def test_two_source_pipeline_publishes_l5_stable_watermarks_and_flushes_20_secon
     assert final.l6_result.metadata["finality_scope"] == "realtime_preview_tail_flushed"
     assert final.l6_result.metadata["retained_commit_dtos"] == 0
     assert processor.layer6._streaming_clusterer is None
+
+
+def test_progressive_snapshot_hashing_reads_only_new_stable_ranges(monkeypatch):
+    calls: dict[str, list[tuple[int, int]]] = {}
+    original = DiskFloat32Spool.update_digest
+
+    def record(self, digest, start_sample, end_sample):
+        calls.setdefault(self.path.name, []).append((start_sample, end_sample))
+        return original(self, digest, start_sample, end_sample)
+
+    monkeypatch.setattr(DiskFloat32Spool, "update_digest", record)
+    processor = _processor()
+    processor.push(_source(0))
+    processor.push(_source(1))
+    final = processor.finalize()
+
+    assert final is not None and final.is_final
+    assert len(calls) == 3  # one source spool and two separated branch spools
+    for ranges in calls.values():
+        assert ranges[0][0] == 0
+        assert all(
+            right[0] == left[1]
+            for left, right in zip(ranges, ranges[1:])
+        )
+        assert sum(end - start for start, end in ranges) == ranges[-1][1]
 
 
 def test_one_source_bypasses_mf2_and_can_upgrade_by_replaying_when_two_sources_appear():

@@ -378,15 +378,43 @@ class RealtimePostprocessingService:
 
     def _run(self) -> None:
         finalized = False
-        try:
+
+        def processor_for_work() -> RealtimePostprocessor:
+            processor = self._processor
+            if processor is not None:
+                return processor
             with self._lock:
                 self._state = "loading"
             started = monotonic()
-            self._processor = self._factory()
+            try:
+                processor = self._factory()
+            except Exception:
+                with self._lock:
+                    # The work item that triggered lazy loading has already
+                    # left the mailbox and must still be accounted for.
+                    self._dropped_blocks += 1
+                raise
+            finally:
+                with self._lock:
+                    self._model_load_seconds = monotonic() - started
+            self._processor = processor
             with self._lock:
-                self._model_load_seconds = monotonic() - started
-                if self._error is None:
-                    self._state = "waiting"
+                if self._error is None and self._state == "loading":
+                    # One accepted item is already owned by this worker. Keep
+                    # the public state consistent with the eager-load path
+                    # after its first submission instead of returning to the
+                    # idle ``waiting`` state between loading and processing.
+                    self._state = "queued"
+            return processor
+
+        def work_was_aborted_during_load() -> bool:
+            with self._lock:
+                if self._state != "aborting":
+                    return False
+                self._dropped_blocks += 1
+                return True
+
+        try:
             while True:
                 work = self._mailbox.get()
                 if work is _ABORT:
@@ -412,15 +440,19 @@ class RealtimePostprocessingService:
                     return
                 if not isinstance(work, _BlockWork):
                     if isinstance(work, _TrackFinalWork):
-                        assert self._processor is not None
-                        snapshot = self._processor.finalize_track(work.identity)
+                        processor = processor_for_work()
+                        if work_was_aborted_during_load():
+                            continue
+                        snapshot = processor.finalize_track(work.identity)
                         with self._lock:
                             self._processed_blocks += 1
                         if snapshot is not None:
                             self._publish(snapshot)
                     continue
-                assert self._processor is not None
-                snapshot = self._processor.push(
+                processor = processor_for_work()
+                if work_was_aborted_during_load():
+                    continue
+                snapshot = processor.push(
                     work.source,
                     is_final_chunk=work.is_final_chunk,
                 )

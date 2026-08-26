@@ -27,6 +27,14 @@ from .contracts import ContinuousTrackAudio, TrackAudioBatch, TrackAudioHop, Tra
 
 _HOP_SAMPLES = 960
 _CROSSFADE_SAMPLES = 96
+_CROSSFADE_PHASE = np.linspace(
+    0.0, np.pi / 2.0, _CROSSFADE_SAMPLES, dtype=np.float32,
+)
+_CROSSFADE_OLD_WEIGHT = np.cos(_CROSSFADE_PHASE) ** 2
+_CROSSFADE_NEW_WEIGHT = np.sin(_CROSSFADE_PHASE) ** 2
+_CROSSFADE_PHASE.flags.writeable = False
+_CROSSFADE_OLD_WEIGHT.flags.writeable = False
+_CROSSFADE_NEW_WEIGHT.flags.writeable = False
 
 
 @dataclass(slots=True)
@@ -296,43 +304,74 @@ class TrackAudioStreamHub:
         delta_slots = delta_samples // _HOP_SAMPLES
 
         old_audio = self._archive_audio.get(key)
-        if old_audio is not None:
-            replacement = self._archive_store.create_spool(
-                f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_rebased"
-            )
-            zeros = np.zeros(min(delta_samples, 1_048_576), dtype=np.float32)
-            remaining = delta_samples
-            while remaining:
-                count = min(remaining, len(zeros))
-                replacement.append(zeros[:count])
-                remaining -= count
-            if old_audio.length_samples:
-                old_audio.copy_range_to(
-                    0,
-                    old_audio.length_samples,
-                    replacement,
-                    destination_start_sample=delta_samples,
+        replacement_audio: DiskFloat32Spool | None = None
+        timeline_replacements: list[
+            tuple[
+                dict[tuple[str, int, int], DiskUInt8Timeline],
+                DiskUInt8Timeline,
+                DiskUInt8Timeline,
+            ]
+        ] = []
+        created_replacements: list[DiskFloat32Spool | DiskUInt8Timeline] = []
+        try:
+            if old_audio is not None:
+                replacement_audio = self._archive_store.create_spool(
+                    f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_rebased"
                 )
-            old_audio.close()
-            self._archive_audio[key] = replacement
+                created_replacements.append(replacement_audio)
+                zeros = np.zeros(min(delta_samples, 1_048_576), dtype=np.float32)
+                remaining = delta_samples
+                while remaining:
+                    count = min(remaining, len(zeros))
+                    replacement_audio.append(zeros[:count])
+                    remaining -= count
+                if old_audio.length_samples:
+                    old_audio.copy_range_to(
+                        0,
+                        old_audio.length_samples,
+                        replacement_audio,
+                        destination_start_sample=delta_samples,
+                    )
 
-        for timelines in (self._direction_counts, self._audio_presence):
-            old_timeline = timelines.get(key)
-            if old_timeline is None:
-                continue
-            payload = (
-                old_timeline.read_range(0, old_timeline.disk_bytes)
-                if old_timeline.disk_bytes
-                else b""
-            )
-            replacement_timeline = self._archive_store.create_u8_timeline(
-                f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_rebased_meta"
-            )
-            if payload:
-                replacement_timeline.write_range(delta_slots, payload)
-            old_timeline.close()
+            for timelines in (self._direction_counts, self._audio_presence):
+                old_timeline = timelines.get(key)
+                if old_timeline is None:
+                    continue
+                payload = (
+                    old_timeline.read_range(0, old_timeline.disk_bytes)
+                    if old_timeline.disk_bytes
+                    else b""
+                )
+                replacement_timeline = self._archive_store.create_u8_timeline(
+                    f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_rebased_meta"
+                )
+                created_replacements.append(replacement_timeline)
+                if payload:
+                    replacement_timeline.write_range(delta_slots, payload)
+                timeline_replacements.append(
+                    (timelines, old_timeline, replacement_timeline)
+                )
+        except BaseException:
+            # Backfill is allowed to fail without ending capture.  Ensure a
+            # partial rebase cannot retain open replacement files in the store.
+            for replacement in reversed(created_replacements):
+                try:
+                    self._release_spool(replacement)
+                except BaseException:
+                    pass
+            raise
+
+        if replacement_audio is not None:
+            self._archive_audio[key] = replacement_audio
+        for timelines, _old_timeline, replacement_timeline in timeline_replacements:
             timelines[key] = replacement_timeline
         self._archive_origins[key] = new_origin
+
+        # Publish every replacement before releasing the prior generation so
+        # readers never observe a closed spool through the active mappings.
+        self._release_spool(old_audio)
+        for _timelines, old_timeline, _replacement in timeline_replacements:
+            self._release_spool(old_timeline)
 
     def _relative_sample(
         self,
@@ -572,14 +611,9 @@ class TrackAudioStreamHub:
         if previous.shape != (_HOP_SAMPLES,) or current.shape != (_HOP_SAMPLES,):
             raise ValueError("track-audio crossfade requires two complete 20 ms hops")
         output = current.copy()
-        phase = np.linspace(
-            0.0, np.pi / 2.0, _CROSSFADE_SAMPLES, dtype=np.float32,
-        )
-        old_weight = np.cos(phase) ** 2
-        new_weight = np.sin(phase) ** 2
         output[:_CROSSFADE_SAMPLES] = (
-            previous[:_CROSSFADE_SAMPLES] * old_weight
-            + current[:_CROSSFADE_SAMPLES] * new_weight
+            previous[:_CROSSFADE_SAMPLES] * _CROSSFADE_OLD_WEIGHT
+            + current[:_CROSSFADE_SAMPLES] * _CROSSFADE_NEW_WEIGHT
         )
         return np.ascontiguousarray(output, dtype=np.float32)
 

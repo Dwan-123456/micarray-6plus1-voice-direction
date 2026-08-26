@@ -121,6 +121,40 @@ def compensate_l5_input(
 
     full_gain = np.maximum(0.0, settings.target_rms_dbfs - rms_before_dbfs)
     full_gain[silent] = 0.0
+    if initial_gain_db is not None and (
+        not np.isfinite(initial_gain_db) or initial_gain_db < 0.0
+    ):
+        raise ValueError("initial gain must be finite, non-negative dB")
+    if not settings.enabled and (initial_gain_db is None or initial_gain_db == 0.0):
+        # Preserve the complete diagnostic contract while avoiding the disabled
+        # path's per-sample float64 gain envelopes and second full-audio scan.
+        segment_diagnostics = tuple(
+            SegmentGainDiagnostic(
+                probabilities_20ms[index],
+                float(rms_before_dbfs[index]),
+                float(full_gain[index]),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                _dbfs(rms_before[index]),
+                _dbfs(peak_before[index]),
+                bool(silent[index]),
+                False,
+            )
+            for index in range(segment_count)
+        )
+        return np.ascontiguousarray(source.copy()), InputGainCompensationDiagnostic(
+            settings.algorithm_version,
+            False,
+            segment_diagnostics,
+            0.0,
+            0.0,
+            0,
+            0,
+            0.0,
+        )
+
     weights = np.asarray(
         [_probability_weight(value, settings) for value in probabilities_20ms], dtype=np.float64
     )
@@ -134,10 +168,6 @@ def compensate_l5_input(
     output = source.copy()
     applied_mean = np.zeros(segment_count, dtype=np.float64)
     peak_triggered = np.zeros(segment_count, dtype=bool)
-    if initial_gain_db is not None and (
-        not np.isfinite(initial_gain_db) or initial_gain_db < 0.0
-    ):
-        raise ValueError("initial gain must be finite, non-negative dB")
     previous_gain = (
         float(target_gain[0]) if initial_gain_db is None else float(initial_gain_db)
     )

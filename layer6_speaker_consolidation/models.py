@@ -10,12 +10,23 @@ import torch
 from .campplus import CAMPPlus
 
 
+_MODEL_HASH_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while payload := source.read(_MODEL_HASH_CHUNK_BYTES):
+            digest.update(payload)
+    return digest.hexdigest()
+
+
 def _verified_file(artifact: Path, expected_schema: str) -> tuple[dict[str, object], Path]:
     manifest = json.loads((artifact / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema_version") != expected_schema:
         raise ValueError(f"unexpected model artifact schema in {artifact}")
     path = artifact / str(manifest["weights_file"])
-    if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["weights_sha256"]:
+    if _sha256_file(path) != manifest["weights_sha256"]:
         raise ValueError(f"model hash mismatch in {artifact}")
     return manifest, path
 
@@ -27,6 +38,7 @@ class CampPlusEmbedder:
         self.model = CAMPPlus(80, int(self.manifest["embedding_size"]))
         state = torch.load(weights, map_location="cpu", weights_only=True)
         self.model.load_state_dict(state, strict=True)
+        del state
         self.model.eval()
 
     @staticmethod

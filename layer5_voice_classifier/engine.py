@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from common.config import DownstreamAudioWindowSpec
+from common.validated_array import validate_finite_float32_vector
 from layer4_speech_separation.resampling import Layer4Resampler
 
 from .contracts import (
@@ -22,6 +23,11 @@ from .contracts import (
 )
 from .gain_compensation import InputGainCompensationSettings, compensate_l5_input
 from .marblenet import NvidiaFrameVadMarbleNet
+
+
+_L5_MAX_BATCH_INPUT_BYTES = 128 * 1024 * 1024
+_L5_TEMPORAL_CORE_SAMPLES_16K = 60 * 16_000
+_L5_TEMPORAL_CONTEXT_SAMPLES_16K = 80 * 320
 
 
 class VoiceModelPlugin(Protocol):
@@ -89,7 +95,11 @@ class NvidiaMarbleNetPlugin:
         self.artifact = Path(artifact)
         self.manifest = json.loads((self.artifact / "manifest.json").read_text(encoding="utf-8"))
         weights_path = self.artifact / self.manifest["weights_file"]
-        actual_hash = hashlib.sha256(weights_path.read_bytes()).hexdigest()
+        digest = hashlib.sha256()
+        with weights_path.open("rb") as source:
+            while payload := source.read(4 * 1024 * 1024):
+                digest.update(payload)
+        actual_hash = digest.hexdigest()
         if actual_hash != self.manifest["weights_sha256"]:
             raise ValueError("MarbleNet weight hash does not match its manifest")
         self.device = torch.device(device)
@@ -147,23 +157,171 @@ class NvidiaMarbleNetPlugin:
     def predict_16k_20ms(self, waveform_16k: np.ndarray) -> FrameModelPrediction:
         """Run frame VAD directly on L4's native 16 kHz terminal audio."""
 
-        waveform = np.asarray(waveform_16k)
-        if (
-            waveform.ndim != 1
-            or len(waveform) < 320
-            or len(waveform) % 320
-            or waveform.dtype != np.float32
-            or not waveform.flags.c_contiguous
-            or not np.isfinite(waveform).all()
-        ):
+        return self.predict_16k_20ms_batch((waveform_16k,))[0]
+
+    @staticmethod
+    def _validated_16k_20ms(waveform_16k: np.ndarray) -> np.ndarray:
+        try:
+            waveform = validate_finite_float32_vector(
+                waveform_16k,
+                name="L5 long audio",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "L5 long audio must be finite C-contiguous float32 mono 16 kHz audio "
+                "with complete 20 ms hops"
+            ) from exc
+        if len(waveform) < 320 or len(waveform) % 320:
             raise ValueError(
                 "L5 long audio must be finite C-contiguous float32 mono 16 kHz audio "
                 "with complete 20 ms hops"
             )
-        return self._predict_16k_20ms(
-            waveform,
-            input_adapter="16k_l4_direct_v1",
-        )
+        return waveform
+
+    def predict_16k_20ms_batch(
+        self,
+        waveforms_16k: tuple[np.ndarray, ...],
+    ) -> tuple[FrameModelPrediction, ...]:
+        """Infer long audio with bounded, receptive-field-safe temporal chunks.
+
+        MarbleNet is fully convolutional and has a finite temporal receptive
+        field. Each one-minute core therefore carries 1.6 seconds of audio on
+        both sides and only publishes its context-stable center. This is the
+        same overlap/crop rule used by realtime L5, but also bounds the offline
+        fallback for recordings lasting many hours.
+        """
+
+        waveforms = tuple(self._validated_16k_20ms(value) for value in waveforms_16k)
+        if not waveforms:
+            return ()
+        groups: dict[int, list[int]] = {}
+        for index, waveform in enumerate(waveforms):
+            groups.setdefault(len(waveform), []).append(index)
+        results: list[FrameModelPrediction | None] = [None] * len(waveforms)
+        for grouped_indices in groups.values():
+            sample_count = len(waveforms[grouped_indices[0]])
+            hop_count = sample_count // 320
+            temporal_chunking = sample_count > _L5_TEMPORAL_CORE_SAMPLES_16K
+            stitched = {
+                index: np.empty(hop_count, dtype=np.float32)
+                for index in grouped_indices
+            }
+            latency_ms = {index: 0.0 for index in grouped_indices}
+            maximum_batch_seen = {index: 0 for index in grouped_indices}
+            chunk_count = 0
+            core_starts = (
+                range(0, sample_count, _L5_TEMPORAL_CORE_SAMPLES_16K)
+                if temporal_chunking
+                else (0,)
+            )
+            for core_start in core_starts:
+                core_end = (
+                    min(sample_count, core_start + _L5_TEMPORAL_CORE_SAMPLES_16K)
+                    if temporal_chunking
+                    else sample_count
+                )
+                chunk_start = (
+                    max(0, core_start - _L5_TEMPORAL_CONTEXT_SAMPLES_16K)
+                    if temporal_chunking
+                    else 0
+                )
+                chunk_end = (
+                    min(sample_count, core_end + _L5_TEMPORAL_CONTEXT_SAMPLES_16K)
+                    if temporal_chunking
+                    else sample_count
+                )
+                chunk_samples = chunk_end - chunk_start
+                chunk_hops = chunk_samples // 320
+                maximum_batch_items = max(
+                    1,
+                    _L5_MAX_BATCH_INPUT_BYTES // max(1, chunk_samples * 4),
+                )
+                for first in range(0, len(grouped_indices), maximum_batch_items):
+                    indices = grouped_indices[first:first + maximum_batch_items]
+                    if (
+                        len(indices) == 1
+                        and chunk_start == 0
+                        and chunk_end == sample_count
+                        and waveforms[indices[0]].flags.writeable
+                    ):
+                        batch = waveforms[indices[0]][None, :]
+                    else:
+                        batch = np.ascontiguousarray(
+                            np.stack([
+                                waveforms[index][chunk_start:chunk_end]
+                                for index in indices
+                            ]),
+                            dtype=np.float32,
+                        )
+                    started = perf_counter()
+                    audio = torch.from_numpy(batch).to(self.device)
+                    with torch.inference_mode():
+                        logits, lengths = self.model(audio)
+                        frame_probabilities = (
+                            logits.softmax(dim=-1)[..., 1].float().cpu().numpy()
+                        )
+                        frame_lengths = lengths.cpu().tolist()
+                    if (
+                        frame_probabilities.ndim != 2
+                        or frame_probabilities.shape[0] != len(indices)
+                        or len(frame_lengths) != len(indices)
+                    ):
+                        raise RuntimeError(
+                            "NVIDIA frame VAD batch did not return every audio input"
+                        )
+                    elapsed_ms = (perf_counter() - started) * 1_000.0
+                    published_first = (core_start - chunk_start) // 320
+                    published_count = (core_end - core_start) // 320
+                    output_first = core_start // 320
+                    for batch_index, output_index in enumerate(indices):
+                        model_frames = int(frame_lengths[batch_index])
+                        if model_frames < chunk_hops:
+                            raise RuntimeError(
+                                f"NVIDIA frame VAD returned {model_frames} frames for "
+                                f"{chunk_hops} audio hops"
+                            )
+                        stitched[output_index][
+                            output_first:output_first + published_count
+                        ] = frame_probabilities[
+                            batch_index,
+                            published_first:published_first + published_count,
+                        ]
+                        latency_ms[output_index] += elapsed_ms / len(indices)
+                        maximum_batch_seen[output_index] = max(
+                            maximum_batch_seen[output_index], len(indices),
+                        )
+                chunk_count += 1
+            for output_index in grouped_indices:
+                results[output_index] = FrameModelPrediction(
+                    self.model_id,
+                    stitched[output_index],
+                    latency_ms[output_index],
+                    {
+                        "architecture": self.manifest["architecture_id"],
+                        "source_model": self.manifest["source_model"],
+                        "input_adapter": "16k_l4_direct_v1",
+                        "input_samples_16k": sample_count,
+                        "resampled_samples": sample_count,
+                        "frame_shift_ms": 20,
+                        "model_frame_count": hop_count + 1,
+                        "output_frame_count": hop_count,
+                        "alignment": (
+                            "nvidia_frame_index_0_to_input_hop_0_"
+                            "drop_trailing_boundary_v1"
+                        ),
+                        "aggregation": "raw_softmax_voice_probability_per_20ms",
+                        "inference_batch_size": maximum_batch_seen[output_index],
+                        "inference_chunk_count": chunk_count,
+                        "temporal_chunking": temporal_chunking,
+                        "temporal_core_samples_16k": _L5_TEMPORAL_CORE_SAMPLES_16K,
+                        "temporal_context_samples_16k": (
+                            _L5_TEMPORAL_CONTEXT_SAMPLES_16K if temporal_chunking else 0
+                        ),
+                    },
+                )
+        if any(value is None for value in results):
+            raise RuntimeError("L5 batch inference did not produce every result")
+        return tuple(value for value in results if value is not None)
 
     def _predict_16k_20ms(
         self,
@@ -171,44 +329,14 @@ class NvidiaMarbleNetPlugin:
         *,
         input_adapter: str,
     ) -> FrameModelPrediction:
-        started = perf_counter()
-        tensor_input = (
-            audio_16k
-            if audio_16k.flags.writeable
-            else np.array(audio_16k, dtype=np.float32, copy=True)
-        )
-        audio = torch.from_numpy(tensor_input).unsqueeze(0).to(self.device)
-        with torch.inference_mode():
-            logits, lengths = self.model(audio)
-            frame_probabilities = logits.softmax(dim=-1)[0, :, 1]
-        model_frames = int(lengths[0].item())
-        hop_count = len(audio_16k) // 320
-        if model_frames < hop_count:
-            raise RuntimeError(
-                f"NVIDIA frame VAD returned {model_frames} frames for {hop_count} audio hops"
-            )
-        # center=True creates one additional right-boundary frame for complete
-        # 20 ms inputs. NVIDIA frame index 0 is the authoritative 0 ms frame;
-        # retain indices [0, hop_count) and discard only trailing boundary data.
-        probabilities = np.ascontiguousarray(
-            frame_probabilities[:hop_count].float().cpu().numpy(), dtype=np.float32,
-        )
+        result = self.predict_16k_20ms_batch((audio_16k,))[0]
+        if result.metadata.get("input_adapter") == input_adapter:
+            return result
         return FrameModelPrediction(
-            self.model_id,
-            probabilities,
-            (perf_counter() - started) * 1_000.0,
-            {
-                "architecture": self.manifest["architecture_id"],
-                "source_model": self.manifest["source_model"],
-                "input_adapter": input_adapter,
-                "input_samples_16k": len(audio_16k),
-                "resampled_samples": len(audio_16k),
-                "frame_shift_ms": 20,
-                "model_frame_count": model_frames,
-                "output_frame_count": hop_count,
-                "alignment": "nvidia_frame_index_0_to_input_hop_0_drop_trailing_boundary_v1",
-                "aggregation": "raw_softmax_voice_probability_per_20ms",
-            },
+            result.model_id,
+            result.probabilities_20ms,
+            result.latency_ms,
+            {**result.metadata, "input_adapter": input_adapter},
         )
 
 
@@ -311,26 +439,12 @@ class Layer5Engine:
             tuple(item[1] for item in compensated),
         )
 
-    def process_long_audio_20ms(self, item: Layer5AudioSegment) -> Layer5LongAudioResult:
-        """Return raw NVIDIA probabilities aligned to every complete 20 ms input hop."""
-
-        if item.sample_rate != 16_000:
-            raise ValueError("offline L5 accepts only native 16 kHz L4 output")
-        predictor = getattr(self.primary, "predict_16k_20ms", None)
-        if not callable(predictor):
-            raise TypeError("the primary L5 model does not expose direct 16 kHz frame output")
+    def _build_long_audio_result(
+        self,
+        item: Layer5AudioSegment,
+        prediction: FrameModelPrediction,
+    ) -> Layer5LongAudioResult:
         hop_samples = 320
-        if item.gain_compensated:
-            waveform = item.waveform
-        else:
-            waveform, _ = compensate_l5_input(
-                item.waveform,
-                item.array_source_probabilities_20ms,
-                self.input_gain_compensation,
-                segment_count=len(item.waveform) // hop_samples,
-                segment_samples=hop_samples,
-            )
-        prediction = predictor(np.ascontiguousarray(waveform, dtype=np.float32))
         expected = len(item.waveform) // hop_samples
         probabilities = np.asarray(prediction.probabilities_20ms, dtype=np.float32)
         if len(probabilities) != expected:
@@ -357,6 +471,53 @@ class Layer5Engine:
                 "summary_aggregation": "max_contiguous_3frame_mean_complete_audio_v1",
             },
         )
+
+    def process_long_audio_batch_20ms(
+        self,
+        items: tuple[Layer5AudioSegment, ...],
+    ) -> tuple[Layer5LongAudioResult, ...]:
+        """Return aligned 20 ms probabilities while batching independent tracks."""
+
+        items = tuple(items)
+        if not items:
+            return ()
+        if any(item.sample_rate != 16_000 for item in items):
+            raise ValueError("offline L5 accepts only native 16 kHz L4 output")
+        hop_samples = 320
+        waveforms = tuple(
+            item.waveform
+            if item.gain_compensated
+            else compensate_l5_input(
+                item.waveform,
+                item.array_source_probabilities_20ms,
+                self.input_gain_compensation,
+                segment_count=len(item.waveform) // hop_samples,
+                segment_samples=hop_samples,
+            )[0]
+            for item in items
+        )
+        values = tuple(np.ascontiguousarray(value, dtype=np.float32) for value in waveforms)
+        batch_predictor = getattr(self.primary, "predict_16k_20ms_batch", None)
+        if callable(batch_predictor):
+            predictions = tuple(batch_predictor(values))
+        else:
+            predictor = getattr(self.primary, "predict_16k_20ms", None)
+            if not callable(predictor):
+                raise TypeError(
+                    "the primary L5 model does not expose direct 16 kHz frame output"
+                )
+            predictions = tuple(predictor(value) for value in values)
+        if len(predictions) != len(items):
+            raise RuntimeError("L5 long-audio batch did not return every result")
+        return tuple(
+            self._build_long_audio_result(item, prediction)
+            for item, prediction in zip(items, predictions, strict=True)
+        )
+
+    def process_long_audio_20ms(self, item: Layer5AudioSegment) -> Layer5LongAudioResult:
+        """Return raw NVIDIA probabilities aligned to every complete 20 ms input hop."""
+
+        return self.process_long_audio_batch_20ms((item,))[0]
 
     def rethreshold(self, result: Layer5Result, threshold: float) -> Layer5Result:
         """Recompute decisions from existing probabilities; never reruns L3 or a model."""

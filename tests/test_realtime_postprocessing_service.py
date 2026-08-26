@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
-from threading import Event
+from threading import Event, Thread
 from time import monotonic
 
 import numpy as np
@@ -68,7 +68,7 @@ class _Processor:
         self.aborted = True
 
 
-def test_realtime_service_preloads_models_before_the_first_chunk() -> None:
+def test_realtime_service_loads_models_only_after_the_first_chunk() -> None:
     loaded = Event()
     processors = []
 
@@ -81,14 +81,143 @@ def test_realtime_service_preloads_models_before_the_first_chunk() -> None:
     service = RealtimePostprocessingService(factory, queue_chunks=1)
     service.start()
 
+    assert not loaded.wait(0.05)
+    assert service.status.state == "waiting"
+    assert service.status.model_load_seconds == 0.0
+    assert service.submit(_source())
     assert loaded.wait(1.0)
     deadline = monotonic() + 1.0
-    while service.status.state == "loading" and monotonic() < deadline:
+    while service.status.processed_blocks < 1 and monotonic() < deadline:
         Event().wait(0.01)
-    assert service.status.state == "waiting"
+    assert service.status.processed_blocks == 1
     assert service.status.model_load_seconds >= 0.0
     assert service.abort(timeout=2.0)
     assert processors[0].aborted is True
+
+
+def test_realtime_service_empty_finish_never_loads_models() -> None:
+    loaded = Event()
+    service = RealtimePostprocessingService(
+        lambda: loaded.set() or _Processor(), queue_chunks=1,
+    )
+
+    service.start()
+    assert service.finish(timeout=2.0)
+
+    assert not loaded.is_set()
+    assert service.status.state == "finished"
+    assert service.status.model_load_seconds == 0.0
+    assert service.status.submitted_blocks == 0
+    assert service.status.processed_blocks == 0
+    assert service.final_snapshot is None
+
+
+def test_realtime_service_empty_abort_never_loads_models() -> None:
+    loaded = Event()
+    service = RealtimePostprocessingService(
+        lambda: loaded.set() or _Processor(), queue_chunks=1,
+    )
+
+    service.start()
+    assert service.abort(timeout=2.0)
+
+    assert not loaded.is_set()
+    assert service.status.state == "aborted"
+    assert service.status.model_load_seconds == 0.0
+    assert service.status.submitted_blocks == 0
+    assert service.status.processed_blocks == 0
+
+
+def test_realtime_service_track_final_is_also_first_model_work() -> None:
+    loaded = Event()
+    finalized = Event()
+
+    class TrackFinalProcessor(_Processor):
+        def finalize_track(self, identity):
+            assert identity == ("session", 0, 1)
+            finalized.set()
+            return None
+
+    def factory():
+        loaded.set()
+        return TrackFinalProcessor()
+
+    service = RealtimePostprocessingService(factory, queue_chunks=1)
+    service.start()
+    assert not loaded.wait(0.05)
+    assert service.submit_track_final(("session", 0, 1))
+
+    assert finalized.wait(1.0)
+    assert loaded.is_set()
+    assert service.status.processed_blocks == 1
+    assert service.abort(timeout=2.0)
+
+
+def test_abort_during_lazy_model_load_discards_owned_work_and_cleans_processor() -> None:
+    loading = Event()
+    release = Event()
+    processor = _Processor()
+
+    def factory():
+        loading.set()
+        release.wait(2.0)
+        return processor
+
+    service = RealtimePostprocessingService(factory, queue_chunks=1)
+    service.start()
+    assert service.submit(_source())
+    assert loading.wait(1.0)
+
+    aborted = Event()
+
+    def abort_service() -> None:
+        assert service.abort(timeout=2.0)
+        aborted.set()
+
+    thread = Thread(target=abort_service)
+    thread.start()
+    deadline = monotonic() + 1.0
+    while service.status.state != "aborting" and monotonic() < deadline:
+        Event().wait(0.01)
+    release.set()
+    thread.join(2.0)
+
+    assert aborted.is_set()
+    assert processor.count == 0
+    assert processor.aborted is True
+    assert service.status.state == "aborted"
+    assert service.status.processed_blocks == 0
+    assert service.status.dropped_blocks == 1
+
+
+def test_lazy_model_load_failure_records_duration_and_drops_owned_work() -> None:
+    loading = Event()
+    release = Event()
+
+    def factory():
+        loading.set()
+        release.wait(2.0)
+        raise RuntimeError("model-load-failed")
+
+    service = RealtimePostprocessingService(factory, queue_chunks=1)
+    service.start()
+    assert service.submit(_source())
+    assert loading.wait(1.0)
+    Event().wait(0.01)
+    release.set()
+
+    deadline = monotonic() + 1.0
+    while service.status.state != "failed" and monotonic() < deadline:
+        Event().wait(0.01)
+
+    status = service.status
+    assert status.state == "failed"
+    assert status.error == "model-load-failed"
+    assert status.model_load_seconds > 0.0
+    assert status.submitted_blocks == 1
+    assert status.processed_blocks == 0
+    assert status.dropped_blocks == 1
+    assert not service.active
 
 
 def test_realtime_service_drains_chunks_and_publishes_replaceable_final_snapshot():

@@ -44,44 +44,66 @@ class BandMagnitudeMatcher:
             : frame_count * self.hop_length : self.hop_length
         ]
 
-    def _score(self, reference: NDArray[np.float32], candidate: NDArray[np.float32]) -> float:
-        if len(reference) != len(candidate):
+    def _scores(
+        self,
+        reference: NDArray[np.float32],
+        candidates: tuple[NDArray[np.float32], ...],
+    ) -> tuple[float, ...]:
+        if any(len(reference) != len(candidate) for candidate in candidates):
             raise ValueError("matching reference and candidate must be time-aligned and equal length")
         left_frames = self._frames(reference)
-        right_frames = self._frames(candidate)
-        weighted_score = 0.0
-        total_weight = 0.0
-        unweighted_score = 0.0
-        valid_count = 0
+        right_frames = tuple(self._frames(candidate) for candidate in candidates)
+        weighted_scores = [0.0] * len(candidates)
+        total_weights = [0.0] * len(candidates)
+        unweighted_scores = [0.0] * len(candidates)
+        valid_counts = [0] * len(candidates)
         # Bound peak memory for session-length recordings while preserving the
-        # exact complete-audio statistic.
+        # exact complete-audio statistic. The reference transform is shared by
+        # both candidates; every candidate still accumulates in frame order.
         for start in range(0, len(left_frames), 4096):
             stop = min(len(left_frames), start + 4096)
             left = np.fft.rfft(
                 left_frames[start:stop] * self._window, axis=1,
             )[:, self._bins]
-            right = np.fft.rfft(
-                right_frames[start:stop] * self._window, axis=1,
-            )[:, self._bins]
-            # Magnitude-only cosine similarity cannot distinguish two speakers
-            # with similar speech spectra. Complex coherence retains the
-            # phase/time signature of the directional L3 reference while the
-            # absolute inner product remains invariant to a harmless global
-            # polarity flip in a separated source.
-            numerator = np.abs(np.sum(np.conjugate(left) * right, axis=1))
-            denominator = np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1)
-            valid = denominator > np.finfo(np.float64).eps
-            if not np.any(valid):
-                continue
-            scores = np.clip(numerator[valid] / denominator[valid], 0.0, 1.0)
-            weights = np.sum(np.abs(left[valid]) ** 2, axis=1)
-            weighted_score += float(np.sum(scores * weights))
-            total_weight += float(np.sum(weights))
-            unweighted_score += float(np.sum(scores))
-            valid_count += len(scores)
-        if valid_count == 0:
-            return 0.0
-        return weighted_score / total_weight if total_weight > 0.0 else unweighted_score / valid_count
+            for index, frames in enumerate(right_frames):
+                right = np.fft.rfft(
+                    frames[start:stop] * self._window, axis=1,
+                )[:, self._bins]
+                # Magnitude-only cosine similarity cannot distinguish two speakers
+                # with similar speech spectra. Complex coherence retains the
+                # phase/time signature of the directional L3 reference while the
+                # absolute inner product remains invariant to a harmless global
+                # polarity flip in a separated source.
+                numerator = np.abs(np.sum(np.conjugate(left) * right, axis=1))
+                denominator = np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1)
+                valid = denominator > np.finfo(np.float64).eps
+                if not np.any(valid):
+                    continue
+                scores = np.clip(numerator[valid] / denominator[valid], 0.0, 1.0)
+                weights = np.sum(np.abs(left[valid]) ** 2, axis=1)
+                weighted_scores[index] += float(np.sum(scores * weights))
+                total_weights[index] += float(np.sum(weights))
+                unweighted_scores[index] += float(np.sum(scores))
+                valid_counts[index] += len(scores)
+        return tuple(
+            0.0
+            if valid_count == 0
+            else (
+                weighted_score / total_weight
+                if total_weight > 0.0
+                else unweighted_score / valid_count
+            )
+            for weighted_score, total_weight, unweighted_score, valid_count in zip(
+                weighted_scores,
+                total_weights,
+                unweighted_scores,
+                valid_counts,
+                strict=True,
+            )
+        )
+
+    def _score(self, reference: NDArray[np.float32], candidate: NDArray[np.float32]) -> float:
+        return self._scores(reference, (candidate,))[0]
 
     def select(
         self,
@@ -97,7 +119,7 @@ class BandMagnitudeMatcher:
             raise ValueError("16 kHz L3 reference must be finite C-contiguous float32 mono audio")
         if len(reference) != len(candidates.sources[0]):
             raise ValueError("resampled L3 reference and separated candidates must have equal duration")
-        scores = tuple(self._score(reference, source) for source in candidates.sources)
+        scores = self._scores(reference, candidates.sources)
         selected = 0 if scores[0] >= scores[1] else 1
         fallback_reason = None
         if len(reference) < self.minimum_reliable_samples:

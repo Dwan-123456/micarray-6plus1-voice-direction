@@ -170,9 +170,15 @@ def plan_final_reuse(
         results = tuple(l5_by_key.get(key, ()))
         expected = _expected_kinds(source)
         reason: str | None = None
-        if {item.output_kind for item in processed} != expected:
+        if (
+            len(processed) != len(expected)
+            or {item.output_kind for item in processed} != expected
+        ):
             reason = "l4_branch_set_incomplete"
-        elif {item.output_kind for item in results} != expected:
+        elif (
+            len(results) != len(expected)
+            or {item.output_kind for item in results} != expected
+        ):
             reason = "l5_branch_set_incomplete"
         elif not snapshot.is_final and any(
             not bool(item.metadata.get("realtime_track_final"))

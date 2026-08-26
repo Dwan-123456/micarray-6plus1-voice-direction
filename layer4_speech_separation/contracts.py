@@ -7,7 +7,11 @@ from typing import Literal, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from common.disk_audio import DiskAudioView, DiskFrameSeries, is_trusted_disk_audio
+from common.disk_audio import DiskFrameSeries
+from common.validated_array import (
+    readonly_validated_float32_vector,
+    readonly_validated_probability_vector,
+)
 
 
 L4_MODEL_SAMPLE_RATE = 16_000
@@ -18,22 +22,12 @@ L3_HOP_SAMPLES = 960
 
 
 def _readonly_float32_1d(value: NDArray[np.float32], name: str) -> NDArray[np.float32]:
-    array = np.asarray(value)
-    if (
-        array.ndim != 1
-        or array.dtype != np.float32
-        or not array.flags.c_contiguous
-        or (
-            not is_trusted_disk_audio(value)
-            and not np.isfinite(array).all()
-        )
-    ):
-        raise ValueError(f"{name} must be finite C-contiguous float32 mono audio")
-    if isinstance(value, DiskAudioView) and not value.flags.writeable:
-        return value
-    result = np.frombuffer(array.tobytes(), dtype=np.float32)
-    result.flags.writeable = False
-    return result
+    try:
+        return readonly_validated_float32_vector(value, name=name)
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} must be finite C-contiguous float32 mono audio"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +245,7 @@ class Layer4OfflineResult:
     l5_probability: float
     l5_is_voice: bool
     l5_model_id: str
-    l5_probabilities_20ms: tuple[float, ...]
+    l5_probabilities_20ms: tuple[float, ...] | NDArray[np.float32] | DiskFrameSeries
     l5_is_voice_20ms: tuple[bool, ...]
     output_asset_id: str
     output_sha256: str
@@ -282,8 +276,16 @@ class Layer4OfflineResult:
             if self.l5_probabilities_20ms.dtype != np.dtype(np.float32):
                 raise ValueError("offline L5 disk probabilities must use float32")
             probabilities = self.l5_probabilities_20ms
+            probabilities_validated = True
+        elif isinstance(self.l5_probabilities_20ms, np.ndarray):
+            probabilities = readonly_validated_probability_vector(
+                self.l5_probabilities_20ms,
+                name="offline L5 probabilities",
+            )
+            probabilities_validated = True
         else:
             probabilities = tuple(float(value) for value in self.l5_probabilities_20ms)
+            probabilities_validated = False
         if isinstance(self.l5_is_voice_20ms, DiskFrameSeries):
             if self.l5_is_voice_20ms.dtype != np.dtype(np.bool_):
                 raise ValueError("offline L5 disk decisions must use bool")
@@ -292,7 +294,7 @@ class Layer4OfflineResult:
             decisions = tuple(self.l5_is_voice_20ms)
         expected_hops = len(self.source.waveform) // L3_HOP_SAMPLES
         if len(probabilities) != expected_hops or (
-            not isinstance(probabilities, DiskFrameSeries)
+            not probabilities_validated
             and any(not np.isfinite(value) or not 0.0 <= value <= 1.0 for value in probabilities)
         ):
             raise ValueError("offline L5 requires one probability per 20 ms source hop")

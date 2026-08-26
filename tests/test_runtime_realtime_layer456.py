@@ -570,7 +570,7 @@ def test_close_releases_layer456_snapshots_queues_models_and_countnet(tmp_path, 
     }
 
 
-def test_close_joins_live_chunk_model_and_countnet_workers(tmp_path):
+def test_close_joins_idle_sidecar_chunk_and_countnet_workers_without_loading_models(tmp_path):
     runtime = _runtime(tmp_path)
     finalized = Event()
 
@@ -598,7 +598,7 @@ def test_close_joins_live_chunk_model_and_countnet_workers(tmp_path):
 
     runtime.close()
 
-    assert finalized.is_set()
+    assert not finalized.is_set()
     assert not model_worker.is_alive()
     assert not chunk_worker.is_alive()
     assert not countnet_worker.is_alive()
@@ -813,6 +813,35 @@ def test_async_chunk_owner_uses_one_queue_bounded_claim_round(tmp_path):
     assert runtime._stop_realtime_chunk_producer(timeout=1.0)
     assert len(claims) == 1
     assert claims[0]["max_chunks"] == 2
+
+
+def test_async_chunk_owner_coalesces_a_burst_of_l3_notifications(tmp_path):
+    runtime = _runtime(tmp_path)
+    claimed = Event()
+    claims = []
+
+    class Hub:
+        @staticmethod
+        def claim_streaming_chunks(**kwargs):
+            claims.append(kwargs)
+            claimed.set()
+            return ()
+
+    runtime.track_audio_stream = Hub()
+    runtime.realtime_postprocessing = SimpleNamespace(
+        enabled=True,
+        available_slots=2,
+        status=SimpleNamespace(error=None),
+        active=True,
+    )
+    runtime._start_realtime_chunk_producer()
+    for _ in range(5):
+        runtime._signal_realtime_postprocessing_chunks()
+
+    assert claimed.wait(1.0)
+    Event().wait(0.15)
+    assert runtime._stop_realtime_chunk_producer(timeout=1.0)
+    assert len(claims) == 1
 
 
 def test_async_chunk_owner_retries_when_capacity_opens_without_another_l3_signal(

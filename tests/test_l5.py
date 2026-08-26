@@ -9,6 +9,7 @@ from scipy.signal import resample_poly
 import torch
 
 from common.config import DownstreamAudioWindowSpec
+import layer5_voice_classifier.engine as l5_engine_module
 
 from layer5_voice_classifier import (
     FrameModelPrediction,
@@ -91,6 +92,55 @@ def test_missing_probability_silence_and_nonfinite_probability_handling():
         compensate_l5_input(
             source, (float("nan"),) * 8, InputGainCompensationSettings()
         )
+
+
+def test_disabled_gain_compensation_fast_path_preserves_full_diagnostic_contract():
+    levels = np.asarray((-120.0, -60.0, -45.0, -20.0, -4.0, -30.0, -50.0, -23.0))
+    source = np.concatenate([
+        np.zeros(960, np.float32)
+        if level <= -100.0
+        else np.full(960, 10.0 ** (level / 20.0), np.float32)
+        for level in levels
+    ])
+    probabilities = (None, 0.1, 0.3, 0.55, 0.8, 0.9, 1.0, 0.0)
+
+    output, diagnostic = compensate_l5_input(
+        source,
+        probabilities,
+        InputGainCompensationSettings(enabled=False),
+    )
+
+    np.testing.assert_array_equal(output, source)
+    assert not np.shares_memory(output, source)
+    assert diagnostic.enabled is False
+    assert diagnostic.max_applied_gain_db == 0.0
+    assert diagnostic.mean_applied_gain_db == 0.0
+    assert diagnostic.compensated_segment_count == 0
+    assert diagnostic.peak_protection_trigger_count == 0
+    assert diagnostic.final_gain_db == 0.0
+    assert tuple(item.probability for item in diagnostic.segments) == probabilities
+    assert any(item.full_gain_db > 0.0 for item in diagnostic.segments)
+    assert all(item.probability_weight == 0.0 for item in diagnostic.segments)
+    assert all(item.requested_gain_db == 0.0 for item in diagnostic.segments)
+    assert all(item.peak_limited_gain_db == 0.0 for item in diagnostic.segments)
+    assert all(item.applied_gain_db == 0.0 for item in diagnostic.segments)
+    assert all(item.rms_after_dbfs == item.rms_before_dbfs for item in diagnostic.segments)
+    assert not any(item.peak_protection_triggered for item in diagnostic.segments)
+
+
+def test_disabled_gain_compensation_keeps_nonzero_carry_over_semantics():
+    source = _constant_level(-45.0)
+
+    output, diagnostic = compensate_l5_input(
+        source,
+        (None,) * 8,
+        InputGainCompensationSettings(enabled=False),
+        initial_gain_db=6.0,
+    )
+
+    assert output[0] > source[0]
+    assert diagnostic.segments[0].applied_gain_db > 0.0
+    assert diagnostic.final_gain_db == 0.0
 
 
 def test_linear_transition_remains_peak_safe_when_next_segment_is_hotter():
@@ -257,6 +307,116 @@ def test_nvidia_long_audio_adapter_returns_exactly_one_probability_per_20ms() ->
     )
     assert prediction.metadata["model_frame_count"] == 6
     assert prediction.metadata["output_frame_count"] == 5
+
+
+def test_nvidia_long_audio_batch_groups_equal_lengths_and_restores_input_order() -> None:
+    calls = []
+
+    class _BatchSpyModel:
+        def __call__(self, audio):
+            calls.append(tuple(audio.shape))
+            frame_count = audio.shape[1] // 320 + 1
+            probabilities = audio[:, :1].expand(-1, frame_count).clamp(0.01, 0.99)
+            logits = torch.stack(
+                (torch.zeros_like(probabilities), torch.logit(probabilities)),
+                dim=-1,
+            )
+            lengths = torch.full((len(audio),), frame_count, dtype=torch.long)
+            return logits, lengths
+
+    plugin = NvidiaMarbleNetPlugin.__new__(NvidiaMarbleNetPlugin)
+    plugin.model_id = "nvidia-batch-spy"
+    plugin.manifest = {"architecture_id": "spy", "source_model": "spy"}
+    plugin.device = torch.device("cpu")
+    plugin.model = _BatchSpyModel()
+    waveforms = (
+        np.full(640, 0.1, np.float32),
+        np.full(960, 0.2, np.float32),
+        np.full(640, 0.3, np.float32),
+    )
+
+    results = plugin.predict_16k_20ms_batch(waveforms)
+
+    assert calls == [(2, 640), (1, 960)]
+    assert tuple(len(item.probabilities_20ms) for item in results) == (2, 3, 2)
+    np.testing.assert_allclose(
+        tuple(float(item.probabilities_20ms[0]) for item in results),
+        (0.1, 0.2, 0.3),
+        atol=1e-6,
+    )
+
+
+def test_nvidia_long_audio_batch_caps_stacked_input_memory(monkeypatch) -> None:
+    calls = []
+
+    class _BatchSpyModel:
+        def __call__(self, audio):
+            calls.append(tuple(audio.shape))
+            probabilities = torch.full((len(audio), 3), 0.2)
+            logits = torch.stack(
+                (torch.zeros_like(probabilities), torch.logit(probabilities)),
+                dim=-1,
+            )
+            return logits, torch.full((len(audio),), 3, dtype=torch.long)
+
+    plugin = NvidiaMarbleNetPlugin.__new__(NvidiaMarbleNetPlugin)
+    plugin.model_id = "nvidia-bounded-batch-spy"
+    plugin.manifest = {"architecture_id": "spy", "source_model": "spy"}
+    plugin.device = torch.device("cpu")
+    plugin.model = _BatchSpyModel()
+    monkeypatch.setattr(l5_engine_module, "_L5_MAX_BATCH_INPUT_BYTES", 2 * 640 * 4)
+
+    results = plugin.predict_16k_20ms_batch(
+        tuple(np.zeros(640, np.float32) for _ in range(5))
+    )
+
+    assert len(results) == 5
+    assert calls == [(2, 640), (2, 640), (1, 640)]
+    assert tuple(item.metadata["inference_batch_size"] for item in results) == (2, 2, 2, 2, 1)
+
+
+def test_nvidia_long_audio_temporal_chunks_match_full_marblenet(monkeypatch) -> None:
+    plugin = NvidiaMarbleNetPlugin(
+        "nv_marblenet_baseline_v1", ARTIFACT, device="cpu",
+    )
+    rng = np.random.default_rng(42)
+    waveform = np.ascontiguousarray(
+        rng.normal(0.0, 0.01, 7 * 16_000).astype(np.float32),
+    )
+    with torch.inference_mode():
+        logits, _ = plugin.model(torch.from_numpy(waveform[None, :]))
+        expected = logits.softmax(dim=-1)[0, :len(waveform) // 320, 1].cpu().numpy()
+    monkeypatch.setattr(l5_engine_module, "_L5_TEMPORAL_CORE_SAMPLES_16K", 5 * 16_000)
+
+    result = plugin.predict_16k_20ms(waveform)
+
+    np.testing.assert_allclose(result.probabilities_20ms, expected, atol=1e-6, rtol=0.0)
+    assert result.metadata["temporal_chunking"] is True
+    assert result.metadata["inference_chunk_count"] == 2
+    assert result.metadata["temporal_context_samples_16k"] == 80 * 320
+
+
+def test_nvidia_long_audio_batch_rejects_incomplete_model_batch() -> None:
+    class _IncompleteBatchModel:
+        @staticmethod
+        def __call__(audio):
+            probabilities = torch.full((1, 3), 0.2)
+            logits = torch.stack(
+                (torch.zeros_like(probabilities), torch.logit(probabilities)),
+                dim=-1,
+            )
+            return logits, torch.tensor((3,), dtype=torch.long)
+
+    plugin = NvidiaMarbleNetPlugin.__new__(NvidiaMarbleNetPlugin)
+    plugin.model_id = "nvidia-incomplete-batch-spy"
+    plugin.manifest = {"architecture_id": "spy", "source_model": "spy"}
+    plugin.device = torch.device("cpu")
+    plugin.model = _IncompleteBatchModel()
+
+    with pytest.raises(RuntimeError, match="batch did not return every audio input"):
+        plugin.predict_16k_20ms_batch(
+            (np.zeros(640, np.float32), np.zeros(640, np.float32))
+        )
 
 
 def test_layer5_long_audio_engine_preserves_frame_probabilities_and_thresholds_each_hop() -> None:

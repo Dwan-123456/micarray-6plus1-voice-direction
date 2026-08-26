@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from common.disk_audio import DiskUInt8Timeline
 from layer5_voice_classifier import InputGainCompensationSettings
 from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow
 
@@ -161,6 +162,113 @@ def test_claimed_waveform_and_sha_are_immutable_after_backfill_and_live_mutation
     assert claimed.sha256 == published_sha
     assert hashlib.sha256(claimed.waveform.tobytes()).hexdigest() == published_sha
     hub.resolve_streaming_chunk(claimed, accepted=True)
+    hub.reset()
+
+
+def test_backfill_rebase_releases_superseded_spools_from_store_registry() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False),
+        context_ms=160,
+    )
+    key = ("session", 0, 7)
+    track = _track(7)
+    _observe(hub, 7_680, (track,))
+    hub.process(
+        (_window(7_680, 7, level=0.3),),
+        active_track_ids=(7,),
+        identity=_identity(7_680),
+        l2_direction_count=1,
+    )
+    store = hub._archive_store
+    old_audio = hub._archive_audio[key]
+    old_directions = hub._direction_counts[key]
+    old_presence = hub._audio_presence[key]
+    old_spools = (old_audio, old_directions, old_presence)
+    registry_size = len(store._spools)
+
+    inserted = hub.insert_backfill(
+        (_window(5_760, 7, level=0.1),),
+        l2_direction_count=1,
+    )
+
+    assert len(inserted) == 1
+    assert hub._archive_origins[key] == 3_840
+    assert len(store._spools) == registry_size
+    assert all(item._closed for item in old_spools)
+    assert all(item not in store._spools for item in old_spools)
+    assert hub._archive_audio[key] in store._spools
+    assert hub._direction_counts[key] in store._spools
+    assert hub._audio_presence[key] in store._spools
+    hub.reset()
+
+
+def test_backfill_rebase_failure_releases_partial_replacements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False),
+        context_ms=160,
+    )
+    key = ("session", 0, 7)
+    track = _track(7)
+    _observe(hub, 7_680, (track,))
+    hub.process(
+        (_window(7_680, 7, level=0.3),),
+        active_track_ids=(7,),
+        identity=_identity(7_680),
+        l2_direction_count=1,
+    )
+    store = hub._archive_store
+    old_origin = hub._archive_origins[key]
+    old_audio = hub._archive_audio[key]
+    old_directions = hub._direction_counts[key]
+    old_presence = hub._audio_presence[key]
+    old_spools = (old_audio, old_directions, old_presence)
+    registry_before = tuple(store._spools)
+    created: list[object] = []
+    create_spool = store.create_spool
+    create_timeline = store.create_u8_timeline
+
+    def record_spool(label: str) -> object:
+        replacement = create_spool(label)
+        created.append(replacement)
+        return replacement
+
+    def record_timeline(label: str) -> object:
+        replacement = create_timeline(label)
+        created.append(replacement)
+        return replacement
+
+    original_write_range = DiskUInt8Timeline.write_range
+
+    def fail_replacement_timeline(
+        timeline: DiskUInt8Timeline,
+        start: int,
+        values: bytes,
+    ) -> None:
+        if timeline not in {old_directions, old_presence}:
+            raise RuntimeError("injected rebase timeline failure")
+        original_write_range(timeline, start, values)
+
+    monkeypatch.setattr(store, "create_spool", record_spool)
+    monkeypatch.setattr(store, "create_u8_timeline", record_timeline)
+    monkeypatch.setattr(DiskUInt8Timeline, "write_range", fail_replacement_timeline)
+
+    with pytest.raises(RuntimeError, match="injected rebase timeline failure"):
+        hub.insert_backfill(
+            (_window(5_760, 7, level=0.1),),
+            l2_direction_count=1,
+        )
+
+    assert len(created) == 2
+    assert all(item._closed for item in created)
+    assert all(item not in store._spools for item in created)
+    assert tuple(store._spools) == registry_before
+    assert hub._archive_origins[key] == old_origin
+    assert hub._archive_audio[key] is old_audio
+    assert hub._direction_counts[key] is old_directions
+    assert hub._audio_presence[key] is old_presence
+    assert all(not item._closed for item in old_spools)
     hub.reset()
 
 

@@ -7,7 +7,16 @@ from typing import Mapping
 import numpy as np
 from numpy.typing import NDArray
 
+from common.validated_array import (
+    readonly_validated_float32_vector,
+    readonly_validated_probability_vector,
+)
+
 from .gain_compensation import InputGainCompensationDiagnostic
+
+
+def _readonly_float32_vector(value: np.ndarray) -> np.ndarray:
+    return readonly_validated_float32_vector(value, name="L5 float32 vector")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,27 +46,32 @@ class Layer5AudioSegment:
             raise ValueError("L5 audio must be sampled at 16 or 48 kHz")
         if self.track_id is not None and (type(self.track_id) is not int or self.track_id <= 0):
             raise ValueError("L5 audio track_id must be a positive integer")
-        waveform = np.asarray(self.waveform)
         hop_samples = self.sample_rate // 50
-        if (
-            waveform.ndim != 1
-            or len(waveform) < hop_samples
-            or len(waveform) % hop_samples
-            or waveform.dtype != np.float32
-            or not waveform.flags.c_contiguous
-            or not np.isfinite(waveform).all()
-        ):
+        try:
+            waveform = _readonly_float32_vector(self.waveform)
+        except ValueError as exc:
+            raise ValueError(
+                "L5 audio must be finite C-contiguous float32 complete 20 ms hops"
+            ) from exc
+        if len(waveform) < hop_samples or len(waveform) % hop_samples:
             raise ValueError("L5 audio must be finite C-contiguous float32 complete 20 ms hops")
+        if type(self.gain_compensated) is not bool:
+            raise ValueError("gain_compensated must be bool")
         expected_hops = len(waveform) // hop_samples
-        probabilities = self.array_source_probabilities_20ms or (None,) * expected_hops
-        if len(probabilities) != expected_hops or any(
-            value is not None and (not np.isfinite(value) or not 0.0 <= value <= 1.0)
-            for value in probabilities
+        probabilities = self.array_source_probabilities_20ms
+        if not probabilities and not self.gain_compensated:
+            probabilities = (None,) * expected_hops
+        if (
+            (probabilities and len(probabilities) != expected_hops)
+            or any(
+                value is not None and (not np.isfinite(value) or not 0.0 <= value <= 1.0)
+                for value in probabilities
+            )
         ):
             raise ValueError(
                 f"L5 audio requires {expected_hops} aligned IMCRA probabilities or missing values"
             )
-        object.__setattr__(self, "waveform", np.frombuffer(waveform.tobytes(), dtype=np.float32))
+        object.__setattr__(self, "waveform", waveform)
         object.__setattr__(
             self,
             "array_source_probabilities_20ms",
@@ -73,8 +87,6 @@ class Layer5AudioSegment:
         )
         if effective_end - effective_start != len(waveform) or effective_start < 0:
             raise ValueError("L5 effective audio range must match waveform length")
-        if type(self.gain_compensated) is not bool:
-            raise ValueError("gain_compensated must be bool")
         if self.gain_compensated != (self.gain_compensation_diagnostic is not None):
             raise ValueError("pre-compensated L5 audio requires its gain diagnostic")
         object.__setattr__(self, "effective_start_sample", effective_start)
@@ -114,12 +126,18 @@ class ModelPrediction:
     metadata: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        values = np.asarray(self.probabilities, dtype=np.float32)
-        if values.ndim != 1 or not np.isfinite(values).all() or np.any((values < 0) | (values > 1)):
-            raise ValueError("model probabilities must be a finite float32 vector in [0,1]")
+        try:
+            values = readonly_validated_probability_vector(
+                np.asarray(self.probabilities, dtype=np.float32),
+                name="model probabilities",
+                allow_empty=True,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "model probabilities must be a finite float32 vector in [0,1]"
+            ) from exc
         if not self.model_id or not np.isfinite(self.latency_ms) or self.latency_ms < 0:
             raise ValueError("invalid model prediction metadata")
-        values = np.frombuffer(np.ascontiguousarray(values).tobytes(), dtype=np.float32)
         object.__setattr__(self, "probabilities", values)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
@@ -134,14 +152,19 @@ class FrameModelPrediction:
     metadata: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        values = np.asarray(self.probabilities_20ms, dtype=np.float32)
-        if values.ndim != 1 or not len(values) or not np.isfinite(values).all():
-            raise ValueError("frame probabilities must be a non-empty finite float32 vector")
-        if np.any((values < 0) | (values > 1)):
+        try:
+            values = readonly_validated_probability_vector(
+                np.asarray(self.probabilities_20ms, dtype=np.float32),
+                name="frame probabilities",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "frame probabilities must be a non-empty finite float32 vector in [0,1]"
+            ) from exc
+        if not len(values):
             raise ValueError("frame probabilities must be in [0,1]")
         if not self.model_id or not np.isfinite(self.latency_ms) or self.latency_ms < 0:
             raise ValueError("invalid frame-model prediction metadata")
-        values = np.frombuffer(np.ascontiguousarray(values).tobytes(), dtype=np.float32)
         object.__setattr__(self, "probabilities_20ms", values)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 

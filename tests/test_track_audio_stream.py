@@ -16,7 +16,13 @@ from layer5_voice_classifier import (
     VoiceDetection,
 )
 from track_audio_stream import TrackAudioStreamHub, TrackAudioWindow, TrackVoiceAnnotation
-from track_audio_stream.service import _ArchivedHop, _CROSSFADE_SAMPLES
+from track_audio_stream.service import (
+    _ArchivedHop,
+    _CROSSFADE_NEW_WEIGHT,
+    _CROSSFADE_OLD_WEIGHT,
+    _CROSSFADE_PHASE,
+    _CROSSFADE_SAMPLES,
+)
 
 
 def _window(
@@ -415,9 +421,15 @@ def test_adjacent_windows_crossfade_the_future_overlap_without_a_20ms_seam():
     previous_future = first_window.waveform[-960:]
     current = second_window.waveform[-1_920:-960]
     phase = np.linspace(0.0, np.pi / 2.0, _CROSSFADE_SAMPLES, dtype=np.float32)
+    np.testing.assert_array_equal(_CROSSFADE_PHASE, phase)
+    np.testing.assert_array_equal(_CROSSFADE_OLD_WEIGHT, np.cos(phase) ** 2)
+    np.testing.assert_array_equal(_CROSSFADE_NEW_WEIGHT, np.sin(phase) ** 2)
+    assert not _CROSSFADE_PHASE.flags.writeable
+    assert not _CROSSFADE_OLD_WEIGHT.flags.writeable
+    assert not _CROSSFADE_NEW_WEIGHT.flags.writeable
     expected_prefix = (
-        previous_future[:_CROSSFADE_SAMPLES] * np.cos(phase) ** 2
-        + current[:_CROSSFADE_SAMPLES] * np.sin(phase) ** 2
+        previous_future[:_CROSSFADE_SAMPLES] * _CROSSFADE_OLD_WEIGHT
+        + current[:_CROSSFADE_SAMPLES] * _CROSSFADE_NEW_WEIGHT
     )
     np.testing.assert_allclose(second[:_CROSSFADE_SAMPLES], expected_prefix, atol=1e-7)
     np.testing.assert_array_equal(second[_CROSSFADE_SAMPLES:], current[_CROSSFADE_SAMPLES:])

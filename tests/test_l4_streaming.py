@@ -139,7 +139,7 @@ def test_current_official_backend_does_not_expand_ten_seconds_to_its_thirty_seco
     assert tuple(len(item) for item in result.sources) == (10 * 16_000, 10 * 16_000)
 
 
-def test_two_speaker_overlap_is_crossfaded_before_commit() -> None:
+def test_two_speaker_overlap_is_crossfaded_with_cached_weights(monkeypatch) -> None:
     batch = 10 * 960
     overlap = 2 * 960
 
@@ -156,14 +156,52 @@ def test_two_speaker_overlap_is_crossfaded_before_commit() -> None:
         batch_samples_48k=batch,
         overlap_samples_48k=overlap,
     )
+    overlap_16k = overlap // 3
+    ramp = np.linspace(0.0, 1.0, overlap_16k, endpoint=False, dtype=np.float32)
+
+    def unexpected_linspace(*_args, **_kwargs):
+        raise AssertionError("crossfade weights must be cached at session construction")
+
+    monkeypatch.setattr(np, "linspace", unexpected_linspace)
     stream.push(_input(np.zeros(batch, np.float32), start=0))
     outputs = stream.push(_input(np.zeros(batch, np.float32), start=batch))
     positive = next(item.waveform_16k for item in outputs if item.branch_id == 0)
 
-    overlap_16k = overlap // 3
-    ramp = np.linspace(0.0, 1.0, overlap_16k, endpoint=False, dtype=np.float32)
     np.testing.assert_allclose(positive[:overlap_16k], 1.0 + 2.0 * ramp, atol=1e-6)
     np.testing.assert_array_equal(positive[overlap_16k:], np.float32(3.0))
+
+
+def test_exact_four_second_batch_skips_empty_pending_concatenate(monkeypatch) -> None:
+    batch = 4 * 48_000
+    overlap = 48_000
+    source = np.ascontiguousarray(
+        np.linspace(-0.25, 0.25, batch, dtype=np.float32),
+    )
+    item = _input(source, start=0, speaker_count=1)
+    resampler = _DecimatingResampler()
+    stream = Layer4StreamSession(
+        speaker_count=1,
+        resampler=resampler,  # type: ignore[arg-type]
+        batch_samples_48k=batch,
+        overlap_samples_48k=overlap,
+    )
+    original_concatenate = np.concatenate
+    calls = 0
+
+    def counted_concatenate(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_concatenate(*args, **kwargs)
+
+    monkeypatch.setattr(np, "concatenate", counted_concatenate)
+
+    outputs = stream.push(item)
+
+    assert calls == 0
+    assert stream.pending_samples_48k == 0
+    assert resampler.input_lengths == [batch]
+    assert len(outputs) == 1
+    np.testing.assert_array_equal(outputs[0].waveform_16k, source[::3])
 
 
 def test_single_speaker_bypass_never_calls_the_separator_and_flushes_remainder() -> None:

@@ -8,7 +8,7 @@ import tempfile
 import threading
 import weakref
 from collections.abc import Iterator, Sequence
-from typing import BinaryIO, overload
+from typing import BinaryIO, Protocol, overload
 
 import numpy as np
 
@@ -25,6 +25,12 @@ class _ClosedSpoolLock:
 
 
 _CLOSED_SPOOL_LOCK = _ClosedSpoolLock()
+
+
+class _DigestUpdater(Protocol):
+    """Minimal hashlib-compatible surface used by incremental spool hashing."""
+
+    def update(self, payload: bytes | bytearray | memoryview) -> object: ...
 
 
 def _write_all(stream: BinaryIO, payload: memoryview, *, context: str) -> None:
@@ -570,6 +576,50 @@ class DiskFloat32Spool:
                     digest.update(payload)
                     remaining -= len(payload)
             return digest.hexdigest()
+
+    def update_digest(
+        self,
+        digest: _DigestUpdater,
+        start_sample: int,
+        end_sample: int,
+    ) -> None:
+        """Append one stable disk range to an external incremental digest.
+
+        Progressive L4-L6 snapshots advance a stable watermark throughout a
+        potentially multi-hour recording.  Updating the caller-owned digest
+        with only the newly published range keeps that work linear in recorded
+        audio instead of rereading the complete prefix at every snapshot.
+        """
+
+        update = getattr(digest, "update", None)
+        if not callable(update):
+            raise TypeError("disk audio digest target must expose update()")
+        with self._lock:
+            end = self._resolve_range_locked(
+                start_sample,
+                end_sample,
+                invalid_message="disk audio incremental digest range is invalid",
+                exceeds_message="disk audio incremental digest range is invalid",
+            )
+            if not self._closed:
+                self._stream.flush()
+            remaining = (end - start_sample) * np.dtype(np.float32).itemsize
+            with self.path.open("rb", buffering=0) as source:
+                source.seek(start_sample * np.dtype(np.float32).itemsize)
+                buffer = bytearray(min(remaining, self._COPY_CHUNK_BYTES))
+                while remaining:
+                    chunk_bytes = min(remaining, len(buffer))
+                    target = memoryview(buffer)[:chunk_bytes]
+                    copied = 0
+                    while copied < chunk_bytes:
+                        count = source.readinto(target[copied:])
+                        if count is None or count <= 0:
+                            raise RuntimeError(
+                                "disk audio spool ended during incremental hashing"
+                            )
+                        copied += count
+                    update(target)
+                    remaining -= chunk_bytes
 
     def flush(self) -> None:
         with self._lock:

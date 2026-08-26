@@ -91,6 +91,7 @@ _PIPELINE_EOS = object()
 _CONFIGURED_DRAIN_TIMEOUT = object()
 _CONFIRMED_BACKFILL_SAMPLES = 48_000
 _CONFIRMED_BACKFILL_HISTORY_WINDOWS = 60
+_REALTIME_CHUNK_SIGNAL_COALESCE_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -413,6 +414,7 @@ class ApplicationRuntime:
         )
         self.latest_realtime_postprocessing = self.realtime_postprocessing.latest
         self._realtime_chunk_signal = threading.Event()
+        self._realtime_chunk_force_signal = threading.Event()
         self._realtime_chunk_stop = threading.Event()
         self._realtime_chunk_flush_requested = threading.Event()
         self._realtime_chunk_flush_done = threading.Event()
@@ -2452,6 +2454,7 @@ class ApplicationRuntime:
             if not windows:
                 with self._confirmed_backfill_lock:
                     self._confirmed_backfill_ready_ids.add(key)
+                self._signal_realtime_postprocessing_chunks(force=True)
                 continue
             birth_theta = self.track_audio_stream.track_birth_theta_deg(*key)
             work = _ConfirmedBackfillWork(
@@ -2470,7 +2473,7 @@ class ApplicationRuntime:
                 )
                 with self._confirmed_backfill_lock:
                     self._confirmed_backfill_ready_ids.add(key)
-                self._signal_realtime_postprocessing_chunks()
+                self._signal_realtime_postprocessing_chunks(force=True)
 
     def _run(self) -> None:
         try:
@@ -2734,7 +2737,7 @@ class ApplicationRuntime:
                             f"{key[0]}:epoch{key[1]}:track{key[2]}: {failure}; "
                             "realtime L4-L6 continues with zero-filled history gaps"
                         )
-                    self._signal_realtime_postprocessing_chunks()
+                    self._signal_realtime_postprocessing_chunks(force=True)
         finally:
             try:
                 self._layer3_backfill.clear_cache()
@@ -2794,6 +2797,19 @@ class ApplicationRuntime:
                 self._context_probabilities_20ms(window),
                 item.processing_mode,
             ))
+            if len(audio_windows) % 4 == 0 and any(
+                work_queue.qsize()
+                for work_queue in (
+                    self._l2_windows,
+                    self._l3_windows,
+                    self._l3_prepared_windows,
+                    self._l3_host_windows,
+                )
+            ):
+                # Backfill is additive historical work. Briefly yield whenever
+                # live L2/L3 is queued so a one-second recovery burst cannot
+                # steal a full CPU core from the realtime path.
+                self._processing_abort.wait(0.001)
         if self._processing_abort.is_set():
             raise RuntimeError("confirmed L3 backfill was aborted before completion")
         missing = self.track_audio_stream.missing_backfill_windows(
@@ -2810,10 +2826,17 @@ class ApplicationRuntime:
                 return_snapshot=False,
             )
 
-    def _signal_realtime_postprocessing_chunks(self) -> None:
-        """Wake the chunk owner without doing audio work on an L3 thread."""
+    def _signal_realtime_postprocessing_chunks(self, *, force: bool = False) -> None:
+        """Wake the chunk owner without doing audio work on an L3 thread.
+
+        Ordinary 20 ms L3 completions are coalesced by the owner for 100 ms.
+        Backfill readiness uses ``force`` because it can unblock already
+        complete chunks even when no later L3 window arrives.
+        """
 
         if self.realtime_postprocessing.enabled:
+            if force:
+                self._realtime_chunk_force_signal.set()
             self._realtime_chunk_signal.set()
 
     def _start_realtime_chunk_producer(self) -> None:
@@ -2826,6 +2849,7 @@ class ApplicationRuntime:
         self._realtime_chunk_flush_requested.clear()
         self._realtime_chunk_flush_done.clear()
         self._realtime_chunk_signal.clear()
+        self._realtime_chunk_force_signal.clear()
         self._realtime_chunk_failure = None
         self._realtime_chunk_flush_allowed_keys = None
         worker = threading.Thread(
@@ -2841,6 +2865,7 @@ class ApplicationRuntime:
         if worker is None:
             return True
         self._realtime_chunk_stop.set()
+        self._realtime_chunk_force_signal.set()
         self._realtime_chunk_signal.set()
         if worker is not threading.current_thread():
             worker.join(timeout=max(0.0, float(timeout)))
@@ -2863,7 +2888,16 @@ class ApplicationRuntime:
                         else None
                     )
                 )
+                if triggered and not flushing and not retry_after_capacity_block:
+                    # One producer-side trailing edge guarantees the last L3
+                    # notification is eventually claimed while reducing the
+                    # normal 50 Hz wake/empty-scan rate by about 80%.
+                    self._realtime_chunk_force_signal.wait(
+                        _REALTIME_CHUNK_SIGNAL_COALESCE_SECONDS
+                    )
+                flushing = self._realtime_chunk_flush_requested.is_set()
                 self._realtime_chunk_signal.clear()
+                self._realtime_chunk_force_signal.clear()
                 if self._realtime_chunk_stop.is_set():
                     break
                 if (
@@ -2933,6 +2967,7 @@ class ApplicationRuntime:
             None if allowed_track_keys is None else set(allowed_track_keys)
         )
         self._realtime_chunk_flush_requested.set()
+        self._realtime_chunk_force_signal.set()
         self._realtime_chunk_signal.set()
         completed = self._realtime_chunk_flush_done.wait(max(0.0, float(timeout)))
         return completed and self._realtime_chunk_failure is None
@@ -4727,11 +4762,70 @@ class ApplicationRuntime:
             raise RuntimeError("final L4/L5 reconciliation produced no candidates")
 
         l6_started = perf_counter()
-        l6_result = (
-            self.build_offline_l6_pipeline().process(l5_results)
-            if self.config.layer6.enabled
-            else None
+        realtime_l6 = None if snapshot is None else snapshot.l6_result
+        realtime_l6_metadata = dict(getattr(realtime_l6, "metadata", {}))
+        final_end_sample = max(source.end_sample for source in sources)
+        sealed_track_keys = frozenset(
+            (source.session_id, source.stream_epoch, source.track_id)
+            for source in sources
         )
+        snapshot_track_sets_exact = False
+        if snapshot is not None and plan.exact_fast_path:
+            try:
+                snapshot_track_sets_exact = (
+                    frozenset(
+                        (
+                            item.source.session_id,
+                            item.source.stream_epoch,
+                            item.source.track_id,
+                        )
+                        for item in snapshot.l4_processed
+                    )
+                    == sealed_track_keys
+                    and frozenset(
+                        (
+                            item.source.session_id,
+                            item.source.stream_epoch,
+                            item.source.track_id,
+                        )
+                        for item in snapshot.l5_results
+                    )
+                    == sealed_track_keys
+                )
+            except (AttributeError, TypeError, ValueError):
+                # A malformed preview is never safe canonical L6 evidence.
+                snapshot_track_sets_exact = False
+        reuse_realtime_l6 = bool(
+            self.config.layer6.enabled
+            and plan.exact_fast_path
+            and snapshot_track_sets_exact
+            and snapshot is not None
+            and snapshot.is_final
+            and realtime_l6 is not None
+            and getattr(realtime_l6, "session_id", None) == snapshot.session_id
+            and snapshot.session_id == sources[0].session_id
+            and bool(realtime_l6_metadata.get("realtime_tail_flushed"))
+            and bool(realtime_l6_metadata.get("streaming_final"))
+            and int(
+                realtime_l6_metadata.get(
+                    "realtime_l6_valid_through_sample_48k", -1,
+                )
+            ) == snapshot.valid_through_sample_48k
+            and snapshot.valid_through_sample_48k == final_end_sample
+        )
+        if reuse_realtime_l6:
+            l6_result = replace(realtime_l6, metadata={
+                **realtime_l6_metadata,
+                "canonical": True,
+                "realtime_provisional": False,
+                "canonical_source": "validated_realtime_tail_flushed",
+                "canonical_l6_reused": True,
+                "finality_scope": "validated_realtime_tail_flushed",
+            })
+        elif self.config.layer6.enabled:
+            l6_result = self.build_offline_l6_pipeline().process(l5_results)
+        else:
+            l6_result = None
         l6_seconds = perf_counter() - l6_started
         recomputed_keys = tuple(
             (source.session_id, source.stream_epoch, source.track_id)
@@ -4754,6 +4848,7 @@ class ApplicationRuntime:
                 for source in plan.missing_sources
             ),
             "exact_fast_path": plan.exact_fast_path,
+            "canonical_l6_reused": reuse_realtime_l6,
             "reuse_snapshot_is_global_final": bool(
                 snapshot is not None and snapshot.is_final
             ),

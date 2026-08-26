@@ -406,7 +406,9 @@ def test_prepared_context_cache_is_bounded_and_clearable():
     assert cleared.steering_entries == cleared.p_entries == 0
 
 
-def test_two_candidates_use_one_batched_inverse_stft(monkeypatch: pytest.MonkeyPatch):
+def test_two_candidates_reuse_masked_batch_for_one_inverse_stft(
+    monkeypatch: pytest.MonkeyPatch,
+):
     import layer3_direction_signal.engine as engine_module
 
     rng = np.random.default_rng(181)
@@ -415,17 +417,38 @@ def test_two_candidates_use_one_batched_inverse_stft(monkeypatch: pytest.MonkeyP
     window = _window(samples, hops, 0)
     processor = Layer3Processor(load_config(CONFIG, environ={}), device="cpu")
     calls: list[tuple[int, ...]] = []
+    inverse_inputs: list[torch.Tensor] = []
+    beamformed_batches: list[object] = []
     original = engine_module.inverse_stft
+    original_beamform = processor.beamformer.process_prepared_batch
+
+    def recording_beamform(prepared, candidates, geometry):
+        batch = original_beamform(prepared, candidates, geometry)
+        beamformed_batches.append(batch)
+        return batch
 
     def recording_inverse(spectrum, settings, *, length=7_680):
         calls.append(tuple(spectrum.shape))
+        inverse_inputs.append(spectrum)
         return original(spectrum, settings, length=length)
 
+    monkeypatch.setattr(
+        processor.beamformer, "process_prepared_batch", recording_beamform,
+    )
     monkeypatch.setattr(engine_module, "inverse_stft", recording_inverse)
-    result = processor.process(window, _candidates(window), physical_6plus1_geometry())
+    candidates = _candidates(window)
+    geometry = physical_6plus1_geometry()
+    result = processor.process(window, candidates, geometry)
 
     assert len(result.enhanced_audio) == 2
     assert calls == [(2, 513, processor.window_spec.stft_frames)]
+    assert inverse_inputs[0] is beamformed_batches[0].spectra_mft
+
+    prepared = processor.prepare(window)
+    batch = processor.beamformer.process_prepared_batch(prepared, candidates, geometry)
+    processor._synthesize_prepared(prepared, batch)  # noqa: SLF001
+    assert calls[-1] == (2, 513, processor.window_spec.stft_frames)
+    assert inverse_inputs[-1] is batch.spectra_mft
 
 
 def test_deferred_l3_host_handoff_preserves_audio_metadata_and_diagnostics():

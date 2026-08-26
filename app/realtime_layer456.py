@@ -152,6 +152,8 @@ class _BranchState:
     next_dnsmos_sample_16k: int = _DNSMOS_WINDOW_SAMPLES_16K
     last_dnsmos_end_sample_16k: int = 0
     final_dnsmos: tuple[float, float, float] | None = None
+    published_audio_hasher: object = field(default_factory=hashlib.sha256, repr=False)
+    published_audio_samples_16k: int = 0
 
     def append_audio(self, waveform: np.ndarray) -> None:
         value = np.ascontiguousarray(waveform, dtype=np.float32)
@@ -169,6 +171,22 @@ class _BranchState:
 
     def audio_digest(self, start: int, end: int) -> str:
         return self.audio_spool.digest(start, end)
+
+    def published_audio_digest(self, end: int) -> str:
+        """Hash a monotonically growing published prefix exactly once."""
+
+        if end < self.published_audio_samples_16k:
+            # This is not expected in the progressive path, but retaining a
+            # bounded fallback keeps diagnostic callers total.
+            return self.audio_digest(0, end)
+        if end > self.published_audio_samples_16k:
+            self.audio_spool.update_digest(
+                self.published_audio_hasher,  # type: ignore[arg-type]
+                self.published_audio_samples_16k,
+                end,
+            )
+            self.published_audio_samples_16k = end
+        return self.published_audio_hasher.copy().hexdigest()  # type: ignore[attr-defined]
 
     def probabilities(self, samples_16k: int) -> DiskFrameSeries:
         frame_count = samples_16k // 320
@@ -256,6 +274,9 @@ class _TrackState:
     preview_degraded_reason: str | None = None
     replay_dropped_samples_48k: int = 0
     finalized: bool = False
+    published_source_hasher: object = field(default_factory=hashlib.sha256, repr=False)
+    published_source_start_sample_48k: int | None = None
+    published_source_end_sample_48k: int | None = None
 
     @property
     def identity(self) -> tuple[str, int, int]:
@@ -445,6 +466,8 @@ class IncrementalLayer456Processor:
         state: _TrackState,
         start_sample: int,
         end_sample: int,
+        *,
+        sha256: str | None = None,
     ) -> Layer4LongAudioInput:
         if (
             start_sample < state.source_base_sample_48k
@@ -468,9 +491,13 @@ class IncrementalLayer456Processor:
                 f"{state.identity[0]}:epoch{state.identity[1]}:track{state.identity[2]}:"
                 f"realtime-start{start_sample}-end{end_sample}"
             ),
-            sha256=state.source_spool.digest(
-                start_sample - state.source_base_sample_48k,
-                end_sample - state.source_base_sample_48k,
+            sha256=(
+                sha256
+                if sha256 is not None
+                else state.source_spool.digest(
+                    start_sample - state.source_base_sample_48k,
+                    end_sample - state.source_base_sample_48k,
+                )
             ),
             session_id=state.identity[0],
             stream_epoch=state.identity[1],
@@ -481,6 +508,32 @@ class IncrementalLayer456Processor:
             waveform=waveform,
             l2_direction_counts=counts,
         )
+
+    @staticmethod
+    def _published_source_digest(
+        state: _TrackState,
+        start_sample: int,
+        end_sample: int,
+    ) -> str:
+        """Hash only source samples newly exposed by the stable watermark."""
+
+        if (
+            state.published_source_start_sample_48k != start_sample
+            or state.published_source_end_sample_48k is None
+            or state.published_source_end_sample_48k > end_sample
+        ):
+            state.published_source_hasher = hashlib.sha256()
+            state.published_source_start_sample_48k = start_sample
+            state.published_source_end_sample_48k = start_sample
+        cursor = int(state.published_source_end_sample_48k)
+        if end_sample > cursor:
+            state.source_spool.update_digest(
+                state.published_source_hasher,  # type: ignore[arg-type]
+                cursor - state.source_base_sample_48k,
+                end_sample - state.source_base_sample_48k,
+            )
+            state.published_source_end_sample_48k = end_sample
+        return state.published_source_hasher.copy().hexdigest()  # type: ignore[attr-defined]
 
     def _scores(
         self,
@@ -555,6 +608,10 @@ class IncrementalLayer456Processor:
 
     def _advance_l5(self, state: _TrackState, *, final: bool) -> None:
         l5_started = perf_counter()
+        pending: list[
+            tuple[_BranchState, int, int, Layer4ProcessedAudio]
+        ] = []
+        source_cache: dict[tuple[int, int], Layer4LongAudioInput] = {}
         for branch in state.branches.values():
             stable_end = (
                 branch.audio_samples_16k
@@ -572,7 +629,11 @@ class IncrementalLayer456Processor:
             waveform = branch.audio_range(context_start, branch.audio_samples_16k)
             source_start = branch.start_sample_48k + context_start * 3
             source_end = branch.start_sample_48k + branch.audio_samples_16k * 3
-            source = self._source_range(state, source_start, source_end)
+            source_key = (source_start, source_end)
+            source = source_cache.get(source_key)
+            if source is None:
+                source = self._source_range(state, source_start, source_end)
+                source_cache[source_key] = source
             decision = self._decision(state, source)
             kind = (
                 "merged"
@@ -614,7 +675,16 @@ class IncrementalLayer456Processor:
                 },
                 output_kind=kind,  # type: ignore[arg-type]
             )
-            l5 = self._l5_adapter.process_l5(processed)
+            pending.append((branch, stable_end, context_start, processed))
+        if not pending:
+            self._stage_seconds["l5"] += perf_counter() - l5_started
+            return
+        l5_values = self._l5_adapter.process_l5_sealed(
+            tuple(item[3] for item in pending)
+        )
+        for (branch, stable_end, context_start, _processed), l5 in zip(
+            pending, l5_values, strict=True,
+        ):
             first_frame = (branch.l5_samples_16k - context_start) // 320
             last_frame = (stable_end - context_start) // 320
             probabilities = np.ascontiguousarray(
@@ -756,9 +826,9 @@ class IncrementalLayer456Processor:
         state.speaker_count = 2
         state.session = self._new_session(2)
         for branch in state.branches.values():
-            branch.audio_spool.close()
-            branch.probability_spool.close()
-            branch.decision_spool.close()
+            self._storage.release_spool(branch.audio_spool)
+            self._storage.release_spool(branch.probability_spool)
+            self._storage.release_spool(branch.decision_spool)
         state.branches.clear()
         state.committed_end_sample_48k = None
         self._topology_revision += 1
@@ -771,12 +841,12 @@ class IncrementalLayer456Processor:
                 latest.start_sample - state.source_base_sample_48k,
                 latest.end_sample - state.source_base_sample_48k,
             )
-            state.source_spool.close()
+            self._storage.release_spool(state.source_spool)
             state.source_spool = self._storage.create_spool(
                 f"track_{state.identity[2]}_source_replay"
             )
             state.source_spool.append(latest_audio)
-            state.direction_spool.close()
+            self._storage.release_spool(state.direction_spool)
             state.direction_spool = self._storage.create_u8_timeline(
                 f"track_{state.identity[2]}_directions_replay"
             )
@@ -856,6 +926,7 @@ class IncrementalLayer456Processor:
             self._stream_input(state, source_part, is_final=is_final_chunk)
         if is_final_chunk:
             state.finalized = True
+            self._close_track_writers(state)
         return self._snapshot(is_final=False)
 
     @staticmethod
@@ -877,10 +948,16 @@ class IncrementalLayer456Processor:
         start_sample_48k = state.preview_start_sample_48k
         if end_sample_48k <= start_sample_48k or (end_sample_48k - start_sample_48k) % 3:
             return (), ()
+        source_hash = self._published_source_digest(
+            state,
+            start_sample_48k,
+            end_sample_48k,
+        )
         source = self._source_range(
             state,
             start_sample_48k,
             end_sample_48k,
+            sha256=source_hash,
         )
         decision = self._decision(state, source)
         samples_16k = (end_sample_48k - start_sample_48k) // 3
@@ -950,7 +1027,7 @@ class IncrementalLayer456Processor:
                 f"{source.asset_id}:l4:realtime:rank{rank}:"
                 f"stable{branch.stable_branch_id}"
             )
-            output_hash = branch.audio_digest(0, samples_16k)
+            output_hash = branch.published_audio_digest(samples_16k)
             processed = Layer4ProcessedAudio(
                 request_id=f"{source.asset_id}:realtime",
                 source=source,
@@ -1176,6 +1253,18 @@ class IncrementalLayer456Processor:
         for branch in state.branches.values():
             self._update_dnsmos(branch, final=True)
         state.finalized = True
+        self._close_track_writers(state)
+
+    @staticmethod
+    def _close_track_writers(state: _TrackState) -> None:
+        """Close terminal mutable handles while retaining disk-backed reads."""
+
+        state.source_spool.close()
+        state.direction_spool.close()
+        for branch in state.branches.values():
+            branch.audio_spool.close()
+            branch.probability_spool.close()
+            branch.decision_spool.close()
 
     def finalize_track(
         self,

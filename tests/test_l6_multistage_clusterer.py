@@ -77,6 +77,112 @@ def test_multistage_adapter_keeps_history_corrections_and_deduplicates() -> None
     assert corrected.stage == "fallback_ahc"
 
 
+def test_multistage_snapshot_uses_compact_immutable_historical_labels() -> None:
+    backend = _SequenceBackend(((0,), (0, 1), (1, 1, 0)))
+    clusterer = MultiStageVoiceprintClusterer(_config(), backend=backend)
+
+    first = clusterer.update((_evidence(0, (1.0, 0.0)),))
+    second = clusterer.update((_evidence(1, (0.0, 1.0)),))
+    corrected = clusterer.update((_evidence(2, (0.9, 0.1)),))
+
+    assert not isinstance(corrected.labels_by_evidence_id, dict)
+    assert dict(first.labels_by_evidence_id) == {"evidence-0": 0}
+    assert dict(second.labels_by_evidence_id) == {
+        "evidence-0": 0,
+        "evidence-1": 1,
+    }
+    assert dict(corrected.labels_by_evidence_id) == {
+        "evidence-0": 1,
+        "evidence-1": 1,
+        "evidence-2": 0,
+    }
+
+
+def test_multistage_track_assignment_updates_only_corrected_votes() -> None:
+    backend = _SequenceBackend(((0,), (0, 1), (1, 1, 0)))
+    clusterer = MultiStageVoiceprintClusterer(_config(), backend=backend)
+    evidence = (
+        SegmentEvidence("a-0", "track-a", np.asarray((1.0, 0.0)), 32_000),
+        SegmentEvidence("a-1", "track-a", np.asarray((0.9, 0.1)), 16_000),
+        SegmentEvidence("b-0", "track-b", np.asarray((0.0, 1.0)), 32_000),
+    )
+
+    clusterer.update((evidence[0],))
+    before = clusterer.update((evidence[1],))
+    corrected = clusterer.update((evidence[2],))
+
+    assert before.assignments_by_track_key == {"track-a": 0}
+    assert corrected.assignments_by_track_key == {
+        "track-a": 1,
+        "track-b": 0,
+    }
+
+
+def test_multistage_incremental_track_votes_match_full_history_reference() -> None:
+    rng = np.random.default_rng(731)
+    outputs: list[tuple[int, ...]] = []
+    current = np.empty(0, dtype=np.int32)
+    for count in range(1, 61):
+        current = np.concatenate((current, rng.integers(0, 3, size=1)))
+        corrections = rng.choice(count, size=min(count, 7), replace=False)
+        current[corrections] = rng.integers(0, 3, size=len(corrections))
+        outputs.append(tuple(int(value) for value in current))
+    clusterer = MultiStageVoiceprintClusterer(
+        _config(), backend=_SequenceBackend(tuple(outputs)),
+    )
+    evidence: list[SegmentEvidence] = []
+
+    for index in range(60):
+        item = SegmentEvidence(
+            f"evidence-{index}",
+            f"track-{index % 3}",
+            np.asarray((1.0, float(index + 1)), dtype=np.float32),
+            (index % 4 + 1) * 8_000,
+        )
+        evidence.append(item)
+        snapshot = clusterer.update((item,))
+        expected: dict[str, int] = {}
+        for track_index in range(3):
+            weighted: dict[int, int] = {}
+            first: dict[int, int] = {}
+            track_items = [
+                value for value in evidence
+                if value.track_key == f"track-{track_index}"
+            ]
+            for local_index, value in enumerate(track_items):
+                label = snapshot.labels_by_evidence_id[value.evidence_id]
+                weighted[label] = weighted.get(label, 0) + value.weight_samples_16k
+                first.setdefault(label, local_index)
+            if weighted:
+                expected[f"track-{track_index}"] = max(
+                    weighted,
+                    key=lambda label: (weighted[label], -first[label], -label),
+                )
+        assert snapshot.assignments_by_track_key == expected
+
+
+def test_streaming_raw_assignment_prefers_incremental_track_vote() -> None:
+    class ForbiddenLabels(dict[str, int]):
+        def __getitem__(self, key: str) -> int:
+            raise AssertionError(f"rescanned historical label {key}")
+
+    state = SimpleNamespace(
+        track_key="track-a",
+        segment_sample_counts=[32_000] * 10_000,
+    )
+    snapshot = pipeline_module.MultiStageSnapshot(
+        ForbiddenLabels(),
+        10_000,
+        1,
+        "test",
+        {"track-a": 2},
+    )
+
+    assert pipeline_module.OfflineLayer6Pipeline._streaming_raw_assignment(
+        state, snapshot,
+    ) == 2
+
+
 def test_multistage_adapter_reports_algorithm_stages() -> None:
     outputs = tuple(tuple(0 for _ in range(count)) for count in range(1, 9))
     clusterer = MultiStageVoiceprintClusterer(

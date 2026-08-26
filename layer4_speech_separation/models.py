@@ -15,13 +15,24 @@ from safetensors.torch import load_file as load_safetensors
 from .contracts import L4_MODEL_SAMPLE_RATE, Layer4CandidatePair, SpeakerCountDecision
 
 
+_MODEL_HASH_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while payload := source.read(_MODEL_HASH_CHUNK_BYTES):
+            digest.update(payload)
+    return digest.hexdigest()
+
+
 def _load_manifest(artifact: Path, expected_kind: str) -> tuple[dict[str, object], Path]:
     manifest_path = artifact / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("artifact_kind") != expected_kind:
         raise ValueError(f"expected {expected_kind} artifact")
     model_path = artifact / str(manifest["model_file"])
-    actual = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    actual = _sha256_file(model_path)
     if actual != manifest.get("model_sha256"):
         raise ValueError("Layer 4 model hash does not match its manifest")
     return manifest, model_path
@@ -223,6 +234,7 @@ class MossFormer2Backend(_OfficialModelBackend):
         state = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
         state = {str(key).removeprefix("module."): value for key, value in state.items()}
         model.load_state_dict(state, strict=True)
+        del state, checkpoint
         super().__init__(
             backend="mossformer2_ss_16k", manifest=manifest, artifact=root, device=device,
         )
@@ -241,7 +253,9 @@ class TigerBackend(_OfficialModelBackend):
             sys.path.insert(0, str(source))
         module = importlib.import_module("look2hear.models.tiger")
         model = module.TIGER(**config)
-        model.load_state_dict(load_safetensors(str(weights_path)), strict=True)
+        state = load_safetensors(str(weights_path))
+        model.load_state_dict(state, strict=True)
+        del state
         super().__init__(
             backend="tiger_speech_16k", manifest=manifest, artifact=root, device=device,
         )

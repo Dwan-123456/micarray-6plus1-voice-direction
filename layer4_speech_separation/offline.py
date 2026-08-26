@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -12,10 +12,14 @@ import wave
 
 import numpy as np
 
-from layer5_voice_classifier import Layer5AudioSegment, Layer5Engine
+from layer5_voice_classifier import (
+    Layer5AudioSegment,
+    Layer5Engine,
+    Layer5LongAudioResult,
+)
 from layer5_voice_classifier.gain_compensation import (
+    InputGainCompensationDiagnostic,
     InputGainCompensationSettings,
-    compensate_l5_input,
 )
 
 from .contracts import (
@@ -31,8 +35,103 @@ from .matching import BandMagnitudeMatcher
 from .resampling import Layer4Resampler
 
 
+_PERSIST_HASH_CHUNK_BYTES = 4 * 1024 * 1024
+_PERSIST_WAV_CHUNK_SAMPLES = 10 * 16_000
+_PERSIST_INLINE_FRAME_LIMIT = 4_096
+_PERSIST_FRAME_CHUNK_ITEMS = 65_536
+
+
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while payload := source.read(_PERSIST_HASH_CHUNK_BYTES):
+            digest.update(payload)
+    return digest.hexdigest()
+
+
+def _write_pcm16_wav(final: Path, waveform: np.ndarray) -> str:
+    """Write one 16 kHz WAV with bounded conversion memory and return its file hash."""
+
+    partial = final.with_suffix(".wav.partial")
+    with wave.open(str(partial), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16_000)
+        for first in range(0, len(waveform), _PERSIST_WAV_CHUNK_SAMPLES):
+            last = min(len(waveform), first + _PERSIST_WAV_CHUNK_SAMPLES)
+            chunk = np.asarray(waveform[first:last], dtype=np.float32)
+            pcm = np.clip(
+                np.rint(chunk * 32768.0), -32768, 32767,
+            ).astype("<i2")
+            writer.writeframesraw(memoryview(pcm).cast("B"))
+    output_sha256 = _sha256_file(partial)
+    os.replace(partial, final)
+    return output_sha256
+
+
+def _write_frame_sidecar(
+    output_root: Path,
+    *,
+    stem: str,
+    field: str,
+    values: object,
+    dtype: np.dtype,
+) -> dict[str, object]:
+    """Atomically persist one long frame sequence without materializing it in full."""
+
+    count = len(values)  # type: ignore[arg-type]
+    final = output_root / f"{stem}.{field}.bin"
+    partial = final.with_suffix(final.suffix + ".partial")
+    digest = hashlib.sha256()
+    with partial.open("wb") as stream:
+        for first in range(0, count, _PERSIST_FRAME_CHUNK_ITEMS):
+            last = min(count, first + _PERSIST_FRAME_CHUNK_ITEMS)
+            chunk = np.ascontiguousarray(
+                values[first:last],  # type: ignore[index]
+                dtype=dtype,
+            )
+            payload = memoryview(chunk).cast("B")
+            digest.update(payload)
+            written = 0
+            while written < len(payload):
+                count_written = stream.write(payload[written:])
+                if count_written is None or count_written <= 0:
+                    raise OSError("offline L5 sidecar ended during a short write")
+                written += count_written
+    os.replace(partial, final)
+    return {
+        "storage": "binary_sidecar_v1",
+        "path": final.relative_to(output_root).as_posix(),
+        "dtype": dtype.str,
+        "frame_count": count,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _persist_frame_sequence(
+    output_root: Path,
+    *,
+    stem: str,
+    field: str,
+    values: object,
+    dtype: np.dtype,
+) -> object:
+    count = len(values)  # type: ignore[arg-type]
+    if count <= _PERSIST_INLINE_FRAME_LIMIT:
+        if dtype == np.dtype(np.bool_):
+            return tuple(bool(value) for value in values)  # type: ignore[union-attr]
+        return tuple(float(value) for value in values)  # type: ignore[union-attr]
+    return _write_frame_sidecar(
+        output_root,
+        stem=stem,
+        field=field,
+        values=values,
+        dtype=dtype,
+    )
 
 
 def _read_mono_pcm16(path: Path) -> np.ndarray:
@@ -337,32 +436,37 @@ class OfflineLayer4Pipeline:
             output_kind=output_kind,
         )
 
-    def process_l5(self, processed: Layer4ProcessedAudio) -> Layer4OfflineResult:
-        """Run L5 only after the caller explicitly sends completed L4 audio."""
-
-        started = perf_counter()
-        output_16k = np.ascontiguousarray(processed.waveform_16k, dtype=np.float32)
+    def _prepare_l5(
+        self,
+        processed: Layer4ProcessedAudio,
+    ) -> tuple[np.ndarray, Layer5AudioSegment]:
+        output_16k = processed.waveform_16k
         source = processed.source
-        # Hub archives are already gain-compensated. Produce the normal L5
-        # diagnostic with compensation disabled so L5 never applies gain twice.
+        # Hub archives are already gain-compensated. L5 must not scan or copy a
+        # multi-hour immutable waveform merely to record an all-zero disabled
+        # gain diagnostic.
         segment_count = len(output_16k) // 320
         if segment_count * 320 != len(output_16k):
             raise ValueError("L4 output must contain complete 16 kHz 20 ms hops")
-        output_16k, gain_diagnostic = compensate_l5_input(
-            output_16k,
-            (None,) * segment_count,
-            replace(
-                getattr(
-                    self.layer5,
-                    "input_gain_compensation",
-                    InputGainCompensationSettings(),
-                ),
-                enabled=False,
+        gain_settings = replace(
+            getattr(
+                self.layer5,
+                "input_gain_compensation",
+                InputGainCompensationSettings(),
             ),
-            segment_count=segment_count,
-            segment_samples=320,
+            enabled=False,
         )
-        l5 = self.layer5.process_long_audio_20ms(Layer5AudioSegment(
+        gain_diagnostic = InputGainCompensationDiagnostic(
+            algorithm_version=f"{gain_settings.algorithm_version}:trusted_disabled_v1",
+            enabled=False,
+            segments=(),
+            max_applied_gain_db=0.0,
+            mean_applied_gain_db=0.0,
+            compensated_segment_count=0,
+            peak_protection_trigger_count=0,
+            final_gain_db=0.0,
+        )
+        segment = Layer5AudioSegment(
             source.session_id, source.stream_epoch, source.end_sample // 960,
             source.end_sample // 3, source.theta_deg, 16_000, output_16k,
             track_id=source.track_id,
@@ -370,8 +474,18 @@ class OfflineLayer4Pipeline:
             effective_end_sample=source.end_sample // 3,
             gain_compensated=True,
             gain_compensation_diagnostic=gain_diagnostic,
-        ))
-        output_hash = _sha256_bytes(output_16k.tobytes())
+        )
+        return output_16k, segment
+
+    @staticmethod
+    def _complete_l5(
+        processed: Layer4ProcessedAudio,
+        output_16k: np.ndarray,
+        l5: Layer5LongAudioResult,
+        elapsed_ms: float,
+        batch_track_count: int,
+    ) -> Layer4OfflineResult:
+        source = processed.source
         return Layer4OfflineResult(
             request_id=processed.request_id,
             source=source,
@@ -381,13 +495,17 @@ class OfflineLayer4Pipeline:
             l5_probability=l5.summary_probability,
             l5_is_voice=l5.summary_is_voice,
             l5_model_id=l5.model_id,
-            l5_probabilities_20ms=tuple(float(value) for value in l5.probabilities_20ms),
+            l5_probabilities_20ms=l5.probabilities_20ms,
             l5_is_voice_20ms=l5.is_voice_20ms,
             output_asset_id=processed.output_asset_id,
-            output_sha256=output_hash,
+            # L5 receives the immutable L4 output with gain compensation
+            # explicitly disabled, so its authoritative audio hash is already
+            # available and need not be recomputed for every progressive view.
+            output_sha256=processed.output_sha256,
             metadata={
                 **processed.metadata,
-                "l5_elapsed_ms": (perf_counter() - started) * 1_000.0,
+                "l5_elapsed_ms": elapsed_ms,
+                "l5_batch_track_count": batch_track_count,
                 "l5_threshold": l5.threshold,
                 "l5_frame_shift_ms": 20,
                 "l5_frame_count": len(l5.probabilities_20ms),
@@ -396,6 +514,11 @@ class OfflineLayer4Pipeline:
             },
             output_kind=processed.output_kind,
         )
+
+    def process_l5(self, processed: Layer4ProcessedAudio) -> Layer4OfflineResult:
+        """Run L5 only after the caller explicitly sends completed L4 audio."""
+
+        return self.process_l5_sealed((processed,))[0]
 
     def process(self, source: Layer4LongAudioInput, *, request_id: str | None = None) -> Layer4OfflineResult:
         return self.process_l5(self.process_l4(source, request_id=request_id))
@@ -426,7 +549,30 @@ class OfflineLayer4Pipeline:
         sessions = {item.source.session_id for item in processed}
         if len(sessions) != 1:
             raise ValueError("one offline L5 job cannot mix capture sessions")
-        return tuple(self.process_l5(item) for item in processed)
+        l5_started = perf_counter()
+        prepared = tuple(self._prepare_l5(item) for item in processed)
+        segments = tuple(item[1] for item in prepared)
+        batch = getattr(self.layer5, "process_long_audio_batch_20ms", None)
+        l5_results = (
+            tuple(batch(segments))
+            if callable(batch)
+            else tuple(self.layer5.process_long_audio_20ms(item) for item in segments)
+        )
+        if len(l5_results) != len(processed):
+            raise RuntimeError("offline L5 batch did not return every completed L4 track")
+        l5_elapsed_ms = (perf_counter() - l5_started) * 1_000.0
+        return tuple(
+            self._complete_l5(
+                item,
+                prepared_item[0],
+                l5,
+                l5_elapsed_ms,
+                len(processed),
+            )
+            for item, prepared_item, l5 in zip(
+                processed, prepared, l5_results, strict=True,
+            )
+        )
 
     @staticmethod
     def _validate_sources(
@@ -461,21 +607,37 @@ def persist_offline_results(
     output_root.mkdir(parents=True, exist_ok=False)
     rows: list[dict[str, object]] = []
     for result in results:
-        waveform = np.asarray(result.metadata["output_waveform_16k"], dtype=np.float32)
+        waveform = np.asarray(result.metadata["output_waveform_16k"])
+        if (
+            waveform.ndim != 1
+            or waveform.dtype != np.dtype(np.float32)
+            or not waveform.flags.c_contiguous
+            or len(waveform) != len(result.l5_probabilities_20ms) * 320
+        ):
+            raise ValueError(
+                "offline persistence requires aligned C-contiguous float32 16 kHz audio"
+            )
         candidate_suffix = "" if result.output_kind == "merged" else f"_{result.output_kind}"
         name = (
             f"epoch{result.source.stream_epoch:03d}_track{result.source.track_id:06d}"
             f"{candidate_suffix}.wav"
         )
         final = output_root / name
-        partial = final.with_suffix(".wav.partial")
-        with wave.open(str(partial), "wb") as writer:
-            writer.setnchannels(1)
-            writer.setsampwidth(2)
-            writer.setframerate(16_000)
-            pcm = np.clip(np.rint(waveform * 32768.0), -32768, 32767).astype("<i2")
-            writer.writeframes(pcm.tobytes())
-        os.replace(partial, final)
+        output_sha256 = _write_pcm16_wav(final, waveform)
+        probability_payload = _persist_frame_sequence(
+            output_root,
+            stem=final.stem,
+            field="l5_probabilities_20ms",
+            values=result.l5_probabilities_20ms,
+            dtype=np.dtype("<f4"),
+        )
+        decision_payload = _persist_frame_sequence(
+            output_root,
+            stem=final.stem,
+            field="l5_is_voice_20ms",
+            values=result.l5_is_voice_20ms,
+            dtype=np.dtype(np.bool_),
+        )
         metadata = {k: v for k, v in result.metadata.items() if k != "output_waveform_16k"}
         rows.append({
             "request_id": result.request_id,
@@ -484,7 +646,13 @@ def persist_offline_results(
             "stream_epoch": result.source.stream_epoch,
             "track_id": result.source.track_id,
             "theta_deg": result.source.theta_deg,
-            "speaker_count": asdict(result.speaker_count),
+            "speaker_count": {
+                "asset_id": result.speaker_count.asset_id,
+                "speaker_count": result.speaker_count.speaker_count,
+                "confidence": result.speaker_count.confidence,
+                "classifier_id": result.speaker_count.classifier_id,
+                "metadata": dict(result.speaker_count.metadata),
+            },
             "path": result.path,
             "output_kind": result.output_kind,
             "selection": None if result.selected is None else {
@@ -496,10 +664,10 @@ def persist_offline_results(
             "l5_probability": result.l5_probability,
             "l5_is_voice": result.l5_is_voice,
             "l5_model_id": result.l5_model_id,
-            "l5_probabilities_20ms": result.l5_probabilities_20ms,
-            "l5_is_voice_20ms": result.l5_is_voice_20ms,
+            "l5_probabilities_20ms": probability_payload,
+            "l5_is_voice_20ms": decision_payload,
             "output_path": name,
-            "output_sha256": hashlib.sha256(final.read_bytes()).hexdigest(),
+            "output_sha256": output_sha256,
             "metadata": metadata,
         })
     payload = {

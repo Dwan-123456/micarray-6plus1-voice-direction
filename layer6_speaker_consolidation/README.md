@@ -1,9 +1,12 @@
 # L6 speaker consolidation
 
-L6 has a throttled provisional preview in the `1.3.5` development runtime and an
+L6 has a bounded provisional preview in the `1.3.6` development runtime and an
 authoritative offline stage after a sealed Test UI L4/L5 batch. The preview runs
-on first evidence, topology changes, or a 30-second watermark interval; unchanged
-two-second CAMPPlus evidence is cached. The sealed batch replaces the preview. It consumes unmerged L4
+on first evidence, topology changes, or the configured L4 cadence (four seconds by
+default); unchanged two-second CAMPPlus evidence is cached. Multi-stage labels may
+correct history, but the adapter updates only new or relabeled track votes and keeps
+historical labels in a compact array-backed mapping instead of rebuilding dictionaries
+or rescanning every track. The sealed batch replaces the preview. It consumes unmerged L4
 A/B tracks plus any single-speaker bypass track that is the source's only A track.
 It concatenates each selected track's L5 Voice
 frames, divides that continuous speech into fixed two-second segments, and extracts one

@@ -71,6 +71,34 @@ class _L5:
         )
 
 
+class _BatchL5(_L5):
+    def __init__(self):
+        super().__init__()
+        self.batch_calls = 0
+        self.last_items = ()
+
+    def process_long_audio_20ms(self, item):
+        raise AssertionError("batch-capable L5 must not use the scalar fallback")
+
+    def process_long_audio_batch_20ms(self, items):
+        self.batch_calls += 1
+        self.last_items = tuple(items)
+        values = []
+        for item in items:
+            probability = 0.8 if item.track_id == 10 else 0.4
+            probabilities = np.full(len(item.waveform) // 320, probability, np.float32)
+            values.append(SimpleNamespace(
+                model_id="l5-batch",
+                threshold=0.7,
+                probabilities_20ms=probabilities,
+                is_voice_20ms=tuple(bool(value >= 0.7) for value in probabilities),
+                summary_probability=probability,
+                summary_is_voice=probability >= 0.7,
+                metadata={"frame_shift_ms": 20},
+            ))
+        return tuple(values)
+
+
 class _DnsMos:
     def __init__(self) -> None:
         self.calls = 0
@@ -171,6 +199,38 @@ def test_l4_and_l5_pipeline_stages_share_the_same_16khz_waveform() -> None:
         assert any(item.is_voice for item in annotations if item is not None)
     finally:
         store.close()
+
+
+def test_l5_sealed_batches_tracks_once_without_changing_order_or_audio_hashes() -> None:
+    layer5 = _BatchL5()
+    pipeline = OfflineLayer4Pipeline(
+        speaker_counter=DirectionCountSpeakerClassifier(),
+        backends={"mossformer2_ss_16k": _Backend()},
+        layer5=layer5,
+        quality_scorer=_DnsMos(),
+        default_backend="mossformer2_ss_16k",
+    )
+    first = _source((1, 1, 1))
+    second = replace(first, asset_id="asset-10", track_id=10, theta_deg=240.0)
+    processed = pipeline.process_l4_sealed((first, second))
+
+    results = pipeline.process_l5_sealed(processed)
+
+    assert layer5.batch_calls == 1
+    assert tuple(item.source.track_id for item in results) == (9, 10)
+    assert tuple(item.l5_probability for item in results) == (0.4, 0.8)
+    assert tuple(item.l5_is_voice for item in results) == (False, True)
+    for before, after in zip(processed, results, strict=True):
+        assert after.output_sha256 == before.output_sha256
+        assert after.metadata["output_waveform_16k"] is before.waveform_16k
+        assert after.output_sha256 == hashlib.sha256(
+            after.metadata["output_waveform_16k"].tobytes()
+        ).hexdigest()
+    for before, item in zip(processed, layer5.last_items, strict=True):
+        assert item.waveform is before.waveform_16k
+        assert item.array_source_probabilities_20ms == ()
+        assert item.gain_compensation_diagnostic is not None
+        assert item.gain_compensation_diagnostic.segments == ()
 
 
 def test_l4_sealed_selects_each_track_independently_by_its_1_4khz_scores() -> None:

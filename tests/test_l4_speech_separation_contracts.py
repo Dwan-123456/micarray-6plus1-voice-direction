@@ -73,6 +73,42 @@ def test_two_candidates_are_required_and_selection_preserves_parent_id_and_angle
     assert not selected.waveform.flags.writeable
 
 
+def test_matcher_reuses_one_reference_transform_for_both_candidates(monkeypatch) -> None:
+    sample_rate = 16_000
+    time = np.arange(sample_rate, dtype=np.float64) / sample_rate
+    reference = np.ascontiguousarray(np.sin(2 * np.pi * 2_500 * time), dtype=np.float32)
+    candidates = Layer4CandidatePair(
+        "request",
+        "model",
+        "rev",
+        sample_rate,
+        (
+            np.ascontiguousarray(reference * np.float32(0.5)),
+            np.ascontiguousarray(-reference * np.float32(0.25)),
+        ),
+    )
+    matcher = BandMagnitudeMatcher()
+    independently_scored = tuple(
+        matcher._score(reference, candidate) for candidate in candidates.sources
+    )
+    original_rfft = np.fft.rfft
+    calls = 0
+
+    def counted_rfft(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_rfft(*args, **kwargs)
+
+    monkeypatch.setattr(np.fft, "rfft", counted_rfft)
+
+    selected = matcher.select(
+        parent=_parent(), reference_16k=reference, candidates=candidates,
+    )
+
+    assert calls == 3  # one reference plus two candidate transforms
+    assert selected.candidate_scores == independently_scored
+
+
 def test_layer4_candidate_contract_rejects_non_pair_or_misaligned_outputs() -> None:
     audio = np.zeros(16_000, dtype=np.float32)
     with pytest.raises(ValueError, match="equal length"):

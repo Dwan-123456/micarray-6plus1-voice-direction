@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import heapq
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -44,10 +46,52 @@ class SegmentEvidence:
 
 @dataclass(frozen=True, slots=True)
 class MultiStageSnapshot:
-    labels_by_evidence_id: dict[str, int]
+    labels_by_evidence_id: Mapping[str, int]
     evidence_count: int
     cluster_count: int
     stage: str
+    assignments_by_track_key: Mapping[str, int] = field(default_factory=dict)
+
+
+class _ArrayBackedLabelMap(Mapping[str, int]):
+    """Immutable label snapshot without rebuilding a Python dict of history.
+
+    Evidence and its ID index are append-only for one clusterer session.  A
+    frozen length hides later appends from older snapshots, while the label
+    array belongs exclusively to this snapshot.  This preserves historical
+    snapshot semantics with one compact native array copy already required by
+    cluster limiting, instead of allocating one dict entry per old segment on
+    every four-second refresh.
+    """
+
+    __slots__ = ("_evidence", "_index_by_id", "_labels", "_length")
+
+    def __init__(
+        self,
+        evidence: list[SegmentEvidence],
+        index_by_id: dict[str, int],
+        labels: np.ndarray,
+    ) -> None:
+        self._evidence = evidence
+        self._index_by_id = index_by_id
+        self._labels = labels
+        self._length = len(labels)
+
+    def __getitem__(self, evidence_id: str) -> int:
+        try:
+            index = self._index_by_id[evidence_id]
+        except KeyError:
+            raise KeyError(evidence_id) from None
+        if index >= self._length:
+            raise KeyError(evidence_id)
+        return int(self._labels[index])
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(self._length):
+            yield self._evidence[index].evidence_id
+
+    def __len__(self) -> int:
+        return self._length
 
 
 class _StreamingBackend(Protocol):
@@ -105,7 +149,15 @@ class MultiStageVoiceprintClusterer:
         self.backend = backend if backend is not None else _official_backend(config)
         self._evidence: list[SegmentEvidence] = []
         self._by_id: dict[str, SegmentEvidence] = {}
+        self._index_by_id: dict[str, int] = {}
         self._labels = np.empty(0, dtype=np.int32)
+        self._limited_labels = np.empty(0, dtype=np.int32)
+        self._track_label_weights: dict[str, dict[int, int]] = {}
+        self._track_label_members: dict[str, dict[int, list[int]]] = {}
+        self._track_label_heap_entries: dict[str, dict[int, set[int]]] = {}
+        self._assignments_by_track_key: dict[str, int] = {}
+        self._snapshot_dirty = True
+        self._last_snapshot: MultiStageSnapshot | None = None
 
     @property
     def evidence_count(self) -> int:
@@ -147,6 +199,90 @@ class MultiStageVoiceprintClusterer:
             limited[limited == source] = target
         return limited
 
+    def _update_track_assignments(self, limited_labels: np.ndarray) -> None:
+        """Apply only new or historically corrected labels to track votes."""
+
+        previous_count = len(self._limited_labels)
+        common = min(previous_count, len(limited_labels))
+        changed = np.flatnonzero(
+            self._limited_labels[:common] != limited_labels[:common]
+        )
+        if len(limited_labels) > common:
+            changed = np.concatenate((
+                changed,
+                np.arange(common, len(limited_labels), dtype=np.int64),
+            ))
+        affected: set[str] = set()
+        for raw_index in changed:
+            index = int(raw_index)
+            item = self._evidence[index]
+            track_key = item.track_key
+            weight = int(item.weight_samples_16k)
+            weights = self._track_label_weights.setdefault(track_key, {})
+            members = self._track_label_members.setdefault(track_key, {})
+            heap_entries = self._track_label_heap_entries.setdefault(track_key, {})
+            if index < previous_count:
+                old_label = int(self._limited_labels[index])
+                remaining = weights.get(old_label, 0) - weight
+                if remaining > 0:
+                    weights[old_label] = remaining
+                else:
+                    weights.pop(old_label, None)
+            new_label = int(limited_labels[index])
+            weights[new_label] = weights.get(new_label, 0) + weight
+            present = heap_entries.setdefault(new_label, set())
+            if index not in present:
+                heapq.heappush(members.setdefault(new_label, []), index)
+                present.add(index)
+            affected.add(track_key)
+
+        self._limited_labels = limited_labels
+        for track_key in affected:
+            weights = self._track_label_weights[track_key]
+            members = self._track_label_members[track_key]
+            heap_entries = self._track_label_heap_entries[track_key]
+            first_by_label: dict[int, int] = {}
+            for label in weights:
+                heap = members[label]
+                while heap and int(limited_labels[heap[0]]) != label:
+                    heap_entries[label].remove(heapq.heappop(heap))
+                if not heap:
+                    raise RuntimeError("multi-stage track label index became empty")
+                first_by_label[label] = heap[0]
+            self._assignments_by_track_key[track_key] = max(
+                weights,
+                key=lambda label: (
+                    weights[label], -first_by_label[label], -label,
+                ),
+            )
+
+    def _snapshot(self) -> MultiStageSnapshot:
+        limited_labels = self._limit_cluster_count(self._labels)
+        limited_labels.flags.writeable = False
+        self._update_track_assignments(limited_labels)
+        count = int(np.unique(limited_labels).size)
+        evidence_count = len(self._evidence)
+        if evidence_count < int(self.config.multistage_l):
+            stage = "fallback_ahc"
+        elif evidence_count <= int(self.config.multistage_u1):
+            stage = "spectral"
+        else:
+            stage = "preclustered_spectral"
+        snapshot = MultiStageSnapshot(
+            _ArrayBackedLabelMap(
+                self._evidence,
+                self._index_by_id,
+                limited_labels,
+            ),
+            evidence_count,
+            count,
+            stage,
+            dict(self._assignments_by_track_key),
+        )
+        self._snapshot_dirty = False
+        self._last_snapshot = snapshot
+        return snapshot
+
     def update(self, evidence: tuple[SegmentEvidence, ...]) -> MultiStageSnapshot:
         for item in evidence:
             previous = self._by_id.get(item.evidence_id)
@@ -158,19 +294,12 @@ class MultiStageVoiceprintClusterer:
             expected = len(self._evidence) + 1
             if labels.shape != (expected,) or np.any(labels < 0):
                 raise RuntimeError("multi-stage backend returned invalid historical labels")
+            index = len(self._evidence)
             self._evidence.append(item)
             self._by_id[item.evidence_id] = item
+            self._index_by_id[item.evidence_id] = index
             self._labels = labels
-        limited_labels = self._limit_cluster_count(self._labels)
-        labels_by_id = {
-            item.evidence_id: int(label)
-            for item, label in zip(self._evidence, limited_labels, strict=True)
-        }
-        count = len(set(labels_by_id.values()))
-        if len(self._evidence) < int(self.config.multistage_l):
-            stage = "fallback_ahc"
-        elif len(self._evidence) <= int(self.config.multistage_u1):
-            stage = "spectral"
-        else:
-            stage = "preclustered_spectral"
-        return MultiStageSnapshot(labels_by_id, len(self._evidence), count, stage)
+            self._snapshot_dirty = True
+        if not self._snapshot_dirty and self._last_snapshot is not None:
+            return self._last_snapshot
+        return self._snapshot()

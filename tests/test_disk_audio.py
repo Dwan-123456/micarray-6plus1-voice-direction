@@ -164,6 +164,26 @@ def test_copy_range_to_preserves_a_destination_prefix():
     store.retire()
 
 
+def test_incremental_digest_hashes_each_published_range_once() -> None:
+    store = DiskAudioStore(prefix="test_disk_audio_incremental_digest_")
+    spool = store.create_spool("source")
+    first = np.linspace(-0.5, 0.5, 17, dtype=np.float32)
+    second = np.linspace(0.75, -0.25, 13, dtype=np.float32)
+    spool.append(first)
+    spool.append(second)
+    digest = hashlib.sha256()
+
+    spool.update_digest(digest, 0, len(first))
+    spool.update_digest(digest, len(first), len(first) + len(second))
+
+    expected = hashlib.sha256(np.concatenate((first, second)).tobytes()).hexdigest()
+    assert digest.hexdigest() == expected
+    assert spool.digest(0, len(first) + len(second)) == expected
+    with pytest.raises(ValueError, match="incremental digest range"):
+        spool.update_digest(digest, len(first), len(first))
+    store.retire()
+
+
 def test_digest_holds_the_spool_lock_for_the_complete_file_read(monkeypatch):
     store = DiskAudioStore(prefix="test_disk_audio_digest_")
     spool = store.create_spool("source")

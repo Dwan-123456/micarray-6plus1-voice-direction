@@ -648,6 +648,9 @@ class OfflineLayer6Pipeline:
         state: _StreamingVoiceprintState,
         snapshot: MultiStageSnapshot,
     ) -> int:
+        assignment = snapshot.assignments_by_track_key.get(state.track_key)
+        if assignment is not None:
+            return int(assignment)
         weighted: dict[int, int] = {}
         first_index: dict[int, int] = {}
         for index, sample_count in enumerate(state.segment_sample_counts):
