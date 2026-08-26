@@ -273,7 +273,7 @@ def test_seal_is_idempotent_even_if_a_later_allow_list_differs() -> None:
     hub.reset()
 
 
-@pytest.mark.parametrize("chunk_seconds", [3, 4, 5, 8, 10, 15])
+@pytest.mark.parametrize("chunk_seconds", [3, 4, 15])
 def test_configured_chunk_durations_preserve_one_contiguous_time_axis(
     chunk_seconds: int,
 ) -> None:

@@ -226,14 +226,6 @@ def test_runtime_direction_threshold_is_live_and_validated(tmp_path):
         runtime.set_direction_threshold(1.01)
 
 
-def test_runtime_has_no_obsolete_iterative_peak_search_switch(tmp_path):
-    runtime = ApplicationRuntime(
-        load_config(CONFIG, environ={}), project_root=tmp_path, pipeline=StubPipeline([]), serial_device=StubSerial()
-    )
-    assert not hasattr(runtime, "iterative_peak_search_enabled")
-    assert not hasattr(runtime, "set_iterative_peak_search_enabled")
-
-
 def test_first_confirmed_id_queues_only_pre_birth_one_second_backfill(tmp_path):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,

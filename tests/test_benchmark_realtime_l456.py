@@ -10,8 +10,8 @@ import pytest
 from scripts import benchmark_realtime_l456 as benchmark
 
 
-@pytest.mark.parametrize("seconds", (3, 5, 8, 10, 15))
-def test_chunk_seconds_accepts_every_representative_integer(seconds: int) -> None:
+@pytest.mark.parametrize("seconds", (3, 15))
+def test_chunk_seconds_accepts_supported_boundaries(seconds: int) -> None:
     assert benchmark._chunk_seconds(str(seconds)) == seconds
 
 

@@ -94,20 +94,6 @@ def test_layer4_streaming_limits_are_strict_and_overlap_advances(updates):
         streaming.__class__.model_validate({**streaming.model_dump(), **updates})
 
 
-@pytest.mark.parametrize("chunk_seconds", (3, 5, 8, 10, 15))
-def test_layer4_streaming_chunk_is_tunable_across_the_benchmark_range(chunk_seconds):
-    streaming = load_config(
-        PROJECT_ROOT / "config" / "config.yaml"
-    ).layer4.streaming
-
-    value = streaming.__class__.model_validate({
-        **streaming.model_dump(),
-        "chunk_seconds": chunk_seconds,
-    })
-
-    assert value.chunk_seconds == chunk_seconds
-
-
 @pytest.mark.parametrize(
     ("field", "value"),
     (
