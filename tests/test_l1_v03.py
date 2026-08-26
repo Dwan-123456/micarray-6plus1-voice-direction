@@ -92,9 +92,9 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
         ready.noise_covariance.setflags(write=True)
 
 
-def test_cohen_2003_table_parameters_and_two_pass_state_are_exposed():
+def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     config = load_config("config/config.yaml").layer1_imcra
-    assert config.algorithm_version == "cohen_imcra_2003_l1_v4"
+    assert config.algorithm_version == "cohen_imcra_2003_l1_v5"
     assert (
         config.frequency_smoothing_half_width,
         config.spectrum_smoothing,
@@ -107,7 +107,9 @@ def test_cohen_2003_table_parameters_and_two_pass_state_are_exposed():
         config.prior_snr_smoothing,
         config.noise_smoothing,
         config.bias_compensation,
-    ) == (1, 0.9, 8, 15, 1.66, 4.6, 3.0, 1.67, 0.92, 0.85, 1.47)
+    ) == (1, 0.77, 10, 5, 1.66, 4.6, 3.0, 1.67, 0.81, 0.66, 1.47)
+    assert config.minimum_history_subwindows * config.minimum_subwindow_frames == 50
+    assert config.warmup_seconds == 1.0
     first = Layer1Imcra(config).process(
         _block(np.ones((960, 8), np.float32) * 0.01, epoch=0, start=0, sequence=0)
     )[0]

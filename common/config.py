@@ -93,7 +93,7 @@ class TimingConfig(StrictModel):
 
 class Layer1ImcraConfig(StrictModel):
     enabled: bool
-    algorithm_version: Literal["cohen_imcra_2003_l1_v4"]
+    algorithm_version: Literal["cohen_imcra_2003_l1_v5"]
     hop_samples: Literal[960]
     n_fft: Literal[2048]
     window: Literal["hann_periodic"]
@@ -102,11 +102,11 @@ class Layer1ImcraConfig(StrictModel):
     frequency_min_hz: Literal[500.0]
     frequency_max_hz: Literal[4000.0]
     frequency_smoothing_half_width: Literal[1]
-    spectrum_smoothing: Literal[0.9]
-    noise_smoothing: Literal[0.85]
-    prior_snr_smoothing: Literal[0.92]
-    minimum_subwindow_frames: Literal[15]
-    minimum_history_subwindows: Literal[8]
+    spectrum_smoothing: Literal[0.77]
+    noise_smoothing: Literal[0.66]
+    prior_snr_smoothing: Literal[0.81]
+    minimum_subwindow_frames: Literal[5]
+    minimum_history_subwindows: Literal[10]
     minimum_bias: Literal[1.66]
     gamma0: Literal[4.6]
     gamma1: Literal[3.0]
@@ -121,8 +121,8 @@ class Layer1ImcraConfig(StrictModel):
             raise ValueError("L1 IMCRA frequency band must be increasing")
         if not self.output_frequency_min_hz < self.frequency_min_hz < self.frequency_max_hz < self.output_frequency_max_hz:
             raise ValueError("L1 IMCRA output and Gate frequency bands are inconsistent")
-        if self.minimum_history_subwindows * self.minimum_subwindow_frames != 120:
-            raise ValueError("Cohen IMCRA minimum window must contain 120 frames")
+        if self.minimum_history_subwindows * self.minimum_subwindow_frames != 50:
+            raise ValueError("adapted IMCRA minimum window must contain 50 frames")
         return self
 
 

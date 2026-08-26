@@ -50,7 +50,7 @@ timing:
 layer1_imcra:
   enabled: true
   # Cohen 2003 IMCRA core; 48 kHz/20 ms/7-mic aggregation is the L1 adapter.
-  algorithm_version: cohen_imcra_2003_l1_v4
+  algorithm_version: cohen_imcra_2003_l1_v5
   hop_samples: 960
   n_fft: 2048
   window: hann_periodic
@@ -58,19 +58,20 @@ layer1_imcra:
   output_frequency_max_hz: 10000.0
   frequency_min_hz: 500.0
   frequency_max_hz: 4000.0
-  # Paper Table I baseline. Recalibrating Bmin/window parameters requires a new version.
+  # Cohen Table I coefficients converted from an 8 ms to this 20 ms update step;
+  # Bmin remains provisional and requires real-noise recalibration.
   frequency_smoothing_half_width: 1
-  spectrum_smoothing: 0.90
-  noise_smoothing: 0.85
-  prior_snr_smoothing: 0.92
-  minimum_subwindow_frames: 15
-  minimum_history_subwindows: 8
+  spectrum_smoothing: 0.77
+  noise_smoothing: 0.66
+  prior_snr_smoothing: 0.81
+  minimum_subwindow_frames: 5
+  minimum_history_subwindows: 10
   minimum_bias: 1.66
   gamma0: 4.60
   gamma1: 3.00
   zeta0: 1.67
   bias_compensation: 1.47
-  warmup_seconds: 2.4
+  warmup_seconds: 1.0
   eps: 1.0e-12
 
 layer1_pre_denoise:

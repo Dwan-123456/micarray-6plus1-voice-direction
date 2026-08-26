@@ -67,7 +67,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert hashlib.sha256(CALIBRATION_REPORT.read_bytes()).hexdigest() == calibration.report_hash
     assert calibration.calibration_hash == calibration_config_hash(config.calibration)
     assert len(config_hash(config)) == 64
-    assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v4"
+    assert config.layer1_imcra.algorithm_version == "cohen_imcra_2003_l1_v5"
     assert config.layer1_imcra.output_frequency_min_hz == 0.0
     assert config.layer1_imcra.output_frequency_max_hz == 10_000.0
     assert config.layer1_imcra.hop_samples == 960

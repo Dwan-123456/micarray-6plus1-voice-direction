@@ -95,7 +95,7 @@ class Layer1Imcra:
             # session and calibration.  The missing interval publishes no
             # probability; if the estimator was already ready, the first
             # recovered hop can resume a formal probability without another
-            # 2.4-second warm-up.
+            # One-second warm-up, synchronized with the adapted minimum history.
             self._buffer = np.empty((0, 7), dtype=np.float32)
             self._segments.clear()
         self._identity = (block.session_id, block.stream_epoch)
