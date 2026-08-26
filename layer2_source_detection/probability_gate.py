@@ -62,7 +62,7 @@ class ProbabilityGateDecision:
     state: ProbabilityGateState
     probability_previous_20ms: float | None
     probability_current_20ms: float | None
-    probability_40ms: float | None
+    probability_20ms: float | None
     threshold: float
     config_revision: int
     sound_present: bool
@@ -81,13 +81,18 @@ class ProbabilityGateDecision:
         values = (
             self.probability_previous_20ms,
             self.probability_current_20ms,
-            self.probability_40ms,
+            self.probability_20ms,
         )
         if any(value is not None and (not np.isfinite(value) or not 0.0 <= value <= 1.0) for value in values):
             raise ValueError("probability Gate values must be finite and in [0,1]")
         formal = self.state in {ProbabilityGateState.OPEN, ProbabilityGateState.CLOSED}
-        if formal != all(value is not None for value in values):
-            raise ValueError("only a formal Gate decision may publish probability values")
+        if formal != (
+            self.probability_current_20ms is not None
+            and self.probability_20ms is not None
+        ):
+            raise ValueError("only a formal Gate decision may publish current probability")
+        if formal and self.probability_current_20ms != self.probability_20ms:
+            raise ValueError("Gate probability must equal the current 20 ms probability")
         if self.state is ProbabilityGateState.OPEN and not self.sound_present:
             raise ValueError("open probability Gate must report sound_present=True")
         if self.state is not ProbabilityGateState.OPEN and self.sound_present:
@@ -101,9 +106,9 @@ class ProbabilityGateDecision:
 
 
 class ProbabilityGate:
-    """Average two aligned 20 ms probabilities and apply an inclusive threshold."""
+    """Apply an inclusive threshold to the current aligned 20 ms probability."""
 
-    backend = "mean_2x20ms_v1"
+    backend = "current_20ms_v1"
 
     @staticmethod
     def _blocked(
@@ -145,73 +150,79 @@ class ProbabilityGate:
         if type(config_revision) is not int or config_revision < 0:
             raise ValueError("probability Gate config revision must be a non-negative int")
         probabilities = tuple(probabilities)
-        if len(probabilities) != 2:
+        if len(probabilities) not in {1, 2}:
             return self._blocked(
                 window,
                 ProbabilityGateState.UNAVAILABLE,
                 threshold,
                 config_revision,
-                "requires_two_aligned_20ms_probabilities",
+                "requires_current_aligned_20ms_probability",
             )
 
-        expected_bounds = (
-            (window.doa_start_sample, window.doa_start_sample + 960),
-            (window.doa_start_sample + 960, window.doa_end_sample),
-        )
-        for index, (item, bounds) in enumerate(zip(probabilities, expected_bounds, strict=True)):
-            identity = (item.session_id, item.stream_epoch)
-            if identity != (window.session_id, window.stream_epoch) or (
-                item.start_sample, item.end_sample
-            ) != bounds:
-                return self._blocked(
-                    window,
-                    ProbabilityGateState.INVALID,
-                    threshold,
-                    config_revision,
-                    "probability_identity_or_interval_mismatch",
-                    (f"invalid_probability_index={index}",),
-                )
-
-        if any(item.state is SourceProbabilityState.WARMING_UP for item in probabilities):
-            return self._blocked(
-                window,
-                ProbabilityGateState.WARMING_UP,
-                threshold,
-                config_revision,
-                "upstream_probability_warming_up",
-                tuple(f"p{index}_reason={item.reason}" for index, item in enumerate(probabilities)),
-            )
-        if any(item.state is SourceProbabilityState.INVALID for item in probabilities):
+        current_item = probabilities[-1]
+        current_bounds = (window.doa_start_sample + 960, window.doa_end_sample)
+        if (
+            (current_item.session_id, current_item.stream_epoch)
+            != (window.session_id, window.stream_epoch)
+            or (current_item.start_sample, current_item.end_sample) != current_bounds
+        ):
             return self._blocked(
                 window,
                 ProbabilityGateState.INVALID,
                 threshold,
                 config_revision,
-                "upstream_probability_invalid",
-                tuple(f"p{index}_reason={item.reason}" for index, item in enumerate(probabilities)),
+                "current_probability_identity_or_interval_mismatch",
             )
-        if any(item.state is not SourceProbabilityState.READY for item in probabilities):
+
+        if current_item.state is SourceProbabilityState.WARMING_UP:
+            return self._blocked(
+                window,
+                ProbabilityGateState.WARMING_UP,
+                threshold,
+                config_revision,
+                "current_probability_warming_up",
+                (f"current_reason={current_item.reason}",),
+            )
+        if current_item.state is SourceProbabilityState.INVALID:
+            return self._blocked(
+                window,
+                ProbabilityGateState.INVALID,
+                threshold,
+                config_revision,
+                "current_probability_invalid",
+                (f"current_reason={current_item.reason}",),
+            )
+        if current_item.state is not SourceProbabilityState.READY:
             return self._blocked(
                 window,
                 ProbabilityGateState.UNAVAILABLE,
                 threshold,
                 config_revision,
-                "upstream_probability_unavailable",
-                tuple(f"p{index}_reason={item.reason}" for index, item in enumerate(probabilities)),
+                "current_probability_unavailable",
+                (f"current_reason={current_item.reason}",),
             )
 
-        previous = probabilities[0].probability
-        current = probabilities[1].probability
-        assert previous is not None and current is not None
-        averaged = (previous + current) / 2.0
-        is_open = averaged >= threshold
-        diagnostics = (
-            f"probability_previous_20ms={previous:.6f}",
+        previous = None
+        if len(probabilities) == 2:
+            previous_item = probabilities[0]
+            previous_bounds = (window.doa_start_sample, window.doa_start_sample + 960)
+            if (
+                (previous_item.session_id, previous_item.stream_epoch)
+                == (window.session_id, window.stream_epoch)
+                and (previous_item.start_sample, previous_item.end_sample) == previous_bounds
+                and previous_item.state is SourceProbabilityState.READY
+            ):
+                previous = previous_item.probability
+        current = current_item.probability
+        assert current is not None
+        is_open = current >= threshold
+        diagnostics = tuple(filter(None, (
+            None if previous is None else f"probability_previous_20ms={previous:.6f}",
             f"probability_current_20ms={current:.6f}",
-            f"probability_40ms={averaged:.6f}",
+            f"probability_20ms={current:.6f}",
             f"gate_threshold={threshold:.6f}",
             f"gate_config_revision={config_revision}",
-        )
+        )))
         return ProbabilityGateDecision(
             window.session_id,
             window.stream_epoch,
@@ -221,7 +232,7 @@ class ProbabilityGate:
             ProbabilityGateState.OPEN if is_open else ProbabilityGateState.CLOSED,
             previous,
             current,
-            averaged,
+            current,
             threshold,
             config_revision,
             is_open,

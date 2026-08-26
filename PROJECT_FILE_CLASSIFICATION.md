@@ -16,7 +16,7 @@
 - `ingest/`、`windowing/`：统一时间轴、分发和分析窗口。
 - `layer1_input/`：当前新项目的Layer 1，与Layer 2、Layer 3、离线Layer 4和Layer 5在根目录并列。
 - `layer2_source_detection/`：Probability Gate、滚动frequency-normalized MUSIC、永久全局方向ID及可选Kalman输出平滑。
-  - `probability_gate.py`：消费L1对齐的两个20 ms声源概率，计算40 ms均值并按运行时门限决定是否运行MUSIC。
+  - `probability_gate.py`：消费L1对齐的当前20 ms声源概率，并按运行时门限决定是否运行MUSIC。
   - `music.py`：维护增量STFT协方差、MDL 0～3源估计、NormMUSIC 360°伪谱和圆周峰值。
   - `global_tracker.py`：使用带birth/miss dummy项的`linear_sum_assignment`维护公共方向轨迹。
   - `pipeline.py`：按Probability Gate → Rolling NormMUSIC → Global ID → optional Kalman编排，并区分`BLOCKED / PROCESSED`。

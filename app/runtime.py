@@ -3658,7 +3658,7 @@ class ApplicationRuntime:
             f"l2_gate_backend={gate.backend}",
             f"l2_gate_state={gate.state.value}",
             f"l2_gate_reason={gate.reason}",
-            f"l2_gate_probability_40ms={gate.probability_40ms}",
+            f"l2_gate_probability_20ms={gate.probability_20ms}",
             f"l2_gate_threshold={gate.threshold}",
             f"l2_gate_config_revision={gate.config_revision}",
             f"l2_direction_tracker_backend={self.config.layer2.direction_id_tracking.backend}",
@@ -3762,7 +3762,7 @@ class ApplicationRuntime:
             "reason": gate_decision.reason,
             "probability_previous_20ms": gate_decision.probability_previous_20ms,
             "probability_current_20ms": gate_decision.probability_current_20ms,
-            "probability_40ms": gate_decision.probability_40ms,
+            "probability_20ms": gate_decision.probability_20ms,
             "threshold": gate_decision.threshold,
             "config_revision": gate_decision.config_revision,
             "source_hops": [

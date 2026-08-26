@@ -97,7 +97,7 @@ WindowWorkItem
     ↓ 有界L2 latest-wins队列（默认容量由runtime.stage_queue_windows=100统一派生）
 【已完成】Layer 2 1.1：二维声源方向定位与公共方向轨迹
     Probability Gate
-        末尾两个20 ms概率取平均得到40 ms Gate概率，默认阈值0.60
+        只使用窗口末尾当前20 ms概率作为Gate概率，默认阈值0.60
         正式逐窗L5不运行CNN且不回传L2，因此Runtime没有语义强制放行
         Gate关闭时跳过MUSIC；预热/缺失/无效概率同样保持阻断
     ↓ Gate放行

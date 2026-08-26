@@ -106,7 +106,7 @@ layer1_speaker_count:
 layer2:
   # Average two aligned upstream 20 ms probabilities; `>=` opens the Gate.
   probability_gate:
-    backend: mean_2x20ms_v1
+    backend: current_20ms_v1
     threshold: 0.60
   # L1/Windowing preparation for the future rolling MUSIC implementation.
   # MUSIC may emit DOA observations only after the Gate has remained OPEN for

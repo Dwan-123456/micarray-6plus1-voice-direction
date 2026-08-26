@@ -21,6 +21,16 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — L2 Probability Gate改用当前20 ms概率
+
+- **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；仅修改L2 Probability Gate判决、对应运行诊断/记录字段、Development Test UI显示、契约文档和测试。L1概率估计、MUSIC、ID追踪、L3～L6、录音音频及模型资产均无算法变化。
+- **Gate判决**：正式后端由`mean_2x20ms_v1`改为`current_20ms_v1`。每个20 ms决策窗口只用与窗口末端严格对齐的当前IMCRA概率与可调门限比较；前一个20 ms概率不再参与平均，也不会因其warming/unavailable而阻断已READY的当前概率。
+- **DTO与诊断**：正式判决值由`probability_40ms`改为`probability_20ms`，且必须等于`probability_current_20ms`；Runtime记录和Test UI同步显示该当前值。仍可保留前一个READY概率作为非判决诊断。
+- **验证**：专项测试覆盖“前一帧低、当前帧到门限即OPEN”“前一帧高、当前帧低即CLOSED”“前一帧warming但当前READY仍正常判决”；Gate、配置、Runtime、并行调度、数据管理及Development Test UI相关回归`184 passed`。尚未执行真实麦克风实机验收。
+- **数据边界**：未提交运行缓存、录音、日志、秘密或本机UI设置；无Git LFS对象新增或修改。
+
+---
+
 ## 2026-08-26 — L2 MUSIC 200 ms协方差与连续Gate预热同步
 
 - **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；修改L2 MUSIC协方差时长与Probability Gate候选预热门禁，并修正Runtime/TrackAudioStreamHub首次confirmed历史BF回填的时间锚点和角度来源。L1、L3实时BF算法、离线L4、L5、L6、录音与数据schema、模型和资产均无变化。

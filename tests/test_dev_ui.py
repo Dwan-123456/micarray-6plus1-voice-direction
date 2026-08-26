@@ -164,8 +164,8 @@ def _open_l2_result(
     )
     gate = ProbabilityGateDecision(
         session_id, epoch, window_id, decision_sample,
-        "mean_2x20ms_v1", ProbabilityGateState.OPEN,
-        0.70, 0.80, 0.75, 0.60, 2, True, "probability_at_or_above_threshold",
+        "current_20ms_v1", ProbabilityGateState.OPEN,
+        0.70, 0.80, 0.80, 0.60, 2, True, "probability_at_or_above_threshold",
     )
     model_order = ModelOrderEstimate(1, 43, 23, 1.0, 0, "ready")
     diagnostics = MusicDiagnostics(
@@ -463,7 +463,7 @@ def test_ui_aggregator_clears_old_and_ignores_late_l2_results_on_epoch_change():
     old_status = PipelineStatus("running", "epoch-test", 0, 15_360, 15_360, "Ready")
     aggregator.update_l1(meter(0), old_status)
     gate = ProbabilityGateDecision(
-        "epoch-test", 0, 0, 15_360, "mean_2x20ms_v1",
+        "epoch-test", 0, 0, 15_360, "current_20ms_v1",
         ProbabilityGateState.WARMING_UP, None, None, None, 0.60, 0, False,
         "upstream_probability_warming_up",
     )
@@ -578,7 +578,7 @@ def test_prediction_only_coasting_window_can_publish_l3_and_l5_without_music_res
         kalman_applied=False,
     )
     gate = ProbabilityGateDecision(
-        "aggregator-test", 0, 1, decision_sample, "mean_2x20ms_v1",
+        "aggregator-test", 0, 1, decision_sample, "current_20ms_v1",
         ProbabilityGateState.CLOSED, 0.1, 0.1, 0.1, 0.7, 2, False,
         "probability_below_threshold",
     )
@@ -726,7 +726,7 @@ def test_runtime_connects_probability_gate_to_ui_during_upstream_warmup(tmp_path
     # scheduling, window 1 may replace window 0 before this test consumes it.
     assert frame.gate_decision.window_id in {0, 1}
     assert frame.gate_decision.state is ProbabilityGateState.WARMING_UP
-    assert frame.gate_decision.probability_40ms is None
+    assert frame.gate_decision.probability_20ms is None
     assert frame.performance.latency_ms_current >= frame.performance.compute_time_ms_current >= 0
 
 
@@ -1455,11 +1455,11 @@ def test_window_has_three_equal_l3_l4_l6_cells_and_fixed_performance_bar(monkeyp
         assert window.music_order_limit.combo.width() == 64
         assert right_layout.indexOf(window.srp_threshold) == 5
         decision = ProbabilityGateDecision(
-            "ui-test", 0, 12, 26_880, "mean_2x20ms_v1", ProbabilityGateState.OPEN,
-            0.55, 0.75, 0.65, 0.60, 4, True, "probability_at_or_above_threshold",
+            "ui-test", 0, 12, 26_880, "current_20ms_v1", ProbabilityGateState.OPEN,
+            0.55, 0.75, 0.75, 0.60, 4, True, "probability_at_or_above_threshold",
         )
         window.gate_readout.set_decision(decision)
-        assert "P 0.65" in window.gate_readout.text()
+        assert "P 0.75" in window.gate_readout.text()
         assert "Gate OPEN" in window.gate_readout.text()
         assert window.gate_readout.height() == 30
         window._enter_stopped_state()

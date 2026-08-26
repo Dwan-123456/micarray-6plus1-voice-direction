@@ -12,7 +12,7 @@ RecordingStore旁路订阅IngestCoordinator的唯一时间轴，不参与实时�
 - logical 8ch：`MIC0..MIC5、Center、HardwareMix`算法顺序；
 - 可选physical 7ch派生视图；
 - 每20 ms IMCRA：算法版本`cohen_imcra_2003_l1_v4`、状态、427点频率轴，以及形状为`[record,7,427]`的噪声PSD、两轮平滑谱、两轮最小值、`q_hat`、SPP和先验/后验SNR；另存`noise_features[record,7,4]`、每麦概率、500～4000 Hz阵列聚合概率与来源sequence。运行时7×7复数噪声协方差不写入录音资产，回放时由L1重建；
-- 每40 ms Gate：两个来源hop、平均概率、阈值、revision和Gate结果；
+- 每20 ms Gate：当前来源hop、当前概率、阈值、revision和Gate结果；
 - MUSIC/NormMUSIC 360点空间谱、model order、有效频点及协方差质量；公共方向的`track_id`、观测角、输出角、轨迹状态、`active_tracks`和Kalman应用状态；`TrackAudioStreamHub`逐ID拼接并按IMCRA概率补偿后的连续48 kHz轨；L5逐ID概率与判断。重叠L3原始窗不再重复保存为正式音频资产。
 
 所有sidecar均以session、epoch及绝对sample区间关联，不能按写入时间猜测对应关系。manifest必须记录0～10000 Hz IMCRA频带、500～4000 Hz Gate证据带、方向算法版本/配置/hash、官方MIC/I²S关系、Host/logical映射和几何版本。HardwareMix没有物理坐标。离线复现有状态算法必须从同一epoch起点顺序重放，不能随机单窗推导内部状态。

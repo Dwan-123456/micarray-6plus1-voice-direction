@@ -210,7 +210,7 @@ def test_runtime_records_exact_algorithm_sidecars_on_absolute_timeline(tmp_path:
         raw_scores=np.arange(360, dtype=np.float32),
         normalized_scores=np.linspace(0, 1, 360, dtype=np.float32),
         gate_decision={
-            "backend": "mean_2x20ms_v1", "state": "open", "sound_present": True,
+            "backend": "current_20ms_v1", "state": "open", "sound_present": True,
             "reason": "foreground", "diagnostics": [],
             "source_hops": [
                 {"start_sample": 46080, "end_sample": 47040, "array_source_probability_20ms": 0.7},

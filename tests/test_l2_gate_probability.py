@@ -43,21 +43,23 @@ def _probabilities(window: DecisionWindow, previous: float, current: float):
     )
 
 
-def test_probability_gate_averages_two_hops_and_uses_inclusive_threshold() -> None:
+def test_probability_gate_uses_only_current_hop_and_inclusive_threshold() -> None:
     window = _window()
     gate = ProbabilityGate()
     at_threshold = gate.evaluate(
-        window, _probabilities(window, 0.50, 0.70), threshold=0.60, config_revision=3
+        window, _probabilities(window, 0.10, 0.60), threshold=0.60, config_revision=3
     )
     below = gate.evaluate(
-        window, _probabilities(window, 0.49, 0.70), threshold=0.60, config_revision=4
+        window, _probabilities(window, 1.00, 0.59), threshold=0.60, config_revision=4
     )
 
-    assert at_threshold.probability_40ms == 0.60
+    assert at_threshold.probability_previous_20ms == 0.10
+    assert at_threshold.probability_current_20ms == 0.60
+    assert at_threshold.probability_20ms == 0.60
     assert at_threshold.state is ProbabilityGateState.OPEN
     assert at_threshold.allow_srp is True
     assert at_threshold.config_revision == 3
-    assert below.probability_40ms == 0.595
+    assert below.probability_20ms == 0.59
     assert below.state is ProbabilityGateState.CLOSED
 
 
@@ -65,26 +67,43 @@ def test_probability_gate_rejects_missing_warming_and_misaligned_hops() -> None:
     window = _window()
     gate = ProbabilityGate()
     missing = gate.evaluate(window, (), threshold=0.60, config_revision=0)
+    first, second = _probabilities(window, 0.5, 0.5)
     warming = SourceProbability20ms(
-        window.session_id, window.stream_epoch, window.doa_start_sample,
-        window.doa_start_sample + 960, None, SourceProbabilityState.WARMING_UP, "warming",
+        window.session_id, window.stream_epoch, window.doa_start_sample + 960,
+        window.doa_end_sample, None, SourceProbabilityState.WARMING_UP, "warming",
     )
-    second = _probabilities(window, 0.5, 0.5)[1]
     warming_decision = gate.evaluate(
-        window, (warming, second), threshold=0.60, config_revision=0
+        window, (first, warming), threshold=0.60, config_revision=0
     )
     misaligned = SourceProbability20ms(
-        window.session_id, window.stream_epoch + 1, window.doa_start_sample,
-        window.doa_start_sample + 960, 0.9, SourceProbabilityState.READY, "ready",
+        window.session_id, window.stream_epoch + 1, window.doa_start_sample + 960,
+        window.doa_end_sample, 0.9, SourceProbabilityState.READY, "ready",
     )
     invalid = gate.evaluate(
-        window, (misaligned, second), threshold=0.60, config_revision=0
+        window, (first, misaligned), threshold=0.60, config_revision=0
     )
 
     assert missing.state is ProbabilityGateState.UNAVAILABLE
     assert warming_decision.state is ProbabilityGateState.WARMING_UP
     assert invalid.state is ProbabilityGateState.INVALID
     assert not missing.allow_srp and not warming_decision.allow_srp and not invalid.allow_srp
+
+
+def test_probability_gate_ignores_previous_hop_state_when_current_is_ready() -> None:
+    window = _window()
+    previous = SourceProbability20ms(
+        window.session_id, window.stream_epoch, window.doa_start_sample,
+        window.doa_start_sample + 960, None, SourceProbabilityState.WARMING_UP, "warming",
+    )
+    current = _probabilities(window, 0.0, 0.80)[1]
+
+    decision = ProbabilityGate().evaluate(
+        window, (previous, current), threshold=0.60, config_revision=0
+    )
+
+    assert decision.state is ProbabilityGateState.OPEN
+    assert decision.probability_previous_20ms is None
+    assert decision.probability_20ms == 0.80
 
 
 @pytest.mark.parametrize("whitening_enabled", [False, True])
@@ -108,16 +127,16 @@ def test_probability_pipeline_skips_music_before_gate_opens(
     probabilities = _probabilities(window, 0.20, 0.30)
     if gate_state == "warming_up":
         probabilities = (
+            probabilities[0],
             SourceProbability20ms(
                 window.session_id,
                 window.stream_epoch,
-                window.doa_start_sample,
                 window.doa_start_sample + 960,
+                window.doa_end_sample,
                 None,
                 SourceProbabilityState.WARMING_UP,
                 "warming",
             ),
-            probabilities[1],
         )
     result = pipeline.process(
         window,

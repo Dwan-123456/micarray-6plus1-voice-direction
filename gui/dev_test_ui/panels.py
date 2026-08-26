@@ -271,7 +271,7 @@ class ProbabilityGateReadout(QLabel):
             return "—" if item is None else f"{item:.2f}"
 
         self.setText(
-            f"P {value(decision.probability_40ms)} >= {decision.threshold:.2f} | "
+            f"P {value(decision.probability_20ms)} >= {decision.threshold:.2f} | "
             f"Gate {decision.state.value.upper()} | rev {decision.config_revision}"
         )
         self.setToolTip(

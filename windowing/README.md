@@ -10,10 +10,10 @@
 
 配置`layer2.music.context_ms`只允许160、240或320 ms，`comparison_context_ms`固定覆盖三档，`max_history_ms`固定为320 ms。这些字段控制L2跨窗口滚动历史，不表示WindowAssembler持有320 ms直接窗口，也不生成任何方向ID。
 
-每个窗口对齐末尾40 ms覆盖的两个20 ms IMCRA结果；L2 Probability Gate据此计算：
+每个窗口仍携带末尾40 ms覆盖的两个20 ms IMCRA结果；L2 Probability Gate只读取末尾当前20 ms结果：
 
 ```text
-gate_probability_40ms = (p_previous + p_current) / 2
+gate_probability_20ms = p_current
 ```
 
 两个概率必须属于同一session/epoch且sample区间连续。缺帧、跨epoch或预热时只发布`WARMING_UP/UNAVAILABLE`，不得拼接旧概率或伪造0。

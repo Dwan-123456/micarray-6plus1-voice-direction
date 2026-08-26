@@ -912,7 +912,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
         gate_config_revision=0,
     )
     assert forced.gate_decision.state is ProbabilityGateState.CLOSED
-    assert forced.gate_decision.probability_40ms == 0.0
+    assert forced.gate_decision.probability_20ms == 0.0
     assert forced.gate_decision.reason == "probability_below_threshold"
     assert forced.spatial_response is None
     assert any(item.track_id == track_id for item in forced.directions)

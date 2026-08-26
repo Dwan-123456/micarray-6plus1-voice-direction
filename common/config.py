@@ -161,7 +161,7 @@ class Layer1SpeakerCountConfig(StrictModel):
 
 
 class Layer2ProbabilityGateConfig(StrictModel):
-    backend: Literal["mean_2x20ms_v1"]
+    backend: Literal["current_20ms_v1"]
     threshold: float = Field(default=0.60, ge=0, le=1)
 
 

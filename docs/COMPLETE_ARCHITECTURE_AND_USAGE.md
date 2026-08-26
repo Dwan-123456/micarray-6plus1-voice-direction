@@ -101,7 +101,7 @@ flowchart TB
 | Ingest | `DecodedAudio`、sequence/timestamp、校准身份 | 建立`session_id`；检测缺口并切换`stream_epoch`；分配绝对sample；把IMCRA hop对齐到同一时间轴 | `IngestedAudioBlock`：48 kHz float32 `[N,8]`，含native、hotmap、IMCRA、校准元数据 | 输入块通常20 ms |
 | Windowing | 连续同epoch的`IngestedAudioBlock` | 环形累计；检查校准身份与sample连续；组合来源sequence | `DecisionWindow [7680,8]`；末端40 ms DOA区间；最近160 ms上下文；8个20 ms IMCRA hop | 160 ms上下文，每20 ms发布 |
 | Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/DOA/IMM-JPDA/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
-| Layer 2 | `DecisionWindow`、末尾两个20 ms声源概率、7麦几何、扫描配置 | 40 ms Probability Gate；Rolling NormMUSIC；圆周峰值与50° NMS；Circular IMM-JPDA方向ID；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；MUSIC诊断 | 每20 ms判断与更新 |
+| Layer 2 | `DecisionWindow`、末尾当前20 ms声源概率、7麦几何、扫描配置 | 当前20 ms Probability Gate；Rolling NormMUSIC；圆周峰值与50° NMS；Circular IMM-JPDA方向ID；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；MUSIC诊断 | 每20 ms判断与更新 |
 | Layer 3 | `DecisionWindow`末尾40/80/160 ms、0–3个公共方向、7麦几何、IMCRA噪声 | 共享STFT与协方差缓存；steering；按`rho`逐频选择Dual LCMV / Soft-null loaded MVDR / Loaded MVDR；或DAS/全频loaded MVDR；数值保护；批量ISTFT | `Layer3Output`，其中每方向一个`EnhancedAudio`：48 kHz mono `[1920/3840/7680]`，携带`track_id/theta/algorithm/fallback` | 当前默认40 ms音频；每20 ms产生新重叠窗 |
 | TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；首次confirmed时按首次出生角回补`first_seen_sample`之前完整1秒BF；2 ms模式切换淡化；可选IMCRA概率响度补偿；维护完整归档；渐进块使用claim/resolve事务 | `TrackAudioBatch`；最长3200 ms试听上下文；3～15秒渐进`Layer4LongAudioInput`；停机完整长轨 | 20 ms hop；当前响度补偿默认关 |
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
@@ -132,7 +132,7 @@ HardwareMix没有物理坐标，不进入MUSIC、steering或BF。
 
 ```text
 DecisionWindow + IMCRA p20
-  → 末尾2个p20平均 → 40 ms Gate（默认0.60）
+  → 末尾当前p20 → 20 ms Gate（默认0.60）
   ├─ Gate关闭 → 空方向结果/明确状态
   └─ Gate打开
        → 7麦2–4 kHz增量STFT

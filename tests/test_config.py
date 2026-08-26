@@ -17,7 +17,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.device.physical_channel_map == (0, 1, 2, 3, 4, 5, 7)
     assert config.device.logical_channel_map == (0, 1, 2, 3, 4, 5, 7, 6)
     assert config.layer2.max_candidates == 3
-    assert config.layer2.probability_gate.backend == "mean_2x20ms_v1"
+    assert config.layer2.probability_gate.backend == "current_20ms_v1"
     assert config.layer2.probability_gate.threshold == 0.60
     assert config.layer2.music.context_ms == 200
     assert config.layer2.music.comparison_context_ms == (160, 200, 240, 320)
@@ -212,7 +212,7 @@ def test_layer2_srp_band_is_fixed_to_2000_4000_hz(tmp_path):
 
 def test_unknown_layer2_probability_gate_backend_is_rejected(tmp_path):
     text = CONFIG.read_text(encoding="utf-8").replace(
-        "backend: mean_2x20ms_v1", "backend: unknown_gate_v9", 1
+        "backend: current_20ms_v1", "backend: unknown_gate_v9", 1
     )
     candidate = tmp_path / "unimplemented-probability-gate.yaml"
     candidate.write_text(text, encoding="utf-8")

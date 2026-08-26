@@ -763,7 +763,7 @@ def test_runtime_connects_l1_l2_formal_recording_and_ui_control(tmp_path):
     assert result_rows[1]["window_id"] == 0
     assert result_rows[1]["session_id"] == manifest["session_id"]
     assert "l2_pipeline_state=blocked" in result_rows[1]["diagnostics"]
-    assert "l2_gate_backend=mean_2x20ms_v1" in result_rows[1]["diagnostics"]
+    assert "l2_gate_backend=current_20ms_v1" in result_rows[1]["diagnostics"]
     assert "l2_gate_state=warming_up" in result_rows[1]["diagnostics"]
 
 
