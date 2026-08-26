@@ -158,4 +158,6 @@ def test_probability_pipeline_skips_music_before_gate_opens(
     assert result.spatial_response is None
     assert result.candidates == ()
     assert result.search_diagnostics is None
+    assert result.id_tracking_ms is not None
+    assert result.id_tracking_ms >= 0.0
     assert np.array_equal(window.samples, before)

@@ -25,6 +25,31 @@ def _time(value: float | None) -> str:
     return "N/A" if value is None else f"{value:.1f} ms"
 
 
+def _format_l12_segment_timing(status: Mapping[str, Any] | None) -> str:
+    telemetry = {} if status is None else status.get("l12_segment_timing", {})
+    by_gate = telemetry.get("by_gate", {}) if isinstance(telemetry, Mapping) else {}
+
+    def metric(summary: Mapping[str, Any], name: str) -> str:
+        values = summary.get(name, {})
+        if not isinstance(values, Mapping) or values.get("avg_ms") is None:
+            return "—"
+        return f"{float(values['avg_ms']):.2f}/{float(values['p95_ms']):.2f}"
+
+    parts = ["分段耗时 avg/p95 ms"]
+    for key, label in (("open", "OPEN"), ("closed", "CLOSED")):
+        summary = by_gate.get(key, {}) if isinstance(by_gate, Mapping) else {}
+        if not isinstance(summary, Mapping):
+            summary = {}
+        parts.append(
+            f"{label} n{max(0, int(summary.get('total_count', 0)))} "
+            f"I {metric(summary, 'imcra')} "
+            f"M {metric(summary, 'music')} "
+            f"ID {metric(summary, 'id_tracking')} "
+            f"T {metric(summary, 'l2_total')}"
+        )
+    return " | ".join(parts)
+
+
 def _runtime_processing_status(runtime: object) -> Mapping[str, Any] | None:
     """Read the public runtime diagnostic snapshot without coupling UI to queues."""
 
@@ -2108,7 +2133,7 @@ def build_window(
         def _render_frame(self, frame, *, render_l2=True, render_l5=True):
             self.bf_panel.set_tracks(
                 getattr(frame, "tracked_audio", ()),
-                show_center_references=not runtime.runtime_recording_active,
+                show_center_references=False,
             )
             self.bf_panel.set_previews(
                 frame.previews if runtime.downstream_processing_enabled else (),
@@ -2224,7 +2249,10 @@ def build_window(
                     "每1秒刷新；L2、L3显示实时20 ms窗口平均耗时；L4-L6按配置块长"
                     "在独立后台渐进处理，停止后再运行完整封存校正。"
                 )
-            self._performance_base_text = text
+            status_snapshot = _runtime_processing_status(runtime)
+            self._performance_base_text = (
+                f"{text}\n{_format_l12_segment_timing(status_snapshot)}"
+            )
             self._refresh_total_duration_text()
 
         def _refresh_total_duration_text(self):

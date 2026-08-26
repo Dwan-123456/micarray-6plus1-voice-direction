@@ -30,7 +30,7 @@ L2的`TrackedDirection`是唯一权威方向身份。Runtime把同一`track_id`�
 
 Development Test UI的方向音频只按`(session_id, stream_epoch, track_id)`拼接。Runtime在每个L2完成窗口先登记confirmed/coasting权威20 ms绝对时间槽，L3只填入BF波形；首尾或中间没有BF结果的槽保留等时静音，因此轨长只由L2首尾sample决定。其余仍保留真实音频补洞、交叉淡化、Center Mic参考、有界分段和L3模式隔离。UI不再维护私有ID投影、角度贪心关联或别名合并。当前离线L5只继承公共ID并返回该ID的人声语义结果，不向L2反馈，也不拥有方向轨迹生命周期。
 
-Development Test UI可实时关闭下游处理。真实麦克风模式每次启动默认进入临时预热阶段：只运行L1/IMCRA和L2 MUSIC/ID，缓存Center试听，禁止提前开启L3/4/5；点击“正式录音开始”只继承IMCRA噪声统计，在与L2 worker互斥的边界清空MUSIC和全部ID追踪状态，同时清空Center与下游音轨缓存后打开L3。关闭下游后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L5 `SKIPPED`终态，已经排队但尚未开始的L3/L5工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner顺序。
+Development Test UI可实时关闭下游处理。真实麦克风模式每次启动默认进入临时预热阶段：只运行L1/IMCRA和L2 MUSIC/ID，禁止提前开启L3/4/5；不创建或写入Center RAW/IMCRA试听轨。点击“正式录音开始”只继承IMCRA噪声统计，在与L2 worker互斥的边界清空MUSIC和全部ID追踪状态，同时清空下游音轨缓存后打开L3。关闭下游后，L2继续正常处理、追踪和显示；新L2结果直接生成`downstream_disabled_by_test_ui`的L3/L5 `SKIPPED`终态，已经排队但尚未开始的L3/L5工作也快速跳过，当前正在执行的单窗允许安全收尾。该状态不计为错误，不破坏ResultJoiner顺序。
 
 Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Output(())`，不执行prepare/STFT/协方差；实时L5不调用空batch模型，仍以`offline_after_l4`的`SKIPPED`终态收束。增强音频和Voice方向为空。
 

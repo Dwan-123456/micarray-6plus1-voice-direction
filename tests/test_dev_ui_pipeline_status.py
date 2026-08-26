@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from gui.dev_test_ui.app import (
+    _format_l12_segment_timing,
     _is_current_monotonic_l2_snapshot,
     _format_processing_pipeline_status,
     _format_processing_pipeline_tooltip,
@@ -60,6 +61,24 @@ class _ParallelRuntime:
             "dropped": 1,
             "error": None,
         },
+        "l12_segment_timing": {
+            "by_gate": {
+                "open": {
+                    "total_count": 50,
+                    "imcra": {"avg_ms": 1.25, "p95_ms": 1.75},
+                    "music": {"avg_ms": 5.5, "p95_ms": 8.25},
+                    "id_tracking": {"avg_ms": 0.2, "p95_ms": 0.35},
+                    "l2_total": {"avg_ms": 7.1, "p95_ms": 10.0},
+                },
+                "closed": {
+                    "total_count": 25,
+                    "imcra": {"avg_ms": 1.1, "p95_ms": 1.5},
+                    "music": {"avg_ms": None, "p95_ms": None},
+                    "id_tracking": {"avg_ms": 0.15, "p95_ms": 0.25},
+                    "l2_total": {"avg_ms": 0.6, "p95_ms": 0.9},
+                },
+            }
+        },
     }
 
 
@@ -82,6 +101,9 @@ def test_parallel_pipeline_status_uses_only_public_snapshot():
     assert "overflow 3，handoff丢块 4，epoch重置 2" in tooltip
     assert "最近原因 health_event:input_overflow" in tooltip
     assert "l3: test failure" in tooltip
+    timing = _format_l12_segment_timing(runtime.processing_status)
+    assert "OPEN n50 I 1.25/1.75 M 5.50/8.25 ID 0.20/0.35 T 7.10/10.00" in timing
+    assert "CLOSED n25 I 1.10/1.50 M — ID 0.15/0.25 T 0.60/0.90" in timing
 
 
 def test_pipeline_status_has_safe_fallback_without_public_snapshot():

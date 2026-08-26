@@ -500,7 +500,7 @@ def test_runtime_marks_only_actual_imcra_outputs_for_center_preview(tmp_path):
     ]
 
 
-def test_runtime_caches_only_marked_imcra_center_selection(tmp_path, monkeypatch):
+def test_runtime_does_not_cache_center_reference_selections(tmp_path, monkeypatch):
     runtime = ApplicationRuntime(
         load_config(CONFIG, environ={}), project_root=tmp_path,
         pipeline=StubPipeline([]), serial_device=StubSerial(),
@@ -522,7 +522,7 @@ def test_runtime_caches_only_marked_imcra_center_selection(tmp_path, monkeypatch
     runtime._publish_l1_selection(block, 1.0, denoised=False)
     runtime._publish_l1_selection(block, 2.0, denoised=True)
 
-    assert cached == [(block, 6)]
+    assert cached == []
     assert published == [(block, 1.0), (block, 2.0)]
 
 

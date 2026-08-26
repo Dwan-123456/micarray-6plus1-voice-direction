@@ -71,6 +71,7 @@ from .final_layer456 import (
     plan_final_reuse,
     track_load_diagnostics,
 )
+from .l12_timing import L12SegmentTimingTelemetry
 from .realtime_layer456 import CachingEmbeddingBackend, IncrementalLayer456Processor
 from .realtime_postprocessing import RealtimePostprocessingService
 from .processing_contracts import (
@@ -294,6 +295,7 @@ class ApplicationRuntime:
         )
         self._ui_lock = threading.Lock()
         self._layer2 = Layer2Pipeline.from_project(config)
+        self._l12_segment_timing = L12SegmentTimingTelemetry()
         self._layer2_state_lock = threading.RLock()
         self._source_probability_provider = source_probability_provider or self._imcra_probabilities
         self._gate_config_lock = threading.Lock()
@@ -1308,6 +1310,7 @@ class ApplicationRuntime:
             "timeline_gap_count": self._timeline_gap_count,
             "last_timeline_gap": self._last_timeline_gap,
             "input_health": self._input_health_snapshot(),
+            "l12_segment_timing": self._l12_segment_timing.snapshot(),
             "dev_center_reference_writer": self._reference_writer_status_snapshot(),
             "l5_actual_completed": l5_diagnostics["actual_completed"],
             "l5_dropped": l5_diagnostics["dropped"],
@@ -2223,15 +2226,7 @@ class ApplicationRuntime:
         return tuple(item for item, _denoised in self._flush_pre_denoise_with_mode())
 
     def _publish_l1_selection(self, block, received: float, *, denoised: bool) -> None:
-        if (
-            denoised
-            and self.dev_audio_tracker is not None
-            and not (
-                self._ephemeral_live_capture
-                and self._ephemeral_recording_active
-            )
-        ):
-            self._submit_dev_center_reference(block, denoised=True)
+        del denoised
         self._publish_l1_block(block, received)
 
     def _publish_l1_block(self, block, received: float) -> None:
@@ -2490,7 +2485,14 @@ class ApplicationRuntime:
                     continue
                 health_events = tuple(self.pipeline.take_health_events())
                 block = self.coordinator.ingest(audio, health_events)
+                imcra_started = perf_counter()
                 imcra_hops = self.imcra.process(block) if self.config.layer1_imcra.enabled else ()
+                self._l12_segment_timing.record_imcra(
+                    block.session_id,
+                    block.stream_epoch,
+                    tuple(hop.end_sample for hop in imcra_hops),
+                    (perf_counter() - imcra_started) * 1_000.0,
+                )
                 if (
                     len(imcra_hops) == 1
                     and imcra_hops[0].start_sample == block.start_sample
@@ -2501,18 +2503,6 @@ class ApplicationRuntime:
                 # Non-blocking enqueue only. CountNet owns resampling, buffering,
                 # model loading and inference on its independent L1 worker.
                 self.speaker_counter.submit(block)
-                if (
-                    self.dev_audio_tracker is not None
-                    and not (
-                        self._ephemeral_live_capture
-                        and self._ephemeral_recording_active
-                    )
-                ):
-                    # Raw logical channel 6 is the Center microphone. It is
-                    # queued before optional L1 pre-denoise so the first L3
-                    # listening row remains a true input reference, without
-                    # making disk/UI sidecar latency part of L1 acquisition.
-                    self._submit_dev_center_reference(block, denoised=False)
                 received = monotonic()
                 for selected, denoised in self._select_pre_denoise_with_mode(block):
                     self._publish_l1_selection(selected, received, denoised=denoised)
@@ -2593,9 +2583,23 @@ class ApplicationRuntime:
                     if len(output.candidates) > 3:
                         raise RuntimeError("Layer 2 contract violation: more than 3 candidates")
                     diagnostics = self._l2_diagnostics(output, values)
+                    finished_ns = monotonic_ns()
                     stage = L2StageResult.completed(
                         item.key, output, started_monotonic_ns=started_ns,
-                        finished_monotonic_ns=monotonic_ns(), diagnostics=diagnostics,
+                        finished_monotonic_ns=finished_ns, diagnostics=diagnostics,
+                    )
+                    self._l12_segment_timing.record_l2(
+                        item.key.session_id,
+                        item.key.stream_epoch,
+                        item.key.decision_sample,
+                        gate_state=output.gate_decision.state.value,
+                        music_ms=(
+                            None
+                            if output.search_diagnostics is None
+                            else output.search_diagnostics.total_ms
+                        ),
+                        id_tracking_ms=output.id_tracking_ms,
+                        total_ms=(finished_ns - started_ns) / 1_000_000.0,
                     )
                     self._stage_errors["l2"] = None
                 except Exception as exc:
