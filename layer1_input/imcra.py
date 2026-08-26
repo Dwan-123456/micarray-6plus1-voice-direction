@@ -8,7 +8,7 @@ from scipy.special import exp1
 
 from common.config import Layer1ImcraConfig, ProjectConfig
 from common.data_types import CalibrationMetadata, ImcraHopSnapshot, IngestedAudioBlock
-from layer1_input.speech_spectrum import equal_sex_ltass_weights
+from layer1_input.speech_spectrum import speech_gate_band_weights
 
 
 class Layer1Imcra:
@@ -30,7 +30,7 @@ class Layer1Imcra:
         self._gate_band = (self._all_frequencies_hz >= config.frequency_min_hz) & (
             self._all_frequencies_hz <= config.frequency_max_hz
         )
-        self._gate_weights = equal_sex_ltass_weights(self._all_frequencies_hz[self._gate_band])
+        self._gate_weights = speech_gate_band_weights(self._all_frequencies_hz[self._gate_band])
         self.frequencies_hz = self._all_frequencies_hz[self._output_band]
         self._warmup_hops = ceil(config.warmup_seconds * sample_rate / self.hop_samples)
         self._identity: tuple[str, int] | None = None

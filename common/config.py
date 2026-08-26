@@ -93,14 +93,14 @@ class TimingConfig(StrictModel):
 
 class Layer1ImcraConfig(StrictModel):
     enabled: bool
-    algorithm_version: Literal["cohen_imcra_2003_l1_v7"]
+    algorithm_version: Literal["cohen_imcra_2003_l1_v8"]
     hop_samples: Literal[960]
     n_fft: Literal[2048]
     window: Literal["hann_periodic"]
     output_frequency_min_hz: Literal[0.0]
     output_frequency_max_hz: Literal[10000.0]
-    frequency_min_hz: Literal[100.0]
-    frequency_max_hz: Literal[1500.0]
+    frequency_min_hz: Literal[250.0]
+    frequency_max_hz: Literal[3400.0]
     frequency_smoothing_half_width: Literal[1]
     spectrum_smoothing: Literal[0.77]
     noise_smoothing: Literal[0.66]

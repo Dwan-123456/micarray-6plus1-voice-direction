@@ -166,7 +166,7 @@ kalman_applied
 
 L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预降噪保持。为 MUSIC 增加以下保证：
 
-- IMCRA对7个物理麦分别统计并发布0～10000 Hz噪声PSD/SPP，Wiener预降噪同样作用于0～10000 Hz；L2 Gate概率证据带使用100～1500 Hz，并按男女长期平均语音谱各50%合成的固定权重聚合，HardwareMix不参与统计或降噪。
+- IMCRA对7个物理麦分别统计并发布0～10000 Hz噪声PSD/SPP，Wiener预降噪同样作用于0～10000 Hz；L2 Gate概率分别对250～700、700～1600、1600～3400 Hz内SPP求均值，再按15%、35%、50%聚合，HardwareMix不参与统计或降噪。
 - L2 必须获得连续的48 kHz、7个物理麦校准音频；单个DecisionWindow直接提供160 ms，MUSIC可通过按WindowKey连续维护的有界滚动状态累计240/320 ms历史。实际滚动历史长度由独立配置和目标机基准确定。HardwareMix仍不得进入协方差、导向矢量或MUSIC伪谱。
 - 校准元数据必须能区分 `verified / unverified`。Development Test UI 对未验证校准明确警告；Production 在完成实机标定后应支持要求 verified calibration 才启动正式定位。
 - 当前增益、极性和整数 sample delay 校准继续兼容；MUSIC 实机误差若表明需要亚采样或频率相关补偿，应新增版本化的频域校准资产，不得静默改写旧 calibration hash。

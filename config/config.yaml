@@ -50,15 +50,15 @@ timing:
 layer1_imcra:
   enabled: true
   # Cohen 2003 IMCRA core; 48 kHz/20 ms/7-mic aggregation is the L1 adapter.
-  algorithm_version: cohen_imcra_2003_l1_v7
+  algorithm_version: cohen_imcra_2003_l1_v8
   hop_samples: 960
   n_fft: 2048
   window: hann_periodic
   output_frequency_min_hz: 0.0
   output_frequency_max_hz: 10000.0
-  # Gate P uses a fixed 50/50 male/female LTASS weighting inside this band.
-  frequency_min_hz: 100.0
-  frequency_max_hz: 1500.0
+  # Gate P averages SPP in three bands with total weights 15% / 35% / 50%.
+  frequency_min_hz: 250.0
+  frequency_max_hz: 3400.0
   # Cohen Table I coefficients converted from an 8 ms to this 20 ms update step;
   # Bmin remains provisional and requires real-noise recalibration.
   frequency_smoothing_half_width: 1
@@ -152,7 +152,7 @@ layer2:
     max_active_tracks: 4
   scanner_backend: frequency_normalized_music
   angle_step_deg: 1.0
-  # MUSIC定位只使用2～4 kHz；L1概率Gate独立使用100～1500 Hz。
+  # MUSIC定位只使用2～4 kHz；L1概率Gate独立使用250～3400 Hz三频带加权。
   frequency_min_hz: 2000.0
   frequency_max_hz: 4000.0
   n_fft: 1024

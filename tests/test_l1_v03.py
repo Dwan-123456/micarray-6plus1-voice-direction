@@ -11,7 +11,7 @@ from layer1_input.configuration import CalibrationConfig
 from layer1_input.imcra import Layer1Imcra
 from layer1_input.interface import DecodedAudio
 from layer1_input.sources import map_logical_channels
-from layer1_input.speech_spectrum import equal_sex_ltass_weights
+from layer1_input.speech_spectrum import speech_gate_band_weights
 from windowing import WindowAssembler
 
 
@@ -95,28 +95,21 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
 
 def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     config = load_config("config/config.yaml").layer1_imcra
-    assert config.algorithm_version == "cohen_imcra_2003_l1_v7"
-    assert (config.frequency_min_hz, config.frequency_max_hz) == (100.0, 1_500.0)
+    assert config.algorithm_version == "cohen_imcra_2003_l1_v8"
+    assert (config.frequency_min_hz, config.frequency_max_hz) == (250.0, 3_400.0)
     estimator = Layer1Imcra(config)
     gate_frequencies = estimator._all_frequencies_hz[estimator._gate_band]
-    assert np.all((gate_frequencies >= 100.0) & (gate_frequencies <= 1_500.0))
-    assert gate_frequencies[0] == pytest.approx(117.1875)
-    assert gate_frequencies[-1] == pytest.approx(1_500.0)
-    weights = equal_sex_ltass_weights(gate_frequencies)
+    assert np.all((gate_frequencies >= 250.0) & (gate_frequencies <= 3_400.0))
+    assert gate_frequencies[0] == pytest.approx(257.8125)
+    assert gate_frequencies[-1] == pytest.approx(3_398.4375)
+    weights = speech_gate_band_weights(gate_frequencies)
     assert weights.shape == gate_frequencies.shape
     assert np.sum(weights) == pytest.approx(1.0)
     assert np.all(weights > 0.0)
-    assert not np.allclose(weights, np.full_like(weights, 1.0 / len(weights)))
     expected_band_weights = (
-        (100.0, 200.0, 0.120626),
-        (200.0, 300.0, 0.203283),
-        (300.0, 400.0, 0.188660),
-        (400.0, 500.0, 0.165802),
-        (500.0, 630.0, 0.141919),
-        (630.0, 800.0, 0.101733),
-        (800.0, 1_000.0, 0.036206),
-        (1_000.0, 1_250.0, 0.024807),
-        (1_250.0, 1_500.1, 0.016964),
+        (250.0, 700.0, 0.15),
+        (700.0, 1_600.0, 0.35),
+        (1_600.0, 3_400.1, 0.50),
     )
     for low, high, expected in expected_band_weights:
         selected = (gate_frequencies >= low) & (gate_frequencies < high)

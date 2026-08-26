@@ -65,6 +65,37 @@ def _equal_area_reference(levels_db: np.ndarray) -> np.ndarray:
 _MALE_EQUAL_AREA = _equal_area_reference(_MALE_LEVEL_DB)
 _FEMALE_EQUAL_AREA = _equal_area_reference(_FEMALE_LEVEL_DB)
 
+_GATE_BANDS = (
+    (250.0, 700.0, 0.15),
+    (700.0, 1_600.0, 0.35),
+    (1_600.0, 3_400.0, 0.50),
+)
+
+
+def speech_gate_band_weights(frequencies_hz: np.ndarray) -> np.ndarray:
+    """Return equal-bin weights with fixed mass assigned to three speech bands."""
+
+    frequencies = np.asarray(frequencies_hz, dtype=np.float64)
+    if frequencies.ndim != 1 or frequencies.size == 0:
+        raise ValueError("Gate frequencies must be a non-empty vector")
+    if not np.isfinite(frequencies).all():
+        raise ValueError("Gate frequencies must be finite")
+
+    weights = np.zeros_like(frequencies)
+    for index, (low_hz, high_hz, band_weight) in enumerate(_GATE_BANDS):
+        if index + 1 == len(_GATE_BANDS):
+            selected = (frequencies >= low_hz) & (frequencies <= high_hz)
+        else:
+            selected = (frequencies >= low_hz) & (frequencies < high_hz)
+        count = int(np.count_nonzero(selected))
+        if count == 0:
+            raise ValueError(f"Gate frequency axis does not cover {low_hz:g}-{high_hz:g} Hz")
+        weights[selected] = band_weight / count
+
+    if not np.isclose(np.sum(weights), 1.0):
+        raise RuntimeError("Gate band weights do not sum to one")
+    return weights
+
 
 def equal_sex_ltass_weights(frequencies_hz: np.ndarray) -> np.ndarray:
     """Return 50/50 male/female LTASS weights for the supplied FFT bins."""
