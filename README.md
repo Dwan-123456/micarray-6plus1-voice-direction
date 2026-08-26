@@ -111,7 +111,7 @@ WindowWorkItem
         圆周峰值 + 50° NMS → 最多3个方向
     永久在线Circular IMM-JPDA方向ID
         tentative → confirmed → coasting → deleted
-        滚动200 ms内累计至少5次匹配观测后confirmed
+        滚动500 ms内累计至少10次匹配观测后confirmed
         恢复匹配同时检查预测角与最后真实观测角，任一距离≤50°即沿用原ID
         两轨进入50°内且近期观测交替、无同窗双峰时归并，保留更正式/更早的ID
         session内track_id单调且不复用；内部最多4轨，公共输出最多3轨
@@ -266,7 +266,7 @@ Test UI保留DPD与白化的独立持久化开关。`DPD + rank-1 MUSIC`按逐�
 
 方向ID追踪是Layer 2默认开启的正式能力（Development Test UI可为MUSIC诊断临时旁路）。它使用全局一对一分配，把不同窗口中的观测关联为`tentative / confirmed / coasting / deleted`轨迹；`track_id`在同一session内单调分配且不复用，并原样进入L3、Runtime、DecisionRecord v5以及停机后的L4/L5、Development Test UI和Production UI。它只表示空间方向轨迹，不表示人物身份。
 
-新方向首次出现时立即分配tentative ID；只有在滚动200 ms窗口内累计至少5次匹配观测且存在概率达标，才进入tracking `confirmed`。候选关联使用50°圆周硬上限与卡方门限20。JPDA主关联不足时，补救匹配同时比较IMM预测角和该ID最后一次真实观测角；候选距任一个不超过50°即恢复旧ID并禁止重复birth。两条既有轨迹后来进入50°以内时，只有在滚动200 ms内两轨均有观测、观测至少两次交替且不存在同窗独立双峰时才执行同源归并；保留confirmed优先、随后更早、存在概率更高的ID，并吸收另一轨较新的IMM状态和观测证据。
+新方向首次出现时立即分配tentative ID；只有在滚动500 ms窗口内累计至少10次匹配观测且存在概率达标，才进入tracking `confirmed`。候选关联使用50°圆周硬上限与卡方门限20。JPDA主关联不足时，补救匹配同时比较IMM预测角和该ID最后一次真实观测角；候选距任一个不超过50°即恢复旧ID并禁止重复birth。两条既有轨迹后来进入50°以内时，只有在同一滚动500 ms历史内两轨均有观测、观测至少两次交替且不存在同窗独立双峰时才执行同源归并；保留confirmed优先、随后更早、存在概率更高的ID，并吸收另一轨较新的IMM状态和观测证据。
 
 达到tracking `confirmed`的轨迹可以在2秒TTL内以`coasting`状态继续作为公共L3方向输出；公共投影只依赖L2的权威观测、关联、角距和数量限制。代码保留在线语义反馈接口以兼容旧契约和专项测试，但当前离线L5不调用它，所以不会实时强制打开Gate、标记噪声干扰或改变轨迹寿命。
 

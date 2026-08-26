@@ -124,8 +124,8 @@ layer2:
     association_gate_deg: 50.0
     association_chi2: 20.0
     max_velocity_dps: 60.0
-    confirmation_observations: 5
-    confirmation_window_ms: 200
+    confirmation_observations: 10
+    confirmation_window_ms: 500
     tentative_ttl_ms: 500
     coasting_ttl_ms: 2000
     probability_detect: 0.85

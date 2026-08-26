@@ -842,7 +842,7 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
 def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
-    audio = _audio((30.0,), seed=29, samples=7_680 + 15 * 960)
+    audio = _audio((30.0,), seed=29, samples=7_680 + 21 * 960)
 
     def probabilities(window: DecisionWindow, value: float) -> tuple[SourceProbability20ms, ...]:
         return tuple(SourceProbability20ms(
@@ -864,7 +864,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
     assert first.directions == first.active_tracks
 
     confirmed = first
-    for index in range(10, 14):
+    for index in range(10, 19):
         confirming_window = _window(audio, index)
         confirmed = pipeline.process(
             confirming_window, probabilities(confirming_window, 1.0),
@@ -876,7 +876,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
 
     # Tracking confirmation without L5 voice evidence cannot sustain MUSIC
     # scanning, but the still-live formal ID continues to L3 as coasting BF.
-    third_window = _window(audio, 14)
+    third_window = _window(audio, 19)
     closed = pipeline.process(
         third_window, probabilities(third_window, 0.0), physical_6plus1_geometry(),
         DirectionScanConfig.from_project(config), gate_threshold=0.6,
@@ -905,7 +905,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
         0.95,
         True,
     )
-    forced_window = _window(audio, 15)
+    forced_window = _window(audio, 20)
     forced = pipeline.process(
         forced_window, probabilities(forced_window, 0.0), physical_6plus1_geometry(),
         DirectionScanConfig.from_project(config), gate_threshold=0.6,

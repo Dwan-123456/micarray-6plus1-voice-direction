@@ -30,8 +30,8 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.direction_id_tracking.survival_probability_per_second == pytest.approx(
         0.97**50
     )
-    assert config.layer2.direction_id_tracking.confirmation_observations == 5
-    assert config.layer2.direction_id_tracking.confirmation_window_ms == 200
+    assert config.layer2.direction_id_tracking.confirmation_observations == 10
+    assert config.layer2.direction_id_tracking.confirmation_window_ms == 500
     assert config.layer2.direction_id_tracking.coasting_ttl_ms == 2_000
     assert config.layer2.effective_order_limit == 2
     assert not hasattr(config.layer2, "mdl_max_age_ms")
