@@ -327,7 +327,7 @@ def test_runtime_processing_snapshot_freezes_music_and_imm_jpda_lifecycle(tmp_pa
     assert values["music_frequency_band_hz"] == (2_000.0, 4_000.0)
     assert values["music_order"] == {
         "source": "test_ui_manual",
-        "value": 3,
+        "value": 2,
         "min_valid_frequency_bins": 12,
     }
     assert values["association_lifecycle"]["coasting_ttl_ms"] > 0
@@ -380,15 +380,15 @@ def test_runtime_optional_music_filters_follow_config_and_are_revisioned(tmp_pat
         pipeline=StubPipeline([]), serial_device=StubSerial(),
     )
     assert runtime.music_dpd_rank1_enabled is False
-    assert runtime.music_noise_whitening_enabled is True
+    assert runtime.music_noise_whitening_enabled is False
     revision = runtime.direction_scan_config_revision
     assert runtime.set_music_dpd_rank1_enabled(True) is True
-    assert runtime.set_music_noise_whitening_enabled(False) is False
+    assert runtime.set_music_noise_whitening_enabled(True) is True
     assert runtime.direction_scan_config_revision == revision + 2
-    runtime.set_music_noise_whitening_enabled(False)
+    runtime.set_music_noise_whitening_enabled(True)
     assert runtime.direction_scan_config_revision == revision + 2
     assert runtime.direction_scan_config.dpd_rank1_enabled is True
-    assert runtime.direction_scan_config.noise_whitening_enabled is False
+    assert runtime.direction_scan_config.noise_whitening_enabled is True
     with pytest.raises(ValueError):
         runtime.set_music_dpd_rank1_enabled(1)
     with pytest.raises(ValueError):

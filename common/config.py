@@ -250,7 +250,7 @@ class Layer2Config(StrictModel):
     dpd_min_circular_concentration: float = Field(ge=0, le=1)
     dpd_peak_fusion_distance_deg: float = Field(gt=0, le=50)
     dpd_peak_fusion_min_normalized_score: float = Field(ge=0, le=1)
-    noise_whitening_enabled: bool = True
+    noise_whitening_enabled: bool = False
     noise_covariance_shrinkage: float = Field(ge=0, le=1)
 
     @model_validator(mode="after")

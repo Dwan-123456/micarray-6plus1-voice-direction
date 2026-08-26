@@ -80,7 +80,7 @@ class DevUiSettings:
         self._save_update(layer2_direction_threshold=threshold)
         return threshold
 
-    def load_music_effective_order_limit(self, default: int = 3) -> int:
+    def load_music_effective_order_limit(self, default: int = 2) -> int:
         fallback = self._validate_music_order_limit(default)
         try:
             return self._validate_music_order_limit(

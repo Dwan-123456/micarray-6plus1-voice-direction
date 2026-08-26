@@ -167,7 +167,7 @@ layer2:
   min_peak_distance_deg: 50.0
   max_candidates: 3
   # Test UI changes this exact MUSIC subspace/search order to 1, 2, or 3.
-  effective_order_limit: 3
+  effective_order_limit: 2
   # Optional experimental safeguards. Both remain OFF until explicitly enabled
   # from Development Test UI; the manual ceiling remains independent.
   dpd_rank1_enabled: false
@@ -184,7 +184,7 @@ layer2:
   # Merge individually strong DPD peaks before the final 50-degree NMS.
   dpd_peak_fusion_distance_deg: 40.0
   dpd_peak_fusion_min_normalized_score: 0.70
-  noise_whitening_enabled: true
+  noise_whitening_enabled: false
   noise_covariance_shrinkage: 0.10
 
 stft:
