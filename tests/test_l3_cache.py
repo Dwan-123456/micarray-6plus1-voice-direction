@@ -39,7 +39,7 @@ def _hop(index: int) -> ImcraHopSnapshot:
         index * 960,
         (index + 1) * 960,
         (index,),
-        "cohen_imcra_2003_l1_v5",
+        "cohen_imcra_2003_l1_v6",
         "ready",
         frequencies,
         noise,

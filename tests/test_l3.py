@@ -51,7 +51,7 @@ def _imcra_hops(
     return tuple(
         ImcraHopSnapshot(
             "session", 0, index * 960, (index + 1) * 960, (index,),
-            "cohen_imcra_2003_l1_v5", "ready", frequencies,
+            "cohen_imcra_2003_l1_v6", "ready", frequencies,
             noise, ones * 2.0, ones * 1.5, ones * 0.5, ones * 0.4,
             np.full(spectral, spp_by_hop[index], np.float32),
             np.full(spectral, 1.0 - spp_by_hop[index], np.float32),

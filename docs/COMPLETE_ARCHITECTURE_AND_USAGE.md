@@ -97,7 +97,7 @@ flowchart TB
 | 模块 | 正式输入 | 内部处理单元 | 正式输出 | 频率/节拍 |
 |---|---|---|---|---|
 | 硬件输入 | 诊室声场 | 6个半径4 cm圆周麦 + Center；MA-USB8通道汇聚 | Host原生PCM16 `[N,8]` | 48 kHz；默认每块960 sample=20 ms |
-| Layer 1 | Host PCM16 `[N,8]`、校准参数、CDC状态 | PCM16解码；增益/极性/整数延迟校准；Host→Logical通道重排；连续性检查；7麦IMCRA；可选IMCRA-Wiener WOLA | `DecodedAudio`：Logical float32 `[N,8]`；Native `[N,8]`；IMCRA噪声PSD/SPP/20 ms声源概率；健康事件 | IMCRA 0–10 kHz；Gate证据500–4000 Hz |
+| Layer 1 | Host PCM16 `[N,8]`、校准参数、CDC状态 | PCM16解码；增益/极性/整数延迟校准；Host→Logical通道重排；连续性检查；7麦IMCRA；可选IMCRA-Wiener WOLA | `DecodedAudio`：Logical float32 `[N,8]`；Native `[N,8]`；IMCRA噪声PSD/SPP/20 ms声源概率；健康事件 | IMCRA 0–10 kHz；Gate证据100–1500 Hz |
 | Ingest | `DecodedAudio`、sequence/timestamp、校准身份 | 建立`session_id`；检测缺口并切换`stream_epoch`；分配绝对sample；把IMCRA hop对齐到同一时间轴 | `IngestedAudioBlock`：48 kHz float32 `[N,8]`，含native、hotmap、IMCRA、校准元数据 | 输入块通常20 ms |
 | Windowing | 连续同epoch的`IngestedAudioBlock` | 环形累计；检查校准身份与sample连续；组合来源sequence | `DecisionWindow [7680,8]`；末端40 ms DOA区间；最近160 ms上下文；8个20 ms IMCRA hop | 160 ms上下文，每20 ms发布 |
 | Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/DOA/IMM-JPDA/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
@@ -360,7 +360,7 @@ run_offline_l4   ── 显式写入封存session，可长期审计
 |---|---|---|
 | `WARMING_UP` | IMCRA、Window或MUSIC历史尚未积累完成 | 等待数百毫秒到IMCRA配置的预热时间 |
 | `UNAVAILABLE` | 必需概率、校准或连续数据缺失 | 设备、通道、epoch切换和顶部错误 |
-| Gate关闭、无方向 | 40 ms概率未达到门限 | L1 IMCRA状态、500–4000 Hz能量和Gate阈值 |
+| Gate关闭、无方向 | 20 ms概率未达到门限 | L1 IMCRA状态、100–1500 Hz概率和Gate阈值 |
 | 有稳定风扇方向 | L2判断空间声源，不判断是否人声 | 记录频谱；查看离线L5；不要把它当响度结果 |
 | L3串音明显 | 小孔径、低频、混响或方向过近 | 声源夹角、80–1500 Hz限制、BF模式和`rho` |
 | L4回退原L3 | 音频太短、匹配分数低或两候选分差太小 | 时长≥2秒、模型状态和匹配诊断 |

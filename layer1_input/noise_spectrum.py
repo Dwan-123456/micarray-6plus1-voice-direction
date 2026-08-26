@@ -90,7 +90,7 @@ class DynamicNoiseSpectrumRecorder:
 
         self._frames_observed += 1
         frequencies = np.fft.rfftfreq(self.n_fft, 1.0 / audio.sample_rate)
-        speech_band = (frequencies >= 500.0) & (frequencies <= 4_000.0)
+        speech_band = (frequencies >= 100.0) & (frequencies <= 1_500.0)
         noise_level_db = 10.0 * np.log10(
             np.maximum(np.mean(self._noise_psd[:, speech_band], axis=1), self.floor)
         )

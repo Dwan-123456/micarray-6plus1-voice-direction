@@ -28,7 +28,7 @@ def _hop(index: int, *, spp_by_mic: np.ndarray, state: str = "ready") -> ImcraHo
     probability = np.mean(spp, axis=1).astype(np.float32)
     start = index * 960
     return ImcraHopSnapshot(
-        "session", 0, start, start + 960, (index,), "cohen_imcra_2003_l1_v5", state,
+        "session", 0, start, start + 960, (index,), "cohen_imcra_2003_l1_v6", state,
         frequencies, ones, ones, ones, ones, ones, spp, 1.0 - spp, ones,
         np.zeros(shape, np.float32),
         np.column_stack((np.zeros(7), np.zeros(7), np.zeros(7), probability)).astype(np.float32),

@@ -94,7 +94,13 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
 
 def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     config = load_config("config/config.yaml").layer1_imcra
-    assert config.algorithm_version == "cohen_imcra_2003_l1_v5"
+    assert config.algorithm_version == "cohen_imcra_2003_l1_v6"
+    assert (config.frequency_min_hz, config.frequency_max_hz) == (100.0, 1_500.0)
+    estimator = Layer1Imcra(config)
+    gate_frequencies = estimator._all_frequencies_hz[estimator._gate_band]
+    assert np.all((gate_frequencies >= 100.0) & (gate_frequencies <= 1_500.0))
+    assert gate_frequencies[0] == pytest.approx(117.1875)
+    assert gate_frequencies[-1] == pytest.approx(1_500.0)
     assert (
         config.frequency_smoothing_half_width,
         config.spectrum_smoothing,
@@ -110,7 +116,7 @@ def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     ) == (1, 0.77, 10, 5, 1.66, 4.6, 3.0, 1.67, 0.81, 0.66, 1.47)
     assert config.minimum_history_subwindows * config.minimum_subwindow_frames == 50
     assert config.warmup_seconds == 1.0
-    first = Layer1Imcra(config).process(
+    first = estimator.process(
         _block(np.ones((960, 8), np.float32) * 0.01, epoch=0, start=0, sequence=0)
     )[0]
     assert np.array_equal(first.smoothed_psd, first.conditional_smoothed_psd)
