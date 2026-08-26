@@ -11,6 +11,26 @@
 
 ## 报告索引
 
+### Sipeed MicArray麦克风阵列官方资料
+
+文件：[`sipeed_micarray.md`](sipeed_micarray.md)
+
+官方页面：<https://wiki.sipeed.com/hardware/zh/modules/micarray.html>
+
+官方源文档：<https://github.com/sipeed/sipeed_wiki/blob/main/docs/hardware/zh/modules/micarray.md>
+
+下载快照：2026-08-26，官方文件最新提交`232411a35675f410233a4a808aaa3308c5b4427f`。资料说明7个`MSM261S4030H0`麦克风、I²S引脚、12颗`SK9822`灯、机械尺寸及K210参考用法。本文是硬件模块通用资料，不代表MA-USB8通过USB暴露7路物理麦。
+
+### Sipeed MA-USB8（BL616）官方使用指南
+
+文件：[`sipeed_ma_usb8_bl616.md`](sipeed_ma_usb8_bl616.md)
+
+官方页面：<https://wiki.sipeed.com/hardware/zh/modules/micarray_usbboard_bl616.html>
+
+官方源文档：<https://github.com/sipeed/sipeed_wiki/blob/main/docs/hardware/zh/modules/micarray_usbboard_bl616.md>
+
+下载快照：2026-08-26，官方文件最新提交`0f5fca9043bd467d1eee216f82bc811b5529225a`。指南明确MA-USB8 UAC2.0采集为8通道、PCM S16_LE、48 kHz：CH0～CH5是六个外圈原始麦，CH6是六麦延时求和后的全频段波束输出，CH7是保留PEC通道而非中心麦；另含灯控命令`e/E`、12档波束、USB/串口热力图与故障排查。该通道定义应作为后续实机通道映射复核的重要依据，尚未因资料入库自动修改当前代码配置。
+
 ### 6+1阵列MUSIC伪峰抑制工程报告（中文版PDF）
 
 文件：[`music_false_peak_suppression_6plus1_cn.pdf`](music_false_peak_suppression_6plus1_cn.pdf)

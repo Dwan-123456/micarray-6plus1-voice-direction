@@ -21,6 +21,15 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — 收录Sipeed MicArray与MA-USB8官方资料
+
+- **参考资料**：从Sipeed官方Wiki仓库下载`MicArray麦克风阵列`和`MA-USB8（BL616）使用指南`的中文Markdown源文档至`docs/references/`，并在参考索引中记录官方页面、GitHub源文件、快照日期和对应源提交。
+- **项目相关发现**：MA-USB8官方指南定义UAC采集为8通道、48 kHz、S16_LE，其中CH0～CH5为六个外圈原始麦、CH6为硬件延时求和波束输出、CH7为保留PEC通道且不是中心麦；该信息已标记为后续实机通道映射复核依据。
+- **未改变范围**：本次只收录官方资料，不修改L1通道映射、IMCRA、L2 MUSIC/ID、L3 BF、L4～L6、Runtime、Test UI、录音schema、配置或测试资产。
+- **验证与资产**：核对两份下载文件的官方源提交和SHA-256，检查Markdown文件及项目差异；无模型、录音、音频fixture或Git LFS资产变化。
+
+---
+
 ## 2026-08-26 — 断流后P快速恢复与Gate滑条拖动修复
 
 - **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；修复同session短暂输入中断后IMCRA P/Gate长时间`WARMING_UP`，以及Development Test UI的Gate阈值滑条拖动卡顿。
