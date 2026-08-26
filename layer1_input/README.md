@@ -61,7 +61,7 @@ PSD/SPP状态保留0～10000 Hz目标频带；概率证据仍仅从500～4000 Hz
 
 不可变`ImcraHopSnapshot`除既有逐麦频谱状态外，新增运行时`noise_covariance[427,7,7] complex64`；它必须finite、Hermitian、只读，且对角线严格等于`noise_psd.T`。该矩阵随20 ms窗口供L2/L3直接读取，但不写入正式录音资产；录音回放时由L1重新计算。
 
-断流、sequence/timestamp/rate异常或epoch切换时必须清空IMCRA状态并重新预热。预热期间发布明确状态，不能把缺失概率写成0。单纯静音或概率下降不改变epoch，也不会让IMCRA重新进入`warming_up`。
+新采集session或校准身份变化时必须清空IMCRA统计并完整重新预热。同一采集session、同一校准下的短暂sequence/timestamp/input overflow/handoff缺口仍建立新epoch并显式不发布缺失区间的P，但只清空运输和时间对齐缓冲，保留已积累的IMCRA噪声统计。若断流前已`ready`，恢复后第一个20 ms hop立即恢复正式P；L2 Gate等待WindowAssembler重新积累8个连续hop（160 ms）后继续。单纯静音或概率下降不改变epoch，也不会让IMCRA重新进入`warming_up`。
 
 ## Test UI专用CountNet人数支路
 
@@ -99,7 +99,7 @@ L1不计算DOA、不执行波束形成、不执行逐方向人声分类，也不
 - verified/unverified校准状态、稳定版本/hash传播、同epoch边界拒绝和未来资产显式拒绝；
 - 麦克风面逆时针几何及灯面镜像防错；
 - HardwareMix保留但不进入7麦阵列算法；
-- IMCRA 20 ms更新、0～10000 Hz PSD/SPP状态、500～4000 Hz概率聚合、重置、预热及概率范围；
+- IMCRA 20 ms更新、0～10000 Hz PSD/SPP状态、500～4000 Hz概率聚合、新session/校准变更重置、同session断流统计保留、预热及概率范围；
 - 40 ms/20 ms WOLA连续重建、每麦独立增益、HardwareMix直通、预热旁路和运行时开关；
 - 设备、WAV、实时handoff和Ingest时间轴一致性。
 - PortAudio回调不执行RMS、连续handoff溢出事件合并、交接队列高水位与输入健康诊断。

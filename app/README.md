@@ -36,6 +36,6 @@ Gate开启且L2空间响应有效但候选为空时，L3直接产生`Layer3Outpu
 
 普通Runtime启动顺序为：重置图和时间轴 → RecordingStore session → `commit,L5,L3,L2` worker → 设备pipeline → L1读取；真实麦克风Test UI临时模式省略RecordingStore session及其全部音频/结果写入。启动失败按反向回滚并join所有已启动线程。正常停止不清空等待队列，而是先停设备/L1并刷出预降噪，再依次以EOS drain L2→L3→L5→completion/commit；普通Runtime随后完成Recording水位并关闭RecordingStore，临时模式只封存可发送给离线L4的本轮UI音轨。完整模拟输入EOF不设有限排空期限，Test UI在此期间显示`FINALIZING`；实时/手动停止继续使用配置的安全期限。有限期限超时的已注册窗口显式转为`CANCELLED/error`；仍有worker存活时拒绝假关闭。操作者在模拟播放中点击“从头重播”属于独立的硬换代路径：立即暂停L1并清空所有尚未执行的L2/L3/L5/Commit工作，当前正在执行且不能安全抢占的单个kernel返回后也丢弃其结果，再用全新处理图从sample 0开始；该行为不改变正常EOF的完整排空和`stopped`计时封存。
 
-Development Test UI只通过公开只读`processing_status`获取每阶段队列深度/容量、worker存活、在途窗口、缓存字节、完成数和错误数；其中`input_health`公开当前epoch、连续性中断次数/最后原因、input overflow、handoff drop及交接队列深度/容量/高水位，L5诊断包括`l5_actual_completed/l5_dropped/l5_skipped/l5_actual_hz`及显示邮箱深度、容量、覆盖数。Gate因新epoch重新预热时，UI错误文案附带`epoch_reset:<reason>`，可直接区分静音、处理丢窗与真实输入中断。UI不得读取Runtime私有队列或据此修改调度。
+Development Test UI只通过公开只读`processing_status`获取每阶段队列深度/容量、worker存活、在途窗口、缓存字节、完成数和错误数；其中`input_health`公开当前epoch、连续性中断次数/最后原因、input overflow、handoff drop及交接队列深度/容量/高水位，顶部简码`IN ov/hd/ep`和提示文本直接投影这些公开计数与最近原因；L5诊断包括`l5_actual_completed/l5_dropped/l5_skipped/l5_actual_hz`及显示邮箱深度、容量、覆盖数。同session输入断点后，Gate只在新epoch的160 ms连续WindowAssembler上下文重建期显示`epoch_reset:<reason>`；缺口本身不报P，恢复后IMCRA继续使用同session/校准的已积累统计。新session或校准变化仍完整预热。UI不得读取Runtime私有队列或据此修改调度。
 
 回归测试覆盖公共ID逐项进入L3/L5、跨层错序/角度/WindowKey拒绝、队列丢弃、sample跳跃、epoch变化、配置revision、停机drain、唯一终态/watermark和有序提交；普通运行与Test UI运行使用同一正式L2/L3/L5链路。

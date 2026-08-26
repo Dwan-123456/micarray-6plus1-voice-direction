@@ -21,6 +21,16 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — 断流后P快速恢复与Gate滑条拖动修复
+
+- **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；修复同session短暂输入中断后IMCRA P/Gate长时间`WARMING_UP`，以及Development Test UI的Gate阈值滑条拖动卡顿。
+- **L1/IMCRA恢复契约**：连续性守卫仍为真实sequence/timestamp/input overflow/handoff缺口建立新epoch，不补零也不伪造缺失区间的P。同一采集session且校准未变时，IMCRA只清空运输/对齐缓冲并保留已积累噪声统计；断流前已`ready`则恢复后第一个20 ms hop即重新发布正式P，L2 Gate在新epoch连续160 ms WindowAssembler上下文完整后继续。新session或校准身份变化仍完整重置和预热。
+- **Test UI与可观测性**：Gate滑条拖动时立即更新Runtime，松手后才单次原子保存本地设置，不再每个刻度执行同步写盘/fsync；顶部状态新增`IN ov/hd/ep`，提示中显示overflow、handoff丢块、epoch中断数和最近原因。不写回`config.yaml`。
+- **契约与验证**：新增同session gap已ready统计保留、新session/校准变更重新预热、断流后首hop P与160 ms Gate窗口恢复、滑条拖动期零写盘/松手单次持久化及输入健康显示回归。Ruff通过，相关L1/L2/Runtime/Test UI专项回归`117 passed`。全量回归`724 passed, 2 failed, 1 warning`；两个失败均为本次未修改的墙钟性能门槛：CountNet中位耗时`172 ms > 100 ms`（独立复测已通过）和DPD+Whitening P95 `17.89 ms > 15 ms`（当时系统CPU约12～16%，独立三次复测仍受调度抖动影响）；未放宽门槛或修改相关算法。未执行真实麦克风实机验收。
+- **未改变与数据边界**：L2 Gate/MUSIC/DPD/Whitening/ID数学、L3 BF与Center Mic拼接、L4～L6、正式录音与数据schema、模型、资产和运行时长监控均无变化；不提交音频、缓存、日志、本机设置或秘密，无Git LFS对象新增或修改。
+
+---
+
 ## 2026-08-26 — L2 MUSIC 200 ms协方差与连续Gate预热同步
 
 - **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；修改L2 MUSIC协方差时长与Probability Gate候选预热门禁，并修正Runtime/TrackAudioStreamHub首次confirmed历史BF回填的时间锚点和角度来源。L1、L3实时BF算法、离线L4、L5、L6、录音与数据schema、模型和资产均无变化。

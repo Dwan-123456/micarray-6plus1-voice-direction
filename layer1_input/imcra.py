@@ -7,7 +7,7 @@ import numpy as np
 from scipy.special import exp1
 
 from common.config import Layer1ImcraConfig, ProjectConfig
-from common.data_types import ImcraHopSnapshot, IngestedAudioBlock
+from common.data_types import CalibrationMetadata, ImcraHopSnapshot, IngestedAudioBlock
 
 
 class Layer1Imcra:
@@ -32,6 +32,7 @@ class Layer1Imcra:
         self.frequencies_hz = self._all_frequencies_hz[self._output_band]
         self._warmup_hops = ceil(config.warmup_seconds * sample_rate / self.hop_samples)
         self._identity: tuple[str, int] | None = None
+        self._calibration: CalibrationMetadata | None = None
         self._next_input_sample = self._buffer_start = 0
         self._buffer = np.empty((0, 7), dtype=np.float32)
         self._segments: deque[tuple[int, int, int]] = deque()
@@ -61,6 +62,7 @@ class Layer1Imcra:
 
     def reset(self) -> None:
         self._identity = None
+        self._calibration = None
         self._next_input_sample = self._buffer_start = 0
         self._buffer = np.empty((0, 7), dtype=np.float32)
         self._segments.clear()
@@ -77,8 +79,27 @@ class Layer1Imcra:
         self._conditional_minimum_history.clear()
 
     def _start_epoch(self, block: IngestedAudioBlock) -> None:
-        self.reset()
+        previous_identity = self._identity
+        preserve_statistics = (
+            previous_identity is not None
+            and previous_identity[0] == block.session_id
+            and self._calibration == block.calibration
+            and self._smoothed is not None
+        )
+        if not preserve_statistics:
+            self.reset()
+        else:
+            # A new epoch marks an explicit hole in the authoritative sample
+            # axis.  Discard only transport/alignment state: accumulated IMCRA
+            # noise statistics remain valid for the same physical capture
+            # session and calibration.  The missing interval publishes no
+            # probability; if the estimator was already ready, the first
+            # recovered hop can resume a formal probability without another
+            # 2.4-second warm-up.
+            self._buffer = np.empty((0, 7), dtype=np.float32)
+            self._segments.clear()
         self._identity = (block.session_id, block.stream_epoch)
+        self._calibration = block.calibration
         self._next_input_sample = self._buffer_start = block.start_sample
 
     def process(self, block: IngestedAudioBlock) -> tuple[ImcraHopSnapshot, ...]:

@@ -243,9 +243,14 @@ class KalmanNoiseScaleControl(QWidget):
 class GateProbabilityThresholdControl(SrpThresholdControl):
     """Independent runtime threshold for the Layer 2 probability Gate."""
 
+    adjustment_finished = Signal(float)
+
     def __init__(self, value: float, parent: QWidget | None = None):
         super().__init__(value, parent)
         self.label.setText("L2 Gate probability")
+        self.slider.sliderReleased.connect(
+            lambda: self.adjustment_finished.emit(self.value)
+        )
 
     def set_value(self, value: float, *, pending: bool = False) -> None:
         super().set_value(value)

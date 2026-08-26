@@ -114,7 +114,17 @@ def _format_processing_pipeline_status(
     cache_bytes = max(0, int(status.get("cache_bytes", 0)))
     cache_max_bytes = max(0, int(status.get("cache_max_bytes", 0)))
     cache_text = f"cache {cache_bytes / (1024 * 1024):.1f}/{cache_max_bytes / (1024 * 1024):.1f} MiB"
-    return " | ".join((*segments, realtime_text, f"flight {inflight}", cache_text))
+    input_health = status.get("input_health", {})
+    input_text = "IN ov0 hd0 ep0"
+    if isinstance(input_health, Mapping):
+        input_text = (
+            f"IN ov{max(0, int(input_health.get('input_overflow_count', 0)))} "
+            f"hd{max(0, int(input_health.get('handoff_drop_count', 0)))} "
+            f"ep{max(0, int(input_health.get('discontinuity_count', 0)))}"
+        )
+    return " | ".join(
+        (*segments, realtime_text, f"flight {inflight}", input_text, cache_text)
+    )
 
 
 def _format_processing_pipeline_tooltip(
@@ -152,6 +162,20 @@ def _format_processing_pipeline_tooltip(
         )
         if center_sidecar.get("error"):
             center_sidecar_line += f"，错误 {center_sidecar['error']}"
+    input_health = status.get("input_health", {})
+    input_health_line = "L1输入连续性：无遥测"
+    if isinstance(input_health, Mapping):
+        last = input_health.get("last_discontinuity")
+        reason = "无"
+        if isinstance(last, Mapping) and last.get("reason"):
+            reason = str(last["reason"])
+        input_health_line = (
+            "L1输入连续性："
+            f"overflow {max(0, int(input_health.get('input_overflow_count', 0)))}，"
+            f"handoff丢块 {max(0, int(input_health.get('handoff_drop_count', 0)))}，"
+            f"epoch重置 {max(0, int(input_health.get('discontinuity_count', 0)))}，"
+            f"最近原因 {reason}"
+        )
     return (
         "分层队列格式为 当前深度/容量；# 后为该阶段完成窗口数。\n"
         f"当前流水中窗口：{max(0, int(status.get('inflight_windows', 0)))}\n"
@@ -167,6 +191,7 @@ def _format_processing_pipeline_tooltip(
         f"{max(0, int(status.get('l5_ui_mailbox_capacity', 0)))}，"
         f"latest-only覆盖：{max(0, int(status.get('l5_ui_mailbox_overwrites', 0)))}\n"
         f"{center_sidecar_line}\n"
+        f"{input_health_line}\n"
         f"{realtime_line}\n"
         f"最近阶段错误：{error_text}"
     )
@@ -655,24 +680,44 @@ def build_window(
             self.music_dpd_rank1.enabled_changed.connect(self._set_music_dpd_rank1)
             self.music_noise_whitening.enabled_changed.connect(self._set_music_noise_whitening)
             self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
+            self.gate_threshold.adjustment_finished.connect(
+                self._persist_gate_probability_threshold
+            )
             self.srp_id_tracking.enabled_changed.connect(self._set_direction_id_tracking)
             return box
 
         def _set_gate_probability_threshold(self, threshold: float):
             previous = runtime.gate_probability_threshold
             try:
-                threshold = ui_settings.save_gate_probability_threshold(threshold)
-                runtime.set_gate_probability_threshold(threshold)
+                threshold = runtime.set_gate_probability_threshold(threshold)
                 self.gate_threshold.set_value(threshold, pending=True)
+                # Mouse dragging may produce dozens of values per second.
+                # Apply those values to Runtime immediately, but defer the
+                # atomic settings write/fsync until the thumb is released so
+                # disk I/O cannot freeze or pull back the slider.
+                if not self.gate_threshold.slider.isSliderDown():
+                    self._persist_gate_probability_threshold(threshold)
+                    return
                 self.statusBar().showMessage(
-                    f"L2 Gate probability threshold saved as {threshold:.2f}; next window applies",
-                    3500,
+                    f"L2 Gate probability threshold {threshold:.2f}; release to save",
                 )
             except Exception as exc:
                 runtime.set_gate_probability_threshold(previous)
                 with QSignalBlocker(self.gate_threshold):
                     self.gate_threshold.set_value(previous)
                 self.statusBar().showMessage(f"Failed to set L2 Gate threshold: {exc}", 8000)
+
+        def _persist_gate_probability_threshold(self, threshold: float):
+            try:
+                threshold = ui_settings.save_gate_probability_threshold(threshold)
+                self.statusBar().showMessage(
+                    f"L2 Gate probability threshold saved as {threshold:.2f}; next window applies",
+                    3500,
+                )
+            except Exception as exc:
+                self.statusBar().showMessage(
+                    f"Gate threshold is active but could not be saved: {exc}", 8000
+                )
 
         def _set_l1_pre_denoise(self, enabled: bool):
             previous = runtime.l1_pre_denoise_enabled

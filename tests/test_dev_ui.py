@@ -937,12 +937,57 @@ def test_gate_probability_slider_emits_runtime_value(monkeypatch):
     control = GateProbabilityThresholdControl(0.60)
     emitted = []
     control.threshold_changed.connect(emitted.append)
+    finished = []
+    control.adjustment_finished.connect(finished.append)
     control.slider.setValue(73)
+    control.slider.sliderReleased.emit()
     assert emitted == [0.73]
+    assert finished == [0.73]
     assert control.value == 0.73
     assert control.value_label.text() == "0.73"
     control.close()
     app.processEvents()
+
+
+def test_gate_probability_mouse_drag_applies_live_and_persists_once_on_release(
+    monkeypatch, tmp_path
+):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    config_path = tmp_path / "config" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    settings = DevUiSettings(tmp_path)
+    settings.save_gate_probability_threshold(0.60)
+    writes = []
+    original = DevUiSettings.save_gate_probability_threshold
+
+    def counted_save(self, value):
+        writes.append(value)
+        return original(self, value)
+
+    monkeypatch.setattr(DevUiSettings, "save_gate_probability_threshold", counted_save)
+    app, window = build_window(config_path)
+    writes.clear()
+    try:
+        slider = window.gate_threshold.slider
+        slider.setSliderDown(True)
+        for value in (61, 62, 63, 64):
+            slider.setValue(value)
+            app.processEvents()
+        assert window._runtime.gate_probability_threshold == 0.64
+        assert writes == []
+
+        slider.setSliderDown(False)
+        app.processEvents()
+
+        assert writes == [0.64]
+        assert settings.load_gate_probability_threshold(0.0) == 0.64
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def test_gate_probability_threshold_restores_and_persists_from_test_ui(monkeypatch, tmp_path):
