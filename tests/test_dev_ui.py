@@ -974,7 +974,7 @@ def test_l5_panel_clears_old_epoch_cache_and_ignores_old_immediate_frame(monkeyp
         app.processEvents()
 
 
-def test_gate_probability_slider_emits_runtime_value(monkeypatch):
+def test_gate_probability_slider_stages_until_apply(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
@@ -983,21 +983,26 @@ def test_gate_probability_slider_emits_runtime_value(monkeypatch):
 
     app = QApplication.instance() or QApplication([])
     control = GateProbabilityThresholdControl(0.60)
-    emitted = []
-    control.threshold_changed.connect(emitted.append)
-    finished = []
-    control.adjustment_finished.connect(finished.append)
+    applied = []
+    control.apply_requested.connect(applied.append)
     control.slider.setValue(73)
-    control.slider.sliderReleased.emit()
-    assert emitted == [0.73]
-    assert finished == [0.73]
+    assert applied == []
     assert control.value == 0.73
     assert control.value_label.text() == "0.73"
+    assert control.label.text() == "Gate"
+    assert control.apply_button.isEnabled()
+    control.set_applied_value(0.60)
+    assert control.value == 0.73
+    assert control.apply_button.isEnabled()
+    control.apply_button.click()
+    assert applied == [0.73]
+    control.set_applied_value(0.73, reset_staged=True)
+    assert not control.apply_button.isEnabled()
     control.close()
     app.processEvents()
 
 
-def test_gate_probability_mouse_drag_applies_live_and_persists_once_on_release(
+def test_gate_probability_mouse_drag_applies_and_persists_only_on_button(
     monkeypatch, tmp_path
 ):
     pytest.importorskip("PySide6")
@@ -1025,13 +1030,19 @@ def test_gate_probability_mouse_drag_applies_live_and_persists_once_on_release(
         for value in (61, 62, 63, 64):
             slider.setValue(value)
             app.processEvents()
-        assert window._runtime.gate_probability_threshold == 0.64
+        assert window._runtime.gate_probability_threshold == 0.60
         assert writes == []
 
         slider.setSliderDown(False)
         app.processEvents()
+        assert window._runtime.gate_probability_threshold == 0.60
+        assert writes == []
+
+        window.gate_threshold.apply_button.click()
+        app.processEvents()
 
         assert writes == [0.64]
+        assert window._runtime.gate_probability_threshold == 0.64
         assert settings.load_gate_probability_threshold(0.0) == 0.64
     finally:
         window.close()
@@ -1053,6 +1064,10 @@ def test_gate_probability_threshold_restores_and_persists_from_test_ui(monkeypat
     try:
         assert window._runtime.gate_probability_threshold == 0.73
         window.gate_threshold.slider.setValue(68)
+        app.processEvents()
+        assert window._runtime.gate_probability_threshold == 0.73
+        assert DevUiSettings(tmp_path).load_gate_probability_threshold() == 0.73
+        window.gate_threshold.apply_button.click()
         app.processEvents()
         assert window._runtime.gate_probability_threshold == 0.68
         assert DevUiSettings(tmp_path).load_gate_probability_threshold() == 0.68

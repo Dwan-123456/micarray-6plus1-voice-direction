@@ -240,21 +240,74 @@ class KalmanNoiseScaleControl(QWidget):
         self.apply_button.setEnabled(self._dirty)
 
 
-class GateProbabilityThresholdControl(SrpThresholdControl):
-    """Independent runtime threshold for the Layer 2 probability Gate."""
+class GateProbabilityThresholdControl(QWidget):
+    """Stage a Gate threshold locally and apply it only on explicit request."""
 
-    adjustment_finished = Signal(float)
+    apply_requested = Signal(float)
 
     def __init__(self, value: float, parent: QWidget | None = None):
-        super().__init__(value, parent)
-        self.label.setText("L2 Gate probability")
-        self.slider.sliderReleased.connect(
-            lambda: self.adjustment_finished.emit(self.value)
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(4)
+        self.label = QLabel("Gate")
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 100)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(5)
+        self.slider.setTracking(True)
+        self.value_label = QLabel()
+        self.value_label.setMinimumWidth(44)
+        self.value_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
+        self.apply_button = QPushButton("应用")
+        self.apply_button.setFixedWidth(52)
+        self._applied = self._validate(value)
+        self._dirty = False
+        layout.addWidget(self.label)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.apply_button)
+        with QSignalBlocker(self.slider):
+            self.slider.setValue(round(self._applied * 100))
+        self.slider.valueChanged.connect(self._stage)
+        self.apply_button.clicked.connect(self._request_apply)
+        self._render()
 
-    def set_value(self, value: float, *, pending: bool = False) -> None:
-        super().set_value(value)
-        self.label.setText("L2 Gate probability" + (" · next window" if pending else ""))
+    @staticmethod
+    def _validate(value: float) -> float:
+        value = round(float(value), 2)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("Gate threshold必须位于[0,1]")
+        return value
+
+    @property
+    def value(self) -> float:
+        return self.slider.value() / 100.0
+
+    def set_applied_value(self, value: float, *, reset_staged: bool = False) -> None:
+        self._applied = self._validate(value)
+        if reset_staged or not self._dirty:
+            with QSignalBlocker(self.slider):
+                self.slider.setValue(round(self._applied * 100))
+            self._dirty = False
+        elif self.value == self._applied:
+            self._dirty = False
+        self._render()
+
+    def _stage(self, _slider_value: int) -> None:
+        self._dirty = self.value != self._applied
+        self._render()
+
+    def _request_apply(self) -> None:
+        if self._dirty:
+            self.apply_requested.emit(self.value)
+
+    def _render(self) -> None:
+        self.value_label.setText(f"{self.value:.2f}")
+        self.apply_button.setEnabled(self._dirty)
+        self.setToolTip(f"当前已应用: {self._applied:.2f}")
 
 
 class ProbabilityGateReadout(QLabel):

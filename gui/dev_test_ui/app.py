@@ -704,44 +704,29 @@ def build_window(
             self.music_order_limit.order_changed.connect(self._set_music_order_limit)
             self.music_dpd_rank1.enabled_changed.connect(self._set_music_dpd_rank1)
             self.music_noise_whitening.enabled_changed.connect(self._set_music_noise_whitening)
-            self.gate_threshold.threshold_changed.connect(self._set_gate_probability_threshold)
-            self.gate_threshold.adjustment_finished.connect(
-                self._persist_gate_probability_threshold
+            self.gate_threshold.apply_requested.connect(
+                self._apply_gate_probability_threshold
             )
             self.srp_id_tracking.enabled_changed.connect(self._set_direction_id_tracking)
             return box
 
-        def _set_gate_probability_threshold(self, threshold: float):
+        def _apply_gate_probability_threshold(self, threshold: float):
             previous = runtime.gate_probability_threshold
+            runtime_changed = False
             try:
                 threshold = runtime.set_gate_probability_threshold(threshold)
-                self.gate_threshold.set_value(threshold, pending=True)
-                # Mouse dragging may produce dozens of values per second.
-                # Apply those values to Runtime immediately, but defer the
-                # atomic settings write/fsync until the thumb is released so
-                # disk I/O cannot freeze or pull back the slider.
-                if not self.gate_threshold.slider.isSliderDown():
-                    self._persist_gate_probability_threshold(threshold)
-                    return
-                self.statusBar().showMessage(
-                    f"L2 Gate probability threshold {threshold:.2f}; release to save",
-                )
-            except Exception as exc:
-                runtime.set_gate_probability_threshold(previous)
-                with QSignalBlocker(self.gate_threshold):
-                    self.gate_threshold.set_value(previous)
-                self.statusBar().showMessage(f"Failed to set L2 Gate threshold: {exc}", 8000)
-
-        def _persist_gate_probability_threshold(self, threshold: float):
-            try:
+                runtime_changed = True
                 threshold = ui_settings.save_gate_probability_threshold(threshold)
+                self.gate_threshold.set_applied_value(threshold, reset_staged=True)
                 self.statusBar().showMessage(
-                    f"L2 Gate probability threshold saved as {threshold:.2f}; next window applies",
-                    3500,
+                    f"Gate threshold已应用并保存: {threshold:.2f}", 3500
                 )
             except Exception as exc:
+                if runtime_changed:
+                    runtime.set_gate_probability_threshold(previous)
+                self.gate_threshold.set_applied_value(previous, reset_staged=True)
                 self.statusBar().showMessage(
-                    f"Gate threshold is active but could not be saved: {exc}", 8000
+                    f"Gate threshold应用失败: {exc}", 8000
                 )
 
         def _set_l1_pre_denoise(self, enabled: bool):
@@ -2015,15 +2000,7 @@ def build_window(
                 self.gate_readout.set_unavailable()
             else:
                 self.gate_readout.set_decision(frame.gate_decision)
-            with QSignalBlocker(self.gate_threshold):
-                self.gate_threshold.set_value(
-                    runtime.gate_probability_threshold,
-                    pending=(
-                        getattr(frame, "gate_config_revision", None) is not None
-                        and getattr(frame, "gate_config_revision", None)
-                        != runtime.gate_config_revision
-                    ),
-                )
+            self.gate_threshold.set_applied_value(runtime.gate_probability_threshold)
             applied_revision = getattr(frame, "scan_config_revision", None)
             revision_pending = (
                 applied_revision is not None
