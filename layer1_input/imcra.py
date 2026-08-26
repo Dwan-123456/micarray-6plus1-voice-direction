@@ -8,6 +8,7 @@ from scipy.special import exp1
 
 from common.config import Layer1ImcraConfig, ProjectConfig
 from common.data_types import CalibrationMetadata, ImcraHopSnapshot, IngestedAudioBlock
+from layer1_input.speech_spectrum import equal_sex_ltass_weights
 
 
 class Layer1Imcra:
@@ -29,6 +30,7 @@ class Layer1Imcra:
         self._gate_band = (self._all_frequencies_hz >= config.frequency_min_hz) & (
             self._all_frequencies_hz <= config.frequency_max_hz
         )
+        self._gate_weights = equal_sex_ltass_weights(self._all_frequencies_hz[self._gate_band])
         self.frequencies_hz = self._all_frequencies_hz[self._output_band]
         self._warmup_hops = ceil(config.warmup_seconds * sample_rate / self.hop_samples)
         self._identity: tuple[str, int] | None = None
@@ -280,7 +282,11 @@ class Layer1Imcra:
         band_signal = np.mean(power[:, self._output_band], axis=1)
         noise_level_db = 10.0 * np.log10(np.maximum(band_noise, cfg.eps))
         signal_level_db = 10.0 * np.log10(np.maximum(band_signal, cfg.eps))
-        probability_per_mic = np.clip(np.mean(self._spp[:, self._gate_band], axis=1), 0.0, 1.0)
+        probability_per_mic = np.clip(
+            np.sum(self._spp[:, self._gate_band] * self._gate_weights[None, :], axis=1),
+            0.0,
+            1.0,
+        )
         features = np.column_stack((noise_level_db, signal_level_db, signal_level_db - noise_level_db, probability_per_mic))
         ready = self._frame_count >= self._warmup_hops
         array_probability = float(np.median(probability_per_mic)) if ready else None

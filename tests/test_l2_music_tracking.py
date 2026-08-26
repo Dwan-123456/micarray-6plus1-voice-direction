@@ -71,7 +71,7 @@ def _imcra_hops(
     return tuple(
         ImcraHopSnapshot(
             "music", 0, start + hop * 960, start + (hop + 1) * 960, (index * 8 + hop,),
-            "cohen_imcra_2003_l1_v6", "ready", frequencies,
+            "cohen_imcra_2003_l1_v7", "ready", frequencies,
             noise, ones * 2.0, ones * 1.5, ones * 0.5, ones * 0.4,
             spp_values, 1.0 - spp_values, ones * (prior_snr + 1.0), ones * prior_snr,
             np.ones((7, 4), dtype=np.float32),

@@ -93,7 +93,7 @@ class TimingConfig(StrictModel):
 
 class Layer1ImcraConfig(StrictModel):
     enabled: bool
-    algorithm_version: Literal["cohen_imcra_2003_l1_v6"]
+    algorithm_version: Literal["cohen_imcra_2003_l1_v7"]
     hop_samples: Literal[960]
     n_fft: Literal[2048]
     window: Literal["hann_periodic"]
