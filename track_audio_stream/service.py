@@ -61,6 +61,7 @@ class _L2TrackTimeline:
     active: bool = True
     inactive_since_sample: int | None = None
     observed_through_sample: int = 0
+    birth_theta_deg: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +467,7 @@ class TrackAudioStreamHub:
                         processing_mode, start_sample, end_sample, theta_deg,
                         track_state in {"confirmed", "coasting"},
                         observed_through_sample=decision_sample,
+                        birth_theta_deg=theta_deg,
                     )
                     self._l2_timelines[key] = timeline
                     self._archive_origin(key, start_sample)
@@ -484,6 +486,20 @@ class TrackAudioStreamHub:
                     l2_direction_count,
                 )
                 self._active_timeline_keys.add(key)
+
+    def track_birth_theta_deg(
+        self, session_id: str, stream_epoch: int, track_id: int
+    ) -> float | None:
+        """Return the first authoritative L2 angle recorded for one exact ID."""
+
+        if not session_id or min(stream_epoch, track_id) < 0 or track_id == 0:
+            raise ValueError("invalid L2 track identity")
+        with self._lock:
+            timeline = self._l2_timelines.get((session_id, stream_epoch, track_id))
+            if timeline is None:
+                return None
+            theta = timeline.birth_theta_deg
+            return timeline.theta_deg if theta is None else theta
 
     @property
     def gain_compensation_enabled(self) -> bool:

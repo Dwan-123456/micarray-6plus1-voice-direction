@@ -166,14 +166,14 @@ class Layer2ProbabilityGateConfig(StrictModel):
 
 
 class Layer2MusicPreparationConfig(StrictModel):
-    context_ms: Literal[160, 240, 320]
-    comparison_context_ms: tuple[Literal[160, 240, 320], ...]
+    context_ms: Literal[160, 200, 240, 320]
+    comparison_context_ms: tuple[Literal[160, 200, 240, 320], ...]
     max_history_ms: Literal[320]
 
     @model_validator(mode="after")
     def validate_history_candidates(self) -> "Layer2MusicPreparationConfig":
-        if self.comparison_context_ms != (160, 240, 320):
-            raise ValueError("MUSIC首轮历史比较必须固定包含160/240/320 ms")
+        if self.comparison_context_ms != (160, 200, 240, 320):
+            raise ValueError("MUSIC历史比较必须固定包含160/200/240/320 ms")
         if self.context_ms not in self.comparison_context_ms:
             raise ValueError("music.context_ms必须来自comparison_context_ms")
         return self
@@ -229,7 +229,7 @@ class Layer2Config(StrictModel):
     win_length: Literal[960]
     hop_length: Literal[480]
     window: Literal["hann_periodic"]
-    context_ms: Literal[160, 240, 320]
+    context_ms: Literal[160, 200, 240, 320]
     covariance_shrinkage: float = Field(ge=0, lt=1)
     diagonal_loading: float = Field(gt=0)
     eigenvalue_floor: float = Field(gt=0)

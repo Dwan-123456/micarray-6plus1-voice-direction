@@ -19,8 +19,8 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer2.max_candidates == 3
     assert config.layer2.probability_gate.backend == "mean_2x20ms_v1"
     assert config.layer2.probability_gate.threshold == 0.60
-    assert config.layer2.music.context_ms == 240
-    assert config.layer2.music.comparison_context_ms == (160, 240, 320)
+    assert config.layer2.music.context_ms == 200
+    assert config.layer2.music.comparison_context_ms == (160, 200, 240, 320)
     assert config.layer2.music.max_history_ms == 320
     assert config.layer2.scanner_backend == "frequency_normalized_music"
     assert config.layer2.direction_id_tracking.backend == "circular_imm_jpda_v1"
@@ -166,16 +166,16 @@ def test_unknown_config_field_is_rejected(tmp_path):
         load_config(candidate, environ={})
 
 
-@pytest.mark.parametrize("context_ms", (160, 240, 320))
+@pytest.mark.parametrize("context_ms", (160, 200, 240, 320))
 def test_music_history_comparison_context_is_configurable(tmp_path, context_ms):
-    text = CONFIG.read_text(encoding="utf-8").replace("context_ms: 240", f"context_ms: {context_ms}", 1)
+    text = CONFIG.read_text(encoding="utf-8").replace("context_ms: 200", f"context_ms: {context_ms}", 1)
     candidate = tmp_path / f"music-{context_ms}.yaml"
     candidate.write_text(text, encoding="utf-8")
     assert load_config(candidate, environ={}).layer2.music.context_ms == context_ms
 
 
 def test_music_history_rejects_values_outside_comparison_set(tmp_path):
-    text = CONFIG.read_text(encoding="utf-8").replace("context_ms: 240", "context_ms: 200", 1)
+    text = CONFIG.read_text(encoding="utf-8").replace("context_ms: 200", "context_ms: 220", 1)
     candidate = tmp_path / "music-invalid.yaml"
     candidate.write_text(text, encoding="utf-8")
     with pytest.raises(ValidationError):

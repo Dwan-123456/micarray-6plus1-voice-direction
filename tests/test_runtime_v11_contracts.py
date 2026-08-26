@@ -47,7 +47,7 @@ def test_processing_config_has_manual_music_order_and_no_removed_switches() -> N
     config = load_config("config/config.yaml", environ={})
     values = config.layer2.model_dump()
     assert config.layer2.scanner_backend == "frequency_normalized_music"
-    assert values["music"]["context_ms"] in {160, 240, 320}
+    assert values["music"]["context_ms"] in {160, 200, 240, 320}
     assert (values["n_fft"], values["win_length"], values["hop_length"]) == (1024, 960, 480)
     assert values["effective_order_limit"] in {1, 2, 3}
     assert "mdl_max_age_ms" not in values

@@ -72,11 +72,11 @@ def test_window_exposes_only_calibrated_physical_history_for_music():
     assert history.shape == (7_680, 7)
     assert window.physical_history_start_sample(160) == window.decision_sample - 7_680
     assert not history.flags.writeable
-    for unavailable_ms in (240, 320):
+    for unavailable_ms in (200, 240, 320):
         with pytest.raises(ValueError, match="exceeds"):
             window.physical_history(unavailable_ms)
-    with pytest.raises(ValueError, match="160/240/320"):
-        window.physical_history(200)
+    with pytest.raises(ValueError, match="160/200/240/320"):
+        window.physical_history(220)
 
 
 def test_rolling_window_contract_uses_session_epoch_and_absolute_sample():

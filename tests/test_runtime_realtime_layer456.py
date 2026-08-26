@@ -378,6 +378,7 @@ def test_full_backfill_queue_never_blocks_l2_and_releases_the_id(tmp_path):
         track_state="confirmed",
         track_id=7,
         first_seen_sample=2_880,
+        theta_deg=30.0,
     )
     runtime._realtime_chunk_signal.clear()
 
@@ -414,6 +415,7 @@ def test_confirmed_backfill_failure_degrades_and_releases_realtime_gate(
         windows=(),
         processing_mode=L3_MODE_OPTIMIZED,
         l2_direction_count=1,
+        backfill_theta_deg=30.0,
     )
 
     class Hub:

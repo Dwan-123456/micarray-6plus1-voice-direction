@@ -61,8 +61,8 @@ class DirectionScanConfig:
             raise ValueError("Layer 2 MUSIC band is fixed at 2000..4000 Hz")
         if (self.n_fft, self.win_length, self.hop_length, self.window) != (1024, 960, 480, "hann_periodic"):
             raise ValueError("MUSIC STFT must be 1024/960/480 periodic Hann")
-        if self.context_ms not in {160, 240, 320}:
-            raise ValueError("MUSIC context_ms must be 160, 240, or 320")
+        if self.context_ms not in {160, 200, 240, 320}:
+            raise ValueError("MUSIC context_ms must be 160, 200, 240, or 320")
         finite = (
             self.direction_threshold, self.peak_prominence, self.min_peak_distance_deg,
             self.covariance_shrinkage, self.diagonal_loading, self.eigenvalue_floor,

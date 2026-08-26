@@ -349,16 +349,16 @@ class DecisionWindow:
     def physical_history(self, context_ms: int) -> NDArray[np.float32]:
         """Return one configured MUSIC comparison history without HardwareMix."""
 
-        if context_ms not in {160, 240, 320}:
-            raise ValueError("MUSIC context_ms must be one of 160/240/320")
+        if context_ms not in {160, 200, 240, 320}:
+            raise ValueError("MUSIC context_ms must be one of 160/200/240/320")
         sample_count = context_ms * 48
         if sample_count > self.available_history_samples:
             raise ValueError("requested MUSIC history exceeds the DecisionWindow context")
         return self.physical_samples[-sample_count:]
 
     def physical_history_start_sample(self, context_ms: int) -> int:
-        if context_ms not in {160, 240, 320}:
-            raise ValueError("MUSIC context_ms must be one of 160/240/320")
+        if context_ms not in {160, 200, 240, 320}:
+            raise ValueError("MUSIC context_ms must be one of 160/200/240/320")
         sample_count = context_ms * 48
         if sample_count > self.available_history_samples:
             raise ValueError("requested MUSIC history exceeds the DecisionWindow context")

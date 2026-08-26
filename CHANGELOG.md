@@ -21,6 +21,18 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — L2 MUSIC 200 ms协方差与连续Gate预热同步
+
+- **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；修改L2 MUSIC协方差时长与Probability Gate候选预热门禁，并修正Runtime/TrackAudioStreamHub首次confirmed历史BF回填的时间锚点和角度来源。L1、L3实时BF算法、离线L4、L5、L6、录音与数据schema、模型和资产均无变化。
+- **协方差时长**：MUSIC滚动空间协方差由240 ms/23帧调整为200 ms/19帧，STFT继续使用48 kHz、20 ms periodic Hann窗和10 ms hop；历史比较集合扩展为160/200/240/320 ms，当前正式值为200 ms。
+- **Gate与候选门禁**：协方差仍在每个连续20 ms窗口增量更新。Gate连续OPEN满与协方差相同的200 ms、即10个窗口后，MUSIC候选角才允许进入ID追踪或原始MUSIC兼容输出；前9窗伪谱仅供诊断。Gate一旦CLOSED、WARMING或UNAVAILABLE便立即停止MUSIC扫描并清零连续计时，再次开启必须重新累计完整200 ms。confirmed ID已有coasting生命周期不变，预测角不视为MUSIC观测。
+- **正式ID连续BF**：确认现有confirmed ID在Gate关闭后仍按保持/IMM预测角进入L3，最长维持最后真实观测后的2秒绝对sample TTL；Gate关闭只停止新MUSIC观测，不立即截断正式ID BF。
+- **出生前回填**：新ID首次进入confirmed时，历史BF回填改为以`first_seen_sample`为时间锚，从出生点向前补完整1秒，并固定使用TrackAudioStreamHub记录的首次出生角；不再按较晚的确认窗口或确认时平滑角回填。任务继续异步有界执行，已有实时BF槽位优先且不会被覆盖。
+- **验证**：配置、Probability Gate、Rolling MUSIC、DPD/Whitening及ID邻接专项回归`75 passed`；Runtime、首次confirmed回填、TrackAudioStreamHub及L2追踪跨层回归`131 passed`；全量回归`723 passed, 1 warning`。覆盖200 ms等于19个STFT快照、连续10窗才放行候选、Gate关闭立即停止扫描并重置、重开后重新预热、出生角回填和实时槽位优先。唯一warning为既有PyTorch `torch.jit.load`弃用提示；尚未执行真实麦克风实机验收。
+- **数据边界**：未提交运行缓存、本机Test UI持久化设置、录音、日志或秘密；无Git LFS对象新增或修改。
+
+---
+
 ## 2026-08-26 — 第三轮精简重复自动化测试
 
 - **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；仅精简基准工具、配置、Runtime和长时磁盘Spool的重复测试样本，生产代码与配置无变化。

@@ -20,7 +20,7 @@ DecisionWindow + 两个对齐的20 ms概率
          NormMUSIC逐频归一化后按4 cm阵列固定频率权重跨频融合
          UI阶数上限1/2/3轮贪心选峰 + 50°圆周NMS
     → 默认开启的全局方向轨迹分配
-         最近240 ms至少4个Gate有效帧（80 ms）才允许创建新ID
+         Gate连续OPEN满200 ms（10个20 ms窗口）才允许MUSIC角进入ID追踪
          预热期间已有ID仍可匹配；confirmed ID可正常coasting
          birth/miss dummy行列 + linear_sum_assignment
          tentative / confirmed / coasting / deleted
@@ -31,7 +31,7 @@ DecisionWindow + 两个对齐的20 ms概率
     → TrackedDirection[0..3] + active_tracks
 ```
 
-`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.3开发线运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；tentative轨迹不进入L3。tentative依然需在200 ms内累计5次观测且存在概率达标才能确认，并可因低存在概率提前删除。confirmed漏检后固定保留2秒绝对sample TTL，存在概率按真实时间约每20 ms保留0.97地平滑衰减，不再因低于0.05而在TTL前提前死亡。在TTL内重新匹配会恢复原ID和`confirmed`状态；连续2秒无匹配才删除。关联角度使用固定50°硬上限和卡方门限20，不按漏检时长额外扩大。补救关联与新生保护同时比较轨迹的IMM预测角和最后真实观测角，候选距任一个不超过50°即恢复原ID并禁止重复birth。两轨后来进入50°以内时，只有近期观测至少两次交替且没有同窗双峰才归并；保留更正式、更早、存在概率更高的ID并吸收较新状态。超过TTL后再次观测会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
+`track_id`只表示空间方向轨迹，不是人物或声纹身份。当前项目的L5只在停机后的离线L4输出上运行，ApplicationRuntime不会调用L2的在线语义反馈接口，因此普通1.3.3开发线运行完全按Gate概率门限决定是否执行MUSIC。达到L2 `confirmed`的实测或coasting轨迹可在数量与50°角距限制内作为公共方向进入L3，不要求L5人声证据；Gate关闭时不再产生MUSIC观测，但正式ID仍可在最后真实观测后的2秒TTL内按保持/预测角继续进入L3；tentative轨迹不进入L3。tentative依然需在200 ms内累计5次观测且存在概率达标才能确认，并可因低存在概率提前删除。confirmed漏检后固定保留2秒绝对sample TTL，存在概率按真实时间约每20 ms保留0.97地平滑衰减，不再因低于0.05而在TTL前提前死亡。在TTL内重新匹配会恢复原ID和`confirmed`状态；连续2秒无匹配才删除。关联角度使用固定50°硬上限和卡方门限20，不按漏检时长额外扩大。补救关联与新生保护同时比较轨迹的IMM预测角和最后真实观测角，候选距任一个不超过50°即恢复原ID并禁止重复birth。两轨后来进入50°以内时，只有近期观测至少两次交替且没有同窗双峰才归并；保留更正式、更早、存在概率更高的ID并吸收较新状态。超过TTL后再次观测会获得新ID。epoch会清除活动轨迹，但同一session的ID计数继续递增；新session建立新的ID命名空间。
 
 为兼容旧在线分类实验，`Layer2Pipeline.submit_voice_feedback()`与`GlobalDirectionTracker.apply_voice_feedback()`仍保留精确`track_id`接口和专项测试：外部若显式提供至少2次正向结果，可使符合条件的confirmed轨在低Gate概率下强制放行；长期无正向结果还可触发噪声干扰标记。该接口当前没有Runtime调用方，不属于1.3.3普通主链，也不得用离线L5结果回写已经结束的实时轨迹。
 
@@ -39,9 +39,9 @@ DecisionWindow + 两个对齐的20 ms概率
 
 ## 滚动计算
 
-比较历史固定包含160/240/320 ms，当前运行配置选择240 ms；`DecisionWindow`仍提供最多320 ms原始历史。无论Probability Gate是否开启，连续窗口都只计算新增的两个50%重叠STFT帧并移出超出历史的两个旧帧，持续维护7路物理麦的MUSIC空间协方差；这不是IMCRA噪声协方差。Gate关闭时到此停止，不执行Hermitian特征分解、伪谱融合或峰值搜索。Gate开启时立即显示使用已预热协方差得到的MUSIC谱，同时统计最近12个20 ms窗口中的Gate有效帧数；累计至少4帧（80 ms）才允许产生新方向ID。该限制不阻止已有ID与观测关联，也不改变confirmed ID的coasting。sample跳跃、epoch或session变化时从当前窗口重建空间协方差并清空有效帧计数。导向张量按阵列几何、频率轴和配置revision缓存，Gate开启时伪谱与轨迹每20 ms更新。
+比较历史固定包含160/200/240/320 ms，当前运行配置选择200 ms；`DecisionWindow`仍提供最多320 ms原始历史。无论Probability Gate是否开启，连续窗口都只计算新增的两个50%重叠STFT帧并移出超出历史的两个旧帧，持续维护7路物理麦的MUSIC空间协方差；这不是IMCRA噪声协方差。Gate关闭或无效时立即停止Hermitian特征分解、伪谱融合和峰值搜索，并清零连续OPEN计数。Gate开启后的前9个20 ms窗口可形成仅供诊断的MUSIC谱，但候选角不会进入ID追踪或原始MUSIC兼容输出；连续OPEN达到第10窗、即完整200 ms后才放行候选角。中途任何一次关闭、warming、unavailable、sample跳跃、epoch或session变化都会重新计时；confirmed ID原有coasting生命周期保持独立。导向张量按阵列几何、频率轴和配置revision缓存，预热完成后伪谱与轨迹每20 ms更新。
 
-`MusicDiagnostics`记录Test UI手动阶数、实际输出数、有效频点、协方差质量、增量状态、最近240 ms有效帧数、新ID门限和协方差更新/eigh/谱融合/总耗时。Test UI可把MUSIC阶数设为1、2或3，下一窗口生效；普通路径同时将该值作为信号子空间阶数和最多搜峰数。后台不再计算或缓存自动模型阶数；兼容DTO中的旧年龄字段恒为0。目标机门禁为稳态p95不高于15 ms，单窗硬门限20 ms。
+`MusicDiagnostics`记录Test UI手动阶数、实际输出数、有效频点、协方差质量、增量状态、连续Gate OPEN窗口数、同步的10窗/200 ms候选放行门限和协方差更新/eigh/谱融合/总耗时。Test UI可把MUSIC阶数设为1、2或3，下一窗口生效；普通路径同时将该值作为信号子空间阶数和最多搜峰数。后台不再计算或缓存自动模型阶数；兼容DTO中的旧年龄字段恒为0。目标机门禁为稳态p95不高于15 ms，单窗硬门限20 ms。
 
 跨频融合固定保留2～4 kHz：2.0～2.3/2.3～2.5/2.5～2.7/2.7～3.0/3.0～3.6 kHz权重依次为`0.35/0.55/0.75/0.90/1.00`；3.6～3.8 kHz由`1.00`线性降至`0.75`，3.8～4.0 kHz由`0.75`线性降至`0.45`。处理顺序为IMCRA空间噪声协方差白化、逐频MUSIC、逐频独立归一化、固定权重融合、峰值搜索；没有新增SNR、SPP、特征值间隙或时间稳定性动态权重。可选DPD保留原有门禁，只把同一固定几何权重乘入其既有频点票权。
 

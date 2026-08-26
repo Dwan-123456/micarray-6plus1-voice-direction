@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -246,9 +247,32 @@ def test_first_confirmed_id_queues_only_pre_birth_one_second_backfill(tmp_path):
         7, 1, 32.0, 30.0, 1.0, 0.9, "confirmed", True, False,
         9_600, 10_560, 0, True,
     )
+    birth = replace(
+        track,
+        window_id=2,
+        decision_sample=9_600,
+        doa_start_sample=7_680,
+        doa_end_sample=9_600,
+        measured_theta_deg=20.0,
+        theta_deg=20.0,
+        track_state="tentative",
+        is_new_track=True,
+        first_seen_sample=9_600,
+        last_observed_sample=9_600,
+    )
     item = SimpleNamespace(key=SimpleNamespace(
         session_id="backfill-session", stream_epoch=0, decision_sample=10_560,
     ))
+    runtime.track_audio_stream.observe_l2(
+        identity=("backfill-session", 0, 2, 9_600),
+        active_tracks=(birth,), processing_mode=L3_MODE_OPTIMIZED,
+        l2_direction_count=1,
+    )
+    runtime.track_audio_stream.observe_l2(
+        identity=("backfill-session", 0, 3, 10_560),
+        active_tracks=(track,), processing_mode=L3_MODE_OPTIMIZED,
+        l2_direction_count=1,
+    )
 
     runtime._schedule_confirmed_backfill(
         item, (track,), processing_mode=L3_MODE_OPTIMIZED,
@@ -262,15 +286,11 @@ def test_first_confirmed_id_queues_only_pre_birth_one_second_backfill(tmp_path):
 
     assert tuple(window.decision_sample for window in queued.windows) == (7_680, 8_640)
     assert queued.track is track
+    assert queued.backfill_theta_deg == 20.0
     assert runtime._confirmed_backfill_work.empty()
     layer3 = _CapturingLayer3()
     runtime._layer3_backfill = layer3
     runtime.downstream_window_spec = SimpleNamespace(samples=7_680, decision_hops=8)
-    runtime.track_audio_stream.observe_l2(
-        identity=("backfill-session", 0, 3, 10_560),
-        active_tracks=(track,), processing_mode=L3_MODE_OPTIMIZED,
-        l2_direction_count=1,
-    )
     runtime._process_confirmed_backfill(queued)
     sealed = runtime.track_audio_stream.seal()[0]
 
@@ -278,7 +298,7 @@ def test_first_confirmed_id_queues_only_pre_birth_one_second_backfill(tmp_path):
         candidate.theta_deg
         for candidates, _mode in layer3.calls
         for candidate in candidates
-    ) == (30.0, 30.0)
+    ) == (20.0, 20.0)
     assert sealed.start_sample == 5_760
     runtime.close()
 
@@ -312,7 +332,7 @@ def test_runtime_processing_snapshot_freezes_music_and_imm_jpda_lifecycle(tmp_pa
     values = snapshot.values
     assert "iterative_peak_search_enabled" not in values
     assert values["direction_id_tracking_enabled"] is True
-    assert values["music_history_ms"] in {160, 240, 320}
+    assert values["music_history_ms"] in {160, 200, 240, 320}
     assert values["music_stft"] == {
         "n_fft": 1024, "win_length": 960, "hop_length": 480, "window": "hann_periodic",
     }

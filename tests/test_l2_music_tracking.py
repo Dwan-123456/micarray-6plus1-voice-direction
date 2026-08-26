@@ -129,7 +129,7 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     scan = DirectionScanConfig.from_project(config)
     assert config.layer2.scanner_backend == "frequency_normalized_music"
     assert (scan.n_fft, scan.win_length, scan.hop_length) == (1024, 960, 480)
-    assert scan.context_ms in {160, 240, 320}
+    assert scan.context_ms in {160, 200, 240, 320}
     assert (scan.frequency_min_hz, scan.frequency_max_hz) == (2_000.0, 4_000.0)
     assert scan.max_candidates == 3 and scan.min_peak_distance_deg == 50.0
     assert not scan.dpd_rank1_enabled
@@ -166,7 +166,7 @@ def test_music_cross_frequency_fusion_uses_fixed_geometry_weights() -> None:
     np.testing.assert_allclose(fused[[20, 140]], (0.35 / 1.35, 1.0 / 1.35))
 
 
-@pytest.mark.parametrize("context_ms, expected_frames", ((160, 15), (240, 23), (320, 31)))
+@pytest.mark.parametrize("context_ms, expected_frames", ((160, 15), (200, 19), (240, 23), (320, 31)))
 def test_music_history_candidates_preserve_direction(context_ms: int, expected_frames: int) -> None:
     scan = replace(
         DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
@@ -724,10 +724,10 @@ def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observati
     assert result.spatial_response is None and result.directions == ()
 
 
-def test_pipeline_keeps_music_spatial_covariance_warm_while_gate_is_closed() -> None:
+def test_pipeline_requires_one_continuously_open_covariance_context_before_music_angles() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
-    audio = _audio((30.0,), seed=37, samples=7_680 + 7 * 960)
+    audio = _audio((30.0,), seed=37, samples=7_680 + 15 * 960)
     scan_config = DirectionScanConfig.from_project(config)
 
     def probabilities(window: DecisionWindow, value: float) -> tuple[SourceProbability20ms, ...]:
@@ -755,33 +755,55 @@ def test_pipeline_keeps_music_spatial_covariance_warm_while_gate_is_closed() -> 
     )
     assert first_open.spatial_response is not None
     assert first_open.search_diagnostics is not None
-    assert first_open.search_diagnostics.model_order.snapshot_count == 23
+    assert first_open.search_diagnostics.model_order.snapshot_count == 19
     assert first_open.search_diagnostics.active_frame_count == 1
-    assert first_open.search_diagnostics.birth_required_active_frames == 4
+    assert first_open.search_diagnostics.birth_required_active_frames == 10
     assert not first_open.search_diagnostics.births_allowed
+    assert first_open.candidates == ()
     assert first_open.music_state is not None
     assert first_open.music_state.state == "advanced"
     assert first_open.music_state.added_frames == 2
     assert first_open.active_tracks == ()
 
     result = first_open
-    for index in range(5, 8):
+    for index in range(5, 14):
         window = _window(audio, index)
         result = pipeline.process(
             window, probabilities(window, 1.0), physical_6plus1_geometry(), scan_config,
             gate_threshold=0.6, gate_config_revision=0,
         )
     assert result.search_diagnostics is not None
-    assert result.search_diagnostics.active_frame_count == 4
+    assert result.search_diagnostics.active_frame_count == 10
     assert result.search_diagnostics.births_allowed
     assert result.active_tracks
     assert result.active_tracks[0].track_state == "tentative"
+
+    closed_window = _window(audio, 14)
+    closed = pipeline.process(
+        closed_window, probabilities(closed_window, 0.0), physical_6plus1_geometry(), scan_config,
+        gate_threshold=0.6, gate_config_revision=0,
+    )
+    assert closed.gate_decision.state is ProbabilityGateState.CLOSED
+    assert closed.spatial_response is None
+    assert closed.search_diagnostics is None
+    assert all(not item.is_observed for item in closed.directions)
+
+    reopened_window = _window(audio, 15)
+    reopened = pipeline.process(
+        reopened_window, probabilities(reopened_window, 1.0),
+        physical_6plus1_geometry(), scan_config,
+        gate_threshold=0.6, gate_config_revision=0,
+    )
+    assert reopened.search_diagnostics is not None
+    assert reopened.search_diagnostics.active_frame_count == 1
+    assert reopened.search_diagnostics.birth_required_active_frames == 10
+    assert all(not item.is_observed for item in reopened.directions)
 
 
 def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_resets_ids() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
-    audio = _audio((30.0,), seed=31, samples=7_680 + 3 * 960)
+    audio = _audio((30.0,), seed=31, samples=7_680 + 10 * 960)
 
     def probabilities(window: DecisionWindow) -> tuple[SourceProbability20ms, ...]:
         return tuple(SourceProbability20ms(
@@ -789,12 +811,15 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
             SourceProbabilityState.READY, "ready",
         ) for start in (window.doa_start_sample, window.doa_start_sample + 960))
 
-    raw_window = _window(audio, 0)
-    raw = pipeline.process(
-        raw_window, probabilities(raw_window), physical_6plus1_geometry(),
-        DirectionScanConfig.from_project(config), gate_threshold=0.6,
-        gate_config_revision=0, direction_id_tracking_enabled=False,
-    )
+    raw = None
+    for index in range(10):
+        raw_window = _window(audio, index)
+        raw = pipeline.process(
+            raw_window, probabilities(raw_window), physical_6plus1_geometry(),
+            DirectionScanConfig.from_project(config), gate_threshold=0.6,
+            gate_config_revision=0, direction_id_tracking_enabled=False,
+        )
+    assert raw is not None
     assert raw.direction_id_tracking_enabled is False
     assert raw.spatial_response is not None
     assert raw.candidates
@@ -802,14 +827,12 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
     assert raw.candidate_track_ids == (None,) * len(raw.candidates)
     assert raw.candidate_track_is_formal == (False,) * len(raw.candidates)
 
-    tracked = raw
-    for index in range(1, 4):
-        tracked_window = _window(audio, index)
-        tracked = pipeline.process(
-            tracked_window, probabilities(tracked_window), physical_6plus1_geometry(),
-            DirectionScanConfig.from_project(config), gate_threshold=0.6,
-            gate_config_revision=0, direction_id_tracking_enabled=True,
-        )
+    tracked_window = _window(audio, 10)
+    tracked = pipeline.process(
+        tracked_window, probabilities(tracked_window), physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config), gate_threshold=0.6,
+        gate_config_revision=0, direction_id_tracking_enabled=True,
+    )
     assert tracked.direction_id_tracking_enabled is True
     assert tracked.active_tracks
     assert tracked.active_tracks[0].track_id == 1
@@ -819,7 +842,7 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
 def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
-    audio = _audio((30.0,), seed=29, samples=7_680 + 10 * 960)
+    audio = _audio((30.0,), seed=29, samples=7_680 + 15 * 960)
 
     def probabilities(window: DecisionWindow, value: float) -> tuple[SourceProbability20ms, ...]:
         return tuple(SourceProbability20ms(
@@ -828,7 +851,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
         ) for start in (window.doa_start_sample, window.doa_start_sample + 960))
 
     first = None
-    for index in range(4):
+    for index in range(10):
         first_window = _window(audio, index)
         first = pipeline.process(
             first_window, probabilities(first_window, 1.0), physical_6plus1_geometry(),
@@ -841,7 +864,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
     assert first.directions == first.active_tracks
 
     confirmed = first
-    for index in range(4, 9):
+    for index in range(10, 14):
         confirming_window = _window(audio, index)
         confirmed = pipeline.process(
             confirming_window, probabilities(confirming_window, 1.0),
@@ -853,7 +876,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
 
     # Tracking confirmation without L5 voice evidence cannot sustain MUSIC
     # scanning, but the still-live formal ID continues to L3 as coasting BF.
-    third_window = _window(audio, 9)
+    third_window = _window(audio, 14)
     closed = pipeline.process(
         third_window, probabilities(third_window, 0.0), physical_6plus1_geometry(),
         DirectionScanConfig.from_project(config), gate_threshold=0.6,
@@ -882,7 +905,7 @@ def test_l4_feedback_is_drained_but_cannot_force_gate_or_extend_ttl() -> None:
         0.95,
         True,
     )
-    forced_window = _window(audio, 10)
+    forced_window = _window(audio, 15)
     forced = pipeline.process(
         forced_window, probabilities(forced_window, 0.0), physical_6plus1_geometry(),
         DirectionScanConfig.from_project(config), gate_threshold=0.6,

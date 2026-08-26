@@ -18,10 +18,6 @@ from .music import MusicDiagnostics, MusicStateDiagnostic, RollingNormMusicScann
 from .probability_gate import ProbabilityGate, ProbabilityGateDecision, ProbabilityGateState, SourceProbability20ms
 
 
-_MUSIC_BIRTH_WARMUP_HOPS = 4
-_MUSIC_ACTIVITY_HISTORY_HOPS = 12
-
-
 class Layer2ExecutionState(str, Enum):
     BLOCKED = "blocked"
     PROCESSED = "processed"
@@ -180,7 +176,7 @@ class Layer2Pipeline:
         self._voice_feedback: deque[tuple[str, int, int, int, float, bool]] = deque(maxlen=4096)
         self._voice_feedback_lock = Lock()
         self._gate_activity_key: tuple[str, int, int] | None = None
-        self._gate_activity: deque[int] = deque(maxlen=_MUSIC_ACTIVITY_HISTORY_HOPS)
+        self._consecutive_gate_open_hops = 0
 
     @classmethod
     def from_project(cls, config: ProjectConfig, *, scanner: DetailedDirectionScanner | None = None) -> "Layer2Pipeline":
@@ -208,7 +204,7 @@ class Layer2Pipeline:
         self.last_id_tracking_error = None
         self._direction_id_tracking_enabled = True
         self._gate_activity_key = None
-        self._gate_activity.clear()
+        self._consecutive_gate_open_hops = 0
 
     def _update_gate_activity(
         self, window: DecisionWindow, decision: ProbabilityGateDecision
@@ -219,15 +215,18 @@ class Layer2Pipeline:
             and previous[:2] == (window.session_id, window.stream_epoch)
             and window.decision_sample == previous[2] + 960
         )
-        if not continuous:
-            self._gate_activity.clear()
-        self._gate_activity.append(int(decision.state is ProbabilityGateState.OPEN))
+        if decision.state is not ProbabilityGateState.OPEN:
+            self._consecutive_gate_open_hops = 0
+        elif not continuous:
+            self._consecutive_gate_open_hops = 1
+        else:
+            self._consecutive_gate_open_hops += 1
         self._gate_activity_key = (
             window.session_id,
             window.stream_epoch,
             window.decision_sample,
         )
-        return sum(self._gate_activity)
+        return self._consecutive_gate_open_hops
 
     def submit_voice_feedback(
         self,
@@ -303,19 +302,25 @@ class Layer2Pipeline:
                 ),
             )
         active_frame_count = self._update_gate_activity(window, decision)
+        required_active_frames = scan_config.context_ms // 20
         response: SpatialResponse | None = None
         diagnostics: MusicDiagnostics | None = None
         observations: tuple[CandidateDirection, ...] = ()
         if decision.allow_srp:
             response, observations, diagnostics = self.scanner.scan_detailed(
                 window, geometry, scan_config, scan_config_revision)
-            warm = active_frame_count >= _MUSIC_BIRTH_WARMUP_HOPS
+            warm = active_frame_count >= required_active_frames
             diagnostics = replace(
                 diagnostics,
                 births_allowed=diagnostics.births_allowed and warm,
                 active_frame_count=active_frame_count,
-                birth_required_active_frames=_MUSIC_BIRTH_WARMUP_HOPS,
+                birth_required_active_frames=required_active_frames,
             )
+            # Before one complete continuously-open covariance context exists,
+            # the spectrum remains diagnostic-only and cannot update/create IDs
+            # or escape through the raw-MUSIC compatibility path.
+            if not warm:
+                observations = ()
         if not direction_id_tracking_enabled:
             self.last_id_tracking_error = None
             return Layer2PipelineResult(

@@ -133,6 +133,7 @@ class _ConfirmedBackfillWork:
     windows: tuple[DecisionWindow, ...]
     processing_mode: str
     l2_direction_count: int
+    backfill_theta_deg: float
 
 
 @dataclass(slots=True)
@@ -2437,9 +2438,8 @@ class ApplicationRuntime:
             with self._confirmed_backfill_lock:
                 if key in self._confirmed_backfill_ids:
                     continue
-                target_start = max(
-                    0, item.key.decision_sample - _CONFIRMED_BACKFILL_SAMPLES
-                )
+                first_seen_sample = int(getattr(track, "first_seen_sample"))
+                target_start = max(0, first_seen_sample - _CONFIRMED_BACKFILL_SAMPLES)
                 windows = tuple(
                     window
                     for window in self._confirmed_backfill_history
@@ -2449,7 +2449,7 @@ class ApplicationRuntime:
                     # tentative observation onward. Historical recovery only
                     # fills audio before that authoritative ID existed.
                     and window.decision_sample
-                    < int(getattr(track, "first_seen_sample"))
+                    < first_seen_sample
                     and window.decision_sample - 2 * self.config.timing.decision_hop_samples
                     >= target_start
                 )
@@ -2458,11 +2458,13 @@ class ApplicationRuntime:
                 with self._confirmed_backfill_lock:
                     self._confirmed_backfill_ready_ids.add(key)
                 continue
+            birth_theta = self.track_audio_stream.track_birth_theta_deg(*key)
             work = _ConfirmedBackfillWork(
                 track,
                 windows,
                 processing_mode,
                 max(1, min(3, int(l2_direction_count))),
+                float(getattr(track, "theta_deg")) if birth_theta is None else birth_theta,
             )
             try:
                 self._confirmed_backfill_work.put_nowait(work)
@@ -2750,7 +2752,7 @@ class ApplicationRuntime:
                 break
             if window.decision_sample not in wanted:
                 continue
-            theta = float(getattr(track, "theta_deg"))
+            theta = item.backfill_theta_deg
             candidate = replace(
                 track,
                 window_id=window.window_id,

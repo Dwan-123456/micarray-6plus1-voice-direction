@@ -103,7 +103,7 @@ flowchart TB
 | Runtime封装 | `DecisionWindow`、当前UI/配置revision | 创建唯一`WindowKey=(session, epoch, window_id, decision_sample)`；冻结本窗Gate/DOA/IMM-JPDA/L3设置；有界latest-wins入队 | `WindowWorkItem` | 每个DecisionWindow一个 |
 | Layer 2 | `DecisionWindow`、末尾两个20 ms声源概率、7麦几何、扫描配置 | 40 ms Probability Gate；Rolling NormMUSIC；圆周峰值与50° NMS；Circular IMM-JPDA方向ID；可选DPD/IMCRA白化 | `Layer2PipelineResult`：Gate状态；`SpatialResponse` 360点；0–3个`TrackedDirection`；active tracks；MUSIC诊断 | 每20 ms判断与更新 |
 | Layer 3 | `DecisionWindow`末尾40/80/160 ms、0–3个公共方向、7麦几何、IMCRA噪声 | 共享STFT与协方差缓存；steering；按`rho`逐频选择Dual LCMV / Soft-null loaded MVDR / Loaded MVDR；或DAS/全频loaded MVDR；数值保护；批量ISTFT | `Layer3Output`，其中每方向一个`EnhancedAudio`：48 kHz mono `[1920/3840/7680]`，携带`track_id/theta/algorithm/fallback` | 当前默认40 ms音频；每20 ms产生新重叠窗 |
-| TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；首次confirmed回填；2 ms模式切换淡化；可选IMCRA概率响度补偿；维护完整归档；渐进块使用claim/resolve事务 | `TrackAudioBatch`；最长3200 ms试听上下文；3～15秒渐进`Layer4LongAudioInput`；停机完整长轨 | 20 ms hop；当前响度补偿默认关 |
+| TrackAudioStreamHub | L3的`EnhancedAudio`、本窗IMCRA概率、L2 active IDs/方向数 | 每ID只取末尾唯一20 ms；去除重叠；按绝对sample补洞；首次confirmed时按首次出生角回补`first_seen_sample`之前完整1秒BF；2 ms模式切换淡化；可选IMCRA概率响度补偿；维护完整归档；渐进块使用claim/resolve事务 | `TrackAudioBatch`；最长3200 ms试听上下文；3～15秒渐进`Layer4LongAudioInput`；停机完整长轨 | 20 ms hop；当前响度补偿默认关 |
 | 实时L5审计 | L3/Hub阶段终态 | 不运行模型，只形成可审计跳过原因 | `L5StageResult=SKIPPED(offline_after_l4)` | 每实时窗口一个终态 |
 | ResultJoiner | 同一`WindowKey`的L2/L3/L5阶段终态 | 校验ID与角度对齐；等待完整终态；按全局window顺序提交；保留失败/丢弃/取消原因 | `JoinedWindowResult`、`DecisionRecord v5`、`ResultWatermark`、UI快照 | 有序逐窗提交 |
 | RecordingStore | 原生/逻辑音频、IMCRA、Joined结果、Hub hop | 异步有界写盘；60秒切块；逐ID hop合并；SHA-256；journal事务；崩溃恢复；Catalog投影 | WAV/NPZ/JSONL/manifest/Catalog；逐ID连续48 kHz增强WAV | 不反压采集 |
@@ -136,7 +136,8 @@ DecisionWindow + IMCRA p20
   ├─ Gate关闭 → 空方向结果/明确状态
   └─ Gate打开
        → 7麦2–4 kHz增量STFT
-       → 240 ms滚动协方差
+       → 200 ms滚动协方差
+       → Gate连续OPEN满200 ms后才放行MUSIC候选角
        → frequency-normalized MUSIC 0..359°
        → MDL/跨频一致性诊断
        → 局部峰 + prominence + 50°圆周NMS
@@ -266,7 +267,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 ### 6.2 从采集到渐进预览和最终结果
 
 1. 连接阵列，确认Windows识别设备；启动UI并检查顶部设备、CUDA和模型状态。
-2. 点击“启动采集”。等待160 ms窗口累计及IMCRA预热；L2的240 ms滚动定位历史会继续独立预热。
+2. 点击“启动采集”。等待160 ms窗口累计及IMCRA预热；L2维护200 ms滚动定位历史，且Gate连续OPEN满200 ms后才开始放行MUSIC候选角。
 3. 检查左上8路电平。依次轻敲麦克风，确认MIC0–MIC5、Center及HardwareMix映射没有镜像或错位。
 4. 在右上查看L2 Gate、360°MUSIC谱、手动MUSIC阶数、实际候选数和方向ID。基线保持DPD关闭、IMCRA白化和ID Tracking开启。
 5. 在左下查看Center参考和按`track_id`排列的L3方向轨；基线使用DS。渐进旁路提交首块后，本次采集中锁定L3模式，避免不同算法音频混入同一preview。

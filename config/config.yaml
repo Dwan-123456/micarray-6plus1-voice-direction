@@ -109,10 +109,11 @@ layer2:
     backend: mean_2x20ms_v1
     threshold: 0.60
   # L1/Windowing preparation for the future rolling MUSIC implementation.
-  # 240 ms is only the current comparison candidate, not a frozen final default.
+  # MUSIC may emit DOA observations only after the Gate has remained OPEN for
+  # one complete covariance context. Keep these durations synchronized.
   music:
-    context_ms: 240
-    comparison_context_ms: [160, 240, 320]
+    context_ms: 200
+    comparison_context_ms: [160, 200, 240, 320]
     max_history_ms: 320
   # Circular IMM-JPDA direction tracking. The Test UI ID Track switch controls
   # this complete stage; there is no separate Kalman switch.
@@ -156,7 +157,7 @@ layer2:
   win_length: 960
   hop_length: 480
   window: hann_periodic
-  context_ms: 240
+  context_ms: 200
   covariance_shrinkage: 0.05
   diagonal_loading: 1.0e-3
   eigenvalue_floor: 1.0e-10

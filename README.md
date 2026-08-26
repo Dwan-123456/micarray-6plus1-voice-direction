@@ -102,7 +102,7 @@ WindowWorkItem
         Gate关闭时跳过MUSIC；预热/缺失/无效概率同样保持阻断
     ↓ Gate放行
     2000～4000 Hz Rolling frequency-normalized MUSIC
-        240 ms滚动历史；20 ms增量STFT/协方差；0～359°逐度扫描
+        200 ms滚动历史；20 ms增量STFT/协方差；0～359°逐度扫描
         Test UI手动选择MUSIC阶数1/2/3
         普通路径信号子空间阶数与最多搜峰数=该手动值
         可选DPD逐频投票 + 圆周核聚类、L1完整空间噪声协方差白化（白化默认开启）
@@ -133,7 +133,7 @@ WindowWorkItem
     实时拼接在L3 worker内同步执行；仅首次confirmed回填使用独立有界任务
     按(session_id, stream_epoch, track_id)从每个L3重叠窗只追加一个20 ms hop
     去除重叠重复；缺口按绝对sample审计；处理模式变化时安全重建该轨上下文
-    新ID首次confirmed时，用确认时平滑角回溯最多1秒补做ID出生前缺失BF
+    新ID首次confirmed时，用该ID首次出生角从first_seen_sample向前补做完整1秒BF
     回填按绝对sample前插；已有实时BF槽位优先且不会被覆盖
     可选按每hop IMCRA概率执行imcra_probability_rms_v1（当前实验基线默认关闭）
     RMS目标-23 dBFS、只放大；新增增益受-3 dBFS峰值保护
@@ -240,7 +240,7 @@ IMCRA是一种递归噪声估计算法。它持续估计每个麦克风、每个
 
 系统为每次采集建立唯一`session_id`，用`stream_epoch`表示连续音频段，并用绝对sample编号描述时间。发生输入丢失或不连续时会切换epoch，防止把不连续音频误拼到同一个算法窗口。
 
-WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的240 ms定位历史；L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为40 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop；响度补偿当前默认关闭。正式逐窗L5不读Hub片段，但隔离旁路会按3～15秒连续块运行带上下文的L5 preview；完整轨仍在停机排空后封存。
+WindowAssembler累计160 ms上下文，之后每20 ms产生一个新窗口。因此算法每秒最多形成50个判断点，每个`DecisionWindow`继续携带160 ms音频。L2在自己的有界滚动状态中累计当前配置的200 ms定位历史；Probability Gate必须连续OPEN满同一个200 ms上下文后，MUSIC候选角才可进入ID追踪，Gate一旦关闭或无效便立即停止MUSIC扫描并清零连续计时。L3从DecisionWindow末尾截取`timing.downstream_audio_window_ms`，当前为40 ms。L3之后的`TrackAudioStreamHub`按精确ID每窗只追加一个20 ms hop；响度补偿当前默认关闭。正式逐窗L5不读Hub片段，但隔离旁路会按3～15秒连续块运行带上下文的L5 preview；完整轨仍在停机排空后封存。
 
 ### 4. Probability Gate
 
@@ -254,7 +254,7 @@ MUSIC维护多帧STFT的逐频7×7协方差，只使用7个物理麦和2000～40
 
 Test UI保留DPD与白化的独立持久化开关。`DPD + rank-1 MUSIC`按逐频主特征值间隙、平面波拟合度以及IMCRA的SPP/先验SNR筛选可靠频点，每个可靠频点按单源噪声子空间产生方向票，再执行跨359°/0°连续的圆周核聚类。当前每个合格簇至少需要4个支持频点、覆盖4个等宽子带中的2个、加权支持率不低于0.20、圆周集中度不低于0.85。归一化峰值均严格大于0.70且组内任意峰圆周距离不超过40°时，先按唯一支持频点权重融合为圆周平均角，再执行50°圆周NMS；蓝色投票谱不做二次归一化。合格簇数量决定0～手动上限个候选。`IMCRA噪声白化`直接读取DecisionWindow已有的READY L1 `noise_covariance[427,7,7]`，经频率插值、收缩和loading后，以批量Cholesky同时白化观测协方差和steering；不在L2重新估计噪声矩阵。没有READY数据或完整空间协方差时本窗明确标记`unavailable`并安全退回未白化计算。L2队列丢窗是独立的Runtime过载状态，不代表Gate或L1 IMCRA不可用，Test UI会保留最近一次成功结果并标记`STALE | L2 DROPPED`。
 
-达到L2 `confirmed`的方向ID在最后一次MUSIC观测后的2秒几何TTL内继续保留。新MUSIC峰用于更新角度；短时漏检时，公共投影可按该ID的保持/预测角继续每20 ms生成BF音频。当前离线L5不参与实时槽位准入、排序或续租；tentative轨迹不会进入L3。
+达到L2 `confirmed`的方向ID在最后一次MUSIC观测后的2秒几何TTL内继续保留；即使Gate已经关闭，公共投影仍按该ID的保持/预测角继续每20 ms生成BF音频，直到重新匹配或TTL到期。新ID首次进入`confirmed`时，Runtime使用其首次出生角，对`first_seen_sample`之前完整1秒历史窗口异步补做L3 BF；已有实时BF槽位优先且不会被回填覆盖。当前离线L5不参与实时槽位准入、排序或续租；tentative轨迹不会进入L3。
 
 50°是同一窗口内两个候选之间的最小角距。完整360°空间响应会保留供诊断，公共候选只保留角度、分数和时间身份。
 

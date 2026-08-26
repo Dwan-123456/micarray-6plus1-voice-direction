@@ -172,19 +172,19 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 
 ## 6. Windowing 改动
 
-- `DecisionWindow [7680,8]` 每20 ms发布一次并始终保留160 ms上游上下文。L3和Development Test UI读取`timing.downstream_audio_window_ms`派生的末尾40/80/160 ms；当前为40 ms。离线L5只读取L4原生16 kHz长音频，不使用该实时窗口参数。L2的MUSIC历史独立配置为240 ms并由跨窗口状态维护，不受该下游参数影响。
+- `DecisionWindow [7680,8]` 每20 ms发布一次并始终保留160 ms上游上下文。L3和Development Test UI读取`timing.downstream_audio_window_ms`派生的末尾40/80/160 ms；当前为40 ms。离线L5只读取L4原生16 kHz长音频，不使用该实时窗口参数。L2的MUSIC历史独立配置为200 ms并由跨窗口状态维护，不受该下游参数影响；Gate必须连续OPEN满同一个200 ms上下文才放行MUSIC候选角。
 - L2维护按session/epoch/sample连续的滚动STFT与协方差状态。每个新DecisionWindow原则上只加入最近20 ms产生的新帧并移出超出MUSIC历史长度的旧帧；禁止每20 ms从头重算320 ms STFT和全部协方差。
 - `music.context_ms`首轮至少比较`160 / 240 / 320 ms`。最终默认值由目标设备实时性能、合成多源精度和真实移动声源测试共同决定，不把320 ms预先固化成不可调整要求。
 - Gate 仍消费与窗口末端对齐的两个20 ms IMCRA概率，达到阈值才运行MUSIC。L2保留按精确ID接收在线语义反馈后强制放行的兼容接口，但正式L5审计和渐进L5 preview都不把语义回传L2，因此1.3.5普通运行不会触发语义强制放行。ID继续按2秒绝对sample TTL推进到coasting/超时；所有仍在有效TTL内的正式coasting ID都可在数量与角距限制内作为公共方向送入L3。
 - 窗口不得预先生成 ID。所有 L2 配置必须冻结进 `WindowWorkItem`，保证同一窗口的 MUSIC、ID 和 Kalman 参数一致。
 
-本分支的Windowing直接提供`DecisionWindow.physical_samples`和`physical_history(160)`，只含7个物理麦，`HardwareMix`只能通过独立属性访问；请求超出当前窗口的240/320 ms历史会被拒绝。`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2跨窗口维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/240/320三档之一、比较集合固定为三档且滚动历史上限为320 ms。WindowAssembler仍只组装160 ms窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
+本分支的Windowing直接提供`DecisionWindow.physical_samples`和`physical_history(160)`，只含7个物理麦，`HardwareMix`只能通过独立属性访问；请求超出当前窗口的200/240/320 ms历史会被拒绝。`rolling_state_key=(session_id, stream_epoch, decision_sample)`、`rolling_update_start_sample`和连续后继检查为L2跨窗口维护滚动状态提供稳定边界。配置冻结`music.context_ms`为160/200/240/320四档之一、比较集合固定为四档且滚动历史上限为320 ms。WindowAssembler仍只组装160 ms窗口和校验连续性/校准边界，不创建STFT、协方差、MUSIC结果或方向ID。
 
 ## 7. Layer 2：MUSIC 定位
 
 ### 7.1 初始参数基线
 
-- 输入：48 kHz、7个物理麦的连续滚动音频；可用历史上限320 ms，初始候选历史长度为160/240/320 ms三档基准后择优。
+- 输入：48 kHz、7个物理麦的连续滚动音频；可用历史上限320 ms，候选历史长度为160/200/240/320 ms四档，当前选择200 ms。
 - STFT：`n_fft=1024`、分析窗 `960 samples`、hop `480 samples`，形成多帧快照；实际窗函数沿用项目统一定义并写入算法版本。
 - 定位频带：首版保持 `2000～4000 Hz`，后续只能依据真实诊室数据和空间可分度测试调整。
 - 每个频点形成 `7×7` 复协方差矩阵，执行对角加载或收缩，拒绝 non-finite、秩异常和严重病态输入。
@@ -249,14 +249,14 @@ L1 的 8 通道顺序、唯一采样时间轴、20 ms IMCRA 和可选 Wiener 预
 - 输入从无 ID 的 `CandidateDirection` 改为 `TrackedDirection`，以 `(WindowKey, track_id)` 为方向批次身份。
 - `DirectionalSignal`、波束形成批次和 `EnhancedAudio` 都必须携带 `track_id`、`theta_deg` 与原候选顺序；输出不得重新分配、猜测或合并 ID。
 - L3 在入口和出口校验：同一 WindowKey、ID 唯一、ID 集合/顺序、角度和音频数量完全对应；错误必须成为明确阶段终态。
-- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。所有仍在有效TTL内的正式coasting ID都可继续占用L3方向槽位：MUSIC有新观测时更新角度，短时漏检进入coasting时仍每20 ms按保持/预测角生成BF音频。当前离线L5不参与本窗L3方向槽的准入与排序。最终仍遵守3方向上限和50°分离约束；未确认tentative轨不生成 L3 音频。
+- 默认仅处理本窗 `directions` 中已确认的实测或coasting保持/预测目标。所有仍在有效TTL内的正式coasting ID都可继续占用L3方向槽位：MUSIC有新观测时更新角度；Gate关闭或短时漏检进入coasting时，仍每20 ms按保持/预测角生成BF音频，最长维持最后真实观测后的2秒TTL。当前离线L5不参与本窗L3方向槽的准入与排序。最终仍遵守3方向上限和50°分离约束；未确认tentative轨不生成 L3 音频。
 - `optimized`、`ds_baseline`、`loaded_mvdr_baseline`三档保留；
   Loaded MVDR档对所有方向和有效频点统一执行IMCRA协方差驱动的diagonal-loaded MVDR；
   五频段与固定30°波束模式均已删除。切换模式不改变权威ID，只隔离各模式的试听缓存。
 
 ## 10. Layer 4-L6 渐进旁路与采集后权威链
 
-- 每个L2完成窗口先按精确ID登记confirmed/coasting的绝对20 ms权威时间槽；L3公开1920/3840/7680个48 kHz重叠窗，并只向对应槽填入BF hop。`TrackAudioStreamHub`负责去重、可选响度补偿和完整长音频；没有BF结果的首尾或中间槽保留等时静音。正式逐窗审计到Hub结束，不执行CNN；独立旁路可以在配置块完整后运行渐进L4-L6。
+- 每个L2完成窗口先按精确ID登记confirmed/coasting的绝对20 ms权威时间槽；L3公开1920/3840/7680个48 kHz重叠窗，并只向对应槽填入BF hop。新ID首次进入confirmed时，Runtime固定使用该ID首次出生角，从`first_seen_sample`向前回补完整1秒历史BF；回填异步有界执行，已有实时BF槽位优先且不被覆盖。`TrackAudioStreamHub`负责去重、可选响度补偿和完整长音频；没有BF结果的首尾或中间槽保留等时静音。正式逐窗审计到Hub结束，不执行CNN；独立旁路可以在配置块完整后运行渐进L4-L6。
 - L3 host只发轻量事件。chunk producer在后台按ID claim最多一个有界admission round；sidecar接纳成功才ack并推进cursor，拒绝时原区间可精确重试。上游块长为3～15秒任意整数、默认10秒，不要求2秒的整数倍；CAMPPlus 2秒证据余量跨块保留。
 - 默认资源拓扑为L1/L2/L3 DS、Hub、L5、DNSMOS、CAMPPlus与L6在CPU，MF2在CUDA。实时L3与L4不得同时占用同一CUDA设备。模型在首块累计期间后台预载，MF2/CAMPPlus可在渐进与canonical间复用；L2/L3/L5默认各100窗、L4-L6默认2块，latest mailbox和停机等待均有硬上限，preview失败不反压L1-L3。
 - 离线L5输入、`VoiceDetection`和结果均保留原`track_id`与角度；L5只返回语义，不拥有方向身份。
@@ -373,7 +373,7 @@ v4 至少保存：
 
 ### 15.4 性能与实机
 
-- 在目标设备上分别基准160/240/320 ms滚动历史，验证50 Hz持续流水、预热后每20 ms有新MUSIC结果、队列不持续积压；L2初始预算为p95不超过15 ms、硬门限小于20 ms。记录STFT、协方差、eigh、伪谱和关联的分项耗时。
+- 在目标设备上分别基准160/200/240/320 ms滚动历史，验证50 Hz持续流水、连续Gate OPEN满对应历史后每20 ms有新MUSIC结果、队列不持续积压；L2初始预算为p95不超过15 ms、硬门限小于20 ms。记录STFT、协方差、eigh、伪谱和关联的分项耗时。
 - 增加“增量结果与从头离线重算一致”测试、长时间滚动数值漂移测试，以及配置/校准revision和sample跳跃触发安全重建测试。不得通过隐藏丢窗或复用过期伪谱宣称实时通过。
 - 使用音频库`Pass-开始静音`比较3/5/8/10/15秒渐进块；记录首预览延迟、L4-L6分项RTF、GPU峰值、CPU队列高水位、L3丢窗率、stop flush及canonical耗时。10秒是默认基线，不预设为最终最优值。
 - 使用真实阵列完成静止、移动、`359° ↔ 0°`、新说话方向、短时静音、三声源、混响和长时间运行验收。
