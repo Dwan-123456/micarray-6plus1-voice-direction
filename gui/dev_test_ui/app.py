@@ -258,7 +258,7 @@ def build_window(
         SrpThresholdControl,
     )
     from .settings import DevUiSettings
-    from .srp_panel import MusicPanelSnapshot, MusicPolarPanel
+    from .srp_panel import MusicPanelSnapshot, MusicPolarPanel, sync_track_colours
 
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
@@ -2052,6 +2052,14 @@ def build_window(
                 frame.spatial_response is not None
                 and frame.spatial_published_monotonic is not None
             ):
+                active_tracks = tuple(getattr(frame, "active_tracks", ()))
+                sync_track_colours(
+                    (
+                        frame.spatial_response.session_id,
+                        frame.spatial_response.stream_epoch,
+                    ),
+                    active_tracks,
+                )
                 l5_result = getattr(frame, "l5_result", None)
                 probabilities = {
                     detection.track_id: detection.probability
@@ -2061,7 +2069,7 @@ def build_window(
                 snapshot = MusicPanelSnapshot(
                     frame.spatial_response,
                     getattr(frame, "directions", ()),
-                    getattr(frame, "active_tracks", ()),
+                    active_tracks,
                     frame.spatial_published_monotonic,
                     probabilities,
                     effective_order=(
@@ -2122,7 +2130,36 @@ def build_window(
                     f"sample {frame.spatial_response.decision_sample:012d} | "
                     f"age {snapshot.age_ms:03.0f} ms{search_suffix}",
                 )
+            elif (
+                frame.gate_decision is not None
+                and frame.gate_decision.state.value == "closed"
+            ):
+                gate = frame.gate_decision
+                active_tracks = tuple(getattr(frame, "active_tracks", ()))
+                sync_track_colours(
+                    (gate.session_id, gate.stream_epoch),
+                    active_tracks,
+                )
+                window_key = (gate.session_id, gate.stream_epoch, gate.window_id)
+                if window_key != self._last_rendered_window:
+                    self.srp_polar.set_gate_closed_tracks(
+                        active_tracks,
+                        window_id=gate.window_id,
+                        live=True,
+                    )
+                    self._last_rendered_window = window_key
+                self._set_text(
+                    self.music_status,
+                    "MUSIC order=—  output=—  valid=—  status=GATE CLOSED",
+                )
+                self._set_text(
+                    self.srp_header,
+                    f"LIVE | session {gate.session_id[:8]} | "
+                    f"epoch {gate.stream_epoch} | window {gate.window_id:08d} | "
+                    f"sample {gate.decision_sample:012d} | Gate CLOSED",
+                )
             elif "srp" in frame.missing_reasons:
+                sync_track_colours(None, ())
                 self.srp_header.setText(frame.missing_reasons["srp"])
                 self.srp_polar.set_snapshot(None)
                 self.music_status.setText(

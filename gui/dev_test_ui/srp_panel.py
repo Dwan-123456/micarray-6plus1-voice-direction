@@ -14,8 +14,62 @@ _TRACK_COLOURS = ("#ff3b30", "#2ecc71", "#ffb000", "#af7ac5", "#00bcd4", "#ff7f5
 _TENTATIVE_TRACK_COLOUR = "#aab2bb"
 
 
+class TrackColourPool:
+    """Lease the six formal-ID colours until an authoritative track dies."""
+
+    def __init__(self) -> None:
+        self._stream: tuple[str, int] | None = None
+        self._leases: dict[int, int] = {}
+
+    def sync(
+        self,
+        stream: tuple[str, int] | None,
+        active_tracks: tuple[TrackedDirection, ...],
+    ) -> None:
+        if stream != self._stream:
+            self._stream = stream
+            self._leases.clear()
+        formal_ids = tuple(dict.fromkeys(
+            int(track.track_id)
+            for track in active_tracks
+            if track.track_state != "tentative"
+        ))
+        live = set(formal_ids)
+        self._leases = {
+            track_id: colour_index
+            for track_id, colour_index in self._leases.items()
+            if track_id in live
+        }
+        available = [
+            index for index in range(len(_TRACK_COLOURS))
+            if index not in self._leases.values()
+        ]
+        for track_id in formal_ids:
+            if track_id not in self._leases and available:
+                self._leases[track_id] = available.pop(0)
+
+    def colour(self, track_id: int) -> str | None:
+        index = self._leases.get(int(track_id))
+        return None if index is None else _TRACK_COLOURS[index]
+
+
+_TRACK_COLOUR_POOL = TrackColourPool()
+
+
+def sync_track_colours(
+    stream: tuple[str, int] | None,
+    active_tracks: tuple[TrackedDirection, ...],
+) -> None:
+    _TRACK_COLOUR_POOL.sync(stream, tuple(active_tracks))
+
+
 def track_colour_hex(track_id: int) -> str:
     """Return the stable UI colour assigned to one authoritative L2 ID."""
+    leased = _TRACK_COLOUR_POOL.colour(track_id)
+    if leased is not None:
+        return leased
+    # Historical/non-live rows do not own a lease. Keep their legacy colour
+    # deterministic without allowing them to reserve a live-ID colour.
     return _TRACK_COLOURS[(int(track_id) - 1) % len(_TRACK_COLOURS)]
 
 
@@ -106,6 +160,8 @@ if QWidget is not None:
             self._live = False
             self._selected_track_id: int | None = None
             self._stream_key: tuple[str, int] | None = None
+            self._gate_closed_tracks: tuple[TrackedDirection, ...] = ()
+            self._gate_closed_window_id: int | None = None
             self.setMinimumSize(0, 0)
 
         def set_snapshot(self, snapshot: MusicPanelSnapshot | None, *, live: bool = True) -> None:
@@ -113,6 +169,23 @@ if QWidget is not None:
             if stream != self._stream_key:
                 self._stream_key = stream
             self._snapshot = snapshot
+            self._gate_closed_tracks = ()
+            self._gate_closed_window_id = None
+            self._live = bool(live)
+            self.update()
+
+        def set_gate_closed_tracks(
+            self,
+            active_tracks: tuple[TrackedDirection, ...],
+            *,
+            window_id: int,
+            live: bool = True,
+        ) -> None:
+            """Render the geometry and live IDs without a stale MUSIC curve."""
+
+            self._snapshot = None
+            self._gate_closed_tracks = tuple(active_tracks)
+            self._gate_closed_window_id = int(window_id)
             self._live = bool(live)
             self.update()
 
@@ -136,7 +209,11 @@ if QWidget is not None:
             painter.setPen(QColor("#dce7f2"))
             painter.setFont(QFont("Sans Serif", 11))
             snapshot = self._snapshot
-            if snapshot is None or snapshot.response.model_order is None:
+            gate_closed = self._gate_closed_window_id is not None
+            if (
+                not gate_closed
+                and (snapshot is None or snapshot.response.model_order is None)
+            ):
                 painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "DOA UNAVAILABLE")
                 return
 
@@ -154,16 +231,20 @@ if QWidget is not None:
                     label = self._point(center, radius + 20, theta)
                     painter.drawText(QPointF(label.x() - 12, label.y() + 5), f"{theta}°")
 
-            scores = snapshot.response.normalized_scores
-            polygon = QPolygonF([
-                self._point(center, self._response_radius(radius, scores[theta]), theta)
-                for theta in range(360)
-            ] + [self._point(center, self._response_radius(radius, scores[0]), 0)])
-            painter.setPen(QPen(QColor("#42b8ff"), 2.2))
-            painter.drawPolyline(polygon)
+            if not gate_closed:
+                assert snapshot is not None
+                scores = snapshot.response.normalized_scores
+                polygon = QPolygonF([
+                    self._point(center, self._response_radius(radius, scores[theta]), theta)
+                    for theta in range(360)
+                ] + [self._point(center, self._response_radius(radius, scores[0]), 0)])
+                painter.setPen(QPen(QColor("#42b8ff"), 2.2))
+                painter.drawPolyline(polygon)
 
-            if snapshot.direction_id_tracking_enabled:
-                for track in snapshot.active_tracks:
+            tracks = self._gate_closed_tracks if gate_closed else snapshot.active_tracks
+            id_tracking_enabled = gate_closed or snapshot.direction_id_tracking_enabled
+            if id_tracking_enabled:
+                for track in tracks:
                     point = self._point(center, radius, track.theta_deg)
                     colour, diameter = _track_marker_style(track)
                     painter.setBrush(QColor(colour))
@@ -178,20 +259,25 @@ if QWidget is not None:
 
         def mousePressEvent(self, event) -> None:  # noqa: N802
             snapshot = self._snapshot
-            if (
-                snapshot is None
-                or not snapshot.direction_id_tracking_enabled
-                or not snapshot.active_tracks
-            ):
+            gate_closed = self._gate_closed_window_id is not None
+            tracks = self._gate_closed_tracks if gate_closed else (
+                () if snapshot is None else snapshot.active_tracks
+            )
+            if not tracks or (not gate_closed and not snapshot.direction_id_tracking_enabled):
                 return
             center = QPointF(self.width() / 2.0, self.height() / 2.0)
             dx, dy = event.position().x() - center.x(), center.y() - event.position().y()
             clicked = float(np.rad2deg(np.arctan2(dy, dx)) % 360.0)
-            nearest = min(snapshot.active_tracks, key=lambda item: abs((item.theta_deg - clicked + 180) % 360 - 180))
+            nearest = min(tracks, key=lambda item: abs((item.theta_deg - clicked + 180) % 360 - 180))
             if abs((nearest.theta_deg - clicked + 180) % 360 - 180) <= 8.0:
                 self._selected_track_id = nearest.track_id
-                self.track_selected.emit(nearest.track_id, snapshot.response.window_id)
-                self.candidate_selected.emit(nearest.theta_deg, snapshot.response.window_id)
+                window_id = (
+                    self._gate_closed_window_id
+                    if gate_closed
+                    else snapshot.response.window_id
+                )
+                self.track_selected.emit(nearest.track_id, window_id)
+                self.candidate_selected.emit(nearest.theta_deg, window_id)
                 self.update()
 
 

@@ -21,6 +21,13 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — Test UI Gate关闭视图与正式ID颜色租约
+
+- **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；仅修改Development Test UI的L2绘制与颜色管理，不改变L1、L2算法输出、ID生命周期、L3～L6、录音或Runtime调度。
+- **Gate关闭视图**：收到正式`Gate CLOSED`窗口且MUSIC未执行时，L2极坐标区继续显示方位圆环和当前`active_tracks` ID点，不再显示`DOA UNAVAILABLE`，也不沿用上一窗口的蓝色MUSIC响应曲线；Gate开启时绘制保持原样。真正的上游warming-up、超时或无有效L2状态仍显示不可用原因。
+- **颜色生命周期**：六种正式ID颜色改为按`session/epoch`和`active_tracks`租约管理；confirmed/coasting ID存活期间独占原颜色，新正式ID只领取空闲颜色，ID从权威存活集合消失后才归还；tentative ID保持10 px灰点且不占正式颜色。
+- **验证与资产**：新增颜色不碰撞、死亡归还、换流重置以及Gate关闭面板状态回归；执行Development Test UI专项测试。无Git LFS对象新增或修改，不提交音频、缓存、日志、本机设置或秘密。
+
 ## 2026-08-26 — P Gate采用男女LTASS频谱加权
 
 - **版本与范围**：保持`1.3.5`开发线，不创建或移动发布标签；100～1500 Hz Gate证据带不变，将每麦SPP的频点算术平均改为固定语音谱加权平均，概率适配器身份升级为`cohen_imcra_2003_l1_v7`。

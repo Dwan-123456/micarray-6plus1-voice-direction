@@ -796,6 +796,54 @@ def test_simulation_l2_frame_renders_doa_polar_snapshot(monkeypatch, tmp_path):
         app.processEvents()
 
 
+def test_gate_closed_frame_keeps_polar_ring_and_live_ids_without_music_curve(
+    monkeypatch, tmp_path,
+):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    _, _, open_gate, _ = _open_l2_result()
+    gate = replace(
+        open_gate,
+        state=ProbabilityGateState.CLOSED,
+        sound_present=False,
+        reason="probability_below_threshold",
+    )
+    track = TrackedDirection(
+        gate.session_id, gate.stream_epoch, gate.window_id, gate.decision_sample,
+        gate.decision_sample - 1_920, gate.decision_sample,
+        7, 1, None, 30.0, 0.2, 0.8, "coasting", False, False,
+        gate.decision_sample - 960, gate.decision_sample - 960, 960, True,
+    )
+    frame = SimpleNamespace(
+        gate_decision=gate,
+        gate_config_revision=window._runtime.gate_config_revision,
+        scan_config_revision=window._runtime.direction_scan_config_revision,
+        direction_id_tracking_enabled=True,
+        spatial_response=None,
+        spatial_published_monotonic=None,
+        directions=(track,),
+        active_tracks=(track,),
+        search_diagnostics=None,
+        candidates=(),
+        missing_reasons={"srp": "UNAVAILABLE: probability_below_threshold"},
+    )
+    try:
+        window._render_l2_frame(frame)
+        app.processEvents()
+
+        assert window.srp_polar._snapshot is None
+        assert window.srp_polar._gate_closed_tracks == (track,)
+        assert window.srp_polar._gate_closed_window_id == gate.window_id
+        assert "GATE CLOSED" in window.music_status.text()
+        assert "DOA UNAVAILABLE" not in window.srp_header.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_test_ui_sends_led_off_only_after_microphone_start_succeeds(monkeypatch):
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
@@ -2178,6 +2226,33 @@ def test_music_track_markers_only_assign_colours_to_formal_ids():
     assert _track_marker_style(tentative) == ("#aab2bb", 10.0)
     assert _track_marker_style(confirmed) == (track_colour_hex(2), 24.0)
     assert _track_marker_style(coasting) == (track_colour_hex(2), 10.0)
+
+
+def test_music_formal_track_colours_are_leased_until_track_death():
+    from gui.dev_test_ui.srp_panel import TrackColourPool
+
+    pool = TrackColourPool()
+
+    def confirmed(track_id):
+        return SimpleNamespace(track_id=track_id, track_state="confirmed")
+
+    tentative = SimpleNamespace(track_id=99, track_state="tentative")
+    pool.sync(("stream", 0), (confirmed(1), confirmed(7), tentative))
+    first, second = pool.colour(1), pool.colour(7)
+    assert first is not None and second is not None and first != second
+    assert pool.colour(99) is None
+
+    pool.sync(("stream", 0), (confirmed(1), confirmed(7), confirmed(13)))
+    assert pool.colour(1) == first
+    assert pool.colour(7) == second
+    assert len({pool.colour(1), pool.colour(7), pool.colour(13)}) == 3
+
+    pool.sync(("stream", 0), (confirmed(1), confirmed(13), confirmed(14)))
+    assert pool.colour(1) == first
+    assert pool.colour(14) == second
+
+    pool.sync(("new-stream", 1), (confirmed(42),))
+    assert pool.colour(1) is None
 
 
 def test_music_panel_and_table_use_authoritative_track_fields(monkeypatch):

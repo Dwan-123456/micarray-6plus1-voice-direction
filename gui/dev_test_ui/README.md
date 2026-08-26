@@ -37,7 +37,7 @@ Development Test UI不再创建`Center Mic RAW`或`Center Mic IMCRA`试听轨：
 
 L2 Gate滑条范围`0.00～1.00`、步长`0.01`。拖动期间阈值立即送入Runtime，下一完整DecisionWindow生效并显示新的`config_revision`；松手时才原子保存一次Test UI本地设置，避免每个滑动刻度都同步写盘导致卡顿，且始终不写回`config.yaml`。L5阈值滑条只重判缓存的CNN概率。两个滑条必须用“L2声源Gate”和“L5人声判断”清晰区分。
 
-L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3，并直接决定普通路径的信号子空间阶数与最多搜峰数；DPD路径将它作为最多候选数。右侧状态条显示当前手动阶数和实际输出候选数。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不启用逐频支持或可靠性加权门禁。
+L2面板的紧凑“MUSIC阶数”控件只能选择1、2、3，并直接决定普通路径的信号子空间阶数与最多搜峰数；DPD路径将它作为最多候选数。右侧状态条显示当前手动阶数和实际输出候选数。阶数和`ID Tracking`状态都写入Test UI本地设置；L2每次真正开始计算前读取最新revision，因此即使处理队列已有积压也会在下一次L2计算实时应用。阶数控件不启用逐频支持或可靠性加权门禁。Gate关闭时极坐标仍显示圆环和当前存活ID点，但隐藏蓝色MUSIC响应曲线；六种正式ID颜色按存活期独占，ID死亡后才归还颜色池，tentative ID始终使用灰色小点且不占正式颜色。
 
 所有算法信息按session、epoch、window和sample endpoint对齐。缺少任一20 ms IMCRA概率、跨epoch或尚未预热时，右上明确显示`WARMING_UP/UNAVAILABLE`，不能拼接旧数据或显示假SRP结果。
 
