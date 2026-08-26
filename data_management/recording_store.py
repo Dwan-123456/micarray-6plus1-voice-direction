@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 
 from common.data_types import IngestedAudioBlock
+from common.geometry import PHYSICAL_GEOMETRY_VERSION, PHYSICAL_MIC_ANGLES_DEG
 from layer1_input.pcm import pcm16_bytes
 
 from .catalog import Catalog
@@ -597,11 +598,11 @@ class RecordingStore:
             "board_i2s": {"MIC_D0": ["MIC0", "MIC1"], "MIC_D1": ["MIC2", "MIC3"], "MIC_D2": ["MIC4", "MIC5"], "MIC_D3": ["Center"]},
             "native_host_order": ["CH0", "CH1", "CH2", "CH3", "CH4", "CH5", "HardwareMix", "Center"],
             "logical_from_native": [0, 1, 2, 3, 4, 5, 7, 6],
-            "observation_face": "microphone_face_from_above",
+            "observation_face": "led_face_from_above",
             "theta_zero": "center_to_MIC0_positive_x",
             "theta_direction": "counterclockwise",
             "hardware_mix_has_physical_coordinate": False,
-            "physical_angles_deg": [0, 60, 120, 180, 240, 300, None],
+            "physical_angles_deg": [*PHYSICAL_MIC_ANGLES_DEG, None],
             "ring_radius_m": 0.04,
             "speed_of_sound_mps": 343.0,
         }
@@ -729,7 +730,7 @@ class RecordingStore:
                 "physical_channel_map": [0, 1, 2, 3, 4, 5, 7],
                 "hardware_mix_channel": 6,
                 "logical_channel_map": [0, 1, 2, 3, 4, 5, 7, 6],
-                "observation_face": "microphone_face_top_view_mic0_positive_x_ccw",
+                "observation_face": "led_face_top_view_mic0_positive_x_ccw_54321",
                 "channel_layouts": {
                     "native_8ch": ["CH0", "CH1", "CH2", "CH3", "CH4", "CH5", "HardwareMix", "Center"],
                     "logical_8ch": ["MIC0", "MIC1", "MIC2", "MIC3", "MIC4", "MIC5", "Center", "HardwareMix"],
@@ -740,7 +741,7 @@ class RecordingStore:
                 "calibration_hash": meta.get("calibration_hash", ""),
                 "calibration_revision": int(meta.get("calibration_revision", 0)),
                 "calibration_version": meta.get("calibration_version", "unversioned"),
-                "geometry_version": meta.get("geometry_version", "r6plus1_mic_face_ccw_v1"),
+                "geometry_version": meta.get("geometry_version", PHYSICAL_GEOMETRY_VERSION),
                 "config_hash": meta.get("config_hash", ""),
                 "config_revision": int(meta.get("config_revision", 0)),
                 "git_commit": meta.get("git_commit"),

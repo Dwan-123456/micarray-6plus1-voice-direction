@@ -5,16 +5,16 @@ from pathlib import Path
 
 import numpy as np
 
-from common.geometry import MIC_POSITIONS_M, MicGeometry
+from common.geometry import MIC_POSITIONS_M, PHYSICAL_GEOMETRY_VERSION, MicGeometry
 
 
-P_TABLE_VERSION = "spatial_separability_p_48k_fft1024_6plus1_v1"
+P_TABLE_VERSION = "spatial_separability_p_48k_fft1024_6plus1_v2"
 P_SAMPLE_RATE = 48_000
 P_N_FFT = 1_024
 P_FREQUENCY_MIN_HZ = 80.0
 P_FREQUENCY_MAX_HZ = 8_000.0
 P_SPEED_OF_SOUND_MPS = 343.0
-P_GEOMETRY_VERSION = "r6plus1_mic_face_ccw_v1"
+P_GEOMETRY_VERSION = PHYSICAL_GEOMETRY_VERSION
 
 _ALL_FREQUENCIES_HZ = np.fft.rfftfreq(P_N_FFT, 1.0 / P_SAMPLE_RATE)
 P_FREQUENCY_BIN_INDICES = np.flatnonzero(

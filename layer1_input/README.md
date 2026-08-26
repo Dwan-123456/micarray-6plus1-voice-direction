@@ -2,7 +2,7 @@
 
 > 项目1.3.3的L1输入已按[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md#5-layer-1-改动)落地：提供连续、校准后的7麦输入、verified/unverified状态及版本/hash边界；L1不创建ID，MUSIC与公共方向ID由L2负责。
 
-权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1的逻辑8通道、麦克风面坐标和20 ms IMCRA迁移已完成。
+权威目标契约见根目录[`ARCHITECTURE_V0.3_TARGET.md`](../ARCHITECTURE_V0.3_TARGET.md)。L1的逻辑8通道、灯面朝上坐标和20 ms IMCRA迁移已完成。
 
 ## 目标职责
 
@@ -26,9 +26,9 @@ PortAudio回调只复制驱动当前提供的PCM块、分配单调sequence并投
 
 `status()`公开`input_overflow_count、handoff_drop_count、handoff_queue_depth、handoff_queue_capacity、handoff_queue_high_water`。连续的handoff满队列丢块合并为一次有范围和lost sample数的健康事件，避免同一次拥塞突发对IMCRA反复重置；不连续的独立缺口仍分别增加epoch。任何真实缺失都不补零、不隐藏。
 
-## 麦克风面坐标
+## 灯面朝上坐标
 
-官方装配图从灯面俯视，灯面位于麦克风背面。算法统一从朝上的麦克风面观察：中央麦为原点，实际位于底部的MIC0方向为`+x/0°`，角度逆时针增加。MIC0～MIC5依次是`0°、60°、120°、180°、240°、300°`，Center为原点。
+算法统一按设备实际灯面朝上的摆放方式，从灯面正上方向下观察：中央麦为原点，Center→MIC0方向为`+x/0°`，角度逆时针增加。固定映射为`MIC0=0°、MIC5=60°、MIC4=120°、MIC3=180°、MIC2=240°、MIC1=300°`，Center为原点。
 
 官方阵列板资料给出`MIC_D0=MIC0/1`、`MIC_D1=MIC2/3`、`MIC_D2=MIC4/5`、`MIC_D3=Center`；Host的CH映射属于MA-USB8桥接定义，二者必须分别在manifest中记录。
 
@@ -97,7 +97,7 @@ L1不计算DOA、不执行波束形成、不执行逐方向人声分类，也不
 
 - native→logical 8ch映射、只读/finite/C-contiguous契约；
 - verified/unverified校准状态、稳定版本/hash传播、同epoch边界拒绝和未来资产显式拒绝；
-- 麦克风面逆时针几何及灯面镜像防错；
+- 灯面朝上、MIC0→MIC5→MIC4→MIC3→MIC2→MIC1逆时针几何防错；
 - HardwareMix保留但不进入7麦阵列算法；
 - IMCRA 20 ms更新、0～10000 Hz PSD/SPP状态、500～4000 Hz概率聚合、新session/校准变更重置、同session断流统计保留、预热及概率范围；
 - 40 ms/20 ms WOLA连续重建、每麦独立增益、HardwareMix直通、预热旁路和运行时开关；

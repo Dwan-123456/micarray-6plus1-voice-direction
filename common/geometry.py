@@ -5,15 +5,21 @@ from dataclasses import dataclass
 import numpy as np
 
 
+# LED face is the project-wide observation face.  Looking down at that face,
+# Center -> MIC0 is +x / 0 degrees and positive angles increase CCW through
+# MIC5, MIC4, MIC3, MIC2, MIC1.
+PHYSICAL_GEOMETRY_VERSION = "r6plus1_led_face_mic0_posx_ccw_54321_v2"
+PHYSICAL_MIC_ANGLES_DEG = (0, 300, 240, 180, 120, 60)
+
 MIC_POSITIONS_M = np.asarray(
     [
-        (0.040000000, 0.000000000),
-        (0.020000000, 0.034641016),
-        (-0.020000000, 0.034641016),
-        (-0.040000000, 0.000000000),
-        (-0.020000000, -0.034641016),
-        (0.020000000, -0.034641016),
-        (0.000000000, 0.000000000),
+        (0.040000000, 0.000000000),   # MIC0:   0 degrees
+        (0.020000000, -0.034641016),  # MIC1: 300 degrees
+        (-0.020000000, -0.034641016),  # MIC2: 240 degrees
+        (-0.040000000, 0.000000000),  # MIC3: 180 degrees
+        (-0.020000000, 0.034641016),  # MIC4: 120 degrees
+        (0.020000000, 0.034641016),   # MIC5:  60 degrees
+        (0.000000000, 0.000000000),   # Center
     ],
     dtype=np.float64,
 )
@@ -42,7 +48,7 @@ class MicGeometry:
 
 def physical_6plus1_geometry(
     speed_of_sound_mps: float = 343.0,
-    version: str = "r6plus1_mic_face_ccw_v1",
+    version: str = PHYSICAL_GEOMETRY_VERSION,
     ring_radius_m: float = 0.04,
 ) -> MicGeometry:
     if not np.isfinite(ring_radius_m) or ring_radius_m <= 0:

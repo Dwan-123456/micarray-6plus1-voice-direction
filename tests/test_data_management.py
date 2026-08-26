@@ -127,6 +127,11 @@ def test_runtime_recording_assets_results_and_catalog_rebuild(tmp_path: Path):
     store.advance_result_watermark(ResultWatermark(session, 0, 48000))
     manifest = store.stop_session("normal")
     assert manifest["status"] == "complete" and len(manifest["chunks"]) == 1
+    assert manifest["observation_face"] == "led_face_top_view_mic0_positive_x_ccw_54321"
+    assert manifest["mapping_contract"]["physical_angles_deg"] == [
+        0, 300, 240, 180, 120, 60, None,
+    ]
+    assert manifest["geometry_version"] == "r6plus1_led_face_mic0_posx_ccw_54321_v2"
     chunk = manifest["chunks"][0]
     assert chunk["frame_count"] == 48000 and chunk["result_count"] == 1
     root = next(tmp_path.glob(f"runtime_sessions/*/*/{session}"))

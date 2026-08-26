@@ -5,7 +5,13 @@ from .data_types import (
     CalibrationAssetIdentity, CalibrationMetadata, CandidateDirection, DecisionWindow, EnhancedAudio, IngestedAudioBlock,
     ModelOrderEstimate, PipelineStatus, SpatialResponse, TrackedDirection,
 )
-from .geometry import MIC_POSITIONS_M, MicGeometry, physical_6plus1_geometry
+from .geometry import (
+    MIC_POSITIONS_M,
+    PHYSICAL_GEOMETRY_VERSION,
+    PHYSICAL_MIC_ANGLES_DEG,
+    MicGeometry,
+    physical_6plus1_geometry,
+)
 
 __all__ = [
     "CandidateDirection",
@@ -17,6 +23,8 @@ __all__ = [
     "EnhancedAudio",
     "IngestedAudioBlock",
     "MIC_POSITIONS_M",
+    "PHYSICAL_GEOMETRY_VERSION",
+    "PHYSICAL_MIC_ANGLES_DEG",
     "MicGeometry",
     "PipelineStatus",
     "SpatialResponse",

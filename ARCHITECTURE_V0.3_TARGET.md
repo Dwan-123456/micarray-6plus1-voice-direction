@@ -64,17 +64,16 @@ ResultJoiner：按WindowKey合并L2/L3/L5终态，按唯一时间轴有序提交
 
 ### 2.1 资料边界
 
-Sipeed 官方资料只定义阵列板的麦克风与 I²S 数据线：`MIC_D0`承载 MIC0/1，`MIC_D1`承载 MIC2/3，`MIC_D2`承载 MIC4/5，`MIC_D3`承载中央麦。装配图是**从灯面俯视**，灯面位于麦克风面的背面，因此不能直接把灯面图的顺序用作算法角度。
+Sipeed 官方资料只定义阵列板的麦克风与 I²S 数据线：`MIC_D0`承载 MIC0/1，`MIC_D1`承载 MIC2/3，`MIC_D2`承载 MIC4/5，`MIC_D3`承载中央麦。当前项目统一按设备实际摆放方式，从**灯面正上方向下观察**；灯面图中的物理编号必须直接对应算法几何，不再换算到另一观察面。
 
 MA-USB8 桥接后的 Host 通道语义来自本项目随附桥接资料：CH0～CH5 对应 MIC0～MIC5，CH6 是阵列内部合成音频，CH7 是中央麦。两类资料必须分开记录，禁止把 USB 通道顺序冒充成 Sipeed 原始阵列板的官方 USB 定义。
 
 ### 2.2 唯一算法观察面
 
-- 阵列实际使用时**麦克风面朝上**。
-- 从麦克风面正上方向下看，中央麦为原点。
-- 实际放置时，板上标记 MIC0 的外圈麦位于底部；从原点指向 MIC0 的方向定义为物理 `+x`。
-- `theta_deg=0°`沿 `+x`，从麦克风面观察时逆时针增加，范围为 `[0,360)`。
-- 灯面装配图必须先做背面镜像，再用于验证麦克风面顺序。
+- 阵列实际使用时**灯面朝上**。
+- 从灯面正上方向下看，中央麦为原点。
+- 从Center指向MIC0的方向定义为物理`+x`，即`theta_deg=0°`。
+- 从灯面观察时角度逆时针增加，范围为`[0,360)`，外圈依次经过MIC5、MIC4、MIC3、MIC2、MIC1。
 
 ### 2.3 外圈坐标
 
@@ -83,15 +82,15 @@ MA-USB8 桥接后的 Host 通道语义来自本项目随附桥接资料：CH0～
 | 逻辑通道 | Host通道 | 角度 | 坐标 `(x,y)` |
 |---|---:|---:|---|
 | MIC0 | CH0 | 0° | `(r, 0)` |
-| MIC1 | CH1 | 60° | `(r/2, +sqrt(3)r/2)` |
-| MIC2 | CH2 | 120° | `(-r/2, +sqrt(3)r/2)` |
+| MIC1 | CH1 | 300° | `(r/2, -sqrt(3)r/2)` |
+| MIC2 | CH2 | 240° | `(-r/2, -sqrt(3)r/2)` |
 | MIC3 | CH3 | 180° | `(-r, 0)` |
-| MIC4 | CH4 | 240° | `(-r/2, -sqrt(3)r/2)` |
-| MIC5 | CH5 | 300° | `(r/2, -sqrt(3)r/2)` |
+| MIC4 | CH4 | 120° | `(-r/2, +sqrt(3)r/2)` |
+| MIC5 | CH5 | 60° | `(r/2, +sqrt(3)r/2)` |
 | Center | CH7 | 不适用 | `(0, 0)` |
 | HardwareMix | CH6 | 无物理坐标 | 不得加入几何 |
 
-因此从麦克风面观察，MIC0→MIC5 的编号方向与算法角度一样，均为**逆时针**。L1 的逻辑通道标签、`common.geometry`、L2 steering delay、L3 steering vector、UI角度和录音manifest必须引用同一个几何版本，不能各自维护坐标副本。
+因此从灯面观察，算法正角方向的编号次序是**MIC0→MIC5→MIC4→MIC3→MIC2→MIC1**。L1的逻辑通道标签、`common.geometry`、L2 steering delay、L3 steering vector、UI角度和录音manifest必须引用同一个几何版本，不能各自维护坐标副本。
 
 ## 3. Layer 1 目标契约
 
@@ -290,7 +289,7 @@ p_table = load_p_table()
 
 `lookup_p`先把两个有限角度规范化到`0°..359°`并量化到最近1°，随后对A/B作对称规范化，因此交换候选顺序必须得到逐bit相同的`p_f`。L3有两个候选时必须把查得的`p_f`写入完整513-bin控制向量的bin 2～170，据此选择Dual LCMV、soft-null loaded MVDR或loaded MVDR；禁止在L3运行时重新根据steering vector计算空间相关度，双候选权重求解器缺少查表结果时必须拒绝执行。0个候选不运行BF，1个候选继续使用单约束loaded MVDR，不查询也不计算双源可分度。IMCRA的SPP、噪声PSD和噪声协方差仍按窗口动态进入权重求解，不能被静态`p`表替代。
 
-表只适用于`r6plus1_mic_face_ccw_v1`、4 cm半径、343 m/s声速、48 kHz/FFT 1024及80～8000 Hz BF配置。上下文不匹配必须明确拒绝，不能静默使用错误索引。修改麦克风坐标、角度定义、声速、FFT或BF频带后，必须同步升级`P_TABLE_VERSION`并运行：
+表只适用于`r6plus1_led_face_mic0_posx_ccw_54321_v2`、4 cm半径、343 m/s声速、48 kHz/FFT 1024及80～8000 Hz BF配置。上下文不匹配必须明确拒绝，不能静默使用错误索引。修改麦克风坐标、角度定义、声速、FFT或BF频带后，必须同步升级`P_TABLE_VERSION`并运行：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\generate_spatial_separability_p_table.py
@@ -342,7 +341,7 @@ RecordingStore异步保存同一时间轴上的：
 - 每40 ms Gate聚合概率、阈值、配置revision及Gate结果；
 - 原始SRP空间谱、平滑候选方向、L3增强音频和L5结果；不保存L2内部ID。
 
-所有sidecar必须使用绝对sample区间关联，不能按文件到达时间猜测。算法结果只能由ResultJoiner按`WindowKey`合并并有序提交；RecordingStore不得直接订阅某个stage的未合并结果。manifest必须记录Host映射、logical映射、几何版本、麦克风面观察规则、方向平滑器版本、完整配置与config hash。由于ID不持久化，离线复现平滑角必须从同一epoch起点顺序重放全部窗口。写盘失败仍不得反压实时采集。
+所有sidecar必须使用绝对sample区间关联，不能按文件到达时间猜测。算法结果只能由ResultJoiner按`WindowKey`合并并有序提交；RecordingStore不得直接订阅某个stage的未合并结果。manifest必须记录Host映射、logical映射、几何版本、灯面朝上观察规则、方向平滑器版本、完整配置与config hash。由于ID不持久化，离线复现平滑角必须从同一epoch起点顺序重放全部窗口。写盘失败仍不得反压实时采集。
 
 当前RecordingStore按以下有界事务边界实施：
 
@@ -357,7 +356,7 @@ RecordingStore异步保存同一时间轴上的：
 ## 10. 必须新增或调整的测试
 
 - 官方MIC/I²S关系、Host通道、logical通道三层映射分别测试。
-- 从麦克风面观察：MIC0=0°，MIC1～MIC5逆时针递增；灯面图不得直接进入几何。
+- 从灯面观察：MIC0=0°，逆时针依次为MIC5、MIC4、MIC3、MIC2、MIC1。
 - 新7麦坐标、21麦对、0/60/120/180/240/300°及全角度无镜像测试。
 - `[N,8]`音频契约、HardwareMix保留且不进入SRP/MVDR测试。
 - Cohen IMCRA每20 ms更新、表I参数锁定、两轮平滑/最小值状态、式(28)分子来源、式(29)/(7)概率边界、80～8000 Hz的338点PSD覆盖、500～4000 Hz概率聚合、连续性重置、finite/只读及预热状态测试。

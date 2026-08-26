@@ -48,7 +48,7 @@ Production UI运行录音详情显示方向ID、epoch、首末sample、持续时
 - IMCRA 20 ms、Gate 40 ms、SRP/L3/L5结果sample级对齐；
 - 原始SpatialResponse、平滑候选和下游角度一致；资产及Catalog中不存在内部ID；
 - 使用同一配置从epoch起点顺序重放可复现平滑角；
-- 映射与麦克风面几何写入manifest并可重建；
+- Host映射与灯面朝上几何写入manifest并可重建；
 - hash、恢复、overflow、Catalog、lineage、QA、Trash及不反压性能回归。
 - 原子result+watermark队列溢出时两者均不接纳，水位不假前进；
 - 连续多chunk运行后已封闭chunk结果被写出并从RAM释放，event未触发结果始终不超过pre-roll/硬数量上限；连续触发合并为一条有界审计、容量扫描每事件段最多一次，跨epoch不合并且post-roll间隙可由ring补回；

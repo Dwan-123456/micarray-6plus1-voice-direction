@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from common.geometry import PHYSICAL_GEOMETRY_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,7 +15,7 @@ class SessionMetadata:
     config_revision: int = 0
     calibration_revision: int = 0
     calibration_version: str = "unversioned"
-    geometry_version: str = "r6plus1_mic_face_ccw_v1"
+    geometry_version: str = PHYSICAL_GEOMETRY_VERSION
     git_commit: str | None = None
     runtime: Mapping[str, Any] = field(default_factory=dict)
     algorithm_versions: Mapping[str, Any] = field(default_factory=dict)

@@ -10,6 +10,10 @@
 
 覆盖规则：本文件是 **1.1系列架构** 的权威契约；各目录README必须明确区分“代码已实现”“自动验收已完成”和“尚待实机验收”，不得把自动测试写成真实环境已通过。
 
+### 全项目唯一阵列坐标
+
+设备以灯面朝上使用，从灯面正上方向下观察：Center为原点，Center→MIC0为`+x/0°`，角度逆时针增加。外圈固定映射为`MIC0=0°、MIC5=60°、MIC4=120°、MIC3=180°、MIC2=240°、MIC1=300°`。L2 MUSIC、L3 BF、UI极坐标、录音manifest和空间可分度表必须共同使用`r6plus1_led_face_mic0_posx_ccw_54321_v2`，不得单独镜像或增加角度偏移。Host通道映射仍为CH0～CH5对应MIC0～MIC5、CH6为HardwareMix、CH7为Center。
+
 ## 1. 改造目标与非目标
 
 1. 用宽带 MUSIC/NormMUSIC 替换 L2 的 SRP-PHAT 定位主链，并直接支持 0～3 个同时存在的方向峰。
