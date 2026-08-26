@@ -58,6 +58,24 @@ def _wait_until(predicate, *, timeout: float = 2.0) -> None:
     assert predicate()
 
 
+def test_release_spool_forgets_closed_wrapper_until_store_retirement() -> None:
+    store = DiskAudioStore(prefix="test_disk_audio_release_")
+    timeline = store.create_u8_timeline("discarded")
+    root = store.root
+    path = timeline.path
+    timeline.set(0, 1)
+
+    store.release_spool(timeline)
+
+    assert timeline._closed is True
+    assert timeline._stream is None
+    assert timeline not in store._spools
+    assert path.exists()
+
+    store.retire()
+    assert not root.exists()
+
+
 def test_copy_range_to_is_bounded_stable_and_returns_matching_digest(monkeypatch):
     source_store = DiskAudioStore(prefix="test_disk_audio_source_")
     target_store = DiskAudioStore(prefix="test_disk_audio_target_")

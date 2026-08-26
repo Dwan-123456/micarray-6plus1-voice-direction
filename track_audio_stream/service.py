@@ -227,6 +227,17 @@ class TrackAudioStreamHub:
             return
         spool.close()  # type: ignore[attr-defined]
 
+    @staticmethod
+    def _release_spool(spool: object | None) -> None:
+        if spool is None:
+            return
+        owner = getattr(spool, "owner", None)
+        release = getattr(owner, "release_spool", None)
+        if callable(release):
+            release(spool)
+            return
+        spool.close()  # type: ignore[attr-defined]
+
     def _clear_archive_generation(
         self,
         key: tuple[str, int, int],
@@ -236,9 +247,9 @@ class TrackAudioStreamHub:
         """Drop one mutable mode generation without touching published snapshots."""
 
         self._archive.pop(key, None)
-        self._close_spool(self._archive_audio.pop(key, None))
-        self._close_spool(self._audio_presence.pop(key, None))
-        self._close_spool(self._direction_counts.pop(key, None))
+        self._release_spool(self._archive_audio.pop(key, None))
+        self._release_spool(self._audio_presence.pop(key, None))
+        self._release_spool(self._direction_counts.pop(key, None))
         self._archive_origins.pop(key, None)
         self._archive_modes.pop(key, None)
         self._emitted_ends.pop(key, None)
@@ -448,7 +459,16 @@ class TrackAudioStreamHub:
                     and not timeline.active
                     and self._timeline_ready_for_early_finalization(timeline)
                 ):
-                    self._active_timeline_keys.discard(key)
+                    if timeline.ever_formal:
+                        self._active_timeline_keys.discard(key)
+                    else:
+                        # A tentative ID that died without ever becoming a
+                        # public/formal track can never contribute to L4-L6.
+                        # Release its disk spools as soon as the resurrection
+                        # grace expires instead of retaining one open file per
+                        # transient noise ID until the complete capture stops.
+                        self._clear_archive_generation(key, clear_timeline=True)
+                        self._tracks.pop(key, None)
 
             for track_state, track_id, theta_deg in observed:
                 key = (session_id, stream_epoch, track_id)
@@ -1245,6 +1265,14 @@ class TrackAudioStreamHub:
                 archive = self._archive.get(key)
                 if archive is not None and key in self._l2_timelines:
                     archive.clear()
+                # Finalization is admitted only after every authoritative hop
+                # reached the downstream cursor. Keep the paths and lengths
+                # for final seal/offline readers, but release the three mutable
+                # writer handles immediately instead of holding them until the
+                # whole capture stops.
+                self._close_spool(self._archive_audio.get(key))
+                self._close_spool(self._audio_presence.get(key))
+                self._close_spool(self._direction_counts.get(key))
 
     def take_streaming_chunks(
         self,
@@ -1394,7 +1422,8 @@ class TrackAudioStreamHub:
                 origin = self._archive_origin(key, output_start)
                 relative_start = output_start - origin
                 relative_end = output_end - origin
-                spool.ensure_length(relative_end)
+                if spool.length_samples < relative_end:
+                    spool.ensure_length(relative_end)
                 # seal() is terminal for this archive generation. Closing it
                 # freezes the exact bytes before publishing a read-only mmap.
                 spool.close()

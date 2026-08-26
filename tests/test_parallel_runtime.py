@@ -764,6 +764,8 @@ def test_test_ui_can_bypass_l3_and_l5_while_l2_keeps_running(tmp_path: Path) -> 
         assert first.status == "ok"
         assert first.terminal_reason == "downstream_disabled_by_test_ui"
         assert runtime.processing_error is None
+        assert runtime.track_audio_stream._l2_timelines == {}
+        assert runtime.track_audio_stream._direction_counts == {}
 
         assert runtime.set_downstream_processing_enabled(True) is True
         runtime._admit_window(_window(1))

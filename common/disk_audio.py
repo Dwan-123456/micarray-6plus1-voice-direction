@@ -13,6 +13,20 @@ from typing import BinaryIO, overload
 import numpy as np
 
 
+class _ClosedSpoolLock:
+    """Lock-free context manager for an immutable closed disk spool."""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc_info: object) -> bool:
+        del exc_info
+        return False
+
+
+_CLOSED_SPOOL_LOCK = _ClosedSpoolLock()
+
+
 def _write_all(stream: BinaryIO, payload: memoryview, *, context: str) -> None:
     """Write every byte or fail without accepting a zero-progress short write."""
 
@@ -203,6 +217,27 @@ class DiskAudioStore:
             timeline = DiskUInt8Timeline(path, self)
             self._spools.append(timeline)
             return timeline
+
+    def release_spool(
+        self,
+        spool: "DiskFloat32Spool | DiskFrameSpool | DiskUInt8Timeline",
+    ) -> None:
+        """Close and forget one discarded mutable spool before store retirement.
+
+        Closing drops the Windows file object and ``RLock`` resources; removing
+        a terminal spool from the owner's registry also prevents discarded IDs
+        from accumulating Python wrappers. The containing temporary directory
+        remains owned by this store for normal retirement cleanup.
+        """
+
+        if getattr(spool, "owner", None) is not self:
+            raise ValueError("disk spool belongs to a different store")
+        spool.close()
+        with self._lock:
+            try:
+                self._spools.remove(spool)
+            except ValueError:
+                pass
 
     def _acquire_view(self) -> None:
         with self._lock:
@@ -545,11 +580,14 @@ class DiskFloat32Spool:
         with self._lock:
             if self._closed:
                 return
+            stream = self._stream
             try:
-                self._stream.flush()
+                stream.flush()
             finally:
                 self._closed = True
-                self._stream.close()
+                stream.close()
+                self._stream = None  # type: ignore[assignment]
+                self._lock = _CLOSED_SPOOL_LOCK  # type: ignore[assignment]
 
 
 class DiskFrameSeries(Sequence[float | bool]):
@@ -709,11 +747,14 @@ class DiskFrameSpool:
         with self._lock:
             if self._closed:
                 return
+            stream = self._stream
             try:
-                self._stream.flush()
+                stream.flush()
             finally:
                 self._closed = True
-                self._stream.close()
+                stream.close()
+                self._stream = None  # type: ignore[assignment]
+                self._lock = _CLOSED_SPOOL_LOCK  # type: ignore[assignment]
 
 
 class DiskUInt8Series(Sequence[int]):
@@ -892,8 +933,11 @@ class DiskUInt8Timeline:
         with self._lock:
             if self._closed:
                 return
+            stream = self._stream
             try:
-                self._stream.flush()
+                stream.flush()
             finally:
                 self._closed = True
-                self._stream.close()
+                stream.close()
+                self._stream = None  # type: ignore[assignment]
+                self._lock = _CLOSED_SPOOL_LOCK  # type: ignore[assignment]

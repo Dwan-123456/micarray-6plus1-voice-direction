@@ -335,6 +335,14 @@ def test_ended_short_track_is_flushed_and_finalized_before_global_stop() -> None
     assert hub.claim_streaming_finalizations(
         ready_track_keys={key}, max_tracks=1,
     ) == ()
+    assert hub._archive_audio[key]._closed is True
+    assert hub._audio_presence[key]._closed is True
+    assert hub._direction_counts[key]._closed is True
+
+    sealed = hub.seal()
+    assert len(sealed) == 1
+    assert sealed[0].track_id == 7
+    assert len(sealed[0].waveform) == 3 * _HOP
 
 
 def test_temporary_track_absence_inside_grace_does_not_finalize() -> None:
@@ -361,6 +369,41 @@ def test_temporary_track_absence_inside_grace_does_not_finalize() -> None:
     assert hub.claim_streaming_finalizations(
         ready_track_keys={key}, max_tracks=1,
     ) == ()
+
+
+def test_dead_never_confirmed_tracks_release_every_disk_spool_after_grace() -> None:
+    hub = TrackAudioStreamHub(
+        InputGainCompensationSettings(enabled=False),
+        context_ms=160,
+        ended_track_grace_ms=40,
+    )
+    tentative = _track(7, state="tentative")
+    key = ("session", 0, 7)
+
+    _observe(hub, 7_680, (tentative,))
+    hub.process(
+        (_window(7_680, 7, level=0.01),),
+        active_track_ids=(7,), identity=_identity(7_680), l2_direction_count=1,
+    )
+    audio = hub._archive_audio[key]
+    directions = hub._direction_counts[key]
+    presence = hub._audio_presence[key]
+
+    _observe(hub, 8_640, ())
+    assert key in hub._l2_timelines
+    _observe(hub, 9_600, ())
+    _observe(hub, 10_560, ())
+
+    assert key not in hub._l2_timelines
+    assert key not in hub._active_timeline_keys
+    assert key not in hub._tracks
+    assert key not in hub._archive_audio
+    assert key not in hub._direction_counts
+    assert key not in hub._audio_presence
+    assert hub._archive_store._spools == []
+    assert audio._closed is True
+    assert directions._closed is True
+    assert presence._closed is True
 
 
 def test_streaming_cursor_is_cleared_by_mode_reset_reset_and_seal_discard() -> None:

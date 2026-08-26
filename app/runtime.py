@@ -2621,6 +2621,7 @@ class ApplicationRuntime:
                 self._joiner_submit(lambda: self._result_joiner.submit_l2(stage))
                 if (
                     stage.state is StageState.COMPLETED
+                    and self.downstream_processing_enabled
                     and bool(values["direction_id_tracking_enabled"])
                 ):
                     l2_directions = tuple(

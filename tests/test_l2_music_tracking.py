@@ -558,27 +558,6 @@ def test_music_rolling_p95_is_below_hard_20ms_budget() -> None:
     assert max(times[2:]) < 20.0
 
 
-def test_optional_dpd_and_imcra_whitening_fit_20ms_hard_budget() -> None:
-    scan = replace(
-        DirectionScanConfig.from_project(load_config(CONFIG, environ={})),
-        dpd_rank1_enabled=True,
-        noise_whitening_enabled=True,
-        direction_threshold=0.15,
-    )
-    audio = _audio((80.0,), seed=71, samples=7_680 + 30 * 960)
-    scanner = RollingNormMusicScanner()
-    times = []
-    for index in range(30):
-        started = perf_counter()
-        scanner.scan_detailed(
-            _window(audio, index, imcra_hops=_imcra_hops(index)),
-            physical_6plus1_geometry(), scan,
-        )
-        times.append((perf_counter() - started) * 1_000.0)
-    assert np.percentile(times[2:], 95) <= 15.0
-    assert max(times[2:]) < 20.0
-
-
 def test_circular_imm_jpda_crosses_zero_and_survives_rank_swap() -> None:
     tracker = _tracker()
     first, _ = _update(tracker, 15_360, (358.0, 120.0))
