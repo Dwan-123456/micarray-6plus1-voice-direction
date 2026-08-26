@@ -133,7 +133,7 @@ def test_music_configuration_and_hardware_mix_contract() -> None:
     assert (scan.frequency_min_hz, scan.frequency_max_hz) == (2_000.0, 4_000.0)
     assert scan.max_candidates == 3 and scan.min_peak_distance_deg == 50.0
     assert not scan.dpd_rank1_enabled
-    assert scan.noise_whitening_enabled
+    assert not scan.noise_whitening_enabled
 
 
 def test_music_fixed_geometry_frequency_weights_match_2_to_4khz_contract() -> None:

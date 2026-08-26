@@ -197,7 +197,7 @@ def _l5_result(
 def test_operator_settings_round_trip_without_overwriting_each_other(tmp_path):
     settings = DevUiSettings(tmp_path)
     assert settings.load_direction_threshold(.35) == .35
-    assert settings.load_music_effective_order_limit(3) == 3
+    assert settings.load_music_effective_order_limit() == 2
     assert settings.load_music_dpd_rank1_enabled() is False
     assert settings.load_music_noise_whitening_enabled() is False
     assert settings.load_direction_kalman_enabled() is False
@@ -1048,7 +1048,7 @@ def test_workflow_profile_ignores_stale_settings_and_switches_are_run_scoped(
     settings.save_l1_pre_denoise_enabled(True)
     settings.save_l5_input_gain_compensation_enabled(True)
     settings.save_music_dpd_rank1_enabled(True)
-    settings.save_music_noise_whitening_enabled(False)
+    settings.save_music_noise_whitening_enabled(True)
     settings.save_direction_id_tracking_enabled(False)
     settings.save_layer4_backend("tiger_speech_16k")
     before = settings.path.read_bytes()
@@ -1058,7 +1058,7 @@ def test_workflow_profile_ignores_stale_settings_and_switches_are_run_scoped(
         assert window._runtime.l1_pre_denoise_enabled is False
         assert window._runtime.l5_input_gain_compensation_enabled is False
         assert window._runtime.music_dpd_rank1_enabled is False
-        assert window._runtime.music_noise_whitening_enabled is True
+        assert window._runtime.music_noise_whitening_enabled is False
         assert window._runtime.direction_id_tracking_enabled is True
         assert window.l4_panel.backend_id == "mossformer2_ss_16k"
 

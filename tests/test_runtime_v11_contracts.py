@@ -53,7 +53,7 @@ def test_processing_config_has_manual_music_order_and_no_removed_switches() -> N
     assert "mdl_max_age_ms" not in values
     assert "min_cross_frequency_consistency" not in values
     assert values["dpd_rank1_enabled"] is False
-    assert values["noise_whitening_enabled"] is True
+    assert values["noise_whitening_enabled"] is False
     assert values["direction_id_tracking"]["coasting_ttl_ms"] > 0
     assert "iterative_peak_search_enabled" not in values
     assert "enabled" not in values["direction_id_tracking"]

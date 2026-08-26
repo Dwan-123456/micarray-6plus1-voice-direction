@@ -21,6 +21,15 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — Whitening默认关闭并将MUSIC默认阶数设为2
+
+- **版本与默认配置**：保持`1.3.5`开发线，不创建或移动发布标签；`layer2.noise_whitening_enabled`的项目配置及缺省schema值由开启改为关闭，Development Test UI每次新实验继续从项目工作流配置初始化，操作者仍可在运行中手动开启Whitening。`layer2.effective_order_limit`与Test UI设置读取的无保存值缺省由3改为2；已有操作者显式保存的阶数仍按原规则优先，1/2/3手动切换能力不变。
+- **依据与性能边界**：同日真实麦克风L1/L2对照中，Whitening关闭与开启各取完整5分钟窗口，均保持epoch 0、约50 Hz、输入/处理/20 ms窗口零丢失；关闭时L2界面采样约`4.2～6.1 ms`，开启时约`6.7～15.9 ms`。默认关闭用于保留更大的20 ms实时余量，不删除或降级Whitening算法。
+- **契约与验证**：同步配置、Runtime快照、MUSIC扫描、Test UI工作流和基准配置契约；专用L4～L6压力基准继续显式开启Whitening以覆盖高负载路径。配置/Runtime/MUSIC/Test UI专项`177 passed`，项目全量`745 passed, 1 warning`；唯一警告为既有CountNet `torch.jit.load`弃用提示。
+- **未改变与数据边界**：L1采集/IMCRA公式及预降噪默认、P Gate、MUSIC/DPD/Whitening计算本身、ID追踪、L3～L6、正式录音与数据schema、模型权重和运行时长监控均无变化；未提交实机音频、Test UI缓存、日志、本机设置或其他运行数据，无Git LFS对象新增或修改。
+
+---
+
 ## 2026-08-26 — L1/L2长时实时性与Test UI旁路稳定性修复
 
 - **版本、分支与问题定位**：项目保持`1.3.5`开发线，不创建或移动发布标签；在独立分支`codex/l12-realtime-stability`修复真实麦克风长时运行后L1灯条停更、Gate反复`WARMING_UP`及L2吞吐下降。根因不是Gate或MUSIC数学，而是Development Test UI每20 ms在L1线程同步写Center试听文件，同时每帧复制整段历史包络并逐文件`stat()`计算时长；成本随运行时长线性增长，最终填满采集handoff队列并触发真实epoch重置。
