@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+import queue
 import shutil
 import threading
+from time import monotonic
 from typing import BinaryIO
 
 import numpy as np
@@ -20,9 +22,78 @@ _HOP_SAMPLES = 960
 # edge fade below.
 _CROSSFADE_SAMPLES = 96
 _EDGE_FADE_SAMPLES = 240
+_REFERENCE_ENVELOPE_TARGET_POINTS = 512
+_REFERENCE_WRITE_QUEUE_BLOCKS = 500
+_REFERENCE_GAP_FILL_CHUNK_SAMPLES = 50 * _HOP_SAMPLES
 CENTER_RAW_TRACK_ID = 0
 CENTER_IMCRA_TRACK_ID = -1
 _REFERENCE_TRACK_IDS = frozenset((CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID))
+
+
+@dataclass(slots=True)
+class _BoundedPeakEnvelope:
+    """Incremental max-pool thumbnail with a duration-independent bound.
+
+    Completed bins always cover the same number of 20 ms hops.  Once there
+    are twice the target number of bins, adjacent pairs are max-pooled and the
+    bin width doubles.  The exact PCM remains on disk; this object is only the
+    full-duration UI thumbnail.
+    """
+
+    target_points: int = _REFERENCE_ENVELOPE_TARGET_POINTS
+    bins: deque[float] = field(default_factory=deque)
+    hops_per_bin: int = 1
+    pending_hops: int = 0
+    pending_peak: float = 0.0
+    total_hops: int = 0
+
+    def __post_init__(self) -> None:
+        if self.target_points < 2:
+            raise ValueError("reference envelope target must be at least two points")
+
+    def extend(self, peaks: object) -> None:
+        for raw in peaks:
+            peak = float(raw)
+            if not np.isfinite(peak) or peak < 0.0:
+                raise ValueError("reference envelope peaks must be finite and non-negative")
+            self.pending_peak = max(self.pending_peak, peak)
+            self.pending_hops += 1
+            self.total_hops += 1
+            if self.pending_hops != self.hops_per_bin:
+                continue
+            self.bins.append(self.pending_peak)
+            self.pending_hops = 0
+            self.pending_peak = 0.0
+            if len(self.bins) == 2 * self.target_points:
+                values = iter(self.bins)
+                self.bins = deque(
+                    max(left, right) for left, right in zip(values, values, strict=True)
+                )
+                self.hops_per_bin *= 2
+
+    def snapshot(self) -> tuple[float, ...]:
+        result = tuple(self.bins)
+        if self.pending_hops:
+            result += (self.pending_peak,)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class _ReferenceWrite:
+    block: object
+    track_id: int
+    channel_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class _QueuedCenterBlock:
+    session_id: str
+    stream_epoch: int
+    end_sample: int
+    samples: np.ndarray
+
+
+_REFERENCE_WRITER_STOP = object()
 
 
 @dataclass(slots=True)
@@ -34,6 +105,7 @@ class _Track:
     state: str = "active"
     segment_index: int = 0
     segment_samples: int = 0
+    cached_samples: int = 0
     segments: list[Path] = field(default_factory=list)
     pending_waveform: np.ndarray | None = None
     pending_decision_sample: int | None = None
@@ -42,6 +114,7 @@ class _Track:
     authoritative_id: bool = False
     envelope_peaks: deque[float] = field(default_factory=deque)
     voice_annotations: deque[TrackVoiceAnnotation | None] = field(default_factory=deque)
+    reference_envelope: _BoundedPeakEnvelope | None = None
     stream_key: tuple[str, int] | None = None
     processing_mode: str = "optimized"
 
@@ -96,6 +169,21 @@ class AudioIdTracker:
         self._reference_stream_paths: dict[int, Path] = {}
         self._next_track_id = 1
         self._snapshot_counter = 0
+        self._ui_snapshot_cache: tuple[TrackedAudioSnapshot, ...] | None = None
+        self._ui_snapshot_stream: tuple[str, int] | None = None
+        self._ui_snapshot_deadline = 0.0
+        self._reference_writer_lock = threading.RLock()
+        self._reference_writer_condition = threading.Condition()
+        self._reference_write_queue: queue.Queue[object] | None = None
+        self._reference_writer: threading.Thread | None = None
+        self._reference_submit_session_id: str | None = None
+        self._reference_writes_accepted = 0
+        self._reference_writes_completed = 0
+        self._reference_writes_dropped = 0
+        self._reference_writes_accepted_base = 0
+        self._reference_writes_completed_base = 0
+        self._reference_writes_dropped_base = 0
+        self._reference_writer_error: str | None = None
         self.reset()
 
     @staticmethod
@@ -104,38 +192,239 @@ class AudioIdTracker:
         return min(delta, 360.0 - delta)
 
     def reset(self) -> None:
-        with self._lock:
-            self._close_reference_streams()
-            if self.cache_root.exists():
-                shutil.rmtree(self.cache_root)
-            self.cache_root.mkdir(parents=True, exist_ok=True)
-            (self.cache_root / "playback").mkdir(exist_ok=True)
-            self._stream = None
-            self._processing_mode = None
-            self._mode_generation = 0
-            self._processing_partition = "optimized_000"
-            self._tracks.clear()
-            self._reference_tracks.clear()
-            self._next_track_id = 1
-            self._snapshot_counter = 0
+        # Runtime.start() and the temporary-to-formal recording boundary call
+        # reset before accepting the next reference generation.  Stop and
+        # discard the old sidecar queue first so no late block can be written
+        # into the newly-created cache root.
+        with self._reference_writer_lock:
+            self._stop_reference_writer_locked(discard=True)
+            with self._lock:
+                self._close_reference_streams()
+                if self.cache_root.exists():
+                    shutil.rmtree(self.cache_root)
+                self.cache_root.mkdir(parents=True, exist_ok=True)
+                (self.cache_root / "playback").mkdir(exist_ok=True)
+                self._stream = None
+                self._processing_mode = None
+                self._mode_generation = 0
+                self._processing_partition = "optimized_000"
+                self._tracks.clear()
+                self._reference_tracks.clear()
+                self._next_track_id = 1
+                self._snapshot_counter = 0
+                self._ui_snapshot_cache = None
+                self._ui_snapshot_stream = None
+                self._ui_snapshot_deadline = 0.0
+                self._reference_submit_session_id = None
+                # Keep absolute completion counters monotonic so a concurrent
+                # flush waiter can never observe its target move backwards.
+                # Status remains per-generation through these baselines.
+                with self._reference_writer_condition:
+                    self._reference_writes_accepted_base = (
+                        self._reference_writes_accepted
+                    )
+                    self._reference_writes_completed_base = (
+                        self._reference_writes_completed
+                    )
+                    self._reference_writes_dropped_base = (
+                        self._reference_writes_dropped
+                    )
+                    self._reference_writer_error = None
+
+    def _prepare_session_locked(self, incoming_session: str) -> None:
+        incoming_session = str(incoming_session)
+        current_session = self._reference_submit_session_id
+        if current_session is None and self._stream is not None:
+            current_session = self._stream[0]
+        if current_session is not None and current_session != incoming_session:
+            self.reset()
+        self._reference_submit_session_id = incoming_session
+
+    def _prepare_stream_session(self, stream: tuple[str, int]) -> None:
+        # Destructive lifecycle transitions always take the writer barrier
+        # before the tracker state lock.  Public mutation methods call this
+        # before entering _lock so _ensure_stream can never join a worker while
+        # holding the lock that worker needs.
+        with self._reference_writer_lock:
+            self._prepare_session_locked(str(stream[0]))
+
+    def _start_reference_writer_locked(self) -> queue.Queue[object]:
+        worker = self._reference_writer
+        if worker is not None and worker.is_alive():
+            assert self._reference_write_queue is not None
+            return self._reference_write_queue
+        mailbox: queue.Queue[object] = queue.Queue(
+            maxsize=_REFERENCE_WRITE_QUEUE_BLOCKS
+        )
+        worker = threading.Thread(
+            target=self._run_reference_writer,
+            args=(mailbox,),
+            name="dev-ui-center-reference",
+            daemon=True,
+        )
+        self._reference_write_queue = mailbox
+        self._reference_writer = worker
+        worker.start()
+        return mailbox
+
+    def _complete_reference_write(self) -> None:
+        with self._reference_writer_condition:
+            self._reference_writes_completed += 1
+            self._reference_writer_condition.notify_all()
+
+    def _run_reference_writer(self, mailbox: queue.Queue[object]) -> None:
+        while True:
+            item = mailbox.get()
+            try:
+                if item is _REFERENCE_WRITER_STOP:
+                    return
+                assert isinstance(item, _ReferenceWrite)
+                try:
+                    self._append_center_reference(
+                        item.block, item.track_id, item.channel_index,
+                    )
+                except Exception as exc:
+                    with self._reference_writer_condition:
+                        self._reference_writer_error = str(exc)
+                finally:
+                    self._complete_reference_write()
+            finally:
+                mailbox.task_done()
+
+    def submit_center_reference(
+        self,
+        block: object,
+        *,
+        denoised: bool = False,
+        channel_index: int = 6,
+    ) -> bool:
+        """Queue one UI-only Center reference without blocking the L1 thread."""
+
+        source = np.asarray(block.samples, dtype=np.float32)
+        resolved_channel = int(channel_index)
+        if (
+            source.ndim != 2
+            or not 0 <= resolved_channel < source.shape[1]
+            or len(source) <= 0
+            or len(source) % _HOP_SAMPLES
+        ):
+            raise ValueError("Center reference block must contain whole 20 ms logical hops")
+        # Retain only the selected Center channel in the bounded mailbox.  It
+        # keeps L1 submission independent from later buffer reuse and reduces
+        # the full mailbox payload from roughly 15 MiB to roughly 2 MiB.
+        queued_block = _QueuedCenterBlock(
+            str(block.session_id),
+            int(block.stream_epoch),
+            int(block.end_sample),
+            np.ascontiguousarray(source[:, resolved_channel, None]),
+        )
+        item = _ReferenceWrite(
+            queued_block,
+            CENTER_IMCRA_TRACK_ID if denoised else CENTER_RAW_TRACK_ID,
+            0,
+        )
+        with self._reference_writer_lock:
+            # Direct users of the tracker do not necessarily call reset()
+            # before changing capture sessions.  Resolve that boundary on the
+            # submitting thread; otherwise the writer would discover it from
+            # inside _ensure_stream() and could try to join itself.
+            # Tuple publication is atomic and every destructive lifecycle
+            # transition also owns _reference_writer_lock.  Do not acquire
+            # _lock here: the writer deliberately holds it while doing disk
+            # I/O, and making L1 wait for that lock would defeat this sidecar.
+            self._prepare_session_locked(queued_block.session_id)
+            mailbox = self._start_reference_writer_locked()
+            try:
+                mailbox.put_nowait(item)
+            except queue.Full:
+                with self._reference_writer_condition:
+                    self._reference_writes_dropped += 1
+                return False
+            with self._reference_writer_condition:
+                self._reference_writes_accepted += 1
+            return True
+
+    def flush_reference_writes(self, timeout: float | None = None) -> bool:
+        """Wait only for writes accepted before this call, never future input."""
+
+        if timeout is not None and timeout <= 0.0:
+            raise ValueError("reference writer flush timeout must be positive or None")
+        with self._reference_writer_condition:
+            target = self._reference_writes_accepted
+            deadline = None if timeout is None else monotonic() + timeout
+            while self._reference_writes_completed < target:
+                remaining = None if deadline is None else deadline - monotonic()
+                if remaining is not None and remaining <= 0.0:
+                    return False
+                self._reference_writer_condition.wait(remaining)
+        return True
+
+    def _stop_reference_writer_locked(self, *, discard: bool) -> None:
+        worker, mailbox = self._reference_writer, self._reference_write_queue
+        if worker is None or mailbox is None:
+            self._reference_writer = None
+            self._reference_write_queue = None
+            return
+        if discard:
+            while True:
+                try:
+                    item = mailbox.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not _REFERENCE_WRITER_STOP:
+                    with self._reference_writer_condition:
+                        self._reference_writes_dropped += 1
+                    self._complete_reference_write()
+                mailbox.task_done()
+        else:
+            if not self.flush_reference_writes(timeout=None):
+                raise RuntimeError("reference writer could not drain")
+        mailbox.put(_REFERENCE_WRITER_STOP)
+        worker.join()
+        self._reference_writer = None
+        self._reference_write_queue = None
+
+    @property
+    def reference_writer_status(self) -> dict[str, object]:
+        with self._reference_writer_lock, self._reference_writer_condition:
+            mailbox = self._reference_write_queue
+            worker = self._reference_writer
+            return {
+                "active": bool(worker is not None and worker.is_alive()),
+                "queue_depth": 0 if mailbox is None else mailbox.qsize(),
+                "queue_capacity": _REFERENCE_WRITE_QUEUE_BLOCKS,
+                "accepted": (
+                    self._reference_writes_accepted
+                    - self._reference_writes_accepted_base
+                ),
+                "completed": (
+                    self._reference_writes_completed
+                    - self._reference_writes_completed_base
+                ),
+                "dropped": (
+                    self._reference_writes_dropped
+                    - self._reference_writes_dropped_base
+                ),
+                "error": self._reference_writer_error,
+            }
 
     def _ensure_stream(self, stream: tuple[str, int]) -> None:
         """Move to a new epoch without deleting this capture session's audio."""
 
         if self._stream is None:
             self._stream = stream
+            self._ui_snapshot_cache = None
+            self._ui_snapshot_stream = None
             for track in self._reference_tracks.values():
                 track.stream_key = stream
+                track.last_seen_sample = 0
             return
         if self._stream == stream:
             return
         if self._stream[0] != stream[0]:
-            # A new source start owns a new cache lifecycle.  Runtime.start()
-            # normally performs this reset first; keep the tracker safe for
-            # direct callers as well.
-            self.reset()
-            self._stream = stream
-            return
+            raise RuntimeError(
+                "Test UI tracker session changed without its lifecycle barrier"
+            )
 
         # An epoch change is a continuity boundary inside the same capture
         # session.  Close live directional runs, but keep every playable file
@@ -148,9 +437,12 @@ class AudioIdTracker:
                 track.state = "ended"
         self._remove_filtered_ended_tracks()
         self._stream = stream
+        self._ui_snapshot_cache = None
+        self._ui_snapshot_stream = None
         self._processing_mode = None
         for track in self._reference_tracks.values():
             track.stream_key = stream
+            track.last_seen_sample = 0
 
     def _close_reference_stream(self, track_id: int) -> None:
         stream = self._reference_streams.pop(int(track_id), None)
@@ -165,11 +457,15 @@ class AudioIdTracker:
 
     def append_center_reference(self, block, *, channel_index: int = 6) -> None:
         """Cache the raw logical Center microphone without entering L2/L3."""
-        self._append_center_reference(block, CENTER_RAW_TRACK_ID, channel_index)
+        with self._reference_writer_lock:
+            self._prepare_session_locked(str(block.session_id))
+            self._append_center_reference(block, CENTER_RAW_TRACK_ID, channel_index)
 
     def append_imcra_center_reference(self, block, *, channel_index: int = 6) -> None:
         """Cache only Center hops that actually passed through IMCRA denoising."""
-        self._append_center_reference(block, CENTER_IMCRA_TRACK_ID, channel_index)
+        with self._reference_writer_lock:
+            self._prepare_session_locked(str(block.session_id))
+            self._append_center_reference(block, CENTER_IMCRA_TRACK_ID, channel_index)
 
     def _append_center_reference(self, block, track_id: int, channel_index: int) -> None:
         samples = np.asarray(block.samples, dtype=np.float32)
@@ -182,6 +478,17 @@ class AudioIdTracker:
             raise ValueError("Center reference block must contain whole 20 ms logical hops")
         stream_identity = (block.session_id, block.stream_epoch)
         with self._lock:
+            if (
+                self._stream is not None
+                and self._stream[0] == stream_identity[0]
+                and int(stream_identity[1]) < int(self._stream[1])
+            ):
+                # L3 can advance the visible epoch while an older UI-only
+                # Center write is still queued.  Never let that late sidecar
+                # move the tracker backwards and re-open a closed generation.
+                with self._reference_writer_condition:
+                    self._reference_writes_dropped += 1
+                return
             self._ensure_stream(stream_identity)
             track = self._reference_tracks.get(track_id)
             if track is None:
@@ -189,11 +496,64 @@ class AudioIdTracker:
                     track_id,
                     0.0,
                     0.0,
-                    int(block.end_sample),
+                    0,
                     authoritative_id=True,
+                    reference_envelope=_BoundedPeakEnvelope(),
                     stream_key=stream_identity,
                 )
                 self._reference_tracks[track_id] = track
+            center = np.ascontiguousarray(samples[:, int(channel_index)], dtype=np.float32)
+            end_sample = int(block.end_sample)
+            block_start = end_sample - len(center)
+            if min(block_start, end_sample) < 0 or end_sample <= block_start:
+                raise ValueError("Center reference sample interval is invalid")
+            if block_start < track.last_seen_sample:
+                overlap = track.last_seen_sample - block_start
+                if overlap >= len(center):
+                    return
+                if overlap % _HOP_SAMPLES:
+                    raise ValueError("Center reference overlap must align to 20 ms")
+                center = np.ascontiguousarray(center[overlap:])
+                block_start += overlap
+            if block_start > track.last_seen_sample:
+                gap = block_start - track.last_seen_sample
+                if gap % _HOP_SAMPLES:
+                    raise ValueError("Center reference gap must align to 20 ms")
+                self._write_center_reference_silence(track_id, track, gap)
+            self._write_center_reference_samples(track_id, track, center)
+            track.last_seen_sample = int(block.end_sample)
+
+    def _write_center_reference_silence(
+        self,
+        track_id: int,
+        track: _Track,
+        sample_count: int,
+    ) -> None:
+        """Fill a known sidecar gap without allocating the full gap at once."""
+
+        remaining = int(sample_count)
+        if remaining <= 0 or remaining % _HOP_SAMPLES:
+            raise ValueError("Center reference silence must contain whole 20 ms hops")
+        chunk = np.zeros(
+            min(remaining, _REFERENCE_GAP_FILL_CHUNK_SAMPLES),
+            dtype=np.float32,
+        )
+        while remaining:
+            count = min(remaining, len(chunk))
+            self._write_center_reference_samples(track_id, track, chunk[:count])
+            remaining -= count
+
+    def _write_center_reference_samples(
+        self,
+        track_id: int,
+        track: _Track,
+        audio: np.ndarray,
+    ) -> None:
+        audio = np.ascontiguousarray(audio, dtype=np.float32)
+        if len(audio) <= 0 or len(audio) % _HOP_SAMPLES:
+            raise ValueError("Center reference write must contain whole 20 ms hops")
+        offset = 0
+        while offset < len(audio):
             if track.segment_samples >= self.segment_samples:
                 self._close_reference_stream(track_id)
             path = self._segment_path(track)
@@ -201,11 +561,14 @@ class AudioIdTracker:
                 self._close_reference_stream(track_id)
                 self._reference_streams[track_id] = path.open("ab", buffering=1 << 20)
                 self._reference_stream_paths[track_id] = path
-            center = np.ascontiguousarray(samples[:, int(channel_index)], dtype=np.float32)
-            self._reference_streams[track_id].write(center.tobytes())
-            track.segment_samples += len(center)
-            track.last_seen_sample = int(block.end_sample)
-            self._update_envelope(track, center)
+            available = self.segment_samples - track.segment_samples
+            count = min(available, len(audio) - offset)
+            piece = audio[offset:offset + count]
+            self._reference_streams[track_id].write(piece.tobytes())
+            track.segment_samples += count
+            track.cached_samples += count
+            offset += count
+        self._update_envelope(track, audio)
 
     def _segment_path(self, track: _Track) -> Path:
         if track.track_id == CENTER_RAW_TRACK_ID:
@@ -225,6 +588,7 @@ class AudioIdTracker:
             if track.track_id not in _REFERENCE_TRACK_IDS:
                 while len(track.segments) > self.retained_segments:
                     track.segments.pop(0).unlink(missing_ok=True)
+                    track.cached_samples -= self.segment_samples
         return track.segments[-1]
 
     @staticmethod
@@ -267,6 +631,7 @@ class AudioIdTracker:
             with path.open("ab") as stream:
                 stream.write(np.ascontiguousarray(audio[offset:offset + count]).tobytes())
             track.segment_samples += count
+            track.cached_samples += count
             offset += count
         self._update_envelope(track, audio, observed_hops=observed_hops)
 
@@ -282,12 +647,14 @@ class AudioIdTracker:
             observed_hops = (True,) * len(hops)
         elif len(observed_hops) != len(hops):
             raise ValueError("Test UI L3 observed-hop mask must align with envelope")
-        track.envelope_peaks.extend(
-            float(item) for item in np.max(np.abs(hops), axis=1)
-        )
-        track.voice_annotations.extend(None for _item in hops)
+        peaks = np.max(np.abs(hops), axis=1)
         if track.track_id in _REFERENCE_TRACK_IDS:
+            if track.reference_envelope is None:
+                track.reference_envelope = _BoundedPeakEnvelope()
+            track.reference_envelope.extend(peaks)
             return
+        track.envelope_peaks.extend(float(item) for item in peaks)
+        track.voice_annotations.extend(None for _item in hops)
         maximum = self.retained_segments * self.segment_samples // _HOP_SAMPLES
         while len(track.envelope_peaks) > maximum:
             track.envelope_peaks.popleft()
@@ -471,7 +838,7 @@ class AudioIdTracker:
 
     @staticmethod
     def _cached_samples(track: _Track) -> int:
-        return sum(path.stat().st_size // np.dtype(np.float32).itemsize for path in track.segments if path.exists())
+        return int(track.cached_samples)
 
     def _should_discard_short_track(self, track: _Track) -> bool:
         return (
@@ -488,8 +855,10 @@ class AudioIdTracker:
                 shutil.rmtree(directory)
         track.segments.clear()
         track.segment_samples = 0
+        track.cached_samples = 0
         track.envelope_peaks.clear()
         track.voice_annotations.clear()
+        track.reference_envelope = None
 
     def _remove_filtered_ended_tracks(self) -> None:
         for track_id, track in tuple(self._tracks.items()):
@@ -499,13 +868,7 @@ class AudioIdTracker:
 
     def _reference_cached_samples(self, track_id: int) -> int:
         track = self._reference_tracks.get(int(track_id))
-        if track is None:
-            return 0
-        prior = sum(
-            path.stat().st_size // np.dtype(np.float32).itemsize
-            for path in track.segments[:-1] if path.exists()
-        )
-        return prior + track.segment_samples
+        return 0 if track is None else int(track.cached_samples)
 
     def _new_track(
         self,
@@ -537,6 +900,7 @@ class AudioIdTracker:
         previews,
         *,
         active_tracks=(),
+        return_snapshot: bool = True,
     ) -> tuple[TrackedAudioSnapshot, ...]:
         """Append exact-ID L3 audio and mirror the L2-owned lifecycle."""
         directions, previews, active_tracks = tuple(directions), tuple(previews), tuple(active_tracks)
@@ -565,6 +929,7 @@ class AudioIdTracker:
             raise ValueError("Test UI tracker cannot combine different L3 modes in one window")
         incoming_mode = None if not preview_modes else next(iter(preview_modes))
         stream = (window.session_id, window.stream_epoch)
+        self._prepare_stream_session(stream)
         with self._lock:
             self._ensure_stream(stream)
             if (
@@ -608,13 +973,14 @@ class AudioIdTracker:
             # A visible row must remain playable for the complete capture
             # session.  Do not prune ENDED tracks behind the UI; reset()/close()
             # release every row and file together at the next session boundary.
-            return self.snapshots()
+            return self._snapshot_rows_locked() if return_snapshot else ()
 
     def consume_stream_batch(
         self,
         batch: TrackAudioBatch,
         *,
         active_tracks=(),
+        return_snapshot: bool = True,
     ) -> tuple[TrackedAudioSnapshot, ...]:
         """Cache the formal compensated stream; no L3 window is reassembled here."""
         active_tracks = tuple(active_tracks)
@@ -627,6 +993,7 @@ class AudioIdTracker:
         if len(modes) > 1:
             raise ValueError("Test UI cannot cache mixed processing modes in one batch")
         incoming_mode = None if not modes else next(iter(modes))
+        self._prepare_stream_session(stream)
         with self._lock:
             self._ensure_stream(stream)
             if (
@@ -699,7 +1066,7 @@ class AudioIdTracker:
                 if track_id not in active_by_id and track.state != "ended":
                     track.state = "ended"
             self._remove_filtered_ended_tracks()
-            return self.snapshots()
+            return self._snapshot_rows_locked() if return_snapshot else ()
 
     def prepend_backfill_hops(
         self,
@@ -707,12 +1074,13 @@ class AudioIdTracker:
         *,
         authoritative_track: object,
         processing_mode: str,
+        return_snapshot: bool = True,
     ) -> tuple[TrackedAudioSnapshot, ...]:
         """Prepend confirmed-ID historical BF slots to the playable L3 row."""
 
         hops = tuple(sorted(hops, key=lambda item: item.start_sample))
         if not hops:
-            return self.snapshots()
+            return self.snapshots() if return_snapshot else ()
         track_id = int(getattr(authoritative_track, "track_id"))
         stream = (hops[0].session_id, hops[0].stream_epoch)
         if any(
@@ -727,6 +1095,7 @@ class AudioIdTracker:
         ):
             raise ValueError("Test UI backfill hops must be contiguous")
 
+        self._prepare_stream_session(stream)
         with self._lock:
             self._ensure_stream(stream)
             track = self._tracks.get(track_id)
@@ -743,7 +1112,7 @@ class AudioIdTracker:
                 self._tracks[track_id] = track
                 self._next_track_id = max(self._next_track_id, track_id + 1)
             elif track.processing_mode != processing_mode:
-                return self.snapshots()
+                return self._snapshot_rows_locked() if return_snapshot else ()
 
             cached_samples = self._cached_samples(track)
             existing_end = track.last_emitted_decision_sample
@@ -756,7 +1125,7 @@ class AudioIdTracker:
                 if existing_start is None or item.end_sample <= existing_start
             )
             if not prefix:
-                return self.snapshots()
+                return self._snapshot_rows_locked() if return_snapshot else ()
 
             existing_audio = np.empty(0, dtype=np.float32)
             existing_annotations = tuple(track.voice_annotations)
@@ -807,7 +1176,7 @@ class AudioIdTracker:
                 getattr(authoritative_track, "decision_sample", prefix[-1].end_sample)
             )
             track.state = "active"
-            return self.snapshots()
+            return self._snapshot_rows_locked() if return_snapshot else ()
 
     def required_context_track_ids(
         self,
@@ -831,6 +1200,8 @@ class AudioIdTracker:
     def apply_l5_annotations(
         self,
         annotations: tuple[TrackVoiceAnnotation, ...],
+        *,
+        return_snapshot: bool = True,
     ) -> tuple[TrackedAudioSnapshot, ...]:
         """Attach formal L5 results to already cached exact-ID 20 ms hops."""
 
@@ -871,7 +1242,7 @@ class AudioIdTracker:
                 updates.append((track, index, annotation))
             for track, index, annotation in updates:
                 track.voice_annotations[index] = annotation
-            return self.snapshots()
+            return self._snapshot_rows_locked() if return_snapshot else ()
 
     def seal_mode(self, next_mode: str | None = None) -> None:
         """Delete the now-hidden mode and start an isolated L3 partition."""
@@ -899,6 +1270,7 @@ class AudioIdTracker:
         sealing: Hub keys include the epoch in which each track was created.
         """
 
+        self.flush_reference_writes(timeout=None)
         with self._lock:
             self._close_reference_streams()
             for track in self._tracks.values():
@@ -924,6 +1296,8 @@ class AudioIdTracker:
     def append_terminal_hops(
         self,
         hops: tuple[TrackAudioHop, ...],
+        *,
+        return_snapshot: bool = True,
     ) -> tuple[TrackedAudioSnapshot, ...]:
         """Append Hub-provided missing tail slots before final capture sealing."""
 
@@ -947,34 +1321,76 @@ class AudioIdTracker:
                 )
                 self._append_audio(track, audio, observed_hops=(bool(hop.observed),))
                 track.last_emitted_decision_sample = int(hop.end_sample)
-            return self.snapshots()
+            return self._snapshot_rows_locked() if return_snapshot else ()
+
+    def _snapshot_rows_locked(self) -> tuple[TrackedAudioSnapshot, ...]:
+        if self._stream is None:
+            return ()
+        tracks = tuple(
+            TrackedAudioSnapshot(
+                self._stream[0], self._stream[1], track.track_id, track.state,
+                track.theta_deg, track.score, self._cached_samples(track),
+                waveform_envelope=tuple(track.envelope_peaks),
+                voice_annotations_20ms=tuple(track.voice_annotations),
+            )
+            for track in sorted(self._tracks.values(), key=lambda item: item.track_id)
+        )
+        references = tuple(
+            TrackedAudioSnapshot(
+                self._stream[0], self._stream[1], track_id, "active",
+                0.0, 0.0, sample_count,
+                waveform_envelope=(
+                    ()
+                    if self._reference_tracks[track_id].reference_envelope is None
+                    else self._reference_tracks[track_id].reference_envelope.snapshot()
+                ),
+            )
+            for track_id in (CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID)
+            if (sample_count := self._reference_cached_samples(track_id)) > 0
+        )
+        return references + tracks
 
     def snapshots(self) -> tuple[TrackedAudioSnapshot, ...]:
+        """Return an immediate projection without touching cached audio files."""
+
         with self._lock:
-            if self._stream is None:
-                return ()
-            tracks = tuple(
-                TrackedAudioSnapshot(
-                    self._stream[0], self._stream[1], track.track_id, track.state,
-                    track.theta_deg, track.score, self._cached_samples(track),
-                    waveform_envelope=tuple(track.envelope_peaks),
-                    voice_annotations_20ms=tuple(track.voice_annotations),
-                )
-                for track in sorted(self._tracks.values(), key=lambda item: item.track_id)
-            )
-            references = tuple(
-                TrackedAudioSnapshot(
-                    self._stream[0], self._stream[1], track_id, "active",
-                    0.0, 0.0, sample_count,
-                    waveform_envelope=tuple(self._reference_tracks[track_id].envelope_peaks),
-                )
-                for track_id in (CENTER_RAW_TRACK_ID, CENTER_IMCRA_TRACK_ID)
-                if (sample_count := self._reference_cached_samples(track_id)) > 0
-            )
-            return references + tracks
+            return self._snapshot_rows_locked()
+
+    def ui_snapshots(
+        self,
+        *,
+        min_interval_seconds: float = 0.1,
+        force: bool = False,
+    ) -> tuple[TrackedAudioSnapshot, ...]:
+        """Return an immutable, rate-limited projection for the Test UI.
+
+        L1 meters and the independent L2 mailbox can still repaint at their
+        configured rates.  Only the full-session waveform DTO projection is
+        capped, so repeated L1 frames reuse the exact same tuple object.
+        """
+
+        interval = float(min_interval_seconds)
+        if not np.isfinite(interval) or interval <= 0.0:
+            raise ValueError("UI snapshot interval must be finite and positive")
+        now = monotonic()
+        with self._lock:
+            if (
+                not force
+                and self._ui_snapshot_cache is not None
+                and self._ui_snapshot_stream == self._stream
+                and now < self._ui_snapshot_deadline
+            ):
+                return self._ui_snapshot_cache
+            rows = self._snapshot_rows_locked()
+            self._ui_snapshot_cache = rows
+            self._ui_snapshot_stream = self._stream
+            self._ui_snapshot_deadline = now + interval
+            return rows
 
     def audio_cache_path(self, track_id: int) -> Path | None:
         """Create a stable bounded snapshot so playback never reads a live file."""
+        if int(track_id) in _REFERENCE_TRACK_IDS:
+            self.flush_reference_writes(timeout=None)
         with self._lock:
             resolved_id = int(track_id)
             track = self._reference_tracks.get(resolved_id, self._tracks.get(resolved_id))
@@ -993,10 +1409,16 @@ class AudioIdTracker:
             return output
 
     def close(self, *, delete_files: bool = True) -> None:
-        with self._lock:
-            self._close_reference_streams()
-            self._tracks.clear()
-            self._reference_tracks.clear()
-            self._stream = None
-            if delete_files and self.cache_root.exists():
-                shutil.rmtree(self.cache_root)
+        with self._reference_writer_lock:
+            self._stop_reference_writer_locked(discard=bool(delete_files))
+            with self._lock:
+                self._close_reference_streams()
+                self._tracks.clear()
+                self._reference_tracks.clear()
+                self._stream = None
+                self._reference_submit_session_id = None
+                self._ui_snapshot_cache = None
+                self._ui_snapshot_stream = None
+                self._ui_snapshot_deadline = 0.0
+                if delete_files and self.cache_root.exists():
+                    shutil.rmtree(self.cache_root)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from common.config import load_config
 from common.data_types import DecisionWindow
@@ -85,25 +87,55 @@ def test_probability_gate_rejects_missing_warming_and_misaligned_hops() -> None:
     assert not missing.allow_srp and not warming_decision.allow_srp and not invalid.allow_srp
 
 
-def test_probability_pipeline_skips_srp_when_closed_and_preserves_audio() -> None:
+@pytest.mark.parametrize("whitening_enabled", [False, True])
+@pytest.mark.parametrize("gate_state", ["closed", "warming_up"])
+def test_probability_pipeline_skips_music_before_gate_opens(
+    whitening_enabled: bool,
+    gate_state: str,
+) -> None:
     class ForbiddenScanner:
         def scan_detailed(self, *args, **kwargs):
-            raise AssertionError("closed probability Gate must skip SRP-PHAT")
+            raise AssertionError("non-open probability Gate must skip MUSIC")
 
     project = load_config(CONFIG, environ={})
     window = _window()
     before = window.samples.copy()
     pipeline = Layer2Pipeline(ProbabilityGate(), ForbiddenScanner())
+    scan_config = replace(
+        DirectionScanConfig.from_project(project),
+        noise_whitening_enabled=whitening_enabled,
+    )
+    probabilities = _probabilities(window, 0.20, 0.30)
+    if gate_state == "warming_up":
+        probabilities = (
+            SourceProbability20ms(
+                window.session_id,
+                window.stream_epoch,
+                window.doa_start_sample,
+                window.doa_start_sample + 960,
+                None,
+                SourceProbabilityState.WARMING_UP,
+                "warming",
+            ),
+            probabilities[1],
+        )
     result = pipeline.process(
         window,
-        _probabilities(window, 0.20, 0.30),
+        probabilities,
         physical_6plus1_geometry(),
-        DirectionScanConfig.from_project(project),
+        scan_config,
         gate_threshold=0.60,
         gate_config_revision=2,
     )
 
     assert result.state is Layer2ExecutionState.BLOCKED
+    expected_gate_state = (
+        ProbabilityGateState.CLOSED
+        if gate_state == "closed"
+        else ProbabilityGateState.WARMING_UP
+    )
+    assert result.gate_decision.state is expected_gate_state
+    assert result.gate_decision.allow_srp is False
     assert result.spatial_response is None
     assert result.candidates == ()
     assert result.search_diagnostics is None

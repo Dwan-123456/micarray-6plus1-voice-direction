@@ -21,6 +21,19 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.3.5`，最近正式架构以`ARCHITECTURE_V1.1_TARGET.md`为权威契约，发布基线为不可变标签`v1.3.3`，实际参数以`config/config.yaml`和代码为准。
 
+## 2026-08-26 — L1/L2长时实时性与Test UI旁路稳定性修复
+
+- **版本、分支与问题定位**：项目保持`1.3.5`开发线，不创建或移动发布标签；在独立分支`codex/l12-realtime-stability`修复真实麦克风长时运行后L1灯条停更、Gate反复`WARMING_UP`及L2吞吐下降。根因不是Gate或MUSIC数学，而是Development Test UI每20 ms在L1线程同步写Center试听文件，同时每帧复制整段历史包络并逐文件`stat()`计算时长；成本随运行时长线性增长，最终填满采集handoff队列并触发真实epoch重置。
+- **L1非阻塞试听旁路**：Center RAW/IMCRA改为容量500的独立有界写入线程；L1只复制选中的单路Center并执行非阻塞投递，不再等待建目录、文件写入或长音频复制。队列满和写入错误只进入`dev_center_reference_writer`/`dev_audio`诊断，不生成`InputHealthEvent`、不修改`processing_error`、不推进正式stream epoch；已知时间轴内的试听丢块以等时静音补位，保持试听长度，不伪造声音内容。
+- **会话、epoch与重播屏障**：正式录音切换、Runtime重启和重播清空统一先停止/丢弃旧代际旁路，再重建缓存；迟到的旧epoch Center块不能把可见stream倒退。Test UI点击“从头重播”只立即清空画面，缓存的权威重置由后台停机屏障在处理线程退出后完成，避免Qt线程与L1写入竞态。原有`STOPPED`状态、逐层运行时长监控和真实采集丢帧/epoch审计逻辑保持不变。
+- **固定成本波形与时长**：Center RAW/IMCRA完整48 kHz PCM仍按原规则保留并可试听；显示包络改为分层max-pool缩略图，任意录制时长最多约1024点并保留峰值。RAW、IMCRA和方向轨的可播放样本数改为写入时维护的O(1)权威计数，普通快照不再访问文件系统；L3/L5高频mutation不再构造未使用DTO。队列丢块后的已知静音缺口固定按1秒小块补齐，小时级缺口也不会一次性申请整段内存。10分钟/30,000-hop虚拟Center快照为938点，200次投影平均`0.406 ms`、最大`0.998 ms`，完整样本数仍为28,800,000。
+- **UI刷新与试听**：L1仪表和独立L2 DOA邮箱继续以50 Hz刷新；只有整轨波形投影限频为10 Hz，并复用同一个不可变tuple跳过相同行重绘。点击长轨试听时，缓存flush/复制移至既有后台命令线程，Qt线程不再冻结；取消、切轨、无缓存、异常和关闭窗口均恢复按钮并清理未接管的临时快照。顶部诊断tooltip新增Center旁路深度、接纳、完成、仅试听丢块和错误。
+- **L1/L2稳定性验证**：新增30,000个连续20 ms块保持epoch 0且零discontinuity；单次真实sequence gap只升一个epoch，默认2.4秒IMCRA预热后持续`ready`；Gate在`warming/closed × Whitening开/关`四组合均不调用MUSIC。独立250-hop/5秒IMCRA三轮耗时`0.849/0.685/0.569 s`，最慢仍为`294.6 Hz`；MUSIC滚动和DPD+Whitening原有硬预算测试继续满足P95不高于15 ms、单次低于20 ms。
+- **自动回归与实机边界**：L1/L2/Runtime/Test UI专项均通过，其中Center tracker专项`27 passed`；项目全量`692 passed, 1 warning`，唯一警告为既有CountNet `torch.jit.load`弃用提示；Ruff、Python编译和`git diff --check`通过。测试全部使用项目`.venv`与Qt offscreen，未弹出Test UI。当前机器检测到两个用户已有Test UI进程占用真实麦克风，因此本分支没有并发抢占设备执行新的10分钟实机复测，不能把本次自动回归写成实机验收。
+- **未改变与资产/数据边界**：L1校准与IMCRA公式、L2 Gate阈值/MUSIC/Whitening/ID数学、L3 BF与Hub音频、L4～L6、正式RecordingStore/Catalog/data schema、Production UI、模型权重和正式运行时长统计均无变化；不提交`data/`、真实录音、试听缓存、日志、基准原始音频或本机配置。无模型、音频fixture或Git LFS对象新增/修改。
+
+---
+
 ## 2026-08-25 — L6输出契约扩展至100并限制MultiStage最多5簇
 
 - **问题与边界**：MultiStage在少于`L=30`条证据时使用距离门限fallback AHC，该第三方fallback不遵守SpectralClusterer的`max_clusters`，实机产生第4簇后触发旧DTO仅允许Speaker 1～3的校验，导致L4/L5成功但最终L6失败。

@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import numpy as np
 
 from common.data_types import TrackedDirection
+import gui.dev_test_ui.audio_id_tracker as audio_id_tracker_module
 from gui.dev_test_ui.audio_id_tracker import (
     AudioIdTracker,
     CENTER_IMCRA_TRACK_ID,
     CENTER_RAW_TRACK_ID,
     _CROSSFADE_SAMPLES,
     _EDGE_FADE_SAMPLES,
+    _REFERENCE_GAP_FILL_CHUNK_SAMPLES,
 )
 from gui.dev_test_ui.contracts import BeamformPreview
+from track_audio_stream import TrackAudioBatch
 
 
 def _direction(
@@ -380,3 +385,398 @@ def test_raw_and_imcra_center_references_are_distinct_full_capture_rows(tmp_path
     np.testing.assert_allclose(imcra, raw * 0.1)
     tracker.close(delete_files=True)
     assert not (tmp_path / "cache").exists()
+
+
+def test_ten_minute_center_reference_thumbnail_is_bounded_and_preserves_peak(
+    tmp_path,
+    monkeypatch,
+):
+    """The exact Center timeline may grow, but its UI DTO must not."""
+
+    class CountingStream:
+        def __init__(self) -> None:
+            self.byte_count = 0
+            self.closed = False
+
+        def write(self, data) -> int:
+            size = len(data)
+            self.byte_count += size
+            return size
+
+        def flush(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    streams: list[CountingStream] = []
+    original_open = Path.open
+
+    def open_counting_stream(path: Path, mode="r", *args, **kwargs):
+        if path.suffix == ".f32" and mode == "ab":
+            stream = CountingStream()
+            streams.append(stream)
+            return stream
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_counting_stream)
+    tracker = AudioIdTracker(
+        "cache",
+        project_root=tmp_path,
+        # One stream is enough for the virtual ten-minute capture.  Segmenting
+        # is orthogonal to the thumbnail bound and would add test-only I/O.
+        segment_seconds=700.0,
+    )
+    hops_per_block = 100
+    block_count = 300
+    samples = np.zeros((hops_per_block * 960, 1), dtype=np.float32)
+    end_sample = 0
+    expected_peak = np.float32(0.875)
+    for block_index in range(block_count):
+        samples.fill(0.0)
+        if block_index == 137:
+            samples[12_345, 0] = expected_peak
+        end_sample += len(samples)
+        tracker.append_center_reference(
+            SimpleNamespace(
+                session_id="ten-minutes",
+                stream_epoch=0,
+                end_sample=end_sample,
+                samples=samples,
+            ),
+            channel_index=0,
+        )
+
+    rows = tracker.snapshots()
+    assert len(rows) == 1
+    assert rows[0].track_id == CENTER_RAW_TRACK_ID
+    assert rows[0].audio_sample_count == 30_000 * 960
+    assert len(rows[0].waveform_envelope) <= 1_024
+    assert max(rows[0].waveform_envelope) == expected_peak
+    assert sum(item.byte_count for item in streams) == 30_000 * 960 * 4
+    tracker.close(delete_files=True)
+
+
+def test_center_snapshot_uses_cached_sample_count_without_path_stat(
+    tmp_path,
+    monkeypatch,
+):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    samples = np.zeros((2 * 960, 1), dtype=np.float32)
+    samples[117, 0] = 0.6
+    tracker.append_center_reference(
+        SimpleNamespace(
+            session_id="session",
+            stream_epoch=0,
+            end_sample=len(samples),
+            samples=samples,
+        ),
+        channel_index=0,
+    )
+
+    with monkeypatch.context() as patch:
+        def fail_stat(*_args, **_kwargs):
+            raise AssertionError("snapshots() must not scan Center cache files")
+
+        patch.setattr(Path, "stat", fail_stat)
+        row = tracker.snapshots()[0]
+
+    assert row.audio_sample_count == 2 * 960
+    assert max(row.waveform_envelope) == np.float32(0.6)
+    tracker.close(delete_files=True)
+
+
+def test_async_center_writer_flushes_and_reset_is_a_generation_barrier(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    writes: list[str] = []
+    original_append = tracker._append_center_reference
+
+    def delayed_append(block, track_id, channel_index):
+        writes.append(str(block.session_id))
+        if block.session_id == "old":
+            entered.set()
+            assert release.wait(5.0)
+        original_append(block, track_id, channel_index)
+
+    tracker._append_center_reference = delayed_append
+    samples = np.full((960, 1), 0.25, dtype=np.float32)
+    old = SimpleNamespace(
+        session_id="old",
+        stream_epoch=0,
+        end_sample=960,
+        samples=samples,
+    )
+    assert tracker.submit_center_reference(old, channel_index=0)
+    assert entered.wait(5.0)
+
+    flush_result: list[bool] = []
+    flush_thread = threading.Thread(
+        target=lambda: flush_result.append(
+            tracker.flush_reference_writes(timeout=5.0)
+        ),
+        daemon=True,
+    )
+    flush_thread.start()
+    reset_thread = threading.Thread(target=tracker.reset, daemon=True)
+    reset_thread.start()
+    assert reset_thread.is_alive()
+    release.set()
+    flush_thread.join(5.0)
+    reset_thread.join(5.0)
+    assert flush_result == [True]
+    assert not reset_thread.is_alive()
+
+    new = SimpleNamespace(
+        session_id="new",
+        stream_epoch=0,
+        end_sample=960,
+        samples=np.full((960, 1), 0.75, dtype=np.float32),
+    )
+    assert tracker.submit_center_reference(new, channel_index=0)
+    assert tracker.flush_reference_writes(timeout=5.0)
+    assert writes == ["old", "new"]
+    row = tracker.snapshots()[0]
+    assert row.session_id == "new"
+    assert row.audio_sample_count == 960
+    assert max(row.waveform_envelope) == np.float32(0.75)
+    status = tracker.reference_writer_status
+    assert status["accepted"] == status["completed"] == 1
+    assert status["dropped"] == 0
+    assert status["error"] is None
+    tracker.close(delete_files=True)
+
+
+def test_full_center_writer_queue_only_increments_ui_drop_counter(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(audio_id_tracker_module, "_REFERENCE_WRITE_QUEUE_BLOCKS", 1)
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    original_append = tracker._append_center_reference
+
+    def delayed_append(block, track_id, channel_index):
+        entered.set()
+        assert release.wait(5.0)
+        original_append(block, track_id, channel_index)
+
+    tracker._append_center_reference = delayed_append
+    samples = np.zeros((960, 1), dtype=np.float32)
+
+    def block(end_sample: int):
+        return SimpleNamespace(
+            session_id="session",
+            stream_epoch=0,
+            end_sample=end_sample,
+            samples=samples,
+        )
+
+    assert tracker.submit_center_reference(block(960), channel_index=0)
+    assert entered.wait(5.0)
+    assert tracker.submit_center_reference(block(1_920), channel_index=0)
+    assert not tracker.submit_center_reference(block(2_880), channel_index=0)
+    status = tracker.reference_writer_status
+    assert status["accepted"] == 2
+    assert status["dropped"] == 1
+    assert status["error"] is None
+
+    release.set()
+    assert tracker.flush_reference_writes(timeout=5.0)
+    assert tracker.submit_center_reference(block(3_840), channel_index=0)
+    assert tracker.flush_reference_writes(timeout=5.0)
+    rows = tracker.snapshots()
+    assert rows[0].session_id == "session"
+    assert rows[0].stream_epoch == 0
+    # The missing UI-only block is represented as silence so playback length
+    # remains aligned to the known L1 timeline without back-pressuring L1.
+    assert rows[0].audio_sample_count == 4 * 960
+    tracker.close(delete_files=True)
+
+
+def test_large_center_reference_gap_is_filled_with_bounded_allocations(
+    tmp_path,
+    monkeypatch,
+):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    first = SimpleNamespace(
+        session_id="session",
+        stream_epoch=0,
+        end_sample=960,
+        samples=np.ones((960, 1), dtype=np.float32),
+    )
+    tracker.append_center_reference(first, channel_index=0)
+
+    write_count = 0
+    written_samples = 0
+    largest_write = 0
+    zero_allocations: list[int] = []
+    original_zeros = np.zeros
+
+    def tracked_zeros(shape, *args, **kwargs):
+        size = int(shape) if np.isscalar(shape) else int(np.prod(shape))
+        zero_allocations.append(size)
+        return original_zeros(shape, *args, **kwargs)
+
+    def count_write(track_id, track, audio):
+        nonlocal write_count, written_samples, largest_write
+        assert track_id == CENTER_RAW_TRACK_ID
+        assert track.track_id == CENTER_RAW_TRACK_ID
+        write_count += 1
+        written_samples += len(audio)
+        largest_write = max(largest_write, len(audio))
+
+    monkeypatch.setattr(audio_id_tracker_module.np, "zeros", tracked_zeros)
+    monkeypatch.setattr(tracker, "_write_center_reference_samples", count_write)
+
+    one_hour_gap = 60 * 60 * 48_000
+    latest = SimpleNamespace(
+        session_id="session",
+        stream_epoch=0,
+        end_sample=960 + one_hour_gap + 960,
+        samples=np.ones((960, 1), dtype=np.float32),
+    )
+    tracker.append_center_reference(latest, channel_index=0)
+
+    assert write_count > 1
+    assert written_samples == one_hour_gap + 960
+    assert largest_write <= _REFERENCE_GAP_FILL_CHUNK_SAMPLES
+    assert zero_allocations == [_REFERENCE_GAP_FILL_CHUNK_SAMPLES]
+    tracker.close(delete_files=True)
+
+
+def test_center_submit_does_not_wait_for_writer_disk_lock(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    submit_finished = threading.Event()
+    original_append = tracker._append_center_reference
+
+    def locked_append(block, track_id, channel_index):
+        with tracker._lock:
+            writer_entered.set()
+            assert release_writer.wait(5.0)
+            original_append(block, track_id, channel_index)
+
+    tracker._append_center_reference = locked_append
+    samples = np.zeros((960, 1), dtype=np.float32)
+
+    def block(end_sample: int):
+        return SimpleNamespace(
+            session_id="session",
+            stream_epoch=0,
+            end_sample=end_sample,
+            samples=samples,
+        )
+
+    assert tracker.submit_center_reference(block(960), channel_index=0)
+    assert writer_entered.wait(5.0)
+
+    def submit_next() -> None:
+        assert tracker.submit_center_reference(block(1_920), channel_index=0)
+        submit_finished.set()
+
+    submitter = threading.Thread(target=submit_next, daemon=True)
+    submitter.start()
+    try:
+        # The writer deliberately owns tracker._lock here.  L1 submission
+        # must use only the independent bounded-mailbox lock and finish.
+        assert submit_finished.wait(2.0)
+    finally:
+        release_writer.set()
+        submitter.join(5.0)
+        assert tracker.flush_reference_writes(timeout=5.0)
+        tracker.close(delete_files=True)
+
+
+def test_late_center_sidecar_cannot_move_visible_epoch_backwards(tmp_path):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+    samples = np.full((960, 1), 0.25, dtype=np.float32)
+    current = SimpleNamespace(
+        session_id="session",
+        stream_epoch=2,
+        end_sample=960,
+        samples=samples,
+    )
+    stale = SimpleNamespace(
+        session_id="session",
+        stream_epoch=1,
+        end_sample=1_920,
+        samples=np.full((960, 1), 0.75, dtype=np.float32),
+    )
+    tracker.append_center_reference(current, channel_index=0)
+    assert tracker.submit_center_reference(stale, channel_index=0)
+    assert tracker.flush_reference_writes(timeout=5.0)
+
+    row = tracker.snapshots()[0]
+    assert (row.session_id, row.stream_epoch) == ("session", 2)
+    assert row.audio_sample_count == 960
+    assert max(row.waveform_envelope) == np.float32(0.25)
+    assert tracker.reference_writer_status["dropped"] == 1
+    tracker.close(delete_files=True)
+
+
+def test_mutation_return_snapshot_false_never_constructs_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+
+    def fail_snapshot():
+        raise AssertionError("return_snapshot=False must skip DTO construction")
+
+    monkeypatch.setattr(tracker, "_snapshot_rows_locked", fail_snapshot)
+    assert tracker.update(
+        _window(7_680), (), (), active_tracks=(), return_snapshot=False,
+    ) == ()
+    empty_batch = TrackAudioBatch("session", 0, 0, 7_680, (), (), ())
+    assert tracker.consume_stream_batch(
+        empty_batch, active_tracks=(), return_snapshot=False,
+    ) == ()
+    assert tracker.prepend_backfill_hops(
+        (),
+        authoritative_track=SimpleNamespace(track_id=1),
+        processing_mode="ds_baseline",
+        return_snapshot=False,
+    ) == ()
+    assert tracker.apply_l5_annotations((), return_snapshot=False) == ()
+    assert tracker.append_terminal_hops((), return_snapshot=False) == ()
+    tracker.close(delete_files=True)
+
+
+def test_ui_snapshots_reuses_tuple_until_deadline_or_force(tmp_path, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(audio_id_tracker_module, "monotonic", lambda: now[0])
+    tracker = AudioIdTracker("cache", project_root=tmp_path)
+
+    def append(end_sample: int, value: float) -> None:
+        tracker.append_center_reference(
+            SimpleNamespace(
+                session_id="session",
+                stream_epoch=0,
+                end_sample=end_sample,
+                samples=np.full((960, 1), value, dtype=np.float32),
+            ),
+            channel_index=0,
+        )
+
+    append(960, 0.25)
+    first = tracker.ui_snapshots(min_interval_seconds=0.1)
+    append(1_920, 0.5)
+    cached = tracker.ui_snapshots(min_interval_seconds=0.1)
+    assert cached is first
+    assert cached[0].audio_sample_count == 960
+
+    forced = tracker.ui_snapshots(min_interval_seconds=0.1, force=True)
+    assert forced is not first
+    assert forced[0].audio_sample_count == 2 * 960
+
+    append(2_880, 0.75)
+    assert tracker.ui_snapshots(min_interval_seconds=0.1) is forced
+    now[0] += 0.101
+    refreshed = tracker.ui_snapshots(min_interval_seconds=0.1)
+    assert refreshed is not forced
+    assert refreshed[0].audio_sample_count == 3 * 960
+    tracker.close(delete_files=True)

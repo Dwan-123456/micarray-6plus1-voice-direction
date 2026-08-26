@@ -5,6 +5,7 @@ import wave
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, current_thread, main_thread
 from types import SimpleNamespace
 
 import numpy as np
@@ -328,6 +329,47 @@ def test_beamform_panel_replaces_single_window_playback_with_downstream_switch(m
     assert not panel.mode_switch.isEnabled()
     panel.deleteLater()
     app.processEvents()
+
+
+def test_beamform_panel_skips_rebuilding_identical_track_projection(monkeypatch):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from gui.dev_test_ui.panels import AudioTrackRow, BeamformPanel
+
+    config = load_config(CONFIG, environ={})
+    app = QApplication.instance() or QApplication([])
+    panel = BeamformPanel(config)
+    snapshot = TrackedAudioSnapshot(
+        "s", 0, 7, "active", 20.0, 0.8, 144_000,
+        waveform_envelope=(0.1, 0.4, 0.2),
+    )
+    projection = (snapshot,)
+    rendered = []
+    original_set_snapshot = AudioTrackRow.set_snapshot
+
+    def record_set_snapshot(self, item, *, playing):
+        rendered.append((item, playing))
+        return original_set_snapshot(self, item, playing=playing)
+
+    monkeypatch.setattr(AudioTrackRow, "set_snapshot", record_set_snapshot)
+    try:
+        panel.set_tracks(projection, show_center_references=True)
+        assert len(rendered) == 1
+
+        # Runtime intentionally reuses the immutable tuple until the next
+        # waveform refresh; frequent L1/L2 paint ticks must remain O(1).
+        panel.set_tracks(projection, show_center_references=True)
+        assert len(rendered) == 1
+
+        panel.set_tracks(tuple([snapshot]), show_center_references=True)
+        assert len(rendered) == 2
+
+        panel.set_tracks(projection, show_center_references=False)
+        assert len(rendered) == 3
+    finally:
+        panel.deleteLater()
+        app.processEvents()
 
 
 def test_performance_tracker_resets_on_epoch_and_observes_rate():
@@ -1997,6 +2039,72 @@ def test_l3_listening_panel_hides_tracks_shorter_than_two_seconds(monkeypatch):
         app.processEvents()
         assert window.bf_panel._track_rows == {}
     finally:
+        window.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize("cache_outcome", ["missing", "error"])
+def test_l3_playback_cache_is_prepared_off_qt_thread_and_recovers(
+    monkeypatch, cache_outcome,
+):
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from gui.dev_test_ui.app import build_window
+
+    app, window = build_window(CONFIG)
+    entered = Event()
+    release = Event()
+    worker_threads = []
+    snapshot = TrackedAudioSnapshot(
+        "s", 0, 7, "ended", 20.0, 0.8, 144_000,
+        waveform_envelope=(0.1, 0.4, 0.2),
+    )
+
+    def slow_cache_path(track_id):
+        assert track_id == 7
+        worker_threads.append(current_thread())
+        entered.set()
+        assert release.wait(timeout=5.0)
+        if cache_outcome == "error":
+            raise RuntimeError("cache preparation failed")
+        return None
+
+    monkeypatch.setattr(
+        window._runtime.dev_audio_tracker, "audio_cache_path", slow_cache_path,
+    )
+    try:
+        window.bf_panel.set_tracks((snapshot,))
+        row = window.bf_panel._track_rows[7]
+        row.play.click()
+
+        # The click returns while the deliberately blocked cache preparation
+        # runs on the command worker, and the selected row remains visibly in
+        # its preparing/playing state.
+        assert window._pending_command is not None
+        name, future, _ = window._pending_command
+        assert name == "准备ID-007试听缓存"
+        assert window._pending_track_audio_id == 7
+        assert window.bf_panel._playing_track_id == 7
+        assert row.play.text() == "Ⅱ"
+        assert entered.wait(timeout=2.0)
+        assert len(worker_threads) == 1
+        assert worker_threads[0] is not main_thread()
+        assert not future.done()
+
+        release.set()
+        future.result(timeout=5.0)
+        window._poll_command()
+
+        assert window._pending_command is None
+        assert window._pending_track_audio_id is None
+        assert window.bf_panel._playing_track_id is None
+        assert row.play.text() == "▶"
+        if cache_outcome == "missing":
+            assert "暂无可播放缓存" in window.statusBar().currentMessage()
+        else:
+            assert "cache preparation failed" in window.statusBar().currentMessage()
+    finally:
+        release.set()
         window.close()
         app.processEvents()
 

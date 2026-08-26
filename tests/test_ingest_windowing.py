@@ -88,6 +88,36 @@ def test_rolling_window_contract_uses_session_epoch_and_absolute_sample():
     assert not hasattr(second, "track_id")
 
 
+def test_ten_minute_contiguous_stream_never_invents_a_discontinuity():
+    """30,000 20 ms blocks model ten minutes without retaining old windows."""
+
+    coordinator = IngestCoordinator(session_id="ten-minute-contiguous")
+    assembler = WindowAssembler()
+    samples = np.zeros((960, 8), dtype=np.float32)
+    final_window = None
+
+    for sequence in range(30_000):
+        decoded = DecodedAudio(
+            samples,
+            48_000,
+            sequence,
+            sequence * 0.02,
+        )
+        block = coordinator.ingest(decoded)
+        assert block.stream_epoch == 0
+        windows = assembler.add(block)
+        assert len(windows) == (0 if sequence < 7 else 1)
+        if windows:
+            final_window = windows[0]
+            assert final_window.stream_epoch == 0
+
+    assert coordinator.stream_epoch == 0
+    assert coordinator.discontinuities == []
+    assert final_window is not None
+    assert (final_window.window_id, final_window.decision_sample) == (29_992, 28_800_000)
+    assert assembler.status.stream_epoch == 0
+
+
 def test_health_event_and_sequence_gap_increment_epoch_only_once():
     coordinator = IngestCoordinator(session_id="test")
     first = coordinator.ingest(frame(0, 0, 960))
