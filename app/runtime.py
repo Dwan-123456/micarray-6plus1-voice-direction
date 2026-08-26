@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import gc
 import queue
+import shutil
 import threading
+import tempfile
 from collections import deque
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -374,7 +377,12 @@ class ApplicationRuntime:
         self._layer4_backends: dict[str, object] = {}
         self._campplus_embedder: CampPlusEmbedder | None = None
         self._campplus_cached_embedder: CachingEmbeddingBackend | None = None
+        # ``_realtime_chunk_seconds`` is the next-generation setting.  The
+        # generation value is frozen at start() so L4 admission and L6 cadence
+        # cannot observe different values if the UI edits the next run after a
+        # completed stop.
         self._realtime_chunk_seconds = int(config.layer4.streaming.chunk_seconds)
+        self._realtime_generation_chunk_seconds: int | None = None
         self.track_audio_stream = TrackAudioStreamHub(
             InputGainCompensationSettings(
                 **config.layer5.input_gain_compensation.model_dump()
@@ -385,6 +393,7 @@ class ApplicationRuntime:
                 if dev_audio_tracker is not None
                 else 0.0
             ),
+            spool_min_free_bytes=config.runtime.layer456_spool_min_free_bytes,
         )
         # Track sealing explicitly rather than inferring it from the Hub's
         # empty tuple.  An empty tuple is also the Hub's reset/default state,
@@ -1123,6 +1132,35 @@ class ApplicationRuntime:
             "last_error": capture_status.get("last_error"),
         }
 
+    def _layer456_resource_snapshot(self) -> dict[str, object]:
+        """Expose bounded-cache and spool-volume headroom for long runs."""
+
+        store = getattr(self.track_audio_stream, "_archive_store", None)
+        spool_root = Path(getattr(store, "root", tempfile.gettempdir()))
+        try:
+            free_bytes: int | None = int(shutil.disk_usage(spool_root).free)
+        except OSError:
+            free_bytes = None
+        reserve = int(self.config.runtime.layer456_spool_min_free_bytes)
+        cached = self._campplus_cached_embedder
+        return {
+            "resident_memory_budget_bytes": int(
+                self.config.runtime.layer456_resident_memory_budget_bytes
+            ),
+            "embedding_cache_segments": (
+                0 if cached is None else int(cached.cached_segments)
+            ),
+            "embedding_cache_max_segments": int(
+                self.config.layer6.embedding_cache_max_segments
+            ),
+            "spool_root": str(spool_root),
+            "spool_free_bytes": free_bytes,
+            "spool_min_free_bytes": reserve,
+            "spool_low_space": (
+                None if free_bytes is None else free_bytes < reserve
+            ),
+        }
+
     @property
     def processing_status(self) -> dict[str, object]:
         snapshots = self._compute_cache.snapshots()
@@ -1191,6 +1229,12 @@ class ApplicationRuntime:
             "l5_skipped": l5_diagnostics["skipped"],
             "l5_actual_hz": l5_diagnostics["actual_hz"],
             "layer456_stream": asdict(realtime),
+            "layer456_resources": self._layer456_resource_snapshot(),
+            "realtime_chunk_seconds": {
+                "configured_default": int(self.config.layer4.streaming.chunk_seconds),
+                "next_generation": self.realtime_chunk_seconds,
+                "active_generation": self.realtime_applied_chunk_seconds,
+            },
             "l5_ui_mailbox_depth": self.latest_l5_dev_ui.qsize(),
             "l5_ui_mailbox_capacity": self.latest_l5_dev_ui.maxsize,
             "l5_ui_mailbox_overwrites": l5_diagnostics["ui_mailbox_overwrites"],
@@ -1416,32 +1460,54 @@ class ApplicationRuntime:
 
     @property
     def realtime_chunk_seconds(self) -> int:
-        """Current L1-to-L6 progressive chunk size in whole seconds."""
+        """Progressive chunk size selected for the next capture generation."""
 
         return self._realtime_chunk_seconds
 
+    @property
+    def realtime_applied_chunk_seconds(self) -> int | None:
+        """Chunk size frozen for the current/most recently completed run."""
+
+        with self._realtime_mode_submission_lock:
+            return self._realtime_generation_chunk_seconds
+
+    def _bound_realtime_chunk_seconds(self) -> int:
+        """Return one generation-consistent chunk size for L4 and L6."""
+
+        with self._realtime_mode_submission_lock:
+            return (
+                self._realtime_generation_chunk_seconds
+                if self._realtime_generation_chunk_seconds is not None
+                else self._realtime_chunk_seconds
+            )
+
+    def _bind_realtime_chunk_generation(self) -> int:
+        """Freeze the next-run setting before either L4 or L6 can start."""
+
+        with self._realtime_mode_submission_lock:
+            self._realtime_generation_chunk_seconds = self._realtime_chunk_seconds
+            return self._realtime_generation_chunk_seconds
+
     def set_realtime_chunk_seconds(self, value: int) -> int:
-        """Apply a new progressive chunk size before formal recording begins."""
+        """Select a progressive chunk size for the next stopped→started run."""
 
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("realtime chunk seconds must be an integer")
         if not 3 <= value <= 15:
             raise ValueError("realtime chunk seconds must be between 3 and 15")
-        if self.runtime_recording_active:
-            raise RuntimeError("正式录音进行中，不能调整伪实时分块")
+        overlap = int(self.config.layer4.streaming.overlap_seconds)
+        if value <= overlap:
+            raise ValueError(
+                "realtime chunk seconds must be greater than the configured overlap"
+            )
         with self._realtime_mode_submission_lock:
-            status = self.realtime_postprocessing.status
-            if status.submitted_blocks > 0:
-                raise RuntimeError("本次正式录音已接纳分块，不能再调整块长")
             if value == self._realtime_chunk_seconds:
                 return value
-
-            was_active = self.realtime_postprocessing.active
-            if was_active and not self.realtime_postprocessing.abort(timeout=30.0):
-                raise RuntimeError("L4-L6处理器仍在退出，分块调整未应用")
+            if self.runtime_recording_active:
+                raise RuntimeError("正式录音进行中，不能调整伪实时分块")
+            if self.active:
+                raise RuntimeError("采集或L4-L6处理仍在运行，停止完成后才能调整块长")
             self._realtime_chunk_seconds = value
-            if was_active:
-                self.realtime_postprocessing.start()
         return value
 
     @property
@@ -1932,10 +1998,12 @@ class ApplicationRuntime:
             # The L4/L5/L6 sidecar owns its model lifecycle independently of
             # the 20 ms graph. It loads lazily only after the first complete
             # configured audio chunk reaches the worker.
-            if self._campplus_cached_embedder is not None:
-                self._campplus_cached_embedder.clear()
-            self.realtime_postprocessing.start()
-            self._start_realtime_chunk_producer()
+            with self._realtime_mode_submission_lock:
+                self._bind_realtime_chunk_generation()
+                if self._campplus_cached_embedder is not None:
+                    self._campplus_cached_embedder.clear()
+                self.realtime_postprocessing.start()
+                self._start_realtime_chunk_producer()
             if not self._ephemeral_live_capture:
                 self.recording_store.start_session(self.coordinator.session_id, metadata)
                 self._recording_session_started = True
@@ -2019,6 +2087,13 @@ class ApplicationRuntime:
             )
             self._processing_threads = alive
             self._processing_thread = alive.get("commit")
+            chunk_worker = self._realtime_chunk_thread
+            if (
+                not self.realtime_postprocessing.active
+                and (chunk_worker is None or not chunk_worker.is_alive())
+            ):
+                with self._realtime_mode_submission_lock:
+                    self._realtime_generation_chunk_seconds = None
             if self._recording_session_started:
                 try:
                     self.recording_store.stop_session("runtime_start_failed")
@@ -2796,7 +2871,7 @@ class ApplicationRuntime:
             ready = set(self._confirmed_backfill_ready_ids)
         if allowed_track_keys is not None:
             ready.intersection_update(allowed_track_keys)
-        chunk_samples = self._realtime_chunk_seconds * 48_000
+        chunk_samples = self._bound_realtime_chunk_seconds() * 48_000
         with self._realtime_mode_submission_lock:
             claim_finalizations = getattr(
                 self.track_audio_stream,
@@ -4444,6 +4519,17 @@ class ApplicationRuntime:
         self._layer3_backfill.clear_cache()
         self.track_audio_stream.reset()
         self._offline_l4_sealed = False
+        self._clear_realtime_postprocessing_references()
+        self._clear_layer456_embedding_cache()
+        self._drain_mailboxes(
+            self.latest_l1,
+            self.latest_windows,
+            self.latest_dev_ui,
+            self.latest_l2_dev_ui,
+            self.latest_l5_dev_ui,
+        )
+        with self._realtime_mode_submission_lock:
+            self._realtime_generation_chunk_seconds = None
         with self._confirmed_backfill_lock:
             self._confirmed_backfill_history.clear()
             self._confirmed_backfill_ids.clear()
@@ -4563,10 +4649,15 @@ class ApplicationRuntime:
             (source.session_id, source.stream_epoch, source.track_id)
             for source in plan.missing_sources
         )
+        generation_chunk_seconds = getattr(
+            self, "_realtime_generation_chunk_seconds", None,
+        )
+        if generation_chunk_seconds is None:
+            generation_chunk_seconds = self._realtime_chunk_seconds
         diagnostics = {
             **track_load_diagnostics(
                 sources,
-                chunk_samples_48k=self._realtime_chunk_seconds * 48_000,
+                chunk_samples_48k=generation_chunk_seconds * 48_000,
             ),
             "reused_track_count": len(plan.reused_track_keys),
             "recomputed_track_count": len(recomputed_keys),
@@ -4615,15 +4706,17 @@ class ApplicationRuntime:
         selected = self.config.layer4.default_backend
         backend = self._get_layer4_backend(selected)
         streaming = self.config.layer4.streaming
+        chunk_samples = self._bound_realtime_chunk_seconds() * 48_000
         return IncrementalLayer456Processor(
             backend=backend,
             layer5=self._layer5,
             quality_scorer=self._get_dnsmos_scorer(),
             embedder=self._get_campplus_cached_embedder(),
             layer6_config=self.config.layer6,
-            chunk_samples_48k=self._realtime_chunk_seconds * 48_000,
+            chunk_samples_48k=chunk_samples,
             overlap_samples_48k=streaming.overlap_seconds * 48_000,
-            l6_interval_samples_48k=self._realtime_chunk_seconds * 48_000,
+            l6_interval_samples_48k=chunk_samples,
+            spool_min_free_bytes=self.config.runtime.layer456_spool_min_free_bytes,
         )
 
     def build_offline_l4_pipeline(self, backend_id: str | None = None) -> OfflineLayer4Pipeline:
@@ -4698,7 +4791,8 @@ class ApplicationRuntime:
         with self._layer4_model_lock:
             if self._campplus_cached_embedder is None:
                 self._campplus_cached_embedder = CachingEmbeddingBackend(
-                    self._get_campplus_embedder()
+                    self._get_campplus_embedder(),
+                    max_segments=self.config.layer6.embedding_cache_max_segments,
                 )
             return self._campplus_cached_embedder
 
@@ -4719,8 +4813,98 @@ class ApplicationRuntime:
             self._get_campplus_cached_embedder(), self.config.layer6,
         )
 
+    @staticmethod
+    def _drain_mailboxes(*mailboxes: object) -> None:
+        """Drop every currently queued reference from queue-like mailboxes."""
+
+        for mailbox in mailboxes:
+            get_nowait = getattr(mailbox, "get_nowait", None)
+            if not callable(get_nowait):
+                continue
+            while True:
+                try:
+                    get_nowait()
+                except queue.Empty:
+                    break
+
+    def _clear_realtime_postprocessing_references(self) -> None:
+        """Release drained sidecar queues/snapshots without racing its worker."""
+
+        service = self.realtime_postprocessing
+        if bool(getattr(service, "active", False)):
+            raise RuntimeError("cannot clear realtime L4-L6 state while its worker is active")
+        lock = getattr(service, "_lock", None)
+        if lock is None:
+            self._drain_mailboxes(
+                getattr(service, "latest", None),
+                self.latest_realtime_postprocessing,
+            )
+            return
+        with lock:
+            thread = getattr(service, "_thread", None)
+            if thread is not None and thread.is_alive():
+                raise RuntimeError("cannot clear realtime L4-L6 state while its worker is active")
+            self._drain_mailboxes(
+                getattr(service, "_mailbox", None),
+                getattr(service, "latest", None),
+                self.latest_realtime_postprocessing,
+            )
+            service._processor = None
+            service._final_snapshot = None
+            service._reuse_snapshot = None
+
+    def _clear_layer456_embedding_cache(self) -> None:
+        with self._layer4_model_lock:
+            if self._campplus_cached_embedder is not None:
+                self._campplus_cached_embedder.clear()
+
+    def _release_layer456_model_references(self) -> None:
+        """Drop Runtime-owned lazy L4/L6 models after all consumers exit."""
+
+        with self._layer4_model_lock:
+            cached = self._campplus_cached_embedder
+            if cached is not None:
+                cached.clear()
+            owned = (
+                *self._layer4_backends.values(),
+                cached,
+                self._campplus_embedder,
+                self._dnsmos_scorer,
+            )
+            self._layer4_backends.clear()
+            self._campplus_cached_embedder = None
+            self._campplus_embedder = None
+            self._dnsmos_scorer = None
+        closed_ids: set[int] = set()
+        for value in owned:
+            if value is None or id(value) in closed_ids:
+                continue
+            closed_ids.add(id(value))
+            close = getattr(value, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    # Dropping the owning reference remains the authoritative
+                    # cleanup path for adapters without a reliable close hook.
+                    pass
+        # Do not keep the last loop item (or the tuple itself) alive across
+        # allocator cleanup; most torch adapters release weights by refcount.
+        value = None
+        owned = ()
+        gc.collect()
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            # CPU-only torch builds and partially initialized CUDA runtimes do
+            # not make application shutdown fail.
+            pass
+
     def close(self, *, delete_dev_test_ui_audio: bool = False) -> None:
         self.stop()
+        sidecar_timeout = float(self.config.runtime.graceful_shutdown_timeout_seconds)
+        self._stop_realtime_chunk_producer(timeout=sidecar_timeout)
+        self.realtime_postprocessing.abort(timeout=sidecar_timeout)
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError(
                 "cannot close RecordingStore while the input worker is still alive"
@@ -4737,6 +4921,19 @@ class ApplicationRuntime:
                 "cannot close runtime while realtime L4-L6 workers are still alive"
             )
         close_error: BaseException | None = None
+        try:
+            self.speaker_counter.close(timeout=sidecar_timeout)
+            counter_thread = getattr(self.speaker_counter, "_thread", None)
+            if counter_thread is not None and counter_thread.is_alive():
+                raise RuntimeError("cannot close runtime while L1 CountNet worker is still alive")
+            counter_queue = getattr(self.speaker_counter, "_queue", None)
+            self._drain_mailboxes(counter_queue)
+            if hasattr(self.speaker_counter, "_model"):
+                self.speaker_counter._model = None
+            if hasattr(self.speaker_counter, "_latest"):
+                self.speaker_counter._latest = None
+        except BaseException as exc:
+            close_error = exc
         # A light command can lazily open CDC before capture starts.  In that
         # state InputPipeline does not own an active hotmap lifecycle, so its
         # stop() has nothing to close; runtime shutdown must still release the
@@ -4755,25 +4952,24 @@ class ApplicationRuntime:
             self.recording_store.close()
         except BaseException as exc:
             close_error = close_error or exc
-        if delete_dev_test_ui_audio:
-            # Drop bounded formal previews and UI snapshot references.
-            for mailbox in (
-                self.latest_l1, self.latest_windows, self.latest_dev_ui,
-                self.latest_l2_dev_ui, self.latest_l5_dev_ui,
-                self._l2_windows, self._l3_windows, self._l3_prepared_windows,
-                self._l3_host_windows,
-                self._l5_windows,
-                self._confirmed_backfill_work,
-                self._completion_results,
-            ):
-                while True:
-                    try:
-                        mailbox.get_nowait()
-                    except queue.Empty:
-                        break
-            self._ui_aggregator = DevUiAggregator(
-                self._performance, stale_after_ms=self.config.dev_test_ui.stale_after_ms
-            )
+        # Runtime close always drops in-memory work and preview references;
+        # ``delete_dev_test_ui_audio`` controls only recoverable scratch files.
+        self._drain_mailboxes(
+            self.latest_l1, self.latest_windows, self.latest_dev_ui,
+            self.latest_l2_dev_ui, self.latest_l5_dev_ui,
+            self._l2_windows, self._l3_windows, self._l3_prepared_windows,
+            self._l3_host_windows,
+            self._l5_windows,
+            self._confirmed_backfill_work,
+            self._completion_results,
+        )
+        with self._completion_backlog_lock:
+            self._completion_backlog.clear()
+        with self._l5_diagnostics_lock:
+            self._l5_completion_times.clear()
+        self._ui_aggregator = DevUiAggregator(
+            self._performance, stale_after_ms=self.config.dev_test_ui.stale_after_ms
+        )
         if not self._processing_threads:
             self._compute_cache.clear("runtime_close")
             self._layer3.clear_cache()
@@ -4784,6 +4980,20 @@ class ApplicationRuntime:
                 self._confirmed_backfill_history.clear()
                 self._confirmed_backfill_ids.clear()
                 self._confirmed_backfill_ready_ids.clear()
+            try:
+                self._clear_realtime_postprocessing_references()
+            except BaseException as exc:
+                close_error = close_error or exc
+            self._release_layer456_model_references()
+            with self._realtime_mode_submission_lock:
+                self._realtime_generation_chunk_seconds = None
+            archive_store = getattr(self.track_audio_stream, "_archive_store", None)
+            retire = getattr(archive_store, "retire", None)
+            if callable(retire):
+                try:
+                    retire()
+                except BaseException as exc:
+                    close_error = close_error or exc
         if self.dev_audio_tracker is not None:
             try:
                 self.dev_audio_tracker.close(delete_files=delete_dev_test_ui_audio)

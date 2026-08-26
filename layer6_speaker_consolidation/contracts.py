@@ -7,6 +7,8 @@ from typing import Mapping
 import numpy as np
 from numpy.typing import NDArray
 
+from common.disk_audio import DiskAudioView, DiskFrameSeries, is_trusted_disk_audio
+
 
 MAX_SESSION_SPEAKERS = 100
 
@@ -26,8 +28,15 @@ def speaker_label(speaker_id: int) -> str:
 
 def _audio(value: NDArray[np.float32], name: str) -> NDArray[np.float32]:
     array = np.asarray(value)
-    if array.ndim != 1 or array.dtype != np.float32 or not array.flags.c_contiguous or not np.isfinite(array).all():
+    if (
+        array.ndim != 1
+        or array.dtype != np.float32
+        or not array.flags.c_contiguous
+        or (not is_trusted_disk_audio(value) and not np.isfinite(array).all())
+    ):
         raise ValueError(f"{name} must be finite C-contiguous float32 mono audio")
+    if isinstance(value, DiskAudioView) and not value.flags.writeable:
+        return value
     result = np.frombuffer(array.tobytes(), dtype=np.float32)
     result.flags.writeable = False
     return result
@@ -90,13 +99,26 @@ class Layer6Fragment:
         if self.start_sample_48k < 0 or self.end_sample_48k <= self.start_sample_48k:
             raise ValueError("L6 fragment timeline is invalid")
         waveform = _audio(self.waveform_16k, "L6 fragment waveform")
-        probabilities = tuple(float(value) for value in self.voice_probabilities_20ms)
-        decisions = tuple(self.voice_is_active_20ms)
+        if isinstance(self.voice_probabilities_20ms, DiskFrameSeries):
+            if self.voice_probabilities_20ms.dtype != np.dtype(np.float32):
+                raise ValueError("L6 disk probabilities must use float32")
+            probabilities = self.voice_probabilities_20ms
+        else:
+            probabilities = tuple(float(value) for value in self.voice_probabilities_20ms)
+        if isinstance(self.voice_is_active_20ms, DiskFrameSeries):
+            if self.voice_is_active_20ms.dtype != np.dtype(np.bool_):
+                raise ValueError("L6 disk decisions must use bool")
+            decisions = self.voice_is_active_20ms
+        else:
+            decisions = tuple(self.voice_is_active_20ms)
         if len(waveform) * 3 != self.end_sample_48k - self.start_sample_48k or len(waveform) % 320:
             raise ValueError("L6 fragment waveform must preserve its complete 20 ms timeline")
         if len(probabilities) != len(waveform) // 320:
             raise ValueError("L6 fragment probabilities must align to 20 ms audio")
-        if len(decisions) != len(probabilities) or any(type(value) is not bool for value in decisions):
+        if len(decisions) != len(probabilities) or (
+            not isinstance(decisions, DiskFrameSeries)
+            and any(type(value) is not bool for value in decisions)
+        ):
             raise ValueError("L6 fragment voice decisions must align to 20 ms audio")
         if type(self.speaker_id) is not int or not 1 <= self.speaker_id <= MAX_SESSION_SPEAKERS:
             raise ValueError("L6 speaker IDs are session-local values 1..100")

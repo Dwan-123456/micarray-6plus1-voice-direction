@@ -80,10 +80,83 @@ def test_realtime_chunk_seconds_can_change_before_formal_recording(tmp_path):
     with pytest.raises(ValueError, match="between 3 and 15"):
         runtime.set_realtime_chunk_seconds(2)
 
+    streaming = runtime.config.layer4.streaming.__class__.model_validate({
+        **runtime.config.layer4.streaming.model_dump(),
+        "chunk_seconds": 4,
+        "overlap_seconds": 3,
+    })
+    runtime.config = runtime.config.model_copy(update={
+        "layer4": runtime.config.layer4.model_copy(update={"streaming": streaming}),
+    })
+    with pytest.raises(ValueError, match="greater than.*overlap"):
+        runtime.set_realtime_chunk_seconds(3)
+
     runtime._ephemeral_live_capture = True
     runtime._ephemeral_recording_active = True
     with pytest.raises(RuntimeError, match="正式录音进行中"):
         runtime.set_realtime_chunk_seconds(10)
+    runtime.close()
+
+
+def test_realtime_chunk_seconds_can_change_after_stopped_generation(tmp_path):
+    runtime = _runtime(tmp_path)
+    service = runtime.realtime_postprocessing
+    runtime.realtime_postprocessing = SimpleNamespace(
+        active=False,
+        status=SimpleNamespace(submitted_blocks=27),
+    )
+    runtime._realtime_generation_chunk_seconds = 4
+
+    assert runtime.set_realtime_chunk_seconds(7) == 7
+    assert runtime.realtime_chunk_seconds == 7
+    assert runtime.realtime_applied_chunk_seconds == 4
+
+    runtime.realtime_postprocessing = service
+    runtime.close()
+
+
+def test_realtime_chunk_seconds_rejects_live_generation_even_before_first_chunk(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime._thread = SimpleNamespace(is_alive=lambda: True)
+
+    with pytest.raises(RuntimeError, match="仍在运行"):
+        runtime.set_realtime_chunk_seconds(7)
+
+    assert runtime.realtime_chunk_seconds == 4
+    runtime._thread = None
+    runtime.close()
+
+
+def test_realtime_chunk_generation_binds_l4_and_l6_together(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path)
+    captured = []
+    backend = object()
+    embedder = object()
+    scorer = object()
+    monkeypatch.setattr(runtime, "_get_layer4_backend", lambda _selected: backend)
+    monkeypatch.setattr(runtime, "_get_campplus_cached_embedder", lambda: embedder)
+    monkeypatch.setattr(runtime, "_get_dnsmos_scorer", lambda: scorer)
+
+    class Processor:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(runtime_module, "IncrementalLayer456Processor", Processor)
+    runtime.set_realtime_chunk_seconds(7)
+    assert runtime._bind_realtime_chunk_generation() == 7
+
+    # A stopped run may be inspected while the next run is already configured.
+    # Its final diagnostics/factory must keep the completed generation value.
+    runtime.set_realtime_chunk_seconds(5)
+    runtime._build_realtime_postprocessor()
+    assert captured[-1]["chunk_samples_48k"] == 7 * 48_000
+    assert captured[-1]["l6_interval_samples_48k"] == 7 * 48_000
+    assert captured[-1]["spool_min_free_bytes"] == 5 * 1024**3
+
+    assert runtime._bind_realtime_chunk_generation() == 5
+    runtime._build_realtime_postprocessor()
+    assert captured[-1]["chunk_samples_48k"] == 5 * 48_000
+    assert captured[-1]["l6_interval_samples_48k"] == 5 * 48_000
     runtime.close()
 
 
@@ -408,6 +481,126 @@ def test_runtime_processing_status_exposes_sidecar_without_changing_window_queue
     assert status["layer456_stream"]["state"] in {"idle", "disabled"}
     assert status["layer456_stream"]["queued_blocks"] == 0
     assert status["stage_alive"]["layer456_stream"] is False
+    assert status["realtime_chunk_seconds"] == {
+        "configured_default": 4,
+        "next_generation": 4,
+        "active_generation": None,
+    }
+    resources = status["layer456_resources"]
+    assert resources["resident_memory_budget_bytes"] == 128 * 1024 * 1024
+    assert resources["embedding_cache_max_segments"] == 600
+    assert resources["embedding_cache_segments"] == 0
+    assert resources["spool_min_free_bytes"] == 5 * 1024**3
+    assert resources["spool_free_bytes"] is None or resources["spool_free_bytes"] >= 0
+    assert resources["spool_low_space"] in {True, False, None}
+    assert runtime.track_audio_stream.spool_min_free_bytes == 5 * 1024**3
+
+
+def test_thirty_minute_equivalent_voiceprint_cache_remains_bounded(tmp_path):
+    runtime = _runtime(tmp_path)
+
+    class Embedder:
+        @staticmethod
+        def embed(waveform):
+            return np.asarray((float(waveform[0]),), dtype=np.float32)
+
+    runtime._campplus_embedder = Embedder()
+    cached = runtime._get_campplus_cached_embedder()
+    for segment_index in range(30 * 60 // 2):
+        cached.embed(np.asarray((segment_index,), dtype=np.float32))
+
+    assert cached.cached_segments == runtime.config.layer6.embedding_cache_max_segments
+    assert cached.cached_segments == 600
+    runtime.close()
+
+
+def test_close_releases_layer456_snapshots_queues_models_and_countnet(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path)
+    events = []
+
+    class Owned:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            events.append(f"close:{self.name}")
+
+    class Cached(Owned):
+        cached_segments = 3
+
+        def clear(self):
+            events.append("clear:cache")
+
+    backend = Owned("l4")
+    cache = Cached("cache")
+    campplus = Owned("campplus")
+    scorer = Owned("dnsmos")
+    runtime._layer4_backends["test"] = backend
+    runtime._campplus_cached_embedder = cache
+    runtime._campplus_embedder = campplus
+    runtime._dnsmos_scorer = scorer
+    runtime.realtime_postprocessing._final_snapshot = object()
+    runtime.realtime_postprocessing._reuse_snapshot = object()
+    runtime.latest_realtime_postprocessing.put_nowait(object())
+    runtime.latest_l1.put_nowait(object())
+    runtime.latest_dev_ui.put_nowait(object())
+    runtime._completion_backlog.append(object())
+    monkeypatch.setattr(runtime.speaker_counter, "close", lambda timeout: events.append("countnet"))
+    monkeypatch.setattr(runtime_module.torch.cuda, "empty_cache", lambda: events.append("cuda"))
+
+    runtime.close()
+
+    assert runtime.realtime_postprocessing._final_snapshot is None
+    assert runtime.realtime_postprocessing._reuse_snapshot is None
+    assert runtime.latest_realtime_postprocessing.empty()
+    assert runtime.latest_l1.empty()
+    assert runtime.latest_dev_ui.empty()
+    assert not runtime._completion_backlog
+    assert runtime._layer4_backends == {}
+    assert runtime._campplus_cached_embedder is None
+    assert runtime._campplus_embedder is None
+    assert runtime._dnsmos_scorer is None
+    assert runtime.realtime_applied_chunk_seconds is None
+    assert events.count("clear:cache") == 1
+    assert set(events) >= {
+        "countnet", "close:l4", "close:cache", "close:campplus", "close:dnsmos", "cuda",
+    }
+
+
+def test_close_joins_live_chunk_model_and_countnet_workers(tmp_path):
+    runtime = _runtime(tmp_path)
+    finalized = Event()
+
+    class Processor:
+        @staticmethod
+        def finalize():
+            finalized.set()
+            return None
+
+        @staticmethod
+        def abort():
+            return None
+
+    runtime.realtime_postprocessing._factory = Processor
+    runtime._bind_realtime_chunk_generation()
+    runtime.realtime_postprocessing.start()
+    runtime._start_realtime_chunk_producer()
+    runtime.speaker_counter.set_enabled(True)
+    model_worker = runtime.realtime_postprocessing._thread
+    chunk_worker = runtime._realtime_chunk_thread
+    countnet_worker = runtime.speaker_counter._thread
+    assert model_worker is not None and model_worker.is_alive()
+    assert chunk_worker is not None and chunk_worker.is_alive()
+    assert countnet_worker is not None and countnet_worker.is_alive()
+
+    runtime.close()
+
+    assert finalized.is_set()
+    assert not model_worker.is_alive()
+    assert not chunk_worker.is_alive()
+    assert not countnet_worker.is_alive()
+    assert runtime._realtime_chunk_thread is None
+    assert not runtime.realtime_postprocessing.active
 
 
 def test_l3_handoff_only_signals_the_async_chunk_owner(tmp_path):

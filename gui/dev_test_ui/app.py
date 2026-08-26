@@ -1192,8 +1192,8 @@ def build_window(
             self.stop_button.setEnabled(runtime.active and not busy)
             self.realtime_chunk_slider.setEnabled(
                 not busy
+                and not runtime.active
                 and not runtime.runtime_recording_active
-                and runtime.realtime_postprocessing.status.submitted_blocks == 0
             )
             for backend_id, button in self.l4_panel.backend_buttons.items():
                 button.setEnabled(

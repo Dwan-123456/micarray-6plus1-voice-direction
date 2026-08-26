@@ -50,6 +50,8 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.runtime.l3_cuda_batch_wait_ms == 0.0
     assert config.runtime.l4_device == "cuda"
     assert config.runtime.l5_device == "cpu"
+    assert config.runtime.layer456_resident_memory_budget_bytes == 128 * 1024 * 1024
+    assert config.runtime.layer456_spool_min_free_bytes == 5 * 1024**3
     assert AudioConfig.from_project(config).block_size == 960
     assert AudioConfig.from_project(config).handoff_blocks == 500
     assert CdcConfig.from_project(config).required is False
@@ -90,6 +92,7 @@ def test_root_config_is_valid_and_builds_layer1_adapters():
     assert config.layer4.streaming.overlap_seconds == 1
     assert config.layer4.streaming.queue_chunks == 2
     assert config.layer6.maximum_speakers == 5
+    assert config.layer6.embedding_cache_max_segments == 600
     assert config.layer1_speaker_count.model_sha256 == "f655f168bbd9091efd18b950e63484825ba68052a911331cab1e845e27e505e4"
     assert config.recording.runtime.record_imcra is True
     assert config.recording.runtime.record_noise_spectrum is True

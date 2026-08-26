@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from bisect import bisect_left
 from collections import deque
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
-import hashlib
 import threading
 
 import numpy as np
+
+from common.disk_audio import (
+    DiskAudioStore,
+    DiskFloat32Spool,
+    DiskUInt8Series,
+    DiskUInt8Timeline,
+)
 
 from layer5_voice_classifier.gain_compensation import (
     InputGainCompensationDiagnostic,
@@ -42,7 +48,7 @@ class _ArchivedHop:
     end_sample: int
     theta_deg: float
     l2_direction_count: int
-    waveform: np.ndarray
+    waveform: np.ndarray | None = None
 
 
 @dataclass(slots=True)
@@ -52,7 +58,6 @@ class _L2TrackTimeline:
     end_sample: int
     theta_deg: float
     ever_formal: bool = False
-    direction_counts: dict[int, int] = field(default_factory=dict)
     active: bool = True
     inactive_since_sample: int | None = None
     observed_through_sample: int = 0
@@ -64,8 +69,52 @@ class _StreamingChunkPlan:
     start_sample: int
     end_sample: int
     theta_deg: float
-    hops: tuple[_ArchivedHop, ...]
-    direction_counts: dict[int, int]
+    direction_counts: tuple[int, ...]
+    waveform_spool: DiskFloat32Spool
+    waveform_origin_sample: int
+
+
+class _DirectionCountSeries(Sequence[tuple[int, int]]):
+    """Lazy 20 ms direction-count history backed by one byte per hop."""
+
+    _disk_direction_trusted = True
+
+    def __init__(
+        self,
+        values: DiskUInt8Series,
+        *,
+        start_sample: int,
+        hop_samples: int = _HOP_SAMPLES,
+        maximum_count: int = 3,
+    ) -> None:
+        self.values = values
+        self.start_sample = int(start_sample)
+        self.hop_samples = int(hop_samples)
+        self.maximum_count = int(maximum_count)
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def __iter__(self) -> Iterator[tuple[int, int]]:
+        for index, count in enumerate(self.values):
+            yield self.start_sample + (index + 1) * self.hop_samples, int(count)
+
+    def __getitem__(self, index: int | slice):
+        if isinstance(index, slice):
+            return tuple(self)[index]
+        resolved = index + len(self) if index < 0 else index
+        if resolved < 0 or resolved >= len(self):
+            raise IndexError("direction-count history index out of range")
+        return (
+            self.start_sample + (resolved + 1) * self.hop_samples,
+            int(self.values[resolved]),
+        )
+
+    def __eq__(self, other: object) -> bool:
+        try:
+            return tuple(self) == tuple(other)  # type: ignore[arg-type]
+        except TypeError:
+            return False
 
 
 def _combined_diagnostic(
@@ -96,6 +145,7 @@ class TrackAudioStreamHub:
         context_ms: int = 3_200,
         minimum_output_seconds: float = 0.0,
         ended_track_grace_ms: int = 1_000,
+        spool_min_free_bytes: int = 0,
     ) -> None:
         if context_ms < 60 or context_ms % 20:
             raise ValueError("continuous track context must be >=60 ms on the 20 ms grid")
@@ -112,10 +162,28 @@ class TrackAudioStreamHub:
         ):
             raise ValueError("ended track grace must be a non-negative 20 ms multiple")
         self.ended_track_grace_samples = ended_track_grace_ms * 48
+        if type(spool_min_free_bytes) is not int or spool_min_free_bytes < 0:
+            raise ValueError("track archive disk reserve must be a non-negative integer")
+        self.spool_min_free_bytes = spool_min_free_bytes
         self._tracks: dict[tuple[str, int, int], _TrackState] = {}
         self._archive: dict[tuple[str, int, int], list[_ArchivedHop]] = {}
+        self._archive_store = DiskAudioStore(
+            prefix="micarray_track_hub_",
+            minimum_free_bytes=self.spool_min_free_bytes,
+        )
+        self._archive_audio: dict[
+            tuple[str, int, int], DiskFloat32Spool
+        ] = {}
+        self._audio_presence: dict[
+            tuple[str, int, int], DiskUInt8Timeline
+        ] = {}
+        self._direction_counts: dict[
+            tuple[str, int, int], DiskUInt8Timeline
+        ] = {}
+        self._archive_origins: dict[tuple[str, int, int], int] = {}
         self._archive_modes: dict[tuple[str, int, int], str] = {}
         self._l2_timelines: dict[tuple[str, int, int], _L2TrackTimeline] = {}
+        self._active_timeline_keys: set[tuple[str, int, int]] = set()
         self._emitted_ends: dict[tuple[str, int, int], int] = {}
         self._streaming_cursors: dict[tuple[str, int, int], int] = {}
         self._streaming_claims: dict[
@@ -124,20 +192,199 @@ class TrackAudioStreamHub:
         self._streaming_finalization_claims: set[tuple[str, int, int]] = set()
         self._streaming_finalized_tracks: set[tuple[str, int, int]] = set()
         self._sealed: tuple[Layer4LongAudioInput, ...] = ()
+        self._seal_complete = False
         self._lock = threading.RLock()
 
     def reset(self) -> None:
         with self._lock:
+            previous_store = self._archive_store
+            self._archive_store = DiskAudioStore(
+                prefix="micarray_track_hub_",
+                minimum_free_bytes=self.spool_min_free_bytes,
+            )
             self._tracks.clear()
             self._archive.clear()
+            self._archive_audio.clear()
+            self._audio_presence.clear()
+            self._direction_counts.clear()
+            self._archive_origins.clear()
             self._archive_modes.clear()
             self._l2_timelines.clear()
+            self._active_timeline_keys.clear()
             self._emitted_ends.clear()
             self._streaming_cursors.clear()
             self._streaming_claims.clear()
             self._streaming_finalization_claims.clear()
             self._streaming_finalized_tracks.clear()
             self._sealed = ()
+            self._seal_complete = False
+        previous_store.retire()
+
+    @staticmethod
+    def _close_spool(spool: object | None) -> None:
+        if spool is None:
+            return
+        spool.close()  # type: ignore[attr-defined]
+
+    def _clear_archive_generation(
+        self,
+        key: tuple[str, int, int],
+        *,
+        clear_timeline: bool,
+    ) -> None:
+        """Drop one mutable mode generation without touching published snapshots."""
+
+        self._archive.pop(key, None)
+        self._close_spool(self._archive_audio.pop(key, None))
+        self._close_spool(self._audio_presence.pop(key, None))
+        self._close_spool(self._direction_counts.pop(key, None))
+        self._archive_origins.pop(key, None)
+        self._archive_modes.pop(key, None)
+        self._emitted_ends.pop(key, None)
+        self._streaming_cursors.pop(key, None)
+        self._streaming_claims.pop(key, None)
+        self._streaming_finalization_claims.discard(key)
+        self._streaming_finalized_tracks.discard(key)
+        if clear_timeline:
+            self._l2_timelines.pop(key, None)
+            self._active_timeline_keys.discard(key)
+
+    def _archive_origin(
+        self,
+        key: tuple[str, int, int],
+        start_sample: int | None = None,
+    ) -> int:
+        origin = self._archive_origins.get(key)
+        if origin is None:
+            if start_sample is None or start_sample < 0 or start_sample % _HOP_SAMPLES:
+                raise ValueError("track archive origin must be a non-negative 20 ms boundary")
+            origin = start_sample
+            self._archive_origins[key] = origin
+        elif start_sample is not None and start_sample < origin:
+            self._prepend_archive_origin(key, start_sample)
+            origin = start_sample
+        return origin
+
+    def _prepend_archive_origin(
+        self,
+        key: tuple[str, int, int],
+        new_origin: int,
+    ) -> None:
+        """Rebase one short pre-confirmation history without loading the track."""
+
+        old_origin = self._archive_origins.get(key)
+        if (
+            old_origin is None
+            or new_origin < 0
+            or new_origin >= old_origin
+            or (old_origin - new_origin) % _HOP_SAMPLES
+        ):
+            raise ValueError("track archive prepend origin is invalid")
+        delta_samples = old_origin - new_origin
+        delta_slots = delta_samples // _HOP_SAMPLES
+
+        old_audio = self._archive_audio.get(key)
+        if old_audio is not None:
+            replacement = self._archive_store.create_spool(
+                f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_rebased"
+            )
+            zeros = np.zeros(min(delta_samples, 1_048_576), dtype=np.float32)
+            remaining = delta_samples
+            while remaining:
+                count = min(remaining, len(zeros))
+                replacement.append(zeros[:count])
+                remaining -= count
+            if old_audio.length_samples:
+                old_audio.copy_range_to(
+                    0,
+                    old_audio.length_samples,
+                    replacement,
+                    destination_start_sample=delta_samples,
+                )
+            old_audio.close()
+            self._archive_audio[key] = replacement
+
+        for timelines in (self._direction_counts, self._audio_presence):
+            old_timeline = timelines.get(key)
+            if old_timeline is None:
+                continue
+            payload = (
+                old_timeline.read_range(0, old_timeline.disk_bytes)
+                if old_timeline.disk_bytes
+                else b""
+            )
+            replacement_timeline = self._archive_store.create_u8_timeline(
+                f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_rebased_meta"
+            )
+            if payload:
+                replacement_timeline.write_range(delta_slots, payload)
+            old_timeline.close()
+            timelines[key] = replacement_timeline
+        self._archive_origins[key] = new_origin
+
+    def _relative_sample(
+        self,
+        key: tuple[str, int, int],
+        sample: int,
+    ) -> int:
+        relative = sample - self._archive_origin(key, sample)
+        if relative < 0 or relative % _HOP_SAMPLES:
+            raise ValueError("track archive sample must align to its disk origin")
+        return relative
+
+    def _audio_spool(self, key: tuple[str, int, int]) -> DiskFloat32Spool:
+        spool = self._archive_audio.get(key)
+        if spool is None:
+            spool = self._archive_store.create_spool(
+                f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}"
+            )
+            self._archive_audio[key] = spool
+        return spool
+
+    def _direction_spool(self, key: tuple[str, int, int]) -> DiskUInt8Timeline:
+        spool = self._direction_counts.get(key)
+        if spool is None:
+            spool = self._archive_store.create_u8_timeline(
+                f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_directions"
+            )
+            self._direction_counts[key] = spool
+        return spool
+
+    def _presence_spool(self, key: tuple[str, int, int]) -> DiskUInt8Timeline:
+        spool = self._audio_presence.get(key)
+        if spool is None:
+            spool = self._archive_store.create_u8_timeline(
+                f"session_{key[0]}_epoch_{key[1]}_track_{key[2]}_presence"
+            )
+            self._audio_presence[key] = spool
+        return spool
+
+    def _slot_index(self, key: tuple[str, int, int], start_sample: int) -> int:
+        return self._relative_sample(key, start_sample) // _HOP_SAMPLES
+
+    def _has_audio(self, key: tuple[str, int, int], start_sample: int) -> bool:
+        presence = self._audio_presence.get(key)
+        origin = self._archive_origins.get(key)
+        if presence is None or origin is None or start_sample < origin:
+            return False
+        relative = start_sample - origin
+        if relative % _HOP_SAMPLES:
+            raise ValueError("track archive slot must align to its disk origin")
+        return bool(presence.get(relative // _HOP_SAMPLES, 0))
+
+    def _direction_series(
+        self,
+        key: tuple[str, int, int],
+        start_sample: int,
+        end_sample: int,
+    ) -> _DirectionCountSeries:
+        return _DirectionCountSeries(
+            self._direction_spool(key).series(
+                self._slot_index(key, start_sample),
+                self._slot_index(key, end_sample),
+            ),
+            start_sample=start_sample,
+        )
 
     def observe_l2(
         self,
@@ -178,7 +425,11 @@ class TrackAudioStreamHub:
             for _, track_id, _ in observed
         }
         with self._lock:
-            for key, timeline in self._l2_timelines.items():
+            for key in tuple(self._active_timeline_keys):
+                timeline = self._l2_timelines.get(key)
+                if timeline is None:
+                    self._active_timeline_keys.discard(key)
+                    continue
                 if (
                     key[:2] != (session_id, stream_epoch)
                     or timeline.processing_mode != processing_mode
@@ -191,6 +442,12 @@ class TrackAudioStreamHub:
                 if key not in active_keys and timeline.active:
                     timeline.active = False
                     timeline.inactive_since_sample = decision_sample
+                elif (
+                    key not in active_keys
+                    and not timeline.active
+                    and self._timeline_ready_for_early_finalization(timeline)
+                ):
+                    self._active_timeline_keys.discard(key)
 
             for track_state, track_id, theta_deg in observed:
                 key = (session_id, stream_epoch, track_id)
@@ -200,16 +457,19 @@ class TrackAudioStreamHub:
                     # same authoritative ID.  Any incremental consumer cursor
                     # belongs to the discarded old-mode archive and must not
                     # hide the beginning of the replacement stream.
-                    self._streaming_cursors.pop(key, None)
-                    self._streaming_claims.pop(key, None)
-                    self._streaming_finalization_claims.discard(key)
-                    self._streaming_finalized_tracks.discard(key)
+                    if timeline is not None or (
+                        key in self._archive_modes
+                        and self._archive_modes[key] != processing_mode
+                    ):
+                        self._clear_archive_generation(key, clear_timeline=False)
                     timeline = _L2TrackTimeline(
                         processing_mode, start_sample, end_sample, theta_deg,
                         track_state in {"confirmed", "coasting"},
                         observed_through_sample=decision_sample,
                     )
                     self._l2_timelines[key] = timeline
+                    self._archive_origin(key, start_sample)
+                    self._archive_modes[key] = processing_mode
                 else:
                     if end_sample <= timeline.end_sample:
                         raise ValueError("L2 track timeline must be strictly ordered per ID")
@@ -219,7 +479,11 @@ class TrackAudioStreamHub:
                     timeline.active = True
                     timeline.inactive_since_sample = None
                     timeline.observed_through_sample = decision_sample
-                timeline.direction_counts[end_sample] = l2_direction_count
+                self._direction_spool(key).set(
+                    self._slot_index(key, start_sample),
+                    l2_direction_count,
+                )
+                self._active_timeline_keys.add(key)
 
     @property
     def gain_compensation_enabled(self) -> bool:
@@ -304,6 +568,17 @@ class TrackAudioStreamHub:
             segment_count=1,
             initial_gain_db=state.previous_gain_db,
         )
+        # Persist the canonical audio and metadata before advancing any in-memory
+        # state.  A disk-full/short-write failure is therefore retryable at the
+        # same absolute hop without corrupting gain continuity or cursors.
+        relative_start = self._relative_sample(key, start_sample)
+        self._audio_spool(key).write_at(relative_start, compensated)
+        direction_spool = self._direction_spool(key)
+        slot_index = relative_start // _HOP_SAMPLES
+        if direction_spool.get(slot_index, 0) == 0:
+            direction_spool.set(slot_index, l2_direction_count)
+        self._presence_spool(key).set(slot_index, 1)
+
         state.previous_gain_db = diagnostic.final_gain_db
         state.audio.append(compensated)
         state.probabilities.append(probability)
@@ -313,10 +588,12 @@ class TrackAudioStreamHub:
             state.probabilities.popleft()
             state.diagnostics.popleft()
         state.last_emitted_end = end_sample
-        self._archive.setdefault(key, []).append(_ArchivedHop(
-            start_sample, end_sample, theta_deg, l2_direction_count,
-            np.frombuffer(compensated.tobytes(), dtype=np.float32),
+        archive = self._archive.setdefault(key, [])
+        archive.append(_ArchivedHop(
+            start_sample, end_sample, theta_deg, l2_direction_count, compensated,
         ))
+        if len(archive) > self.max_hops:
+            del archive[:-self.max_hops]
         self._archive_modes[key] = state.processing_mode
         self._emitted_ends[key] = end_sample
         return TrackAudioHop(
@@ -372,6 +649,11 @@ class TrackAudioStreamHub:
                 key = (session_id, stream_epoch, window.track_id)
                 state = self._tracks.get(key)
                 if state is None:
+                    if (
+                        key in self._archive_modes
+                        and self._archive_modes[key] != window.processing_mode
+                    ):
+                        self._clear_archive_generation(key, clear_timeline=False)
                     state = _TrackState(window.processing_mode)
                     self._tracks[key] = state
                 elif state.processing_mode != window.processing_mode:
@@ -382,13 +664,14 @@ class TrackAudioStreamHub:
                     # UI switches mode, the old-mode waveform is no longer
                     # displayed and must not remain in the offline L4 archive
                     # under the same authoritative ID.
-                    self._archive.pop(key, None)
-                    self._archive_modes.pop(key, None)
-                    self._emitted_ends.pop(key, None)
-                    self._streaming_cursors.pop(key, None)
-                    self._streaming_claims.pop(key, None)
-                    self._streaming_finalization_claims.discard(key)
-                    self._streaming_finalized_tracks.discard(key)
+                    # observe_l2() normally rotates the generation first and
+                    # writes the new mode's direction slot.  Do not erase that
+                    # freshly prepared metadata when the first L3 window lands.
+                    if self._archive_modes.get(key) != window.processing_mode:
+                        self._clear_archive_generation(key, clear_timeline=False)
+                        first_start = window.decision_sample - 2 * _HOP_SAMPLES
+                        self._archive_origin(key, first_start)
+                        self._archive_modes[key] = window.processing_mode
                 previous = state.last_source_decision
                 if previous is not None and window.decision_sample <= previous:
                     raise ValueError("track-audio windows must be strictly ordered per ID")
@@ -485,15 +768,15 @@ class TrackAudioStreamHub:
         ):
             raise ValueError("backfill windows must belong to one exact ID and L3 mode")
         with self._lock:
-            existing = {
-                item.start_sample
-                for item in self._archive.get(key, ())
-                if self._archive_modes.get(key, mode) == mode
-            }
+            if self._archive_modes.get(key, mode) != mode:
+                return windows
             return tuple(
                 item
                 for item in windows
-                if item.decision_sample - 2 * _HOP_SAMPLES not in existing
+                if not self._has_audio(
+                    key,
+                    item.decision_sample - 2 * _HOP_SAMPLES,
+                )
             )
 
     def missing_backfill_decisions(
@@ -511,11 +794,15 @@ class TrackAudioStreamHub:
         if not processing_mode:
             raise ValueError("backfill L3 mode must be non-empty")
         with self._lock:
-            occupied = {item.start_sample for item in self._archive.get(key, ())}
+            if self._archive_modes.get(key, processing_mode) != processing_mode:
+                return tuple(int(item) for item in decision_samples)
             return tuple(
                 int(decision)
                 for decision in decision_samples
-                if int(decision) - 2 * _HOP_SAMPLES not in occupied
+                if not self._has_audio(
+                    key,
+                    int(decision) - 2 * _HOP_SAMPLES,
+                )
             )
 
     def insert_backfill(
@@ -550,17 +837,18 @@ class TrackAudioStreamHub:
             timeline = self._l2_timelines.get(key)
             if timeline is None or not timeline.ever_formal:
                 raise ValueError("backfill requires an already confirmed authoritative ID")
-            if self._archive.get(key) and self._archive_modes.get(key) != mode:
+            if self._archive_modes.get(key, mode) != mode:
                 return ()
+            self._archive_origin(key, timeline.first_start_sample)
+            self._archive_modes[key] = mode
             archive = self._archive.setdefault(key, [])
-            occupied = {item.start_sample for item in archive}
             previous_gain_db = 0.0
             previous_end: int | None = None
             for window in windows:
                 source_decision = window.decision_sample
                 start_sample = source_decision - 2 * _HOP_SAMPLES
                 end_sample = source_decision - _HOP_SAMPLES
-                if start_sample in occupied:
+                if self._has_audio(key, start_sample):
                     continue
                 recovered = self._extract_hop(window, source_decision)
                 if recovered is None:
@@ -581,18 +869,25 @@ class TrackAudioStreamHub:
                     end_sample,
                     window.theta_deg,
                     l2_direction_count,
-                    np.frombuffer(compensated.tobytes(), dtype=np.float32),
+                    compensated,
                 )
+                relative_start = self._relative_sample(key, start_sample)
+                self._audio_spool(key).write_at(relative_start, compensated)
+                direction_spool = self._direction_spool(key)
+                direction_index = relative_start // _HOP_SAMPLES
+                if direction_spool.get(direction_index, 0) == 0:
+                    direction_spool.set(direction_index, l2_direction_count)
+                self._presence_spool(key).set(direction_index, 1)
                 archive.append(archived)
-                occupied.add(start_sample)
                 previous_end = end_sample
                 timeline.first_start_sample = min(timeline.first_start_sample, start_sample)
-                timeline.direction_counts.setdefault(end_sample, l2_direction_count)
                 emitted.append(TrackAudioHop(
                     key[0], key[1], key[2], start_sample, end_sample,
                     compensated, probability, True,
                 ))
             archive.sort(key=lambda item: item.start_sample)
+            if len(archive) > self.max_hops:
+                del archive[:-self.max_hops]
             if archive:
                 self._archive_modes[key] = mode
             return tuple(emitted)
@@ -615,36 +910,41 @@ class TrackAudioStreamHub:
         ):
             raise ValueError("streaming L4 chunk must align to complete 20 ms hops")
 
-        archived_by_start: dict[int, _ArchivedHop] = {}
-        for hop in plan.hops:
-            if hop.start_sample >= end_sample:
-                break
-            if (
-                hop.end_sample - hop.start_sample != _HOP_SAMPLES
-                or hop.start_sample % _HOP_SAMPLES
-            ):
-                raise ValueError("archived L3 track hops must align to 20 ms")
-            if hop.start_sample in archived_by_start:
-                raise ValueError("archived L3 track hops must not overlap")
-            archived_by_start[hop.start_sample] = hop
+        slot_count = (end_sample - start_sample) // _HOP_SAMPLES
+        if len(plan.direction_counts) != slot_count:
+            raise ValueError("streaming L4 direction history does not cover its chunk")
+        direction_counts = tuple(
+            (
+                start_sample + (index + 1) * _HOP_SAMPLES,
+                int(count),
+            )
+            for index, count in enumerate(plan.direction_counts)
+        )
 
-        audio: list[np.ndarray] = []
-        direction_counts: list[tuple[int, int]] = []
-        for slot_start in range(start_sample, end_sample, _HOP_SAMPLES):
-            slot_end = slot_start + _HOP_SAMPLES
-            hop = archived_by_start.get(slot_start)
-            if hop is None:
-                audio.append(np.zeros(_HOP_SAMPLES, dtype=np.float32))
-                direction_count = plan.direction_counts.get(slot_end, 0)
-            else:
-                audio.append(hop.waveform)
-                direction_count = plan.direction_counts.get(
-                    slot_end, hop.l2_direction_count,
-                )
-            direction_counts.append((slot_end, direction_count))
-
-        waveform = np.ascontiguousarray(np.concatenate(audio), dtype=np.float32)
-        digest = hashlib.sha256(waveform.tobytes()).hexdigest()
+        # A claim is a content-addressed immutable retry token.  Copy only this
+        # bounded 3-15 second interval into its own short-lived store instead of
+        # exposing the mutable capture archive mmap.
+        relative_start = start_sample - plan.waveform_origin_sample
+        relative_end = end_sample - plan.waveform_origin_sample
+        snapshot_store = DiskAudioStore(
+            prefix="micarray_track_chunk_",
+            minimum_free_bytes=plan.waveform_spool.owner.minimum_free_bytes,
+        )
+        snapshot = snapshot_store.create_spool("immutable_chunk")
+        try:
+            plan.waveform_spool.ensure_length(relative_end)
+            plan.waveform_spool.copy_range_to(
+                relative_start,
+                relative_end,
+                snapshot,
+            )
+            snapshot.close()
+            waveform = snapshot.view(0, relative_end - relative_start)
+            digest = snapshot.digest(0, relative_end - relative_start)
+        except BaseException:
+            snapshot_store.retire()
+            raise
+        snapshot_store.retire()
         session_id, stream_epoch, track_id = key
         return Layer4LongAudioInput(
             asset_id=(
@@ -659,7 +959,7 @@ class TrackAudioStreamHub:
             start_sample=start_sample,
             sample_rate=48_000,
             waveform=waveform,
-            l2_direction_counts=tuple(direction_counts),
+            l2_direction_counts=direction_counts,
         )
 
     def _timeline_ready_for_early_finalization(
@@ -727,8 +1027,8 @@ class TrackAudioStreamHub:
                     continue
                 if key in self._streaming_claims:
                     continue
-                hops = self._archive.get(key)
-                if not hops:
+                waveform_spool = self._archive_audio.get(key)
+                if waveform_spool is None:
                     continue
                 if self._archive_modes.get(key) != timeline.processing_mode:
                     self._streaming_cursors.pop(key, None)
@@ -770,28 +1070,21 @@ class TrackAudioStreamHub:
                     chunk_end = available_end
                 else:
                     continue
-                first_index = bisect_left(
-                    hops, cursor, key=lambda item: item.start_sample,
-                )
-                last_index = bisect_left(
-                    hops, chunk_end, key=lambda item: item.start_sample,
-                )
-                direction_counts = {
-                    sample: timeline.direction_counts[sample]
-                    for sample in range(
-                        cursor + _HOP_SAMPLES,
-                        chunk_end + 1,
-                        _HOP_SAMPLES,
+                origin = self._archive_origin(key, timeline.first_start_sample)
+                direction_counts = tuple(
+                    self._direction_spool(key).read_range(
+                        self._slot_index(key, cursor),
+                        self._slot_index(key, chunk_end),
                     )
-                    if sample in timeline.direction_counts
-                }
+                )
                 plans.append(_StreamingChunkPlan(
                     key,
                     cursor,
                     chunk_end,
                     timeline.theta_deg,
-                    tuple(hops[first_index:last_index]),
                     direction_counts,
+                    waveform_spool,
+                    origin,
                 ))
                 # Empty digest reserves this exact interval while expensive
                 # concatenation, validation and SHA run outside the Hub lock.
@@ -851,6 +1144,9 @@ class TrackAudioStreamHub:
                 if cursor != source.start_sample:
                     raise ValueError("accepted streaming chunk does not start at its cursor")
                 self._streaming_cursors[key] = source.end_sample
+                hops = self._archive.get(key)
+                if hops is not None and len(hops) > self.max_hops:
+                    del hops[:-self.max_hops]
             self._streaming_claims.pop(key, None)
 
     def claim_streaming_finalizations(
@@ -888,7 +1184,7 @@ class TrackAudioStreamHub:
                     continue
                 if not flush and not self._timeline_ready_for_early_finalization(timeline):
                     continue
-                if not self._archive.get(key):
+                if key not in self._archive_audio:
                     continue
                 if self._archive_modes.get(key) != timeline.processing_mode:
                     continue
@@ -928,6 +1224,11 @@ class TrackAudioStreamHub:
             self._streaming_finalization_claims.remove(key)
             if accepted:
                 self._streaming_finalized_tracks.add(key)
+                # Authoritative timeline + disk presence are now the source of
+                # truth. Ended-track hop descriptors are no longer needed.
+                archive = self._archive.get(key)
+                if archive is not None and key in self._l2_timelines:
+                    archive.clear()
 
     def take_streaming_chunks(
         self,
@@ -959,7 +1260,7 @@ class TrackAudioStreamHub:
         emitted: list[TrackAudioHop] = []
         with self._lock:
             for key, timeline in sorted(self._l2_timelines.items()):
-                if not self._archive.get(key):
+                if key not in self._archive_audio:
                     continue
                 if self._archive_modes.get(key) != timeline.processing_mode:
                     continue
@@ -991,22 +1292,35 @@ class TrackAudioStreamHub:
 
         outputs: list[Layer4LongAudioInput] = []
         with self._lock:
+            if self._seal_complete:
+                return self._sealed
             discarded: list[tuple[str, int, int]] = []
-            for (session_id, epoch, track_id), hops in sorted(self._archive.items()):
+            keys = sorted(set(self._archive) | set(self._archive_audio))
+            for session_id, epoch, track_id in keys:
                 key = (session_id, epoch, track_id)
+                hops = self._archive.get(key, [])
                 if allowed_track_keys is not None and key not in allowed_track_keys:
                     discarded.append(key)
                     continue
-                if not hops:
-                    continue
                 timeline = self._l2_timelines.get(key)
+                if not hops and timeline is None:
+                    continue
                 if timeline is not None and not timeline.ever_formal:
                     discarded.append(key)
                     continue
-                if timeline is not None and self._archive_modes.get(key) == timeline.processing_mode:
+                spool = self._archive_audio.get(key)
+                authoritative = (
+                    timeline is not None
+                    and self._archive_modes.get(key) == timeline.processing_mode
+                )
+                if authoritative:
                     output_start = timeline.first_start_sample
                     output_end = timeline.end_sample
                     output_theta = timeline.theta_deg
+                elif spool is not None:
+                    output_start = self._archive_origin(key)
+                    output_end = output_start + spool.length_samples
+                    output_theta = hops[-1].theta_deg
                 else:
                     output_start = hops[0].start_sample
                     output_end = hops[-1].end_sample
@@ -1014,48 +1328,62 @@ class TrackAudioStreamHub:
                 if output_end - output_start < self.minimum_output_samples:
                     discarded.append(key)
                     continue
-                audio: list[np.ndarray] = []
-                direction_counts: list[tuple[int, int]] = []
-                cursor = output_start
-                for hop in hops:
-                    if hop.start_sample < cursor:
-                        raise ValueError("archived L3 track hops must not overlap")
-                    gap = hop.start_sample - cursor
-                    if gap % _HOP_SAMPLES:
-                        raise ValueError("archived L3 track gaps must align to 20 ms hops")
-                    if gap:
-                        audio.append(np.zeros(gap, dtype=np.float32))
+                direction_history: Sequence[tuple[int, int]]
+                if timeline is not None or spool is not None:
+                    # Keep the 20 ms history lazy; constructing 90,000 Python
+                    # tuples for a 30 minute track defeats disk-backed audio.
+                    direction_history = self._direction_series(
+                        key,
+                        output_start,
+                        output_end,
+                    )
+                else:
+                    direction_counts: list[tuple[int, int]] = []
+                    cursor = output_start
+                    for hop in hops:
+                        if hop.start_sample < cursor:
+                            raise ValueError("archived L3 track hops must not overlap")
+                        gap = hop.start_sample - cursor
+                        if gap % _HOP_SAMPLES:
+                            raise ValueError("archived L3 track gaps must align to 20 ms hops")
                         direction_counts.extend(
-                            (
-                                end_sample,
-                                0 if timeline is None else timeline.direction_counts.get(end_sample, 0),
-                            )
-                            for end_sample in range(
+                            (end, 0)
+                            for end in range(
                                 cursor + _HOP_SAMPLES,
                                 hop.start_sample + _HOP_SAMPLES,
                                 _HOP_SAMPLES,
                             )
                         )
-                    audio.append(hop.waveform)
-                    direction_counts.append((
-                        hop.end_sample,
-                        hop.l2_direction_count if timeline is None else timeline.direction_counts.get(
-                            hop.end_sample, hop.l2_direction_count,
-                        ),
-                    ))
-                    cursor = hop.end_sample
-                if cursor < output_end:
-                    audio.append(np.zeros(output_end - cursor, dtype=np.float32))
+                        direction_counts.append((hop.end_sample, hop.l2_direction_count))
+                        cursor = hop.end_sample
                     direction_counts.extend(
-                        (end_sample, timeline.direction_counts.get(end_sample, 0))
-                        for end_sample in range(
+                        (end, 0)
+                        for end in range(
                             cursor + _HOP_SAMPLES,
                             output_end + _HOP_SAMPLES,
                             _HOP_SAMPLES,
                         )
                     )
-                waveform = np.ascontiguousarray(np.concatenate(audio), dtype=np.float32)
-                digest = hashlib.sha256(waveform.tobytes()).hexdigest()
+                    direction_history = tuple(direction_counts)
+                if spool is None:
+                    self._archive_origin(key, output_start)
+                    spool = self._audio_spool(key)
+                    for hop in hops:
+                        if hop.waveform is None:
+                            raise RuntimeError("legacy in-memory archive hop has no waveform")
+                        spool.write_at(
+                            self._relative_sample(key, hop.start_sample),
+                            hop.waveform,
+                        )
+                origin = self._archive_origin(key, output_start)
+                relative_start = output_start - origin
+                relative_end = output_end - origin
+                spool.ensure_length(relative_end)
+                # seal() is terminal for this archive generation. Closing it
+                # freezes the exact bytes before publishing a read-only mmap.
+                spool.close()
+                waveform = spool.view(relative_start, relative_end)
+                digest = spool.digest(relative_start, relative_end)
                 outputs.append(Layer4LongAudioInput(
                     asset_id=(
                         f"{session_id}:epoch{epoch}:track{track_id}:"
@@ -1069,19 +1397,13 @@ class TrackAudioStreamHub:
                     start_sample=output_start,
                     sample_rate=48_000,
                     waveform=waveform,
-                    l2_direction_counts=tuple(direction_counts),
+                    l2_direction_counts=direction_history,
                 ))
             for key in discarded:
-                self._archive.pop(key, None)
-                self._archive_modes.pop(key, None)
-                self._l2_timelines.pop(key, None)
-                self._emitted_ends.pop(key, None)
-                self._streaming_cursors.pop(key, None)
-                self._streaming_claims.pop(key, None)
-                self._streaming_finalization_claims.discard(key)
-                self._streaming_finalized_tracks.discard(key)
+                self._clear_archive_generation(key, clear_timeline=True)
                 self._tracks.pop(key, None)
             self._sealed = tuple(outputs)
+            self._seal_complete = True
             return self._sealed
 
     @property

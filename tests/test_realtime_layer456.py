@@ -203,7 +203,9 @@ def test_one_source_bypasses_mf2_and_can_upgrade_by_replaying_when_two_sources_a
     assert len(revised.l4_processed) == 2
     assert revised.valid_through_sample_48k == 835_200
     assert backend.calls == [10 * 16_000, 11 * 16_000]
-    assert revised.l6_result.metadata["realtime_l6_state_reset"] is True
+    # A rank/topology revision changes presentation, not the session/epoch
+    # identity. L6 must retain its incremental voiceprint history.
+    assert revised.l6_result.metadata["realtime_l6_state_reset"] is False
 
 
 def test_voiceprint_embeddings_are_cached_across_revisions():

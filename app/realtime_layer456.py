@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import hashlib
-from bisect import bisect_right
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from time import perf_counter
 from typing import Protocol
 
 import numpy as np
+
+from common.disk_audio import (
+    DiskAudioStore,
+    DiskFloat32Spool,
+    DiskFrameSeries,
+    DiskFrameSpool,
+    DiskUInt8Series,
+    DiskUInt8Timeline,
+)
 
 from layer4_speech_separation import (
     BandMagnitudeMatcher,
@@ -121,12 +130,17 @@ _DNSMOS_WINDOW_SAMPLES_16K = 451 * 320  # 9.02 s, complete 20 ms hops.
 class _BranchState:
     stable_branch_id: int
     start_sample_48k: int
-    audio_parts: list[np.ndarray] = field(default_factory=list)
-    audio_offsets_16k: list[int] = field(default_factory=list)
+    audio_spool: DiskFloat32Spool
+    probability_spool: DiskFrameSpool
+    decision_spool: DiskFrameSpool
     audio_samples_16k: int = 0
-    l5_probability_parts: list[np.ndarray] = field(default_factory=list)
-    l5_decision_parts: list[np.ndarray] = field(default_factory=list)
     l5_samples_16k: int = 0
+    l5_probability_sum: float = 0.0
+    l5_probability_count: int = 0
+    l5_probability_tail: deque[float] = field(
+        default_factory=lambda: deque(maxlen=3)
+    )
+    l5_summary_probability: float = 0.0
     l5_model_id: str | None = None
     l5_metadata: dict[str, object] = field(default_factory=dict)
     match_weighted_sum: float = 0.0
@@ -141,44 +155,48 @@ class _BranchState:
 
     def append_audio(self, waveform: np.ndarray) -> None:
         value = np.ascontiguousarray(waveform, dtype=np.float32)
-        self.audio_offsets_16k.append(self.audio_samples_16k)
-        self.audio_parts.append(value)
+        start, end = self.audio_spool.append(value)
+        if start != self.audio_samples_16k:
+            raise RuntimeError("realtime branch spool lost its append position")
         self.audio_samples_16k += len(value)
+        if end != self.audio_samples_16k:
+            raise RuntimeError("realtime branch spool length is inconsistent")
 
     def audio_range(self, start: int, end: int) -> np.ndarray:
         if start < 0 or end <= start or end > self.audio_samples_16k:
             raise ValueError("realtime branch audio range is invalid")
-        index = max(0, bisect_right(self.audio_offsets_16k, start) - 1)
-        parts: list[np.ndarray] = []
-        cursor = start
-        while index < len(self.audio_parts) and cursor < end:
-            offset = self.audio_offsets_16k[index]
-            waveform = self.audio_parts[index]
-            left = max(cursor, offset)
-            right = min(end, offset + len(waveform))
-            if right > left:
-                parts.append(waveform[left - offset:right - offset])
-                cursor = right
-            index += 1
-        if cursor != end or not parts:
-            raise ValueError("realtime branch archive contains an audio gap")
-        if len(parts) == 1:
-            return np.ascontiguousarray(parts[0], dtype=np.float32)
-        return np.ascontiguousarray(np.concatenate(parts), dtype=np.float32)
+        return self.audio_spool.view(start, end)
 
-    def probabilities(self, samples_16k: int) -> tuple[float, ...]:
+    def audio_digest(self, start: int, end: int) -> str:
+        return self.audio_spool.digest(start, end)
+
+    def probabilities(self, samples_16k: int) -> DiskFrameSeries:
         frame_count = samples_16k // 320
-        values = np.concatenate(self.l5_probability_parts) if self.l5_probability_parts else np.empty(0)
-        if len(values) < frame_count:
+        if self.probability_spool.count < frame_count:
             raise ValueError("realtime L5 probability archive is shorter than its watermark")
-        return tuple(float(value) for value in values[:frame_count])
+        return self.probability_spool.series(frame_count)
 
-    def decisions(self, samples_16k: int) -> tuple[bool, ...]:
+    def decisions(self, samples_16k: int) -> DiskFrameSeries:
         frame_count = samples_16k // 320
-        values = np.concatenate(self.l5_decision_parts) if self.l5_decision_parts else np.empty(0)
-        if len(values) < frame_count:
+        if self.decision_spool.count < frame_count:
             raise ValueError("realtime L5 decision archive is shorter than its watermark")
-        return tuple(bool(value) for value in values[:frame_count])
+        return self.decision_spool.series(frame_count)
+
+    def observe_probabilities(self, values: np.ndarray) -> None:
+        for raw in values:
+            probability = float(raw)
+            self.l5_probability_sum += probability
+            self.l5_probability_count += 1
+            self.l5_probability_tail.append(probability)
+            if self.l5_probability_count < 3:
+                self.l5_summary_probability = (
+                    self.l5_probability_sum / self.l5_probability_count
+                )
+            else:
+                self.l5_summary_probability = max(
+                    self.l5_summary_probability,
+                    sum(self.l5_probability_tail) / 3.0,
+                )
 
     @property
     def match_score(self) -> float:
@@ -196,10 +214,42 @@ class _BranchState:
 
 
 @dataclass(slots=True)
+class _SourcePart:
+    asset_id: str
+    sha256: str
+    session_id: str
+    stream_epoch: int
+    track_id: int
+    theta_deg: float
+    start_sample: int
+    end_sample: int
+    l2_direction_counts: tuple[tuple[int, int], ...]
+
+    @classmethod
+    def from_input(cls, source: Layer4LongAudioInput) -> "_SourcePart":
+        return cls(
+            source.asset_id,
+            source.sha256,
+            source.session_id,
+            source.stream_epoch,
+            source.track_id,
+            source.theta_deg,
+            source.start_sample,
+            source.end_sample,
+            source.l2_direction_counts,
+        )
+
+
+@dataclass(slots=True)
 class _TrackState:
     speaker_count: int
     session: Layer4StreamSession
-    inputs: list[Layer4LongAudioInput] = field(default_factory=list)
+    source_spool: DiskFloat32Spool
+    direction_spool: DiskUInt8Timeline
+    source_base_sample_48k: int
+    original_start_sample_48k: int
+    track_identity: tuple[str, int, int]
+    inputs: deque[_SourcePart] = field(default_factory=deque)
     branches: dict[int, _BranchState] = field(default_factory=dict)
     committed_end_sample_48k: int | None = None
     preview_start_sample_48k: int | None = None
@@ -209,12 +259,41 @@ class _TrackState:
 
     @property
     def identity(self) -> tuple[str, int, int]:
-        first = self.inputs[0]
-        return first.session_id, first.stream_epoch, first.track_id
+        return self.track_identity
 
     @property
     def start_sample_48k(self) -> int:
-        return self.inputs[0].start_sample
+        return self.original_start_sample_48k
+
+
+class _DirectionCountSeries(Sequence[tuple[int, int]]):
+    _disk_direction_trusted = True
+
+    def __init__(
+        self,
+        values: DiskUInt8Series,
+        *,
+        start_sample: int,
+        maximum_count: int,
+    ) -> None:
+        self.values = values
+        self.start_sample = int(start_sample)
+        self.maximum_count = int(maximum_count)
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def __iter__(self) -> Iterator[tuple[int, int]]:
+        for index, count in enumerate(self.values):
+            yield self.start_sample + (index + 1) * 960, int(count)
+
+    def __getitem__(self, index: int | slice):
+        if isinstance(index, slice):
+            return tuple(self)[index]
+        resolved = index + len(self) if index < 0 else index
+        if resolved < 0 or resolved >= len(self):
+            raise IndexError("direction-count history index out of range")
+        return self.start_sample + (resolved + 1) * 960, int(self.values[resolved])
 
 
 class IncrementalLayer456Processor:
@@ -242,6 +321,7 @@ class IncrementalLayer456Processor:
         l6_interval_samples_48k: int | None = None,
         max_replay_samples_48k: int = 60 * 48_000,
         embedding_cache_segments: int | None = None,
+        spool_min_free_bytes: int = 0,
     ) -> None:
         if l6_interval_samples_48k is None:
             l6_interval_samples_48k = chunk_samples_48k
@@ -278,6 +358,8 @@ class IncrementalLayer456Processor:
             or max_replay_samples_48k % 960
         ):
             raise ValueError("realtime replay limit must align to 20 ms")
+        if type(spool_min_free_bytes) is not int or spool_min_free_bytes < 0:
+            raise ValueError("realtime L4-L6 disk reserve must be a non-negative integer")
         self.backend = backend
         self.layer5 = layer5
         self.quality_scorer = quality_scorer
@@ -296,7 +378,11 @@ class IncrementalLayer456Processor:
                 embedder, max_segments=embedding_cache_segments,
             )
         )
-        self.layer6 = OfflineLayer6Pipeline(self.cached_embedder, layer6_config)
+        self.layer6 = OfflineLayer6Pipeline(
+            self.cached_embedder,
+            layer6_config,
+            spool_min_free_bytes=spool_min_free_bytes,
+        )
         # Reuse the proven L5 conversion/validation path. The offline object is
         # model-light: it references the already resident backend and engines.
         backend_id = str(getattr(backend, "backend", "mossformer2_ss_16k"))
@@ -308,6 +394,10 @@ class IncrementalLayer456Processor:
             default_backend=backend_id,
             resampler=self.resampler,
             matcher=self.matcher,
+        )
+        self._storage = DiskAudioStore(
+            prefix="micarray_realtime_l456_",
+            minimum_free_bytes=spool_min_free_bytes,
         )
         self._tracks: dict[tuple[str, int, int], _TrackState] = {}
         self._session_id: str | None = None
@@ -342,7 +432,7 @@ class IncrementalLayer456Processor:
         return min(2, max(count for _, count in source.l2_direction_counts))
 
     @staticmethod
-    def _validate_next_source(state: _TrackState, source: Layer4LongAudioInput) -> None:
+    def _validate_next_source(state: _TrackState, source: _SourcePart) -> None:
         previous = state.inputs[-1]
         if (
             (source.session_id, source.stream_epoch, source.track_id) != state.identity
@@ -356,47 +446,40 @@ class IncrementalLayer456Processor:
         start_sample: int,
         end_sample: int,
     ) -> Layer4LongAudioInput:
-        parts: list[np.ndarray] = []
-        counts: list[tuple[int, int]] = []
-        theta = state.inputs[-1].theta_deg
-        cursor = start_sample
-        for source in state.inputs:
-            left = max(start_sample, source.start_sample)
-            right = min(end_sample, source.end_sample)
-            if right <= left:
-                continue
-            if left != cursor:
-                raise ValueError("realtime source archive contains a timeline gap")
-            offset = left - source.start_sample
-            parts.append(np.asarray(source.waveform[offset:offset + right - left], dtype=np.float32))
-            counts.extend(
-                (sample, count)
-                for sample, count in source.l2_direction_counts
-                if left < sample <= right
-            )
-            theta = source.theta_deg
-            cursor = right
-            if cursor == end_sample:
-                break
-        if cursor != end_sample or not parts:
+        if (
+            start_sample < state.source_base_sample_48k
+            or end_sample <= start_sample
+            or end_sample - state.source_base_sample_48k > state.source_spool.length_samples
+        ):
             raise ValueError("realtime output exceeds retained L3 source chunks")
-        waveform = np.ascontiguousarray(np.concatenate(parts), dtype=np.float32)
-        if not counts or max(count for _, count in counts) == 0:
-            counts = [(end_sample, state.speaker_count)]
+        waveform = state.source_spool.view(
+            start_sample - state.source_base_sample_48k,
+            end_sample - state.source_base_sample_48k,
+        )
+        relative_start = (start_sample - state.source_base_sample_48k) // 960
+        relative_end = (end_sample - state.source_base_sample_48k) // 960
+        counts = _DirectionCountSeries(
+            state.direction_spool.series(relative_start, relative_end),
+            start_sample=start_sample,
+            maximum_count=state.speaker_count,
+        )
         return Layer4LongAudioInput(
             asset_id=(
                 f"{state.identity[0]}:epoch{state.identity[1]}:track{state.identity[2]}:"
                 f"realtime-start{start_sample}-end{end_sample}"
             ),
-            sha256=_digest(waveform),
+            sha256=state.source_spool.digest(
+                start_sample - state.source_base_sample_48k,
+                end_sample - state.source_base_sample_48k,
+            ),
             session_id=state.identity[0],
             stream_epoch=state.identity[1],
             track_id=state.identity[2],
-            theta_deg=theta,
+            theta_deg=state.inputs[-1].theta_deg,
             start_sample=start_sample,
             sample_rate=48_000,
             waveform=waveform,
-            l2_direction_counts=tuple(counts),
+            l2_direction_counts=counts,
         )
 
     def _scores(
@@ -543,8 +626,16 @@ class IncrementalLayer456Processor:
             expected_frames = (stable_end - branch.l5_samples_16k) // 320
             if len(probabilities) != expected_frames or len(decisions) != expected_frames:
                 raise RuntimeError("realtime L5 context crop changed the authoritative timeline")
-            branch.l5_probability_parts.append(probabilities)
-            branch.l5_decision_parts.append(decisions)
+            probability_start, probability_end = branch.probability_spool.append(probabilities)
+            decision_start, decision_end = branch.decision_spool.append(decisions)
+            expected_start = branch.l5_samples_16k // 320
+            if (
+                probability_start != expected_start
+                or decision_start != expected_start
+                or probability_end != decision_end
+            ):
+                raise RuntimeError("realtime L5 frame spools lost alignment")
+            branch.observe_probabilities(probabilities)
             branch.l5_samples_16k = stable_end
             branch.l5_model_id = l5.l5_model_id
             branch.l5_metadata = {
@@ -585,7 +676,21 @@ class IncrementalLayer456Processor:
                 waveform = np.ascontiguousarray(waveform * np.float32(peak_gain), dtype=np.float32)
             branch = state.branches.get(output.branch_id)
             if branch is None:
-                branch = _BranchState(output.branch_id, start)
+                branch = _BranchState(
+                    output.branch_id,
+                    start,
+                    self._storage.create_spool(
+                        f"track_{state.identity[2]}_branch_{output.branch_id}"
+                    ),
+                    self._storage.create_frame_spool(
+                        f"track_{state.identity[2]}_branch_{output.branch_id}_probability",
+                        dtype=np.dtype(np.float32),
+                    ),
+                    self._storage.create_frame_spool(
+                        f"track_{state.identity[2]}_branch_{output.branch_id}_decision",
+                        dtype=np.dtype(np.bool_),
+                    ),
+                )
                 state.branches[output.branch_id] = branch
             expected_start = branch.start_sample_48k + branch.audio_samples_16k * 3
             if start != expected_start:
@@ -621,10 +726,11 @@ class IncrementalLayer456Processor:
     def _stream_input(
         self,
         state: _TrackState,
-        source: Layer4LongAudioInput,
+        source: _SourcePart,
         *,
         is_final: bool,
     ) -> None:
+        source_value = self._source_range(state, source.start_sample, source.end_sample)
         item = Layer4StreamInputChunk(
             source.session_id,
             source.stream_epoch,
@@ -632,7 +738,7 @@ class IncrementalLayer456Processor:
             state.speaker_count,  # type: ignore[arg-type]
             source.start_sample,
             source.theta_deg,
-            np.ascontiguousarray(source.waveform, dtype=np.float32),
+            np.ascontiguousarray(source_value.waveform, dtype=np.float32),
             is_final=is_final,
         )
         l4_started = perf_counter()
@@ -645,10 +751,14 @@ class IncrementalLayer456Processor:
                 self._update_dnsmos(branch, final=True)
 
     def _upgrade_and_replay(self, state: _TrackState, *, final_last: bool) -> None:
-        original_start = state.inputs[0].start_sample
+        original_start = state.original_start_sample_48k
         replay_samples = state.inputs[-1].end_sample - original_start
         state.speaker_count = 2
         state.session = self._new_session(2)
+        for branch in state.branches.values():
+            branch.audio_spool.close()
+            branch.probability_spool.close()
+            branch.decision_spool.close()
         state.branches.clear()
         state.committed_end_sample_48k = None
         self._topology_revision += 1
@@ -657,7 +767,26 @@ class IncrementalLayer456Processor:
             state.preview_degraded_reason = "one_to_two_replay_limit_exceeded"
             state.replay_dropped_samples_48k = latest.start_sample - original_start
             state.preview_start_sample_48k = latest.start_sample
-            state.inputs[:] = [latest]
+            latest_audio = state.source_spool.view(
+                latest.start_sample - state.source_base_sample_48k,
+                latest.end_sample - state.source_base_sample_48k,
+            )
+            state.source_spool.close()
+            state.source_spool = self._storage.create_spool(
+                f"track_{state.identity[2]}_source_replay"
+            )
+            state.source_spool.append(latest_audio)
+            state.direction_spool.close()
+            state.direction_spool = self._storage.create_u8_timeline(
+                f"track_{state.identity[2]}_directions_replay"
+            )
+            for sample, count in latest.l2_direction_counts:
+                state.direction_spool.set(
+                    (sample - latest.start_sample) // 960 - 1,
+                    count,
+                )
+            state.source_base_sample_48k = latest.start_sample
+            state.inputs = deque((latest,))
             replay_inputs = (latest,)
         else:
             state.preview_start_sample_48k = original_start
@@ -683,32 +812,51 @@ class IncrementalLayer456Processor:
             raise ValueError("one realtime L4/L5/L6 processor cannot mix capture sessions")
         key = (source.session_id, source.stream_epoch, source.track_id)
         count = self._speaker_count(source)
+        source_part = _SourcePart.from_input(source)
         state = self._tracks.get(key)
         if state is None:
-            state = _TrackState(count, self._new_session(count))
+            state = _TrackState(
+                count,
+                self._new_session(count),
+                self._storage.create_spool(f"track_{source.track_id}_source"),
+                self._storage.create_u8_timeline(f"track_{source.track_id}_directions"),
+                source.start_sample,
+                source.start_sample,
+                key,
+            )
             state.preview_start_sample_48k = source.start_sample
             self._tracks[key] = state
             self._topology_revision += 1
         elif state.finalized:
             raise RuntimeError("realtime L4 track received audio after per-track finalization")
         elif state.inputs:
-            self._validate_next_source(state, source)
-        state.inputs.append(source)
+            self._validate_next_source(state, source_part)
+        spool_start, _ = state.source_spool.append(
+            np.ascontiguousarray(source.waveform, dtype=np.float32)
+        )
+        expected_spool_start = source.start_sample - state.source_base_sample_48k
+        if spool_start != expected_spool_start:
+            raise RuntimeError("realtime source spool lost its timeline position")
+        for sample, direction_count in source.l2_direction_counts:
+            state.direction_spool.set(
+                (sample - state.source_base_sample_48k) // 960 - 1,
+                direction_count,
+            )
+        state.inputs.append(source_part)
+        while (
+            len(state.inputs) > 1
+            and state.inputs[-1].end_sample - state.inputs[0].start_sample
+            > self.max_replay_samples_48k
+        ):
+            state.inputs.popleft()
         self._processed_blocks += 1
         if count > state.speaker_count:
             self._upgrade_and_replay(state, final_last=is_final_chunk)
         else:
-            self._stream_input(state, source, is_final=is_final_chunk)
+            self._stream_input(state, source_part, is_final=is_final_chunk)
         if is_final_chunk:
             state.finalized = True
         return self._snapshot(is_final=False)
-
-    @staticmethod
-    def _summary_probability(probabilities: tuple[float, ...]) -> float:
-        values = np.asarray(probabilities, dtype=np.float32)
-        if len(values) >= 3:
-            return float(np.max(np.convolve(values, np.ones(3, np.float32) / 3.0, mode="valid")))
-        return float(np.mean(values))
 
     @staticmethod
     def _l5_end_sample_48k(state: _TrackState) -> int | None:
@@ -802,7 +950,7 @@ class IncrementalLayer456Processor:
                 f"{source.asset_id}:l4:realtime:rank{rank}:"
                 f"stable{branch.stable_branch_id}"
             )
-            output_hash = _digest(waveform)
+            output_hash = branch.audio_digest(0, samples_16k)
             processed = Layer4ProcessedAudio(
                 request_id=f"{source.asset_id}:realtime",
                 source=source,
@@ -827,7 +975,7 @@ class IncrementalLayer456Processor:
                 "realtime_revision": self._revision + 1,
                 "realtime_provisional": True,
             }
-            summary = self._summary_probability(probabilities)
+            summary = branch.l5_summary_probability
             l5 = Layer4OfflineResult(
                 request_id=processed.request_id,
                 source=source,
@@ -853,7 +1001,9 @@ class IncrementalLayer456Processor:
         """Small audit surface for proving retained state grows only with audio evidence."""
 
         return {
-            "source_48k": sum(len(source.waveform) for state in self._tracks.values() for source in state.inputs),
+            "source_48k": sum(
+                state.source_spool.length_samples for state in self._tracks.values()
+            ),
             "branch_16k": sum(
                 branch.audio_samples_16k
                 for state in self._tracks.values()
@@ -865,6 +1015,18 @@ class IncrementalLayer456Processor:
                 for branch in state.branches.values()
             ),
             "retained_commit_dtos": 0,
+            "resident_audio_samples": 0,
+            "disk_audio_bytes": sum(
+                state.source_spool.disk_bytes
+                + state.direction_spool.disk_bytes
+                + sum(
+                    branch.audio_spool.disk_bytes
+                    + branch.probability_spool.disk_bytes
+                    + branch.decision_spool.disk_bytes
+                    for branch in state.branches.values()
+                )
+                for state in self._tracks.values()
+            ),
         }
 
     def _snapshot(self, *, is_final: bool) -> RealtimePostprocessingSnapshot | None:
@@ -944,14 +1106,6 @@ class IncrementalLayer456Processor:
         l6_state_reset = False
         if run_l6:
             l6_started = perf_counter()
-            if (
-                self._last_l6_result is not None
-                and self._last_l6_topology_revision != self._topology_revision
-            ):
-                reset_streaming = getattr(self.layer6, "reset_streaming", None)
-                if callable(reset_streaming):
-                    reset_streaming()
-                    l6_state_reset = True
             self._last_l6_result = self.layer6.process_streaming(
                 tuple(l5_results),
                 final=is_final,
@@ -1049,6 +1203,10 @@ class IncrementalLayer456Processor:
             reset_streaming = getattr(self.layer6, "reset_streaming", None)
             if callable(reset_streaming):
                 reset_streaming()
+            self.cached_embedder.clear()
+            self._tracks.clear()
+            self._last_l6_result = None
+            self._storage.retire()
 
     def abort(self) -> None:
         """Discard provisional L6 identity state without flushing model tails."""
@@ -1058,9 +1216,12 @@ class IncrementalLayer456Processor:
             reset_streaming()
         if self._finalized:
             return
+        self.cached_embedder.clear()
         self._last_l6_result = None
         self._last_l6_watermark_48k = None
         self._last_l6_topology_revision = -1
         self._last_l6_ready_keys = ()
         self._last_published_signature = None
+        self._tracks.clear()
+        self._storage.retire()
         self._finalized = True
