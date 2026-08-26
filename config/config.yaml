@@ -273,6 +273,8 @@ layer6:
   multistage_u1: 100
   multistage_u2: 600
   multistage_fallback_distance: 0.38
+  # Bound 2 s content-addressed voiceprints; older segments are recomputed on demand.
+  embedding_cache_max_segments: 600
 
 runtime:
   mode: development
@@ -306,6 +308,10 @@ runtime:
   # Per-stage queue overrides and max_inflight_windows are omitted deliberately;
   # Runtime derives 100/100/100 and 3*100+3=303 automatically.
   compute_cache_max_bytes: 67108864
+  # Long-session L4-L6 audio is disk-spooled; keep resident work bounded and
+  # surface a warning when its spool volume approaches the 5 GiB reserve.
+  layer456_resident_memory_budget_bytes: 134217728
+  layer456_spool_min_free_bytes: 5368709120
   overflow_policy: drop_oldest
   graceful_shutdown_timeout_seconds: 10.0
 

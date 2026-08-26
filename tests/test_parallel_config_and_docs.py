@@ -24,6 +24,9 @@ def test_parallel_runtime_limits_are_loaded_from_the_single_config():
     assert runtime.completion_queue_windows == 8
     assert runtime.max_inflight_windows == 303
     assert runtime.compute_cache_max_bytes == 64 * 1024 * 1024
+    assert runtime.layer456_resident_memory_budget_bytes == 128 * 1024 * 1024
+    assert runtime.layer456_spool_min_free_bytes == 5 * 1024**3
+    assert config.layer6.embedding_cache_max_segments == 600
     assert runtime.overflow_policy == "drop_oldest"
     assert runtime.graceful_shutdown_timeout_seconds == 10.0
     assert config.layer4.streaming.model_dump() == {
@@ -103,3 +106,27 @@ def test_layer4_streaming_chunk_is_tunable_across_the_benchmark_range(chunk_seco
     })
 
     assert value.chunk_seconds == chunk_seconds
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("layer456_resident_memory_budget_bytes", 1),
+        ("layer456_spool_min_free_bytes", -1),
+    ),
+)
+def test_long_session_runtime_guardrails_are_strict(field, value):
+    runtime = load_config(PROJECT_ROOT / "config" / "config.yaml").runtime
+
+    with pytest.raises(ValidationError):
+        RuntimeConfig.model_validate({**runtime.model_dump(), field: value})
+
+
+def test_layer6_voiceprint_cache_limit_is_strict():
+    layer6 = load_config(PROJECT_ROOT / "config" / "config.yaml").layer6
+
+    with pytest.raises(ValidationError):
+        layer6.__class__.model_validate({
+            **layer6.model_dump(),
+            "embedding_cache_max_segments": 0,
+        })

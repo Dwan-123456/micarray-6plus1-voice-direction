@@ -7,6 +7,8 @@ from typing import Literal, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
+from common.disk_audio import DiskAudioView, DiskFrameSeries, is_trusted_disk_audio
+
 
 L4_MODEL_SAMPLE_RATE = 16_000
 L4_MATCH_FREQUENCY_MIN_HZ = 1_000.0
@@ -21,9 +23,14 @@ def _readonly_float32_1d(value: NDArray[np.float32], name: str) -> NDArray[np.fl
         array.ndim != 1
         or array.dtype != np.float32
         or not array.flags.c_contiguous
-        or not np.isfinite(array).all()
+        or (
+            not is_trusted_disk_audio(value)
+            and not np.isfinite(array).all()
+        )
     ):
         raise ValueError(f"{name} must be finite C-contiguous float32 mono audio")
+    if isinstance(value, DiskAudioView) and not value.flags.writeable:
+        return value
     result = np.frombuffer(array.tobytes(), dtype=np.float32)
     result.flags.writeable = False
     return result
@@ -58,17 +65,31 @@ class Layer4LongAudioInput:
         waveform = _readonly_float32_1d(self.waveform, "Layer 4 input")
         if not len(waveform) or len(waveform) % L3_HOP_SAMPLES:
             raise ValueError("Layer 4 input must contain complete 20 ms Layer 3 hops")
-        counts = tuple((int(sample), int(count)) for sample, count in self.l2_direction_counts)
+        trusted_direction_counts = bool(
+            getattr(self.l2_direction_counts, "_disk_direction_trusted", False)
+        )
+        counts = (
+            self.l2_direction_counts
+            if trusted_direction_counts
+            else tuple((int(sample), int(count)) for sample, count in self.l2_direction_counts)
+        )
         if not counts:
             raise ValueError("Layer 4 input requires aligned L2 direction-count history")
-        if any(
+        if not trusted_direction_counts and any(
             sample < self.start_sample or sample > self.end_sample or count not in {0, 1, 2, 3}
             for sample, count in counts
         ):
             raise ValueError("Layer 4 L2 direction counts must be 0..3 on the source timeline")
-        if any(right[0] <= left[0] for left, right in zip(counts, counts[1:])):
+        if not trusted_direction_counts and any(
+            right[0] <= left[0] for left, right in zip(counts, counts[1:])
+        ):
             raise ValueError("Layer 4 L2 direction-count history must be strictly ordered")
-        if max(count for _, count in counts) not in {1, 2, 3}:
+        maximum_count = (
+            int(getattr(counts, "maximum_count"))
+            if trusted_direction_counts
+            else max(count for _, count in counts)
+        )
+        if maximum_count not in {1, 2, 3}:
             raise ValueError("Layer 4 requires at least one L2 direction in its time range")
         object.__setattr__(self, "waveform", waveform)
         object.__setattr__(self, "l2_direction_counts", counts)
@@ -257,14 +278,28 @@ class Layer4OfflineResult:
             raise ValueError("offline L5 probability must be in [0,1]")
         if type(self.l5_is_voice) is not bool:
             raise ValueError("offline L5 decision must be bool")
-        probabilities = tuple(float(value) for value in self.l5_probabilities_20ms)
-        decisions = tuple(self.l5_is_voice_20ms)
+        if isinstance(self.l5_probabilities_20ms, DiskFrameSeries):
+            if self.l5_probabilities_20ms.dtype != np.dtype(np.float32):
+                raise ValueError("offline L5 disk probabilities must use float32")
+            probabilities = self.l5_probabilities_20ms
+        else:
+            probabilities = tuple(float(value) for value in self.l5_probabilities_20ms)
+        if isinstance(self.l5_is_voice_20ms, DiskFrameSeries):
+            if self.l5_is_voice_20ms.dtype != np.dtype(np.bool_):
+                raise ValueError("offline L5 disk decisions must use bool")
+            decisions = self.l5_is_voice_20ms
+        else:
+            decisions = tuple(self.l5_is_voice_20ms)
         expected_hops = len(self.source.waveform) // L3_HOP_SAMPLES
-        if len(probabilities) != expected_hops or any(
-            not np.isfinite(value) or not 0.0 <= value <= 1.0 for value in probabilities
+        if len(probabilities) != expected_hops or (
+            not isinstance(probabilities, DiskFrameSeries)
+            and any(not np.isfinite(value) or not 0.0 <= value <= 1.0 for value in probabilities)
         ):
             raise ValueError("offline L5 requires one probability per 20 ms source hop")
-        if len(decisions) != expected_hops or any(type(value) is not bool for value in decisions):
+        if len(decisions) != expected_hops or (
+            not isinstance(decisions, DiskFrameSeries)
+            and any(type(value) is not bool for value in decisions)
+        ):
             raise ValueError("offline L5 requires one bool decision per 20 ms source hop")
         if len(self.output_sha256) != 64 or any(c not in "0123456789abcdef" for c in self.output_sha256):
             raise ValueError("offline output sha256 must be lowercase hexadecimal")

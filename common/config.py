@@ -401,6 +401,10 @@ class Layer6Config(StrictModel):
     multistage_u1: int = Field(default=100, ge=2)
     multistage_u2: int = Field(default=600, ge=3)
     multistage_fallback_distance: float = Field(default=0.38, gt=0.0, le=2.0)
+    # A long capture can produce more unique 2 s voiceprint windows than the
+    # clustering horizon needs at once.  Bound the content-addressed cache so
+    # a 30+ minute session trades old-cache recomputation for stable RAM.
+    embedding_cache_max_segments: int = Field(default=600, ge=1, le=100_000)
 
     @model_validator(mode="after")
     def validate_layer6(self) -> "Layer6Config":
@@ -441,6 +445,16 @@ class RuntimeConfig(StrictModel):
     completion_queue_windows: int = Field(default=8, gt=0, le=128)
     max_inflight_windows: int | None = Field(default=None, gt=0, le=30_003)
     compute_cache_max_bytes: int = Field(default=67_108_864, ge=8_388_608)
+    # These are observable long-session guardrails.  Audio evidence itself is
+    # spooled to disk; this budget describes the intended resident L4-L6
+    # working set, while the disk reserve drives status/alerting on that spool
+    # volume without hard-coding the progressive chunk duration.
+    layer456_resident_memory_budget_bytes: int = Field(
+        default=134_217_728, ge=16_777_216, le=4_294_967_296,
+    )
+    layer456_spool_min_free_bytes: int = Field(
+        default=5_368_709_120, ge=0, le=1_099_511_627_776,
+    )
     overflow_policy: Literal["drop_oldest"] = "drop_oldest"
     graceful_shutdown_timeout_seconds: float = Field(default=10.0, gt=0.0, le=120.0)
 
