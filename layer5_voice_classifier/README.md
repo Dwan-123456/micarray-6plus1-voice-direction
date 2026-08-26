@@ -1,6 +1,6 @@
 # Layer 5：48 kHz音频到人声概率
 
-> 项目1.3.5开发线中，L5音频段、检测和阶段结果贯通`track_id`；L5不按角度创建或修补ID，语义概率只按L2权威身份关联。
+> 项目正式版1.3.5中，L5音频段、检测和阶段结果贯通`track_id`；L5不按角度创建或修补ID，语义概率只按L2权威身份关联。
 
 权威目标契约见根目录[`ARCHITECTURE_V1.1_TARGET.md`](../ARCHITECTURE_V1.1_TARGET.md)。正式逐窗L5仍只写`offline_after_l4`审计占位。隔离旁路会在L4稳定片段出现后渐进运行MarbleNet；它保留左右各1.6秒上下文并延迟右端，只发布不再受未来音频影响的20 ms帧。停止后的完整L5仍是canonical。
 

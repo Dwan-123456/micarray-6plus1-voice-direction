@@ -1,6 +1,6 @@
 # L4-L6 可调分块伪实时链
 
-本页描述 `1.3.5` 开发线的渐进式 L4-L6 预览。它不改变正式的 20 ms 审计链：
+本页描述正式版`1.3.5`的渐进式L4-L6预览。它不改变正式的20 ms审计链：
 `L2 -> L3 -> L5(SKIPPED: offline_after_l4) -> ResultJoiner -> DecisionRecord` 仍按原
 `WindowKey` 提交。渐进式结果是可替换的旁路预览；停止采集后先用 Hub 封存轨逐 ID 校验
 实时 final 的时间范围、SHA、分支、后端和 L4/L5 水位。完全一致的结果直接转为权威结果，

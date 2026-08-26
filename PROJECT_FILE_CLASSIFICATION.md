@@ -1,6 +1,6 @@
 # 项目文件分类
 
-> 当前正式版本为1.3.3，发布基线为`v1.3.3`；职责以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为准。L1～L6、Rolling NormMUSIC、永久公共方向ID、各UI和正式录音数据系统均纳入版本管理。
+> 当前正式版本为1.3.5，发布基线为`v1.3.5`；职责以[`ARCHITECTURE_V1.1_TARGET.md`](ARCHITECTURE_V1.1_TARGET.md)为准。L1～L6、Rolling NormMUSIC、永久公共方向ID、各UI和正式录音数据系统均纳入版本管理。
 
 > 当前源码已迁移到v0.3主链，权威接口见[`ARCHITECTURE_V0.3_TARGET.md`](ARCHITECTURE_V0.3_TARGET.md)。ApplicationRuntime采用唯一WindowKey、L2/L3/L5逐层有界latest-wins、有界completion/backlog/commit以及有序ResultJoiner；同窗严格L2→L3→L5、稳态跨窗并行。实机标定和production入口的未完成项仍以权威架构文档为准。
 
