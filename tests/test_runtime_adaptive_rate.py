@@ -66,3 +66,7 @@ def test_test_ui_has_no_l3_to_l6_reserved_panels() -> None:
     source = __import__("pathlib").Path("gui/dev_test_ui/app.py").read_text(encoding="utf-8")
     assert "ReservedPanel" not in source
     assert "L3 · Reserved" not in source
+    assert "class L2ControlPanel" in source
+    assert "class L2PolarPanel" in source
+    assert "class SquarePolarHost" in source
+    assert "grid.addLayout(footer_row, 1, 0, 1, 2)" in source

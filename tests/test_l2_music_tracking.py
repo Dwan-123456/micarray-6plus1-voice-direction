@@ -124,6 +124,33 @@ def _circular_error_deg(a: float, b: float) -> float:
     return abs(((a - b + 180.0) % 360.0) - 180.0)
 
 
+@pytest.mark.parametrize("signal_order", (1, 2, 3))
+def test_music_signal_complement_matches_direct_noise_projection(signal_order: int) -> None:
+    rng = np.random.default_rng(820_2026 + signal_order)
+    frequency_bins = 9
+    eigenvectors = np.stack([
+        np.linalg.qr(
+            rng.normal(size=(7, 7)) + 1j * rng.normal(size=(7, 7)),
+        )[0]
+        for _ in range(frequency_bins)
+    ])
+    steering = rng.normal(size=(frequency_bins, 360, 7)) + 1j * rng.normal(
+        size=(frequency_bins, 360, 7),
+    )
+    noise = eigenvectors[:, :, : 7 - signal_order]
+    direct_projection = np.einsum(
+        "fcn,fac->fan", noise.conj(), steering, optimize=True,
+    )
+    direct = np.sum(np.abs(direct_projection) ** 2, axis=2)
+    complement = RollingNormMusicScanner._noise_projection_denominator(
+        eigenvectors,
+        steering,
+        signal_order,
+        np.sum(np.abs(steering) ** 2, axis=2),
+    )
+    np.testing.assert_allclose(complement, direct, rtol=2e-13, atol=2e-13)
+
+
 def test_music_configuration_and_hardware_mix_contract() -> None:
     config = load_config(CONFIG, environ={})
     scan = DirectionScanConfig.from_project(config)

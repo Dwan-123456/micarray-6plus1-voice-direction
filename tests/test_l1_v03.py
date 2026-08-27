@@ -138,6 +138,20 @@ def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     assert np.all(first.spp == 0.0)
 
 
+def test_imcra_frequency_smoother_matches_edge_padded_reference() -> None:
+    config = load_config("config/config.yaml").layer1_imcra
+    estimator = Layer1Imcra(config)
+    values = np.random.default_rng(827_2026).random((7, 41))
+    padded = np.pad(values, ((0, 0), (1, 1)), mode="edge")
+    reference = (
+        0.25 * padded[:, :-2]
+        + 0.5 * padded[:, 1:-1]
+        + 0.25 * padded[:, 2:]
+    )
+    np.testing.assert_allclose(estimator._frequency_smooth(values), reference)
+    assert estimator._window_energy == pytest.approx(float(np.sum(estimator._window**2)))
+
+
 def test_cohen_posterior_spp_detects_a_strong_tonal_component_after_minimum_warmup():
     config = load_config("config/config.yaml").layer1_imcra
     estimator = Layer1Imcra(config)

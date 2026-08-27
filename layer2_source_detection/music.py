@@ -141,8 +141,15 @@ class RollingNormMusicScanner:
         self._covariance_sum: np.ndarray | None = None
         self._frequency_indices: np.ndarray | None = None
         self._frequencies_hz: np.ndarray | None = None
+        self._frequency_key: tuple[object, ...] | None = None
+        self._geometry_weights: np.ndarray | None = None
+        self._analysis_window_key: int | None = None
+        self._analysis_window: np.ndarray | None = None
         self._steering: np.ndarray | None = None
+        self._steering_energy: np.ndarray | None = None
         self._steering_key: tuple[object, ...] | None = None
+        self._identity_7 = np.eye(7, dtype=np.complex128)[None, :, :]
+        self._theta_degrees = np.arange(360, dtype=np.float32)
         self._last_covariance_update_ms = 0.0
         self.last_state_diagnostic: MusicStateDiagnostic | None = None
 
@@ -205,6 +212,14 @@ class RollingNormMusicScanner:
         return np.hanning(length + 1)[:-1].astype(np.float64)
 
     def _prepare_frequency_axis(self, config: DirectionScanConfig) -> None:
+        key = (
+            config.n_fft,
+            config.frequency_min_hz,
+            config.frequency_max_hz,
+            config.min_valid_frequency_bins,
+        )
+        if key == self._frequency_key:
+            return
         frequencies = np.fft.rfftfreq(config.n_fft, 1.0 / 48_000.0)
         indices = np.flatnonzero(
             (frequencies >= config.frequency_min_hz)
@@ -214,23 +229,30 @@ class RollingNormMusicScanner:
             raise DirectionScanError("MUSIC has too few configured frequency bins")
         self._frequency_indices = indices
         self._frequencies_hz = frequencies[indices]
+        self._geometry_weights = self._geometry_frequency_weights(self._frequencies_hz)
+        self._frequency_key = key
+        self._steering = None
+        self._steering_energy = None
+        self._steering_key = None
 
     def _frame_covariance(self, frame: np.ndarray, config: DirectionScanConfig) -> np.ndarray:
-        if self._frequency_indices is None:
-            self._prepare_frequency_axis(config)
+        self._prepare_frequency_axis(config)
         assert self._frequency_indices is not None
+        if self._analysis_window_key != config.win_length:
+            self._analysis_window = self._periodic_hann(config.win_length)
+            self._analysis_window_key = config.win_length
+        assert self._analysis_window is not None
         physical = np.asarray(frame[:, :7], dtype=np.float64)
         physical = physical - physical.mean(axis=0, keepdims=True)
         spectrum = np.fft.rfft(
-            physical * self._periodic_hann(config.win_length)[:, None],
+            physical * self._analysis_window[:, None],
             n=config.n_fft,
             axis=0,
         )[self._frequency_indices]
-        return np.einsum("fc,fd->fcd", spectrum, spectrum.conj(), optimize=True)
+        return spectrum[:, :, None] * spectrum[:, None, :].conj()
 
     def _target_frequencies(self, config: DirectionScanConfig) -> np.ndarray:
-        if self._frequencies_hz is None:
-            self._prepare_frequency_axis(config)
+        self._prepare_frequency_axis(config)
         assert self._frequencies_hz is not None
         return self._frequencies_hz
 
@@ -349,11 +371,10 @@ class RollingNormMusicScanner:
         status = "imcra_spatial_covariance"
         trace = np.real(np.trace(noise_covariance, axis1=1, axis2=2)) / 7.0
         trace = np.maximum(trace, config.eigenvalue_floor)
-        identity = np.eye(7, dtype=np.complex128)[None, :, :]
         effective_covariance = (
             (1.0 - config.noise_covariance_shrinkage) * noise_covariance
-            + config.noise_covariance_shrinkage * trace[:, None, None] * identity
-            + config.diagonal_loading * trace[:, None, None] * identity
+            + config.noise_covariance_shrinkage * trace[:, None, None] * self._identity_7
+            + config.diagonal_loading * trace[:, None, None] * self._identity_7
         )
         effective_covariance = 0.5 * (
             effective_covariance + effective_covariance.conj().transpose(0, 2, 1)
@@ -391,21 +412,23 @@ class RollingNormMusicScanner:
         config: DirectionScanConfig,
         frequency_mask: np.ndarray,
         geometry_weights: np.ndarray,
+        steering_energy: np.ndarray | None,
         imcra_metrics: tuple[np.ndarray, np.ndarray, np.ndarray | None] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        noise = eigenvectors[:, :, :6]
-        projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
-        denominator = np.sum(np.abs(projection) ** 2, axis=2)
+        principal = eigenvectors[:, :, -1]
+        principal_projection = np.abs(
+            np.einsum("fac,fc->fa", steering.conj(), principal, optimize=True)
+        ) ** 2
+        total_energy = (
+            np.sum(np.abs(steering) ** 2, axis=2)
+            if steering_energy is None
+            else steering_energy
+        )
+        denominator = np.maximum(total_energy - principal_projection, 1.0e-12)
         per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
         per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
 
-        principal = eigenvectors[:, :, -1]
-        plane_fit_by_angle = np.abs(
-            np.einsum("fac,fc->fa", steering.conj(), principal, optimize=True)
-        ) ** 2
-        plane_fit_by_angle /= np.maximum(
-            np.sum(np.abs(steering) ** 2, axis=2), 1.0e-12
-        )
+        plane_fit_by_angle = principal_projection / np.maximum(total_energy, 1.0e-12)
         plane_fit = np.max(plane_fit_by_angle, axis=1)
         peak_angles = np.argmax(per_frequency, axis=1).astype(np.float64)
         eigen_ratio = eigenvalues[:, -1] / np.maximum(eigenvalues[:, -2], 1.0e-12)
@@ -731,8 +754,7 @@ class RollingNormMusicScanner:
     def _steering_tensor(
         self, geometry: MicGeometry, config: DirectionScanConfig, revision: int
     ) -> tuple[np.ndarray, bool]:
-        if self._frequencies_hz is None:
-            self._prepare_frequency_axis(config)
+        self._prepare_frequency_axis(config)
         assert self._frequencies_hz is not None
         key = (
             geometry.version, geometry.speed_of_sound_mps,
@@ -749,9 +771,31 @@ class RollingNormMusicScanner:
             self._steering = np.exp(
                 -2j * np.pi * self._frequencies_hz[:, None, None] * delays[None, :, :]
             )
+            self._steering_energy = np.sum(np.abs(self._steering) ** 2, axis=2)
             self._steering_key = key
         assert self._steering is not None
         return self._steering, rebuilt
+
+    @staticmethod
+    def _noise_projection_denominator(
+        eigenvectors: np.ndarray,
+        steering: np.ndarray,
+        signal_order: int,
+        steering_energy: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute noise-subspace energy through its smaller orthogonal complement."""
+
+        signal = eigenvectors[:, :, -signal_order:]
+        projection = np.einsum(
+            "fcn,fac->fan", signal.conj(), steering, optimize=True,
+        )
+        signal_energy = np.sum(np.abs(projection) ** 2, axis=2)
+        total_energy = (
+            np.sum(np.abs(steering) ** 2, axis=2)
+            if steering_energy is None
+            else steering_energy
+        )
+        return np.maximum(total_energy - signal_energy, 1.0e-12)
 
     def scan_detailed(
         self,
@@ -767,11 +811,12 @@ class RollingNormMusicScanner:
         snapshots = len(self._frame_covariances)
         covariance = self._covariance_sum / max(snapshots, 1)
         trace = np.real(np.trace(covariance, axis1=1, axis2=2)) / 7.0
-        identity = np.eye(7, dtype=np.complex128)[None, :, :]
         covariance = (
             (1.0 - config.covariance_shrinkage) * covariance
-            + config.covariance_shrinkage * trace[:, None, None] * identity
-            + config.diagonal_loading * np.maximum(trace, config.eigenvalue_floor)[:, None, None] * identity
+            + config.covariance_shrinkage * trace[:, None, None] * self._identity_7
+            + config.diagonal_loading
+            * np.maximum(trace, config.eigenvalue_floor)[:, None, None]
+            * self._identity_7
         )
         steering, rebuilt = self._steering_tensor(geometry, config, config_revision)
         imcra_metrics = (
@@ -785,27 +830,41 @@ class RollingNormMusicScanner:
         eigenvalues, eigenvectors = np.linalg.eigh(covariance)
         eigensolved = perf_counter()
         valid = np.isfinite(eigenvalues).all(axis=1) & (eigenvalues[:, -1] > config.eigenvalue_floor)
-        if int(valid.sum()) < config.min_valid_frequency_bins:
+        valid_count = int(valid.sum())
+        if valid_count < config.min_valid_frequency_bins:
             raise DirectionScanError("MUSIC covariance quality left too few valid frequency bins")
-        eigenvalues = eigenvalues[valid]
-        eigenvectors = eigenvectors[valid]
-        steering = steering[valid]
-        valid_frequencies = self._target_frequencies(config)[valid]
-        geometry_weights = self._geometry_frequency_weights(valid_frequencies)
+        all_valid = valid_count == valid.size
+        target_frequencies = self._target_frequencies(config)
+        assert self._geometry_weights is not None
+        if all_valid:
+            valid_frequencies = target_frequencies
+            geometry_weights = self._geometry_weights
+            steering_energy = (
+                self._steering_energy
+                if whitening_status == "disabled" else None
+            )
+        else:
+            eigenvalues = eigenvalues[valid]
+            eigenvectors = eigenvectors[valid]
+            steering = steering[valid]
+            valid_frequencies = target_frequencies[valid]
+            geometry_weights = self._geometry_weights[valid]
+            steering_energy = (
+                self._steering_energy[valid]
+                if whitening_status == "disabled" and self._steering_energy is not None
+                else None
+            )
         manual_order = config.effective_order_limit
         # Keep the established ModelOrderEstimate DTO for downstream recording
         # compatibility. Its order is now the explicit operator selection and
         # the legacy MDL age is always zero; no model-order estimator runs.
         model_order = ModelOrderEstimate(
-            manual_order, int(valid.sum()), snapshots, 1.0, 0, "ready",
+            manual_order, valid_count, snapshots, 1.0, 0, "ready",
         )
-        selected = np.ones(int(valid.sum()), dtype=bool)
-        weights = np.ones(int(valid.sum()), dtype=np.float64)
-        plane_fit = np.zeros(int(valid.sum()), dtype=np.float64)
         if config.dpd_rank1_enabled:
             raw, per_frequency, selected, weights, plane_fit = self._dpd_rank1_spectrum(
                 eigenvalues, eigenvectors, steering, window, config, valid,
-                geometry_weights, imcra_metrics,
+                geometry_weights, steering_energy, imcra_metrics,
             )
             limit = config.effective_order_limit
             fallback_reason = (
@@ -818,12 +877,15 @@ class RollingNormMusicScanner:
             # order and the maximum number of peaks to search.
             effective_order = manual_order
             limit = effective_order
-            noise = eigenvectors[:, :, : 7 - effective_order]
-            projection = np.einsum("fcn,fac->fan", noise.conj(), steering, optimize=True)
-            denominator = np.sum(np.abs(projection) ** 2, axis=2)
+            denominator = self._noise_projection_denominator(
+                eigenvectors, steering, effective_order, steering_energy,
+            )
             per_frequency = 1.0 / np.maximum(denominator, 1.0e-12)
             per_frequency /= np.maximum(per_frequency.max(axis=1, keepdims=True), 1.0e-12)
-            raw = self._geometry_weighted_mean(per_frequency, valid_frequencies)
+            total_weight = float(np.sum(geometry_weights))
+            if not np.isfinite(total_weight) or total_weight <= 0.0:
+                raise DirectionScanError("MUSIC fixed frequency weights have no support")
+            raw = np.sum(per_frequency * geometry_weights[:, None], axis=0) / total_weight
             stop_reason = "manual_order_greedy_peak_search"
             fallback_reason = (
                 "imcra_noise_covariance_unavailable"
@@ -838,9 +900,9 @@ class RollingNormMusicScanner:
         response = SpatialResponse(
             window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
             window.doa_start_sample, window.doa_end_sample,
-            np.arange(360, dtype=np.float32), raw32, normalized,
+            self._theta_degrees, raw32, normalized,
             model_order,
-            int(valid.sum()),
+            valid_count,
             "ready" if model_order.status == "ready" else "degraded",
             self.algorithm_version,
         )
@@ -915,7 +977,7 @@ class RollingNormMusicScanner:
                 7,
                 (
                     support_by_index[int(item.theta_deg)].supporting_frequency_bins
-                    if config.dpd_rank1_enabled else int(valid.sum())
+                    if config.dpd_rank1_enabled else valid_count
                 ),
                 (
                     support_by_index[int(item.theta_deg)].frequency_support_ratio
@@ -950,7 +1012,7 @@ class RollingNormMusicScanner:
         )
         diagnostics = MusicDiagnostics(
             "frequency_normalized_music", self.algorithm_version, config_revision,
-            model_order, self.last_state_diagnostic, int(valid.sum()),
+            model_order, self.last_state_diagnostic, valid_count,
             covariance_quality,
             stop_reason=stop_reason,
             fallback_reason=fallback_reason,

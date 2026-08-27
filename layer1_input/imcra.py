@@ -23,8 +23,8 @@ class Layer1Imcra:
         self.config, self.sample_rate, self.hop_samples = config, sample_rate, config.hop_samples
         self._all_frequencies_hz = np.fft.rfftfreq(config.n_fft, 1.0 / sample_rate).astype(np.float32)
         self._window = np.hanning(self.hop_samples + 1)[:-1].astype(np.float64)
-        # Normalized three-point Hanning frequency smoother (paper Table I: w=1).
-        self._frequency_kernel = np.asarray((0.25, 0.5, 0.25), dtype=np.float64)
+        self._window_energy = float(np.sum(self._window**2))
+        self._window_energy_sqrt = float(np.sqrt(self._window_energy))
         self._output_band = (self._all_frequencies_hz >= config.output_frequency_min_hz) & (
             self._all_frequencies_hz <= config.output_frequency_max_hz
         )
@@ -130,8 +130,16 @@ class Layer1Imcra:
         return tuple(output)
 
     def _frequency_smooth(self, values: np.ndarray) -> np.ndarray:
-        padded = np.pad(values, ((0, 0), (1, 1)), mode="edge")
-        return sum(weight * padded[:, offset : offset + values.shape[1]] for offset, weight in enumerate(self._frequency_kernel))
+        # Normalized three-point Hanning frequency smoother (paper Table I: w=1).
+        smoothed = np.empty_like(values, dtype=np.float64)
+        smoothed[:, 1:-1] = (
+            0.25 * values[:, :-2]
+            + 0.5 * values[:, 1:-1]
+            + 0.25 * values[:, 2:]
+        )
+        smoothed[:, 0] = 0.75 * values[:, 0] + 0.25 * values[:, 1]
+        smoothed[:, -1] = 0.25 * values[:, -2] + 0.75 * values[:, -1]
+        return smoothed
 
     def _conditional_frequency_smooth(self, power: np.ndarray, indicator: np.ndarray) -> np.ndarray:
         denominator = self._frequency_smooth(indicator.astype(np.float64))
@@ -262,12 +270,12 @@ class Layer1Imcra:
         core_started = perf_counter()
         centered = samples.astype(np.float64) - np.mean(samples, axis=0, keepdims=True)
         spectrum = np.fft.rfft(centered * self._window[:, None], n=cfg.n_fft, axis=0)
-        window_energy = np.sum(self._window**2)
-        normalized_spectrum = spectrum / np.sqrt(window_energy)
-        spatial_outer = np.einsum(
-            "fc,fd->fcd", normalized_spectrum, normalized_spectrum.conj(), optimize=True,
+        normalized_spectrum = spectrum / self._window_energy_sqrt
+        spatial_outer = (
+            normalized_spectrum[:, :, None]
+            * normalized_spectrum[:, None, :].conj()
         )
-        power = np.maximum((np.abs(spectrum) ** 2).T / window_energy, cfg.eps)
+        power = np.maximum((np.abs(spectrum) ** 2).T / self._window_energy, cfg.eps)
         frequency_smoothed = self._frequency_smooth(power)
         self._initialize(power, frequency_smoothed, spatial_outer) if self._smoothed is None else self._cohen_update(
             power, frequency_smoothed, spatial_outer,
