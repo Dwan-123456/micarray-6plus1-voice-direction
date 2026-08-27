@@ -8,6 +8,8 @@
 
 > 面向首次接触项目的完整数据流、逐层输入/输出/内部处理单元和操作步骤，见[《完整架构与使用手册》](docs/COMPLETE_ARCHITECTURE_AND_USAGE.md)。
 
+> 需要先快速理解v1.3.6完整链、1.4开发方向和Test UI基本操作时，见[《v1.3.6架构、v1.4方向与使用说明》](docs/V1.3.6_TO_V1.4_OVERVIEW_AND_USAGE.md)。
+
 > `1.3.6` 的 L4-L6 可调分块伪实时设计、失败边界和性能门禁见[《L4-L6 可调分块伪实时链》](docs/REALTIME_L456.md)。
 
 > L3双声源分离、4 cm 6+1阵列物理边界和Python实时优化的深度研究报告收录在[`docs/references/`](docs/references/README.md)。这些报告是重要研究参考，不替代当前代码、配置和架构契约。
