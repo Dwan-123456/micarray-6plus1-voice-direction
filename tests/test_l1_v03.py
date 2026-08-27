@@ -10,6 +10,7 @@ from layer1_input.calibration import ChannelCalibrator
 from layer1_input.configuration import CalibrationConfig
 from layer1_input.imcra import Layer1Imcra
 from layer1_input.interface import DecodedAudio
+from layer1_input.serial_device import SerialDevice
 from layer1_input.sources import map_logical_channels
 from layer1_input.speech_spectrum import speech_gate_band_weights
 from windowing import WindowAssembler
@@ -37,6 +38,20 @@ def test_native_to_logical_mapping_is_exact_and_hardware_mix_is_last():
     assert np.array_equal(logical, native[:, [0, 1, 2, 3, 4, 5, 7, 6]])
     assert np.array_equal(logical[:, :7], native[:, [0, 1, 2, 3, 4, 5, 7]])
     assert np.array_equal(logical[:, 7], native[:, 6])
+
+
+def test_unused_cdc_hotmap_queue_retains_only_the_latest_frame():
+    device = SerialDevice("unused", 2_000_000)
+    for value in range(3):
+        payload = bytes([value]) * device.HOTMAP_PAYLOAD_SIZE
+        device._publish(device.HOTMAP_HEADER + payload)
+
+    frames = device.take_hotmap_frames()
+    assert len(frames) == 1
+    assert frames[0].sequence_id == 2
+    assert np.all(frames[0].matrix == 2)
+    assert device.latest_hotmap_frame() is frames[0]
+    assert device.status()["hotmap_frames"] == 3
 
 
 def test_calibration_changes_only_the_seven_physical_microphones():

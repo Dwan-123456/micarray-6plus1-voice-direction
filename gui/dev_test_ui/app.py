@@ -185,6 +185,8 @@ if QApplication is not None:
     class SquarePolarHost(QWidget):
         """Keep a stable square angle panel independent of changing text hints."""
 
+        _LAYOUT_JITTER_PX = 3
+
         def __init__(self, panel: L2PolarPanel) -> None:
             super().__init__()
             self.panel = panel
@@ -198,6 +200,19 @@ if QApplication is not None:
             side = max(1, min(self.width(), self.height()))
             x = max(0, (self.width() - side) // 2)
             geometry = self.panel.geometry()
+            # Windows/Qt can renegotiate the maximized client area by one or
+            # two pixels when focus moves between applications.  Treat that as
+            # decoration jitter, otherwise the angle square visibly "breathes"
+            # even though the user did not resize the window.  Real resizes
+            # still take effect immediately once either dimension changes by
+            # more than this small tolerance.
+            if (
+                geometry.width() > 1
+                and abs(side - geometry.width()) <= self._LAYOUT_JITTER_PX
+                and abs(side - geometry.height()) <= self._LAYOUT_JITTER_PX
+            ):
+                super().resizeEvent(event)
+                return
             if (geometry.x(), geometry.y(), geometry.width(), geometry.height()) != (
                 x, 0, side, side,
             ):
@@ -230,9 +245,11 @@ if QApplication is not None:
             grid.setColumnStretch(1, 3)
             self.footer = QLabel("v1.4.1 | L1/L2 only")
             self.footer.setMinimumWidth(0)
+            self.footer.setFixedHeight(28)
             self.footer.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             footer_row = QHBoxLayout()
             self.performance_toggle = QCheckBox("性能监控")
+            self.performance_toggle.setFixedHeight(28)
             self.performance_toggle.setChecked(runtime.performance_monitor_enabled)
             self.performance_toggle.toggled.connect(runtime.set_performance_monitor_enabled)
             footer_row.addWidget(self.performance_toggle)

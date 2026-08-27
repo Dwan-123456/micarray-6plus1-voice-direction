@@ -208,17 +208,23 @@ class Layer2Pipeline:
         self, window: DecisionWindow, decision: ProbabilityGateDecision
     ) -> int:
         previous = self._gate_activity_key
+        sample_delta = 0 if previous is None else window.decision_sample - previous[2]
         continuous = (
             previous is not None
             and previous[:2] == (window.session_id, window.stream_epoch)
-            and window.decision_sample == previous[2] + 960
+            and sample_delta > 0
+            and sample_delta % 960 == 0
         )
         if decision.state is not ProbabilityGateState.OPEN:
             self._consecutive_gate_open_hops = 0
         elif not continuous:
             self._consecutive_gate_open_hops = 1
         else:
-            self._consecutive_gate_open_hops += 1
+            # Adaptive L2 may compute only one of every N contiguous 20 ms
+            # windows and explicitly reuses the preceding Gate/output on the
+            # skipped windows.  Count those reused hops here so a 40--200 ms
+            # fallback period cannot keep MUSIC birth warm-up stuck at one.
+            self._consecutive_gate_open_hops += sample_delta // 960
         self._gate_activity_key = (
             window.session_id,
             window.stream_epoch,

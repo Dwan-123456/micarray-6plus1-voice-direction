@@ -33,7 +33,10 @@ class SerialDevice:
         self._last_error: str | None = None
         self._frame_buffer = bytearray()
         self._hotmap: CdcHotmapFrame | None = None
-        self._pending_hotmaps: deque[CdcHotmapFrame] = deque()
+        # v1.4 does not consume the legacy DPD hot-map stream.  Retain only
+        # the newest frame for the compatibility accessor instead of queuing
+        # every 50 Hz CDC frame forever during long live sessions.
+        self._pending_hotmaps: deque[CdcHotmapFrame] = deque(maxlen=1)
 
     @property
     def running(self) -> bool:
@@ -197,7 +200,7 @@ class SerialDevice:
             return self._hotmap
 
     def take_hotmap_frames(self) -> tuple[CdcHotmapFrame, ...]:
-        """Drain every decoded CDC frame since the preceding consumer read."""
+        """Drain the newest compatibility frame without retaining a backlog."""
         with self._lock:
             frames = tuple(self._pending_hotmaps)
             self._pending_hotmaps.clear()

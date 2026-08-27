@@ -478,7 +478,7 @@ def test_pipeline_requires_one_continuously_open_covariance_context_before_music
 def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_resets_ids() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
-    audio = _audio((30.0,), seed=31, samples=7_680 + 10 * 960)
+    audio = _audio((30.0,), seed=31, samples=7_680 + 12 * 960)
 
     def probabilities(window: DecisionWindow) -> tuple[SourceProbability20ms, ...]:
         return tuple(SourceProbability20ms(
@@ -512,3 +512,27 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
     assert tracked.active_tracks
     assert tracked.active_tracks[0].track_id == 1
     assert tracked.active_tracks[0].track_state == "tentative"
+
+
+def test_gate_activity_counts_contiguous_hops_across_adaptive_compute_stride() -> None:
+    config = load_config(CONFIG, environ={})
+    pipeline = Layer2Pipeline.from_project(config)
+    audio = _audio((30.0,), seed=41, samples=7_680 + 10 * 960)
+    scan_config = DirectionScanConfig.from_project(config)
+
+    def probabilities(window: DecisionWindow) -> tuple[SourceProbability20ms, ...]:
+        return tuple(SourceProbability20ms(
+            window.session_id, window.stream_epoch, start, start + 960, 1.0,
+            SourceProbabilityState.READY, "ready",
+        ) for start in (window.doa_start_sample, window.doa_start_sample + 960))
+
+    counts = []
+    for index in (0, 2, 4, 6, 8):
+        window = _window(audio, index)
+        result = pipeline.process(
+            window, probabilities(window), physical_6plus1_geometry(), scan_config,
+            gate_threshold=0.6, gate_config_revision=0,
+        )
+        assert result.search_diagnostics is not None
+        counts.append(result.search_diagnostics.active_frame_count)
+    assert counts == [1, 3, 5, 7, 9]
