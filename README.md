@@ -30,4 +30,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 
 VS Code固定使用`.venv-v1.4`，不安装PyTorch、CUDA、ONNX、CountNet或L4～L6依赖。`data/`、`tmp/`、录音、日志、缓存和虚拟环境不提交。旧系统从`v1.3.6`恢复。
 
+v1.4.1的完整架构、各层输入输出、关键参数、Test UI使用方法和1小时真实麦克风长测结果见 [docs/V1.4.1_ARCHITECTURE_USAGE_AND_ONE_HOUR_TEST.md](docs/V1.4.1_ARCHITECTURE_USAGE_AND_ONE_HOUR_TEST.md)。
+
 旧架构与迁移说明见 [docs/V1.3.6_TO_V1.4_OVERVIEW_AND_USAGE.md](docs/V1.3.6_TO_V1.4_OVERVIEW_AND_USAGE.md)。
