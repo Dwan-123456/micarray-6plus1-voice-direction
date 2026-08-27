@@ -11,59 +11,6 @@ FloatArray = NDArray[np.float32]
 UInt8Array = NDArray[np.uint8]
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class SpeakerCountAnnotation:
-    """L1-only CountNet result aligned to five completed 20 ms input blocks."""
-
-    session_id: str
-    stream_epoch: int
-    start_sample: int
-    end_sample: int
-    speaker_count: int | None
-    probabilities: FloatArray | None
-    model_id: str
-    model_hash: str | None
-    status: str
-    reason: str | None = None
-    input_rms_dbfs: float | None = None
-    input_gain_db: float | None = None
-
-    def __post_init__(self) -> None:
-        if (
-            not self.session_id
-            or min(self.stream_epoch, self.start_sample) < 0
-            or self.end_sample - self.start_sample != 4_800
-        ):
-            raise ValueError("speaker-count annotation must cover one 100 ms interval")
-        if self.status not in {"warming_up", "ready", "invalid"}:
-            raise ValueError("speaker-count status must be warming_up, ready, or invalid")
-        if not self.model_id:
-            raise ValueError("speaker-count model_id cannot be empty")
-        if self.model_hash is not None and (
-            len(self.model_hash) != 64
-            or any(character not in "0123456789abcdef" for character in self.model_hash)
-        ):
-            raise ValueError("speaker-count model_hash must be lowercase SHA-256 or None")
-        if self.status == "ready":
-            values = np.asarray(self.probabilities, dtype=np.float32)
-            if (
-                self.speaker_count not in {0, 1, 2}
-                or values.shape != (3,)
-                or not np.isfinite(values).all()
-                or np.any(values < 0.0)
-                or not np.isclose(float(values.sum()), 1.0, atol=1.0e-5)
-            ):
-                raise ValueError("ready speaker-count result requires normalized P0/P1/P2")
-            immutable = np.frombuffer(np.ascontiguousarray(values).tobytes(), dtype=np.float32)
-            object.__setattr__(self, "probabilities", immutable)
-        elif self.speaker_count is not None or self.probabilities is not None:
-            raise ValueError("non-ready speaker-count result cannot invent a count or probabilities")
-        for name in ("input_rms_dbfs", "input_gain_db"):
-            value = getattr(self, name)
-            if value is not None and not np.isfinite(value):
-                raise ValueError(f"speaker-count {name} must be finite or None")
-
-
 @dataclass(slots=True, frozen=True, eq=False)
 class NoiseSpectrumRecord:
     """Read-only dynamic noise PSD snapshot aligned to one audio block."""
@@ -235,7 +182,7 @@ class DecodedAudio:
     timestamp: float
     # Exact float32 representation of the native device channels before the
     # physical-microphone mapping/calibration.  Live MA-USB8 input carries 8
-    # channels here so Session recording can retain the original S16 stream;
+    # channels here so live consumers retain the original S16 stream;
     # offline seven-channel inputs may leave it unset.
     native_samples: FloatArray | None = None
     # Latest CDC hotmap snapshot available when this audio block left Layer 1.

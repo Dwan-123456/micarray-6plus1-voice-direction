@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from time import monotonic
-from types import MappingProxyType
-from typing import Mapping
 
 import numpy as np
 
@@ -90,7 +88,6 @@ class MusicPanelSnapshot:
     directions: tuple[TrackedDirection, ...]
     active_tracks: tuple[TrackedDirection, ...]
     published_monotonic: float
-    l5_probability_by_track: Mapping[int, float] = MappingProxyType({})
     effective_order: int | None = None
     raw_peaks: tuple[CandidateDirection, ...] = ()
     direction_id_tracking_enabled: bool = True
@@ -126,13 +123,9 @@ class MusicPanelSnapshot:
             raise ValueError("active L2 tracks must belong to the MUSIC stream")
         if len({item.track_id for item in active}) != len(active):
             raise ValueError("active L2 track IDs must be unique")
-        probabilities = {int(key): float(value) for key, value in self.l5_probability_by_track.items()}
-        if any(key <= 0 or not 0.0 <= value <= 1.0 for key, value in probabilities.items()):
-            raise ValueError("L5 probabilities must be keyed by positive L2 track IDs")
         object.__setattr__(self, "directions", directions)
         object.__setattr__(self, "active_tracks", active)
         object.__setattr__(self, "raw_peaks", raw_peaks)
-        object.__setattr__(self, "l5_probability_by_track", MappingProxyType(probabilities))
 
     @property
     def age_ms(self) -> float:
@@ -283,7 +276,7 @@ if QWidget is not None:
 
     class DirectionTrackTable(QTableWidget):
         ROW_COUNT = 3
-        HEADERS = ("track_id", "观测角", "输出角", "score", "状态", "新建", "观测", "L5概率")
+        HEADERS = ("track_id", "观测角", "输出角", "score", "状态", "新建", "观测")
 
         def __init__(self, parent: QWidget | None = None):
             super().__init__(self.ROW_COUNT, len(self.HEADERS), parent)
@@ -293,37 +286,12 @@ if QWidget is not None:
             self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self.setAlternatingRowColors(False)
-            self._probability_stream: tuple[str, int] | None = None
-            self._probability_window_started: float | None = None
-            self._probability_pending: dict[int, float] = {}
-            self._probability_display: dict[int, float] = {}
             for row in range(self.ROW_COUNT):
                 for column in range(len(self.HEADERS)):
                     self.setItem(row, column, QTableWidgetItem(""))
 
         def set_snapshot(self, snapshot: MusicPanelSnapshot | None) -> None:
             tracks = () if snapshot is None else snapshot.active_tracks
-            now = monotonic()
-            if snapshot is not None:
-                stream = (snapshot.response.session_id, snapshot.response.stream_epoch)
-                if stream != self._probability_stream:
-                    self._probability_stream = stream
-                    self._probability_window_started = now
-                    self._probability_pending.clear()
-                    self._probability_display.clear()
-                elif (
-                    self._probability_window_started is not None
-                    and now - self._probability_window_started >= 1.0
-                ):
-                    self._probability_display = self._probability_pending
-                    self._probability_pending = {}
-                    self._probability_window_started = now
-                for track_id, probability in snapshot.l5_probability_by_track.items():
-                    track_id = int(track_id)
-                    self._probability_pending[track_id] = max(
-                        float(probability),
-                        self._probability_pending.get(track_id, 0.0),
-                    )
             self.setUpdatesEnabled(False)
             try:
                 for row in range(self.ROW_COUNT):
@@ -332,7 +300,6 @@ if QWidget is not None:
                         values = ("",) * len(self.HEADERS)
                         colour = self.palette().text().color()
                     else:
-                        probability = self._probability_display.get(track.track_id)
                         values = (
                             str(track.track_id),
                             "—" if track.measured_theta_deg is None else f"{track.measured_theta_deg:.1f}°",
@@ -341,7 +308,6 @@ if QWidget is not None:
                             track.track_state,
                             "是" if track.is_new_track else "否",
                             "是" if track.is_observed else "否",
-                            "—" if probability is None else f"{probability:.3f}",
                         )
                         colour = QColor(track_colour_hex(track.track_id))
                     for column, value in enumerate(values):

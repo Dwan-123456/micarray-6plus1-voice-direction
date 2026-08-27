@@ -1,7 +1,6 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$pythonw = Join-Path $projectRoot ".venv\Scripts\pythonw.exe"
-$config = Join-Path $projectRoot "config\config.yaml"
+$pythonw = Join-Path $projectRoot ".venv-v1.4\Scripts\pythonw.exe"
 
 if (-not (Test-Path -LiteralPath $pythonw)) {
     Add-Type -AssemblyName PresentationFramework
@@ -15,4 +14,4 @@ if (-not (Test-Path -LiteralPath $pythonw)) {
 }
 
 Set-Location -LiteralPath $projectRoot
-& $pythonw -m gui.dev_test_ui.app --config $config
+& $pythonw -m gui.dev_test_ui.app

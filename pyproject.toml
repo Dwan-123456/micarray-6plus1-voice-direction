@@ -5,33 +5,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "micarray-6plus1-voice-direction"
 version = "1.4.1"
-description = "6+1 microphone-array MUSIC, directional beamforming and voice-direction pipeline"
+description = "Minimal 6+1 microphone-array IMCRA, MUSIC DOA and spatial-ID runtime"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "torch==2.12.1+cu132",
   "numpy>=2.4,<2.5",
   "scipy>=1.17,<1.18",
   "PyYAML>=6.0,<7",
-  "safetensors>=0.8,<0.9",
   "sounddevice>=0.5,<0.6",
   "pyserial>=3.5,<4",
   "pydantic>=2.12,<3",
-  "kaldi-native-fbank==1.22.3",
-  "onnxruntime==1.29.0",
-  "spectralcluster==0.2.22",
 ]
 
 [project.optional-dependencies]
 ui = [
   "PySide6>=6.10,<6.12",
-  "matplotlib>=3.10,<4",
-]
-service = [
-  "fastapi>=0.116,<1",
-  "uvicorn[standard]>=0.35,<1",
 ]
 dev = [
-  "h5py>=3.14,<4",
   "pytest>=8.4,<10",
   "pytest-cov>=6,<8",
   "ruff>=0.12,<1",
@@ -39,11 +28,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "common*", "config*", "data_management*", "ingest*", "windowing*", "gui*", "spatial_separability*", "layer1_input*", "layer2_source_detection*", "layer3_direction_signal*", "layer4_speech_separation*", "layer5_voice_classifier*", "layer6_speaker_consolidation*"]
+include = ["app*", "common*", "config*", "ingest*", "windowing*", "gui*", "layer1_input*", "layer2_source_detection*"]
 
 [tool.setuptools.package-data]
 config = ["*.yaml"]
-spatial_separability = ["spatial_separability_p.npy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "layer1_input/tests"]
@@ -52,7 +40,3 @@ pythonpath = ["."]
 [tool.ruff]
 target-version = "py312"
 line-length = 120
-extend-exclude = [
-    "models/mossformer2_ss_16k_v1/source",
-    "models/tiger_speech_16k_v1/source",
-]

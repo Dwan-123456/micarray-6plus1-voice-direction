@@ -59,8 +59,8 @@ class WindowAssembler:
         if block.start_sample != expected_start:
             raise ValueError("WindowAssembler收到非连续block；连续性只能由Coordinator重建epoch")
         # IngestedAudioBlock is already in logical order:
-        # MIC0..MIC5, Center, HardwareMix. Preserve all eight channels so L3
-        # receives its public input unchanged.
+        # MIC0..MIC5, Center, HardwareMix. Preserve all eight live channels;
+        # L1/L2 spatial processing uses the seven physical microphones.
         self._buffer = np.concatenate((self._buffer, block.samples), axis=0)
         self._segments.append((block.start_sample, block.end_sample, block.sequence_id))
         incoming_hops = tuple(imcra_hops) or (() if block.imcra_hop is None else (block.imcra_hop,))

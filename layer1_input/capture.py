@@ -225,14 +225,9 @@ class AudioCapture:
                     )
 
     def subscribe(self, maxsize: int = 10) -> queue.Queue[bytes]:
-        """Subscribe to native blocks.
-
-        Network/API consumers stay bounded by default.  The local recording
-        pipeline explicitly requests ``maxsize=0`` so no capture block is
-        discarded under temporary DSP backpressure.
-        """
-        if maxsize < 0:
-            raise ValueError("subscriber maxsize 不能小于 0")
+        """Subscribe to native blocks through a strictly bounded queue."""
+        if maxsize <= 0:
+            raise ValueError("subscriber maxsize 必须大于 0")
         receiver: queue.Queue[bytes] = queue.Queue(maxsize=maxsize)
         with self._lock:
             self._subscribers.add(receiver)

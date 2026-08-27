@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, replace
 from enum import Enum
 from math import isfinite
-from threading import Lock
 from time import perf_counter
 
 from common.angle import circular_distance_deg
@@ -37,10 +35,8 @@ def _select_l3_directions(
     observed_tentative = tuple(item for item in observed if item.track_state == "tentative")
     observed_by_id = {item.track_id: item for item in (*observed_confirmed, *observed_tentative)}
     prioritized = list(observed_confirmed)
-    # Tentative observations enter L3 immediately so confirmation does not
-    # cut the beginning off the canonical per-ID audio.  They remain lower
-    # priority than observed formal IDs and never survive as final output
-    # unless the same authoritative ID is later confirmed.
+    # Tentative observations are published immediately for low-latency L2
+    # diagnostics. They remain lower priority than confirmed tracks.
     prioritized.extend(observed_tentative)
     prioritized.extend(sorted(
         (
@@ -179,8 +175,6 @@ class Layer2Pipeline:
         self.id_tracker = tracker or GlobalDirectionTracker()
         self.last_id_tracking_error: str | None = None
         self._direction_id_tracking_enabled = True
-        self._voice_feedback: deque[tuple[str, int, int, int, float, bool]] = deque(maxlen=4096)
-        self._voice_feedback_lock = Lock()
         self._gate_activity_key: tuple[str, int, int] | None = None
         self._consecutive_gate_open_hops = 0
 
@@ -205,8 +199,6 @@ class Layer2Pipeline:
         if callable(reset_scanner):
             reset_scanner()
         self.id_tracker.reset()
-        with self._voice_feedback_lock:
-            self._voice_feedback.clear()
         self.last_id_tracking_error = None
         self._direction_id_tracking_enabled = True
         self._gate_activity_key = None
@@ -234,35 +226,6 @@ class Layer2Pipeline:
         )
         return self._consecutive_gate_open_hops
 
-    def submit_voice_feedback(
-        self,
-        session_id: str,
-        stream_epoch: int,
-        decision_sample: int,
-        track_id: int,
-        probability: float,
-        is_voice: bool,
-    ) -> bool:
-        if (
-            not session_id or min(stream_epoch, decision_sample) < 0
-            or type(track_id) is not int or track_id <= 0
-            or type(is_voice) is not bool
-            or not isfinite(probability) or not 0.0 <= probability <= 1.0
-        ):
-            return False
-        with self._voice_feedback_lock:
-            self._voice_feedback.append(
-                (session_id, stream_epoch, decision_sample, track_id, float(probability), is_voice)
-            )
-        return True
-
-    def _drain_voice_feedback(self) -> None:
-        with self._voice_feedback_lock:
-            pending = tuple(self._voice_feedback)
-            self._voice_feedback.clear()
-        for item in pending:
-            self.id_tracker.apply_voice_feedback(*item)
-
     def process(self, window: DecisionWindow, probabilities: tuple[SourceProbability20ms, ...],
                 geometry: MicGeometry, scan_config: DirectionScanConfig, *, gate_threshold: float,
                 gate_config_revision: int, scan_config_revision: int = 0,
@@ -283,35 +246,15 @@ class Layer2Pipeline:
             # never reset concurrently with an update. Re-enabling starts a
             # fresh authoritative identity epoch for the same audio stream.
             self.id_tracker.reset()
-            with self._voice_feedback_lock:
-                self._voice_feedback.clear()
             self._direction_id_tracking_enabled = direction_id_tracking_enabled
         observe_covariance = getattr(self.scanner, "observe_covariance", None)
         if callable(observe_covariance):
             observe_covariance(window, scan_config)
-        if direction_id_tracking_enabled:
-            self._drain_voice_feedback()
-            voice_confirmed_ids = self.id_tracker.voice_confirmed_track_ids(
-                window.session_id, window.stream_epoch, window.decision_sample
-            )
-        else:
-            voice_confirmed_ids = ()
         if id_started is not None:
             assert id_tracking_ms is not None
             id_tracking_ms += (perf_counter() - id_started) * 1_000.0
         decision = self.gate.evaluate(window, probabilities, threshold=gate_threshold,
                                       config_revision=gate_config_revision)
-        if voice_confirmed_ids and decision.state is ProbabilityGateState.CLOSED:
-            decision = replace(
-                decision,
-                state=ProbabilityGateState.OPEN,
-                sound_present=True,
-                reason="voice_confirmed_id_force_open",
-                diagnostics=decision.diagnostics + (
-                    "voice_confirmed_id_force_open=true",
-                    "force_open_requires_l5_voice_confirmations=2",
-                ),
-            )
         active_frame_count = self._update_gate_activity(window, decision)
         required_active_frames = scan_config.context_ms // 20
         response: SpatialResponse | None = None

@@ -141,9 +141,7 @@ class TrackerDiagnostics:
 class GlobalDirectionTracker:
     """Circular IMM-JPDA direction tracker using the 48 kHz sample timeline.
 
-    IDs describe direction trajectories, not speaker identities. L4 feedback is
-    accepted for interface compatibility but is deliberately not consumed by
-    this tracker version.
+    IDs describe direction trajectories, not speaker identities.
     """
 
     backend = "circular_imm_jpda_v1"
@@ -159,7 +157,6 @@ class GlobalDirectionTracker:
         self.last_assignment_is_new: tuple[bool, ...] = ()
         self.last_association_probabilities: tuple[float, ...] = ()
         self.last_diagnostics = TrackerDiagnostics(self.backend, 0, (), (), (), (), (), ())
-        self._feedback_audit: list[tuple[str, int, int, int, float, bool]] = []
 
     @property
     def active_track_count(self) -> int:
@@ -178,7 +175,6 @@ class GlobalDirectionTracker:
         self.last_assignment_is_new = ()
         self.last_association_probabilities = ()
         self.last_diagnostics = TrackerDiagnostics(self.backend, 0, (), (), (), (), (), ())
-        self._feedback_audit.clear()
         if not preserve_session_counters:
             self._next_by_session.clear()
 
@@ -200,39 +196,6 @@ class GlobalDirectionTracker:
         result = self._next_by_session.setdefault(session_id, 1)
         self._next_by_session[session_id] = result + 1
         return result
-
-    def apply_voice_feedback(
-        self,
-        session_id: str,
-        stream_epoch: int,
-        decision_sample: int,
-        track_id: int,
-        probability: float,
-        is_voice: bool,
-    ) -> bool:
-        """Preserve the L4 feedback branch without influencing tracking state."""
-
-        if (
-            (session_id, stream_epoch) != (self._session_id, self._stream_epoch)
-            or decision_sample < 0
-            or track_id not in self._tracks
-            or not isfinite(probability)
-            or not 0 <= probability <= 1
-            or type(is_voice) is not bool
-        ):
-            return False
-        self._feedback_audit.append(
-            (session_id, stream_epoch, decision_sample, track_id, float(probability), is_voice)
-        )
-        del self._feedback_audit[:-64]
-        return True
-
-    def voice_confirmed_track_ids(
-        self, session_id: str, stream_epoch: int, decision_sample: int
-    ) -> frozenset[int]:
-        self.prepare_stream(session_id, stream_epoch)
-        self._expire_tracks(decision_sample)
-        return frozenset()
 
     def has_live_tracks(self, session_id: str, stream_epoch: int, decision_sample: int) -> bool:
         self.prepare_stream(session_id, stream_epoch)

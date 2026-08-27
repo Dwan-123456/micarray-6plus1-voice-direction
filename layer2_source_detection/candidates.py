@@ -40,7 +40,7 @@ def rank_observation_indices(
     """Return every valid circular local peak before final NMS/Top-K.
 
     This is the bounded observation interface for the experimental v2 private
-    tracker.  It deliberately keeps nearby peaks so ID confidence and L5
+    tracker.  It deliberately keeps nearby peaks so ID confidence and
     semantics, rather than the public 45-degree NMS, can decide which tracks
     survive.  The public v1 candidate path remains unchanged.
     """

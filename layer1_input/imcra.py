@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from math import ceil
+from time import perf_counter
 
 import numpy as np
 from scipy.special import exp1
@@ -57,6 +58,8 @@ class Layer1Imcra:
         self._speech_absence_probability: np.ndarray | None = None
         self._posterior_snr: np.ndarray | None = None
         self._prior_snr: np.ndarray | None = None
+        self.last_core_ms = 0.0
+        self.last_probability_ms = 0.0
 
     @classmethod
     def from_project(cls, config: ProjectConfig) -> "Layer1Imcra":
@@ -256,6 +259,7 @@ class Layer1Imcra:
         self, samples: np.ndarray, start_sample: int, end_sample: int, source_sequence_ids: tuple[int, ...]
     ) -> ImcraHopSnapshot:
         cfg = self.config
+        core_started = perf_counter()
         centered = samples.astype(np.float64) - np.mean(samples, axis=0, keepdims=True)
         spectrum = np.fft.rfft(centered * self._window[:, None], n=cfg.n_fft, axis=0)
         window_energy = np.sum(self._window**2)
@@ -278,6 +282,8 @@ class Layer1Imcra:
         assert self._speech_absence_probability is not None and self._posterior_snr is not None
         assert self._prior_snr is not None and self._identity is not None
         assert self._noise_covariance is not None
+        probability_started = perf_counter()
+        self.last_core_ms = (probability_started - core_started) * 1_000.0
         band_noise = np.mean(self._noise[:, self._output_band], axis=1)
         band_signal = np.mean(power[:, self._output_band], axis=1)
         noise_level_db = 10.0 * np.log10(np.maximum(band_noise, cfg.eps))
@@ -290,6 +296,7 @@ class Layer1Imcra:
         features = np.column_stack((noise_level_db, signal_level_db, signal_level_db - noise_level_db, probability_per_mic))
         ready = self._frame_count >= self._warmup_hops
         array_probability = float(np.median(probability_per_mic)) if ready else None
+        self.last_probability_ms = (perf_counter() - probability_started) * 1_000.0
         return ImcraHopSnapshot(
             self._identity[0], self._identity[1], start_sample, end_sample, source_sequence_ids,
             cfg.algorithm_version, "ready" if ready else "warming_up", self.frequencies_hz,

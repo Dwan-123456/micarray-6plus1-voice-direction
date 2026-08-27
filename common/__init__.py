@@ -2,7 +2,7 @@
 
 from .angle import THETA_DEGREES, circular_distance_deg, wrap_theta_deg
 from .data_types import (
-    CalibrationAssetIdentity, CalibrationMetadata, CandidateDirection, DecisionWindow, EnhancedAudio, IngestedAudioBlock,
+    CalibrationAssetIdentity, CalibrationMetadata, CandidateDirection, DecisionWindow, IngestedAudioBlock,
     ModelOrderEstimate, PipelineStatus, SpatialResponse, TrackedDirection,
 )
 from .geometry import (
@@ -20,7 +20,6 @@ __all__ = [
     "CalibrationAssetIdentity",
     "CalibrationMetadata",
     "DecisionWindow",
-    "EnhancedAudio",
     "IngestedAudioBlock",
     "MIC_POSITIONS_M",
     "PHYSICAL_GEOMETRY_VERSION",
