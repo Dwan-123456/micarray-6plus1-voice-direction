@@ -209,26 +209,6 @@ class ApplicationRuntime:
         return value
 
     @property
-    def music_dpd_rank1_enabled(self) -> bool:
-        return self._scan_config.dpd_rank1_enabled
-
-    def set_music_dpd_rank1_enabled(self, value: bool) -> bool:
-        with self._control_lock:
-            self._scan_config = replace(self._scan_config, dpd_rank1_enabled=bool(value))
-            self._scan_revision += 1
-        return bool(value)
-
-    @property
-    def music_noise_whitening_enabled(self) -> bool:
-        return self._scan_config.noise_whitening_enabled
-
-    def set_music_noise_whitening_enabled(self, value: bool) -> bool:
-        with self._control_lock:
-            self._scan_config = replace(self._scan_config, noise_whitening_enabled=bool(value))
-            self._scan_revision += 1
-        return bool(value)
-
-    @property
     def direction_id_tracking_enabled(self) -> bool:
         return self._id_tracking_enabled
 
@@ -406,6 +386,13 @@ class ApplicationRuntime:
                 self._l2_windows.put_nowait(_QueuedWindow(window, monotonic()))
                 self.processing_drops += 1
 
+    def _flush_pre_denoiser_tail(self) -> tuple[object, ...]:
+        flushed = self.pre_denoiser.flush()
+        if not self._pre_denoise_latency_active:
+            return ()
+        enabled = self.l1_pre_denoise_enabled
+        return tuple(item.denoised if enabled else item.raw for item in flushed)
+
     def _run_capture(self) -> None:
         try:
             while not self._stop.is_set():
@@ -428,8 +415,14 @@ class ApplicationRuntime:
             self.last_error = str(exc)
         finally:
             try:
-                for item in self.pre_denoiser.flush():
-                    self._publish_block(item.denoised if self.l1_pre_denoise_enabled else item.raw)
+                # With pre-denoise never activated, every raw block has already
+                # been published immediately.  Publishing the denoiser's final
+                # retained raw hop again would duplicate the last sample range,
+                # break WindowAssembler continuity, and make L2/ID appear to
+                # crash during stop/restart.  A latency-active chain still owns
+                # one unpublished tail hop and must flush it normally.
+                for block in self._flush_pre_denoiser_tail():
+                    self._publish_block(block)
             finally:
                 self._input_done.set()
                 try:

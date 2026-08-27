@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 
 from app.adaptive_rate import AdaptiveRateController
@@ -62,6 +63,21 @@ def test_reused_l2_output_is_retimed_and_marked() -> None:
     assert reused.missing_reason == "adaptive_reuse_40ms"
 
 
+def test_inactive_pre_denoise_tail_is_not_republished_at_shutdown() -> None:
+    runtime = object.__new__(ApplicationRuntime)
+    runtime.pre_denoiser = SimpleNamespace(
+        flush=lambda: (SimpleNamespace(raw="raw", denoised="denoised"),)
+    )
+    runtime._pre_denoise_latency_active = False
+    runtime._pre_denoise_enabled = False
+    runtime._pre_denoise_lock = threading.Lock()
+
+    assert runtime._flush_pre_denoiser_tail() == ()
+
+    runtime._pre_denoise_latency_active = True
+    assert runtime._flush_pre_denoiser_tail() == ("raw",)
+
+
 def test_test_ui_has_no_l3_to_l6_reserved_panels() -> None:
     source = __import__("pathlib").Path("gui/dev_test_ui/app.py").read_text(encoding="utf-8")
     assert "ReservedPanel" not in source
@@ -69,4 +85,8 @@ def test_test_ui_has_no_l3_to_l6_reserved_panels() -> None:
     assert "class L2ControlPanel" in source
     assert "class L2PolarPanel" in source
     assert "class SquarePolarHost" in source
+    assert "left.setFixedWidth(820)" in source
+    assert "QSizePolicy.Policy.Ignored" in source
+    assert "DPD rank-1" not in source
+    assert "IMCRA Whitening" not in source
     assert "grid.addLayout(footer_row, 1, 0, 1, 2)" in source

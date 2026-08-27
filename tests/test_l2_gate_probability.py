@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -106,10 +105,8 @@ def test_probability_gate_ignores_previous_hop_state_when_current_is_ready() -> 
     assert decision.probability_20ms == 0.80
 
 
-@pytest.mark.parametrize("whitening_enabled", [False, True])
 @pytest.mark.parametrize("gate_state", ["closed", "warming_up"])
 def test_probability_pipeline_skips_music_before_gate_opens(
-    whitening_enabled: bool,
     gate_state: str,
 ) -> None:
     class ForbiddenScanner:
@@ -120,10 +117,7 @@ def test_probability_pipeline_skips_music_before_gate_opens(
     window = _window()
     before = window.samples.copy()
     pipeline = Layer2Pipeline(ProbabilityGate(), ForbiddenScanner())
-    scan_config = replace(
-        DirectionScanConfig.from_project(project),
-        noise_whitening_enabled=whitening_enabled,
-    )
+    scan_config = DirectionScanConfig.from_project(project)
     probabilities = _probabilities(window, 0.20, 0.30)
     if gate_state == "warming_up":
         probabilities = (

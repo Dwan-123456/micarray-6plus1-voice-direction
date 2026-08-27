@@ -66,21 +66,7 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
     assert ready.frequencies_hz.size == 427
     assert ready.frequencies_hz[0] == 0.0 and ready.frequencies_hz[-1] <= 10_000.0
     assert ready.noise_psd.shape == ready.smoothed_psd.shape == ready.minimum_psd.shape == ready.spp.shape == (7, 427)
-    assert ready.noise_covariance is not None
-    assert ready.noise_covariance.shape == (427, 7, 7)
-    np.testing.assert_allclose(
-        ready.noise_covariance,
-        ready.noise_covariance.conj().transpose(0, 2, 1),
-        rtol=2e-5,
-        atol=1e-7,
-    )
-    np.testing.assert_allclose(
-        np.real(np.diagonal(ready.noise_covariance, axis1=1, axis2=2)),
-        ready.noise_psd.T,
-        rtol=2e-5,
-        atol=1e-7,
-    )
-    assert np.max(np.abs(ready.noise_covariance[:, 0, 1])) > 0.0
+    assert not hasattr(ready, "noise_covariance")
     assert ready.conditional_smoothed_psd.shape == ready.conditional_minimum_psd.shape == (7, 427)
     assert ready.speech_absence_probability.shape == ready.posterior_snr.shape == ready.prior_snr.shape == (7, 427)
     assert ready.noise_features.shape == (7, 4)
@@ -89,8 +75,6 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
     assert np.all((ready.speech_absence_probability >= 0.0) & (ready.speech_absence_probability <= 1.0))
     with pytest.raises(ValueError):
         ready.noise_psd.setflags(write=True)
-    with pytest.raises(ValueError):
-        ready.noise_covariance.setflags(write=True)
 
 
 def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():

@@ -164,19 +164,6 @@ class Layer2Config(StrictModel):
     min_peak_distance_deg: Literal[50.0]
     max_candidates: Literal[3]
     effective_order_limit: Literal[1, 2, 3]
-    dpd_rank1_enabled: bool
-    dpd_min_eigenvalue_ratio: float
-    dpd_min_plane_wave_fit: float
-    dpd_min_frequency_support_ratio: float
-    dpd_angle_tolerance_deg: int
-    dpd_min_cluster_frequency_bins: int
-    dpd_frequency_subbands: int
-    dpd_min_cluster_subbands: int
-    dpd_min_circular_concentration: float
-    dpd_peak_fusion_distance_deg: float
-    dpd_peak_fusion_min_normalized_score: float
-    noise_whitening_enabled: bool
-    noise_covariance_shrinkage: float
 
 
 class RuntimeConfig(StrictModel):

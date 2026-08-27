@@ -64,7 +64,7 @@ layer1_pre_denoise:
   minimum_gain_db: -18.0
   gain_smoothing: 0.80
 layer2:
-  probability_gate: {backend: current_20ms_v1, threshold: 0.60}
+  probability_gate: {backend: current_20ms_v1, threshold: 0.80}
   music: {context_ms: 200, comparison_context_ms: [160, 200, 240, 320], max_history_ms: 320}
   direction_id_tracking:
     backend: circular_imm_jpda_v1
@@ -114,19 +114,6 @@ layer2:
   min_peak_distance_deg: 50.0
   max_candidates: 3
   effective_order_limit: 2
-  dpd_rank1_enabled: false
-  dpd_min_eigenvalue_ratio: 1.50
-  dpd_min_plane_wave_fit: 0.40
-  dpd_min_frequency_support_ratio: 0.20
-  dpd_angle_tolerance_deg: 15
-  dpd_min_cluster_frequency_bins: 4
-  dpd_frequency_subbands: 4
-  dpd_min_cluster_subbands: 2
-  dpd_min_circular_concentration: 0.85
-  dpd_peak_fusion_distance_deg: 40.0
-  dpd_peak_fusion_min_normalized_score: 0.70
-  noise_whitening_enabled: false
-  noise_covariance_shrinkage: 0.10
 runtime:
   capture_handoff_blocks: 500
   l2_queue_windows: 100

@@ -11,7 +11,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication, QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
         QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSlider,
-        QVBoxLayout, QWidget,
+        QSizePolicy, QVBoxLayout, QWidget,
     )
 except ImportError:  # pragma: no cover
     QApplication = None
@@ -112,13 +112,7 @@ if QApplication is not None:
             controls.addWidget(self.gate, 0, 1, 1, 3)
             self.id_tracking = QCheckBox("ID Tracking / Prediction")
             self.id_tracking.setChecked(True)
-            self.dpd = QCheckBox("DPD rank-1")
-            self.dpd.setChecked(runtime.music_dpd_rank1_enabled)
-            self.whitening = QCheckBox("IMCRA Whitening")
-            self.whitening.setChecked(runtime.music_noise_whitening_enabled)
-            controls.addWidget(self.id_tracking, 1, 0, 1, 2)
-            controls.addWidget(self.dpd, 1, 2)
-            controls.addWidget(self.whitening, 1, 3)
+            controls.addWidget(self.id_tracking, 1, 0, 1, 4)
             controls.addWidget(QLabel("MUSIC阶数"), 2, 0)
             self.order = QComboBox()
             self.order.addItems(("1", "2", "3"))
@@ -138,8 +132,6 @@ if QApplication is not None:
             self.gate.valueChanged.connect(self._gate_changed)
             self.threshold.valueChanged.connect(self._threshold_changed)
             self.id_tracking.toggled.connect(runtime.set_direction_id_tracking_enabled)
-            self.dpd.toggled.connect(runtime.set_music_dpd_rank1_enabled)
-            self.whitening.toggled.connect(runtime.set_music_noise_whitening_enabled)
             self.order.currentTextChanged.connect(lambda value: runtime.set_music_effective_order_limit(int(value)))
 
         def _gate_changed(self, value: int) -> None:
@@ -191,16 +183,25 @@ if QApplication is not None:
 
 
     class SquarePolarHost(QWidget):
-        """Keep the angle panel square and anchored to the upper-right area."""
+        """Keep a stable square angle panel independent of changing text hints."""
 
         def __init__(self, panel: L2PolarPanel) -> None:
             super().__init__()
             self.panel = panel
             self.panel.setParent(self)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self.panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+            self.panel.setMinimumSize(1, 1)
+            self.panel.show()
 
         def resizeEvent(self, event) -> None:  # noqa: N802
             side = max(1, min(self.width(), self.height()))
-            self.panel.setGeometry((self.width() - side) // 2, 0, side, side)
+            x = max(0, (self.width() - side) // 2)
+            geometry = self.panel.geometry()
+            if (geometry.x(), geometry.y(), geometry.width(), geometry.height()) != (
+                x, 0, side, side,
+            ):
+                self.panel.setGeometry(x, 0, side, side)
             super().resizeEvent(event)
 
 
@@ -220,7 +221,7 @@ if QApplication is not None:
             left_layout.setContentsMargins(0, 0, 0, 0)
             left_layout.addWidget(self.l1, 3)
             left_layout.addWidget(self.l2, 2)
-            left.setMaximumWidth(820)
+            left.setFixedWidth(820)
             grid.addWidget(left, 0, 0)
             right = SquarePolarHost(self.l2_polar)
             grid.addWidget(right, 0, 1)
@@ -228,6 +229,8 @@ if QApplication is not None:
             grid.setColumnStretch(0, 2)
             grid.setColumnStretch(1, 3)
             self.footer = QLabel("v1.4.1 | L1/L2 only")
+            self.footer.setMinimumWidth(0)
+            self.footer.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             footer_row = QHBoxLayout()
             self.performance_toggle = QCheckBox("性能监控")
             self.performance_toggle.setChecked(runtime.performance_monitor_enabled)
