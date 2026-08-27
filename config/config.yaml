@@ -127,5 +127,14 @@ layer2:
   dpd_peak_fusion_min_normalized_score: 0.70
   noise_whitening_enabled: false
   noise_covariance_shrinkage: 0.10
-runtime: {capture_handoff_blocks: 500, l2_queue_windows: 100, overflow_policy: drop_oldest, graceful_shutdown_timeout_seconds: 10.0}
+runtime:
+  capture_handoff_blocks: 500
+  l2_queue_windows: 100
+  overflow_policy: drop_oldest
+  graceful_shutdown_timeout_seconds: 10.0
+  adaptive_fallback_enabled: true
+  adaptive_maximum_period_ms: 200
+  adaptive_overload_threshold_ms: 20.0
+  adaptive_recovery_threshold_ms: 12.0
+  adaptive_recovery_stable_ms: 5000
 dev_test_ui: {start_fullscreen: false, stale_after_ms: 500, l1_meter_refresh_hz: 50, polar_refresh_hz: 50, snapshot_mailbox_capacity: 1}

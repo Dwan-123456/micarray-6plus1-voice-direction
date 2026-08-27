@@ -184,6 +184,19 @@ class RuntimeConfig(StrictModel):
     l2_queue_windows: int = Field(ge=1)
     overflow_policy: Literal["drop_oldest"]
     graceful_shutdown_timeout_seconds: float = Field(gt=0)
+    adaptive_fallback_enabled: bool = True
+    adaptive_maximum_period_ms: int = Field(default=200, ge=20)
+    adaptive_overload_threshold_ms: float = Field(default=20.0, gt=0)
+    adaptive_recovery_threshold_ms: float = Field(default=12.0, gt=0)
+    adaptive_recovery_stable_ms: int = Field(default=5_000, ge=20)
+
+    @model_validator(mode="after")
+    def validate_adaptive_fallback(self) -> "RuntimeConfig":
+        if self.adaptive_maximum_period_ms % 20:
+            raise ValueError("adaptive maximum period must be a multiple of 20 ms")
+        if self.adaptive_recovery_threshold_ms >= self.adaptive_overload_threshold_ms:
+            raise ValueError("adaptive recovery threshold must be below overload threshold")
+        return self
 
 
 class DevUiConfig(StrictModel):

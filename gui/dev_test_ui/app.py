@@ -20,16 +20,6 @@ except ImportError:  # pragma: no cover
 if QApplication is not None:
     from .srp_panel import DirectionTrackTable, MusicPanelSnapshot, MusicPolarPanel, sync_track_colours
 
-    class ReservedPanel(QGroupBox):
-        def __init__(self, layer: str) -> None:
-            super().__init__(f"{layer} · Reserved")
-            layout = QVBoxLayout(self)
-            label = QLabel("v1.4.1 待用\n当前未接入任何处理或存储")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet("color:#788899;font-size:16px")
-            layout.addWidget(label)
-
-
     class L1Panel(QGroupBox):
         CHANNELS = ("MIC0", "MIC1", "MIC2", "MIC3", "MIC4", "MIC5", "Center", "HardwareMix")
 
@@ -168,7 +158,8 @@ if QApplication is not None:
             self.status.setText(
                 f"LIVE | window {item.window_id:08d} | P "
                 f"{'—' if gate.probability_20ms is None else f'{gate.probability_20ms:.3f}'} | "
-                f"Gate {gate.state.value.upper()} | output {len(item.directions)}"
+                f"Gate {gate.state.value.upper()} | output {len(item.directions)} | "
+                f"{'REUSE' if item.reused_output else 'COMPUTE'} @{item.processing_period_ms} ms"
             )
             sync_track_colours((item.session_id, item.stream_epoch), item.active_tracks)
             if item.spatial_response is None:
@@ -198,10 +189,7 @@ if QApplication is not None:
             self.l2 = L2Panel(runtime)
             grid.addWidget(self.l1, 0, 0, 1, 2)
             grid.addWidget(self.l2, 0, 2, 1, 2)
-            for column, layer in enumerate(("L3", "L4", "L5", "L6")):
-                grid.addWidget(ReservedPanel(layer), 1, column)
-            grid.setRowStretch(0, 3)
-            grid.setRowStretch(1, 1)
+            grid.setRowStretch(0, 1)
             self.footer = QLabel("v1.4.1 | L1/L2 only")
             footer_row = QHBoxLayout()
             self.performance_toggle = QCheckBox("性能监控")
@@ -209,7 +197,7 @@ if QApplication is not None:
             self.performance_toggle.toggled.connect(runtime.set_performance_monitor_enabled)
             footer_row.addWidget(self.performance_toggle)
             footer_row.addWidget(self.footer, 1)
-            grid.addLayout(footer_row, 2, 0, 1, 4)
+            grid.addLayout(footer_row, 1, 0, 1, 4)
             self.timer = QTimer(self)
             self.timer.timeout.connect(self.refresh)
             self.timer.start(20)
@@ -238,7 +226,10 @@ if QApplication is not None:
                 self.footer.setText(
                     f"上一秒平均 | IMCRA {perf['imcra_ms']:.2f} ms | P {perf['probability_ms']:.3f} ms | "
                     f"MUSIC {perf['music_ms']:.2f} ms | ID {perf['id_tracking_ms']:.2f} ms | "
-                    f"总计 {perf['total_ms']:.2f} ms | {perf['frames_per_second']} fps | "
+                    f"总计 {perf['total_ms']:.2f} ms | 输出 {perf['frames_per_second']} fps | "
+                    f"实算 {perf['compute_frames_per_second']} fps | L2周期 {perf['adaptive_period_ms']} ms | "
+                    f"排队 {perf['queue_wait_ms']:.2f} ms | "
+                    f"故障 {perf['faults_per_second']} | "
                     f"drop {status['processing_drops']} | {status['last_error'] or 'OK'}"
                 )
 

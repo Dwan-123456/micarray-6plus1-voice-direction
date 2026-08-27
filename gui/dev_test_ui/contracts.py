@@ -60,6 +60,9 @@ class L2DevUiSnapshot:
     active_tracks: tuple[TrackedDirection, ...]
     published_monotonic: float
     missing_reason: str | None = None
+    processing_period_ms: int = 20
+    reused_output: bool = False
+    queue_wait_ms: float = 0.0
 
     @property
     def age_ms(self) -> float:
