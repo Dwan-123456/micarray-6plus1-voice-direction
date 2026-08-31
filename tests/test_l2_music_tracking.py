@@ -10,7 +10,12 @@ import pytest
 from common.config import load_config
 from common.data_types import CandidateDirection, DecisionWindow
 from common.geometry import MIC_POSITIONS_M, physical_6plus1_geometry
-from layer2_source_detection import DirectionScanConfig, Layer2Pipeline, RollingNormMusicScanner
+from layer2_source_detection import (
+    DirectionScanConfig,
+    Layer2ExecutionState,
+    Layer2Pipeline,
+    RollingNormMusicScanner,
+)
 from layer2_source_detection.global_tracker import GlobalDirectionTracker, GlobalTrackerConfig
 from layer2_source_detection.pipeline import _select_l3_directions
 from layer2_source_detection.probability_gate import (
@@ -81,6 +86,24 @@ def _update(tracker: GlobalDirectionTracker, sample: int, angles: tuple[float, .
 
 def _circular_error_deg(a: float, b: float) -> float:
     return abs(((a - b + 180.0) % 360.0) - 180.0)
+
+
+def _ready_probabilities(
+    window: DecisionWindow,
+    value: float = 1.0,
+) -> tuple[SourceProbability20ms, ...]:
+    return tuple(
+        SourceProbability20ms(
+            window.session_id,
+            window.stream_epoch,
+            start,
+            start + 960,
+            value,
+            SourceProbabilityState.READY,
+            "ready",
+        )
+        for start in (window.doa_start_sample, window.doa_start_sample + 960)
+    )
 
 
 @pytest.mark.parametrize("signal_order", (1, 2, 3))
@@ -399,11 +422,210 @@ def test_pipeline_gate_closed_advances_track_to_coasting_without_music_observati
     assert result.spatial_response is None and result.directions == ()
 
 
+@pytest.mark.parametrize(
+    ("effective_order", "skip_reason"),
+    ((0, "source_count_zero"), (None, "source_count_warming")),
+)
+def test_process_prepared_skips_music_for_zero_or_warming_source_count(
+    effective_order: int | None,
+    skip_reason: str,
+) -> None:
+    class ForbiddenScanner:
+        def __init__(self) -> None:
+            self.scan_calls = 0
+            self.covariance_calls = 0
+            self.reset_calls = 0
+
+        def scan_detailed(self, *args, **kwargs):
+            self.scan_calls += 1
+            raise AssertionError("order 0/None must not scan MUSIC")
+
+        def observe_covariance(self, *args, **kwargs):
+            self.covariance_calls += 1
+            raise AssertionError("order 0/None must not maintain MUSIC covariance")
+
+        def reset(self) -> None:
+            self.reset_calls += 1
+
+    config = load_config(CONFIG, environ={})
+    scanner = ForbiddenScanner()
+    pipeline = Layer2Pipeline.from_project(config, scanner=scanner)
+    window = _window(_audio((30.0,), seed=61))
+    decision, active_frame_count = pipeline.evaluate_gate(
+        window,
+        _ready_probabilities(window),
+        gate_threshold=0.6,
+        gate_config_revision=4,
+    )
+
+    result = pipeline.process_prepared(
+        window,
+        decision,
+        active_frame_count,
+        physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config),
+        music_effective_order=effective_order,
+        music_skip_reason=skip_reason,
+        scan_config_revision=7,
+        direction_id_tracking_enabled=False,
+    )
+
+    assert decision.state is ProbabilityGateState.OPEN
+    assert result.state is Layer2ExecutionState.MUSIC_SKIPPED
+    assert result.music_effective_order == effective_order
+    assert result.music_skip_reason == skip_reason
+    assert result.spatial_response is None
+    assert result.search_diagnostics is None
+    assert result.model_order is None
+    assert result.music_state is None
+    assert result.candidates == ()
+    assert scanner.scan_calls == scanner.covariance_calls == 0
+    assert scanner.reset_calls == 1
+
+
+def test_positive_music_order_rewarms_after_gate_open_count_zero_windows() -> None:
+    config = load_config(CONFIG, environ={})
+    pipeline = Layer2Pipeline.from_project(config)
+    scan_config = DirectionScanConfig.from_project(config)
+    audio = _audio((30.0,), seed=63, samples=20_000)
+
+    for index in range(10):
+        window = _window(audio, index)
+        decision, active_frame_count = pipeline.evaluate_gate(
+            window,
+            _ready_probabilities(window),
+            gate_threshold=0.6,
+            gate_config_revision=4,
+        )
+        skipped = pipeline.process_prepared(
+            window,
+            decision,
+            active_frame_count,
+            physical_6plus1_geometry(),
+            scan_config,
+            music_effective_order=0,
+            music_skip_reason="source_count_zero",
+        )
+        assert skipped.state is Layer2ExecutionState.MUSIC_SKIPPED
+
+    window = _window(audio, 10)
+    decision, active_frame_count = pipeline.evaluate_gate(
+        window,
+        _ready_probabilities(window),
+        gate_threshold=0.6,
+        gate_config_revision=4,
+    )
+    result = pipeline.process_prepared(
+        window,
+        decision,
+        active_frame_count,
+        physical_6plus1_geometry(),
+        scan_config,
+        music_effective_order=1,
+    )
+
+    assert active_frame_count == 1
+    assert result.search_diagnostics is not None
+    assert result.search_diagnostics.active_frame_count == 1
+    assert not result.search_diagnostics.births_allowed
+
+
+@pytest.mark.parametrize("effective_order", (1, 2))
+def test_process_prepared_applies_same_window_source_count_as_music_order(
+    effective_order: int,
+) -> None:
+    class RecordingScanner:
+        def __init__(self) -> None:
+            self.delegate = RollingNormMusicScanner()
+            self.orders: list[int] = []
+
+        @property
+        def last_state_diagnostic(self):
+            return self.delegate.last_state_diagnostic
+
+        def scan_detailed(self, window, geometry, scan_config, config_revision=0):
+            self.orders.append(scan_config.effective_order_limit)
+            return self.delegate.scan_detailed(
+                window,
+                geometry,
+                scan_config,
+                config_revision,
+            )
+
+        def reset(self) -> None:
+            self.delegate.reset()
+
+    config = load_config(CONFIG, environ={})
+    scanner = RecordingScanner()
+    pipeline = Layer2Pipeline.from_project(config, scanner=scanner)
+    window = _window(_audio((30.0, 210.0), seed=67))
+    decision, active_frame_count = pipeline.evaluate_gate(
+        window,
+        _ready_probabilities(window),
+        gate_threshold=0.6,
+        gate_config_revision=5,
+    )
+
+    result = pipeline.process_prepared(
+        window,
+        decision,
+        active_frame_count,
+        physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config),
+        music_effective_order=effective_order,
+        scan_config_revision=8,
+        direction_id_tracking_enabled=False,
+    )
+
+    assert result.state is Layer2ExecutionState.PROCESSED
+    assert scanner.orders == [effective_order]
+    assert result.music_effective_order == effective_order
+    assert result.music_skip_reason is None
+    assert result.search_diagnostics is not None
+    assert result.search_diagnostics.config_revision == 8
+    assert result.search_diagnostics.model_order.estimated_sources == effective_order
+    assert result.search_diagnostics.effective_model_order == effective_order
+    assert result.spatial_response is not None
+    assert result.spatial_response.model_order is not None
+    assert result.spatial_response.model_order.estimated_sources == effective_order
+
+
+def test_process_prepared_rejects_gate_from_a_different_window_before_music() -> None:
+    class ForbiddenScanner:
+        def scan_detailed(self, *args, **kwargs):
+            raise AssertionError("a mismatched Gate must be rejected before MUSIC")
+
+    config = load_config(CONFIG, environ={})
+    pipeline = Layer2Pipeline.from_project(config, scanner=ForbiddenScanner())
+    audio = _audio((30.0,), seed=71)
+    gate_window = _window(audio, 0)
+    current_window = _window(audio, 1)
+    decision, active_frame_count = pipeline.evaluate_gate(
+        gate_window,
+        _ready_probabilities(gate_window),
+        gate_threshold=0.6,
+        gate_config_revision=6,
+    )
+
+    with pytest.raises(ValueError, match="prepared L2 Gate does not match the current window"):
+        pipeline.process_prepared(
+            current_window,
+            decision,
+            active_frame_count,
+            physical_6plus1_geometry(),
+            DirectionScanConfig.from_project(config),
+            music_effective_order=1,
+            scan_config_revision=9,
+            direction_id_tracking_enabled=False,
+        )
+
+
 def test_pipeline_requires_one_continuously_open_covariance_context_before_music_angles() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
     audio = _audio((30.0,), seed=37, samples=7_680 + 15 * 960)
     scan_config = DirectionScanConfig.from_project(config)
+    initial_window_frames = 1 + (7_680 - scan_config.win_length) // scan_config.hop_length
 
     def probabilities(window: DecisionWindow, value: float) -> tuple[SourceProbability20ms, ...]:
         return tuple(SourceProbability20ms(
@@ -420,7 +642,8 @@ def test_pipeline_requires_one_continuously_open_covariance_context_before_music
         assert closed.gate_decision.state is ProbabilityGateState.CLOSED
         assert closed.spatial_response is None
         assert closed.search_diagnostics is None
-        assert closed.music_state is not None
+        assert closed.music_state is None
+        assert len(pipeline.scanner._frame_covariances) == 0
 
     first_open_window = _window(audio, 4)
     first_open = pipeline.process(
@@ -430,14 +653,16 @@ def test_pipeline_requires_one_continuously_open_covariance_context_before_music
     )
     assert first_open.spatial_response is not None
     assert first_open.search_diagnostics is not None
-    assert first_open.search_diagnostics.model_order.snapshot_count == 19
+    assert first_open.search_diagnostics.model_order.snapshot_count == initial_window_frames
     assert first_open.search_diagnostics.active_frame_count == 1
     assert first_open.search_diagnostics.birth_required_active_frames == 10
     assert not first_open.search_diagnostics.births_allowed
     assert first_open.candidates == ()
     assert first_open.music_state is not None
-    assert first_open.music_state.state == "advanced"
-    assert first_open.music_state.added_frames == 2
+    assert first_open.music_state.state == "rebuilt"
+    assert first_open.music_state.added_frames == initial_window_frames
+    assert first_open.music_state.removed_frames == 0
+    assert first_open.music_state.reason == "new_stream"
     assert first_open.active_tracks == ()
 
     result = first_open
@@ -461,6 +686,8 @@ def test_pipeline_requires_one_continuously_open_covariance_context_before_music
     assert closed.gate_decision.state is ProbabilityGateState.CLOSED
     assert closed.spatial_response is None
     assert closed.search_diagnostics is None
+    assert closed.music_state is None
+    assert len(pipeline.scanner._frame_covariances) == 0
     assert all(not item.is_observed for item in closed.directions)
 
     reopened_window = _window(audio, 15)
@@ -472,6 +699,9 @@ def test_pipeline_requires_one_continuously_open_covariance_context_before_music
     assert reopened.search_diagnostics is not None
     assert reopened.search_diagnostics.active_frame_count == 1
     assert reopened.search_diagnostics.birth_required_active_frames == 10
+    assert reopened.music_state is not None
+    assert reopened.music_state.state == "rebuilt"
+    assert reopened.music_state.added_frames == initial_window_frames
     assert all(not item.is_observed for item in reopened.directions)
 
 

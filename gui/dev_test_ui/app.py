@@ -9,7 +9,7 @@ from common.config import load_config
 try:
     from PySide6.QtCore import QTimer, Qt
     from PySide6.QtWidgets import (
-        QApplication, QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
+        QApplication, QCheckBox, QGridLayout, QGroupBox, QHBoxLayout,
         QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSlider,
         QSizePolicy, QVBoxLayout, QWidget,
     )
@@ -114,10 +114,8 @@ if QApplication is not None:
             self.id_tracking.setChecked(True)
             controls.addWidget(self.id_tracking, 1, 0, 1, 4)
             controls.addWidget(QLabel("MUSIC阶数"), 2, 0)
-            self.order = QComboBox()
-            self.order.addItems(("1", "2", "3"))
-            self.order.setCurrentText(str(runtime.music_effective_order_limit))
-            controls.addWidget(self.order, 2, 1)
+            self.order_status = QLabel("固定 2；可在右下角切换为声源数估计")
+            controls.addWidget(self.order_status, 2, 1)
             self.threshold_label = QLabel(f"Candidate threshold {runtime.direction_threshold:.2f}")
             self.threshold = QSlider(Qt.Orientation.Horizontal)
             self.threshold.setRange(0, 100)
@@ -132,7 +130,6 @@ if QApplication is not None:
             self.gate.valueChanged.connect(self._gate_changed)
             self.threshold.valueChanged.connect(self._threshold_changed)
             self.id_tracking.toggled.connect(runtime.set_direction_id_tracking_enabled)
-            self.order.currentTextChanged.connect(lambda value: runtime.set_music_effective_order_limit(int(value)))
 
         def _gate_changed(self, value: int) -> None:
             applied = self.runtime.set_gate_probability_threshold(value / 100)
@@ -182,21 +179,94 @@ if QApplication is not None:
             self.polar.set_snapshot(panel, live=True)
 
 
+    class SourceCountControlOverlay(QGroupBox):
+        """Right-bottom controls which never participate in polar sizing."""
+
+        def __init__(self, runtime: ApplicationRuntime) -> None:
+            super().__init__("突出声源数 / MUSIC阶数")
+            self.runtime = runtime
+            self.setFixedSize(280, 122)
+            self.setStyleSheet(
+                "QGroupBox{background:#f7fafc;border:1px solid #8da1b3;}"
+            )
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(10, 14, 10, 8)
+            layout.setSpacing(2)
+            self.source_count_toggle = QCheckBox("启用声源数估计")
+            self.follow_order_toggle = QCheckBox("MUSIC阶数使用估计结果")
+            result_row = QHBoxLayout()
+            self.source_count_label = QLabel("突出声源数：—")
+            self.source_count_label.setStyleSheet("font-weight:bold")
+            self.music_order_label = QLabel("当前阶数：2")
+            result_row.addWidget(self.source_count_label)
+            result_row.addStretch(1)
+            result_row.addWidget(self.music_order_label)
+            layout.addWidget(self.source_count_toggle)
+            layout.addWidget(self.follow_order_toggle)
+            layout.addLayout(result_row)
+            self.source_count_toggle.toggled.connect(self._set_source_counting)
+            self.follow_order_toggle.toggled.connect(self._set_follow_order)
+            self.sync_runtime()
+
+        @staticmethod
+        def _sync_checkbox(widget: QCheckBox, checked: bool) -> None:
+            previous = widget.blockSignals(True)
+            widget.setChecked(checked)
+            widget.blockSignals(previous)
+
+        def _set_source_counting(self, enabled: bool) -> None:
+            self.runtime.set_source_counting_enabled(enabled)
+            self.sync_runtime()
+
+        def _set_follow_order(self, enabled: bool) -> None:
+            try:
+                self.runtime.set_music_order_follows_source_count(enabled)
+            finally:
+                self.sync_runtime()
+
+        def sync_runtime(self) -> None:
+            enabled = self.runtime.source_counting_enabled
+            follows = self.runtime.music_order_follows_source_count
+            self._sync_checkbox(self.source_count_toggle, enabled)
+            self._sync_checkbox(self.follow_order_toggle, follows)
+            self.follow_order_toggle.setEnabled(enabled)
+            order = self.runtime.current_music_effective_order
+            self.music_order_label.setText(
+                f"当前阶数：{'—' if order is None else order}"
+            )
+
+
     class SquarePolarHost(QWidget):
         """Keep a stable square angle panel independent of changing text hints."""
 
         _LAYOUT_JITTER_PX = 3
 
-        def __init__(self, panel: L2PolarPanel) -> None:
+        def __init__(
+            self,
+            panel: L2PolarPanel,
+            source_controls: SourceCountControlOverlay,
+        ) -> None:
             super().__init__()
             self.panel = panel
+            self.source_controls = source_controls
             self.panel.setParent(self)
+            self.source_controls.setParent(self)
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             self.panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
             self.panel.setMinimumSize(1, 1)
             self.panel.show()
+            self.source_controls.show()
+
+        def _place_source_controls(self) -> None:
+            margin = 10
+            self.source_controls.move(
+                max(0, self.width() - self.source_controls.width() - margin),
+                max(0, self.height() - self.source_controls.height() - margin),
+            )
+            self.source_controls.raise_()
 
         def resizeEvent(self, event) -> None:  # noqa: N802
+            self._place_source_controls()
             side = max(1, min(self.width(), self.height()))
             x = max(0, (self.width() - side) // 2)
             geometry = self.panel.geometry()
@@ -231,6 +301,8 @@ if QApplication is not None:
             self.l1 = L1Panel(runtime)
             self.l2 = L2ControlPanel(runtime)
             self.l2_polar = L2PolarPanel(runtime)
+            self.source_controls = SourceCountControlOverlay(runtime)
+            self.source_count_label = self.source_controls.source_count_label
             left = QWidget()
             left_layout = QVBoxLayout(left)
             left_layout.setContentsMargins(0, 0, 0, 0)
@@ -238,8 +310,8 @@ if QApplication is not None:
             left_layout.addWidget(self.l2, 2)
             left.setFixedWidth(820)
             grid.addWidget(left, 0, 0)
-            right = SquarePolarHost(self.l2_polar)
-            grid.addWidget(right, 0, 1)
+            self.right_host = SquarePolarHost(self.l2_polar, self.source_controls)
+            grid.addWidget(self.right_host, 0, 1)
             grid.setRowStretch(0, 1)
             grid.setColumnStretch(0, 2)
             grid.setColumnStretch(1, 3)
@@ -259,6 +331,8 @@ if QApplication is not None:
             self.timer.timeout.connect(self.refresh)
             self.timer.start(20)
             self._last_performance_second = -1
+            self._last_source_count = None
+            self._last_source_count_enabled = runtime.source_counting_enabled
             self.resize(1920, 1080)
 
         @staticmethod
@@ -276,6 +350,30 @@ if QApplication is not None:
             if (item := self._latest(self.runtime.latest_l2_dev_ui)) is not None:
                 self.l2.update_snapshot(item)
                 self.l2_polar.update_snapshot(item)
+            source_enabled = self.runtime.source_counting_enabled
+            if source_enabled != self._last_source_count_enabled:
+                self._last_source_count = None
+                self._last_source_count_enabled = source_enabled
+            if (item := self._latest(self.runtime.latest_source_count)) is not None:
+                self._last_source_count = item
+            self.source_controls.sync_runtime()
+            count = self._last_source_count
+            if (
+                count is None
+                or not source_enabled
+                or count.source_count is None
+                or self.runtime.source_count_last_error is not None
+                or (
+                    self.runtime.run_started_monotonic
+                    and count.published_monotonic < self.runtime.run_started_monotonic
+                )
+                or count.published_monotonic
+                < self.runtime.source_count_control_changed_monotonic
+                or count.age_ms > self.runtime.config.dev_test_ui.stale_after_ms
+            ):
+                self.source_count_label.setText("突出声源数：—")
+            else:
+                self.source_count_label.setText(f"突出声源数：{count.source_count}")
             second = int(__import__("time").monotonic())
             if second != self._last_performance_second:
                 self._last_performance_second = second
@@ -283,11 +381,14 @@ if QApplication is not None:
                 status = self.runtime.processing_status
                 self.footer.setText(
                     f"上一秒平均 | IMCRA {perf['imcra_ms']:.2f} ms | P {perf['probability_ms']:.3f} ms | "
+                    f"COUNT {perf['source_count_ms']:.2f} ms/"
+                    f"{perf['source_count_frames_per_second']} fps | "
                     f"MUSIC {perf['music_ms']:.2f} ms | ID {perf['id_tracking_ms']:.2f} ms | "
                     f"总计 {perf['total_ms']:.2f} ms | 输出 {perf['frames_per_second']} fps | "
                     f"实算 {perf['compute_frames_per_second']} fps | L2周期 {perf['adaptive_period_ms']} ms | "
                     f"排队 {perf['queue_wait_ms']:.2f} ms | "
                     f"故障 {perf['faults_per_second']} | "
+                    f"计数故障 {perf['source_count_faults_per_second']} | "
                     f"drop {status['processing_drops']} | {status['last_error'] or 'OK'}"
                 )
 

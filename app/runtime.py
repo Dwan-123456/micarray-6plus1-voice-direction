@@ -28,6 +28,11 @@ from layer2_source_detection import (
     SourceProbability20ms,
     SourceProbabilityState,
 )
+from source_counting import (
+    IncrementalGccPhatSourceCounter,
+    SourceCounterConfig,
+    SourceCountSnapshot,
+)
 from windowing import WindowAssembler
 
 from .adaptive_rate import AdaptiveRateController
@@ -40,7 +45,7 @@ class _QueuedWindow:
 
 
 class ApplicationRuntime:
-    """Minimal v1.4 runtime: L1 capture/IMCRA -> L2 MUSIC/ID tracking."""
+    """Minimal v1.4 runtime: IMCRA -> Gate -> source count -> MUSIC/ID."""
 
     def __init__(
         self,
@@ -65,6 +70,7 @@ class ApplicationRuntime:
         self.pipeline = pipeline
         self.latest_l1: queue.Queue[object] = queue.Queue(maxsize=1)
         self.latest_l2_dev_ui: queue.Queue[object] = queue.Queue(maxsize=1)
+        self.latest_source_count: queue.Queue[object] = queue.Queue(maxsize=1)
         self.latest_windows: queue.Queue[object] = queue.Queue(maxsize=1)
         self._l2_windows: queue.Queue[object] = queue.Queue(maxsize=config.runtime.l2_queue_windows)
         self._stop = threading.Event()
@@ -73,11 +79,24 @@ class ApplicationRuntime:
         self._l2_thread: threading.Thread | None = None
         self._control_lock = threading.RLock()
         self._pre_denoise_lock = threading.Lock()
+        self._source_count_enabled = config.source_counting.enabled
+        self._music_order_follows_source_count = (
+            config.source_counting.music_order_from_source_count
+            and config.source_counting.enabled
+        )
+        self._source_count_control_revision = 0
+        self._source_count_control_changed_at = 0.0
+        self._source_count_applied_revision = -1
+        self._current_music_effective_order: int | None = 2
         self._reset_state()
         self.light_state = "unknown"
         self.last_error: str | None = None
         self.processing_drops = 0
         self.l2_processed = 0
+        self.source_count_processed = 0
+        self.source_count_faults = 0
+        self.source_count_last_error: str | None = None
+        self._source_count_time_ms = 0.0
         self._l2_time_ms = 0.0
         self._started_at = 0.0
         self._input_exhausted = False
@@ -115,18 +134,25 @@ class ApplicationRuntime:
         self.pre_denoiser = ImcraWienerPreDenoiser.from_project(self.config)
         self.meter = L1Meter()
         self._layer2 = Layer2Pipeline.from_project(self.config)
+        self._source_counter_config = SourceCounterConfig.from_project(self.config)
+        self._source_counter = IncrementalGccPhatSourceCounter(self._source_counter_config)
         self._geometry = physical_6plus1_geometry(
             self.config.hardware.speed_of_sound_mps,
             self.config.hardware.geometry_version,
             self.config.hardware.ring_radius_m,
         )
-        self._scan_config = DirectionScanConfig.from_project(self.config)
+        self._scan_config = replace(
+            DirectionScanConfig.from_project(self.config),
+            effective_order_limit=2,
+        )
         self._scan_revision = 0
         self._gate_threshold = self.config.layer2.probability_gate.threshold
         self._gate_revision = 0
         self._id_tracking_enabled = True
         self._pre_denoise_enabled = self.config.layer1_pre_denoise.enabled
         self._pre_denoise_latency_active = self._pre_denoise_enabled
+        self._source_count_applied_revision = -1
+        self._current_music_effective_order = 2
 
     @staticmethod
     def _publish_latest(mailbox: queue.Queue[object], value: object) -> None:
@@ -145,7 +171,7 @@ class ApplicationRuntime:
 
     @property
     def active(self) -> bool:
-        return self.running or (self._l2_thread is not None and self._l2_thread.is_alive())
+        return self.running or self.processing_running
 
     @property
     def input_exhausted(self) -> bool:
@@ -154,6 +180,14 @@ class ApplicationRuntime:
     @property
     def processing_running(self) -> bool:
         return self._l2_thread is not None and self._l2_thread.is_alive()
+
+    @property
+    def source_count_running(self) -> bool:
+        return self.processing_running and self.source_counting_enabled
+
+    @property
+    def run_started_monotonic(self) -> float:
+        return self._started_at
 
     @property
     def l1_pre_denoise_enabled(self) -> bool:
@@ -198,15 +232,59 @@ class ApplicationRuntime:
 
     @property
     def music_effective_order_limit(self) -> int:
-        return self._scan_config.effective_order_limit
+        with self._control_lock:
+            return 2 if self._current_music_effective_order is None else self._current_music_effective_order
 
     def set_music_effective_order_limit(self, value: int) -> int:
-        if value not in {1, 2, 3}:
-            raise ValueError("MUSIC order must be 1, 2, or 3")
+        if value != 2:
+            raise ValueError("fixed MUSIC order is 2; use the source-count follow switch")
+        return 2
+
+    @property
+    def source_counting_enabled(self) -> bool:
         with self._control_lock:
-            self._scan_config = replace(self._scan_config, effective_order_limit=int(value))
-            self._scan_revision += 1
-        return value
+            return self._source_count_enabled
+
+    def set_source_counting_enabled(self, enabled: bool) -> bool:
+        if type(enabled) is not bool:
+            raise ValueError("source-counting setting must be bool")
+        with self._control_lock:
+            if enabled != self._source_count_enabled:
+                self._source_count_enabled = enabled
+                if not enabled:
+                    self._music_order_follows_source_count = False
+                    self._current_music_effective_order = 2
+                self._source_count_control_revision += 1
+                self._source_count_control_changed_at = monotonic()
+        return enabled
+
+    @property
+    def music_order_follows_source_count(self) -> bool:
+        with self._control_lock:
+            return self._music_order_follows_source_count
+
+    def set_music_order_follows_source_count(self, enabled: bool) -> bool:
+        if type(enabled) is not bool:
+            raise ValueError("MUSIC source-count-order setting must be bool")
+        with self._control_lock:
+            if enabled and not self._source_count_enabled:
+                raise ValueError("enable source counting before following its MUSIC order")
+            if enabled != self._music_order_follows_source_count:
+                self._music_order_follows_source_count = enabled
+                self._current_music_effective_order = None if enabled else 2
+                self._source_count_control_revision += 1
+                self._source_count_control_changed_at = monotonic()
+        return enabled
+
+    @property
+    def current_music_effective_order(self) -> int | None:
+        with self._control_lock:
+            return self._current_music_effective_order
+
+    @property
+    def source_count_control_changed_monotonic(self) -> float:
+        with self._control_lock:
+            return self._source_count_control_changed_at
 
     @property
     def direction_id_tracking_enabled(self) -> bool:
@@ -234,10 +312,20 @@ class ApplicationRuntime:
         return {
             "queue_depths": self.processing_queue_depths,
             "queue_capacities": {"l2": self._l2_windows.maxsize},
-            "stage_alive": {"l1": self.running, "l2": self.processing_running},
-            "completed_counts": {"l2": self.l2_processed},
+            "stage_alive": {
+                "l1": self.running,
+                "l2": self.processing_running,
+                "source_count": self.source_count_running,
+            },
+            "completed_counts": {
+                "l2": self.l2_processed,
+                "source_count": self.source_count_processed,
+            },
             "processing_drops": self.processing_drops,
             "l2_average_ms": self._l2_time_ms / max(self.l2_processed, 1),
+            "source_count_average_ms": (
+                self._source_count_time_ms / max(self.source_count_processed, 1)
+            ),
             "l2_hz": self.l2_processed / elapsed if elapsed else 0.0,
             "adaptive_fallback": {
                 "enabled": self._adaptive_enabled,
@@ -246,6 +334,10 @@ class ApplicationRuntime:
                 "last_overload_reason": self._adaptive_l2.snapshot.last_overload_reason,
             },
             "last_error": self.last_error,
+            "source_count_last_error": self.source_count_last_error,
+            "source_count_enabled": self.source_counting_enabled,
+            "music_order_follows_source_count": self.music_order_follows_source_count,
+            "current_music_effective_order": self.current_music_effective_order,
         }
 
     @property
@@ -269,7 +361,8 @@ class ApplicationRuntime:
             events = tuple(self._performance_events)
             enabled = self._performance_enabled
         grouped = {name: [] for name in (
-            "imcra", "probability", "music", "id", "queue_wait", "output", "compute", "reuse", "fault",
+            "imcra", "probability", "source_count", "source_count_fault", "music", "id",
+            "queue_wait", "output", "compute", "reuse", "fault",
         )}
         for _timestamp, name, value in events:
             grouped[name].append(value)
@@ -277,9 +370,15 @@ class ApplicationRuntime:
         return {
             "enabled": enabled, "window_seconds": 1.0,
             "imcra_ms": averages["imcra"], "probability_ms": averages["probability"],
+            "source_count_ms": averages["source_count"],
             "music_ms": averages["music"], "id_tracking_ms": averages["id"],
-            "total_ms": sum(averages[name] for name in ("imcra", "probability", "music", "id")),
+            "total_ms": sum(
+                averages[name]
+                for name in ("imcra", "probability", "source_count", "music", "id")
+            ),
             "queue_wait_ms": averages["queue_wait"],
+            "source_count_frames_per_second": len(grouped["source_count"]),
+            "source_count_faults_per_second": len(grouped["source_count_fault"]),
             "frames_per_second": len(grouped["output"]),
             "compute_frames_per_second": len(grouped["compute"]),
             "reused_frames_per_second": len(grouped["reuse"]),
@@ -305,7 +404,10 @@ class ApplicationRuntime:
         self._input_exhausted = False
         self.last_error = None
         self.processing_drops = self.l2_processed = 0
+        self.source_count_processed = self.source_count_faults = 0
+        self.source_count_last_error = None
         self._l2_time_ms = 0.0
+        self._source_count_time_ms = 0.0
         self._reset_state()
         self._audio_cache_10s.clear()
         self._track_history.clear()
@@ -318,6 +420,8 @@ class ApplicationRuntime:
             self._performance_events.clear()
         while not self._l2_windows.empty():
             self._l2_windows.get_nowait()
+        while not self.latest_source_count.empty():
+            self.latest_source_count.get_nowait()
         self.pipeline.start()
         if self.config.device.serial_enabled:
             try:
@@ -333,11 +437,27 @@ class ApplicationRuntime:
     def stop(self, timeout: float | None = None) -> None:
         self._stop.set()
         self.pipeline.stop()
-        limit = timeout or self.config.runtime.graceful_shutdown_timeout_seconds
-        for worker in (self._capture_thread, self._l2_thread):
+        limit = (
+            timeout
+            if timeout is not None
+            else self.config.runtime.graceful_shutdown_timeout_seconds
+        )
+        deadline = monotonic() + max(0.0, limit)
+        workers = (
+            ("_capture_thread", "l1-capture"),
+            ("_l2_thread", "l2-music-id"),
+        )
+        still_alive: list[str] = []
+        for attribute, name in workers:
+            worker = getattr(self, attribute)
             if worker is not None and worker.is_alive():
-                worker.join(limit)
-        self._capture_thread = self._l2_thread = None
+                worker.join(max(0.0, deadline - monotonic()))
+            if worker is not None and worker.is_alive():
+                still_alive.append(name)
+            else:
+                setattr(self, attribute, None)
+        if still_alive and self.last_error is None:
+            self.last_error = f"shutdown timeout: {', '.join(still_alive)} still running"
 
     def close(self) -> None:
         self.stop()
@@ -449,6 +569,92 @@ class ApplicationRuntime:
             ))
         return tuple(output)
 
+    def _unavailable_source_count(
+        self,
+        window: object,
+        *,
+        error: str | None = None,
+        reset: bool = True,
+    ) -> SourceCountSnapshot:
+        if reset:
+            self._source_counter.reset()
+        snapshot = SourceCountSnapshot(
+            window.session_id,
+            window.stream_epoch,
+            window.window_id,
+            window.decision_sample,
+            None,
+            monotonic(),
+        )
+        self._publish_latest(self.latest_source_count, snapshot)
+        self.source_count_last_error = error
+        return snapshot
+
+    def _prepare_source_count_plan(
+        self,
+        window: object,
+        decision: ProbabilityGateDecision,
+        *,
+        enabled: bool,
+        follow_order: bool,
+        control_revision: int,
+    ) -> tuple[SourceCountSnapshot, int | None, str | None, float]:
+        """Resolve the same-window count/order after Gate and before MUSIC."""
+
+        if self._source_count_applied_revision != control_revision:
+            self._source_counter.reset()
+            self._source_count_applied_revision = control_revision
+        if not decision.allow_srp:
+            snapshot = self._unavailable_source_count(window)
+            return snapshot, None, decision.reason, 0.0
+        if not enabled:
+            snapshot = self._unavailable_source_count(window)
+            return snapshot, 2, None, 0.0
+
+        started = perf_counter()
+        try:
+            snapshot = self._source_counter.process(window, self._geometry)
+            expected = (
+                window.session_id,
+                window.stream_epoch,
+                window.window_id,
+                window.decision_sample,
+            )
+            actual = (
+                snapshot.session_id,
+                snapshot.stream_epoch,
+                snapshot.window_id,
+                snapshot.decision_sample,
+            )
+            if actual != expected:
+                raise RuntimeError("source-count result does not match the current Gate window")
+        except Exception as exc:
+            elapsed_ms = (perf_counter() - started) * 1_000.0
+            message = f"processing {type(exc).__name__}: {exc}"
+            snapshot = self._unavailable_source_count(window, error=message)
+            self.source_count_faults += 1
+            self._record_performance("source_count_fault", elapsed_ms)
+            return (
+                snapshot,
+                None if follow_order else 2,
+                "source_count_fault" if follow_order else None,
+                elapsed_ms,
+            )
+
+        elapsed_ms = (perf_counter() - started) * 1_000.0
+        self.source_count_processed += 1
+        self._source_count_time_ms += elapsed_ms
+        self._record_performance("source_count", elapsed_ms)
+        self._publish_latest(self.latest_source_count, snapshot)
+        self.source_count_last_error = None
+        if not follow_order:
+            return snapshot, 2, None, elapsed_ms
+        if snapshot.source_count is None:
+            return snapshot, None, "source_count_warming", elapsed_ms
+        if snapshot.source_count == 0:
+            return snapshot, 0, "source_count_zero", elapsed_ms
+        return snapshot, snapshot.source_count, None, elapsed_ms
+
     def _run_l2(self) -> None:
         try:
             while not self._stop.is_set() or not self._input_done.is_set() or not self._l2_windows.empty():
@@ -468,48 +674,111 @@ class ApplicationRuntime:
                     gate = self._gate_threshold
                     gate_revision = self._gate_revision
                     tracking = self._id_tracking_enabled
-                control_key = (scan_revision, gate_revision, tracking)
-                force = (
-                    self._last_l2_snapshot is None
-                    or self._last_l2_control_key != control_key
-                    or (self._last_l2_snapshot.session_id, self._last_l2_snapshot.stream_epoch)
-                    != (window.session_id, window.stream_epoch)
-                )
-                should_compute = (
-                    True if not self._adaptive_enabled
-                    else self._adaptive_l2.should_compute(force=force)
-                )
+                    source_enabled = self._source_count_enabled
+                    follow_order = self._music_order_follows_source_count
+                    source_revision = self._source_count_control_revision
                 self._record_performance("queue_wait", queue_wait_ms)
-                if not should_compute:
-                    sparse_started = perf_counter()
-                    observe_covariance = getattr(self._layer2.scanner, "observe_covariance", None)
-                    try:
-                        if callable(observe_covariance):
-                            observe_covariance(window, scan)
-                    except Exception as exc:
-                        self.last_error = f"L2 sparse maintenance {type(exc).__name__}: {exc}"
-                        self._adaptive_l2.force_overload(f"music_maintenance_fault:{type(exc).__name__}")
-                        self._record_performance("fault", 0.0)
-                    sparse_music_ms = (perf_counter() - sparse_started) * 1_000.0
-                    self._maximum_sparse_music_ms = max(self._maximum_sparse_music_ms, sparse_music_ms)
-                    snapshot = self._reuse_l2_snapshot(
-                        self._last_l2_snapshot,
-                        window,
-                        period_ms=self._adaptive_l2.period_ms,
-                        queue_wait_ms=queue_wait_ms,
-                    )
-                    self._last_l2_snapshot = snapshot
-                    self._publish_latest(self.latest_l2_dev_ui, snapshot)
-                    self._record_performance("music", sparse_music_ms)
-                    self._record_performance("reuse", 0.0)
-                    self._record_performance("output", 0.0)
-                    self._update_track_log(snapshot.active_tracks, window.decision_sample)
-                    continue
                 started = perf_counter()
+                decision: ProbabilityGateDecision | None = None
+                control_key: tuple[object, ...] | None = None
+                music_order: int | None = None
+                source_count_ms = 0.0
                 try:
-                    output = self._layer2.process(
-                        window, self._imcra_probabilities(window), self._geometry, scan,
-                        gate_threshold=gate, gate_config_revision=gate_revision,
+                    decision, active_frame_count = self._layer2.evaluate_gate(
+                        window,
+                        self._imcra_probabilities(window),
+                        gate_threshold=gate,
+                        gate_config_revision=gate_revision,
+                    )
+                    _count_snapshot, music_order, music_skip_reason, source_count_ms = (
+                        self._prepare_source_count_plan(
+                            window,
+                            decision,
+                            enabled=source_enabled,
+                            follow_order=follow_order,
+                            control_revision=source_revision,
+                        )
+                    )
+                    with self._control_lock:
+                        self._current_music_effective_order = (
+                            music_order
+                            if follow_order
+                            else 2
+                        )
+                    control_key = (
+                        scan_revision,
+                        gate_revision,
+                        tracking,
+                        source_revision,
+                        source_enabled,
+                        follow_order,
+                        decision.state,
+                        music_order,
+                        music_skip_reason,
+                    )
+                    force = (
+                        self._last_l2_snapshot is None
+                        or self._last_l2_control_key != control_key
+                        or (
+                            self._last_l2_snapshot.session_id,
+                            self._last_l2_snapshot.stream_epoch,
+                        )
+                        != (window.session_id, window.stream_epoch)
+                    )
+                    should_compute = (
+                        True
+                        if not self._adaptive_enabled
+                        else self._adaptive_l2.should_compute(force=force)
+                    )
+                    can_reuse = (
+                        decision.allow_srp
+                        and music_order in {1, 2, 3}
+                        and not should_compute
+                        and self._last_l2_snapshot is not None
+                        and self._last_l2_snapshot.spatial_response is not None
+                        and self._last_l2_snapshot.spatial_response.model_order.estimated_sources
+                        == music_order
+                    )
+                    if can_reuse:
+                        sparse_started = perf_counter()
+                        observe_covariance = getattr(
+                            self._layer2.scanner,
+                            "observe_covariance",
+                            None,
+                        )
+                        if callable(observe_covariance):
+                            observe_covariance(
+                                window,
+                                replace(scan, effective_order_limit=music_order),
+                            )
+                        sparse_music_ms = (perf_counter() - sparse_started) * 1_000.0
+                        self._maximum_sparse_music_ms = max(
+                            self._maximum_sparse_music_ms,
+                            sparse_music_ms,
+                        )
+                        snapshot = self._reuse_l2_snapshot(
+                            self._last_l2_snapshot,
+                            window,
+                            gate_decision=decision,
+                            period_ms=self._adaptive_l2.period_ms,
+                            queue_wait_ms=queue_wait_ms,
+                        )
+                        self._last_l2_snapshot = snapshot
+                        self._last_l2_control_key = control_key
+                        self._publish_latest(self.latest_l2_dev_ui, snapshot)
+                        self._record_performance("music", sparse_music_ms)
+                        self._record_performance("reuse", 0.0)
+                        self._record_performance("output", 0.0)
+                        self._update_track_log(snapshot.active_tracks, window.decision_sample)
+                        continue
+                    output = self._layer2.process_prepared(
+                        window,
+                        decision,
+                        active_frame_count,
+                        self._geometry,
+                        scan,
+                        music_effective_order=music_order,
+                        music_skip_reason=music_skip_reason,
                         scan_config_revision=scan_revision,
                         direction_id_tracking_enabled=tracking,
                     )
@@ -517,14 +786,25 @@ class ApplicationRuntime:
                     self.last_error = f"L2 processing {type(exc).__name__}: {exc}"
                     if self._adaptive_enabled:
                         self._adaptive_l2.force_overload(f"l2_fault:{type(exc).__name__}")
-                    can_reuse = self._last_l2_snapshot is not None and (
-                        self._last_l2_snapshot.session_id,
-                        self._last_l2_snapshot.stream_epoch,
-                    ) == (window.session_id, window.stream_epoch)
+                    can_reuse = (
+                        decision is not None
+                        and decision.allow_srp
+                        and music_order in {1, 2, 3}
+                        and self._last_l2_snapshot is not None
+                        and self._last_l2_snapshot.spatial_response is not None
+                        and self._last_l2_snapshot.spatial_response.model_order.estimated_sources
+                        == music_order
+                        and (
+                            self._last_l2_snapshot.session_id,
+                            self._last_l2_snapshot.stream_epoch,
+                        )
+                        == (window.session_id, window.stream_epoch)
+                    )
                     snapshot = (
                         self._reuse_l2_snapshot(
                             self._last_l2_snapshot,
                             window,
+                            gate_decision=decision,
                             period_ms=self._adaptive_l2.period_ms,
                             queue_wait_ms=queue_wait_ms,
                         )
@@ -563,6 +843,7 @@ class ApplicationRuntime:
                         stage_ms={
                             "imcra": self.imcra.last_core_ms,
                             "probability": self.imcra.last_probability_ms,
+                            "source_count": source_count_ms,
                             "music": max(music_ms, self._maximum_sparse_music_ms),
                             "id": id_ms,
                             "l2_total": l2_wall_ms,
@@ -575,7 +856,11 @@ class ApplicationRuntime:
                     output.spatial_response, output.candidates, output.gate_decision,
                     gate, gate_revision, scan.direction_threshold, tracking, scan_revision,
                     output.search_diagnostics, output.directions, output.active_tracks, monotonic(),
-                    None if output.spatial_response is not None else output.gate_decision.reason,
+                    (
+                        None
+                        if output.spatial_response is not None
+                        else output.music_skip_reason or output.gate_decision.reason
+                    ),
                     self._adaptive_l2.period_ms, False, queue_wait_ms,
                 )
                 self._last_l2_snapshot = snapshot
@@ -641,6 +926,7 @@ class ApplicationRuntime:
         previous: L2DevUiSnapshot | None,
         window: object,
         *,
+        gate_decision: ProbabilityGateDecision | None = None,
         period_ms: int,
         queue_wait_ms: float,
     ) -> L2DevUiSnapshot:
@@ -657,11 +943,21 @@ class ApplicationRuntime:
             "doa_start_sample": window.doa_start_sample,
             "doa_end_sample": window.doa_end_sample,
         }
+        source_gate = previous.gate_decision if gate_decision is None else gate_decision
+        gate_identity = (
+            source_gate.session_id,
+            source_gate.stream_epoch,
+            source_gate.window_id,
+            source_gate.decision_sample,
+        )
+        expected_identity = tuple(identity.values())
+        if gate_decision is not None and gate_identity != expected_identity:
+            raise ValueError("adaptive reuse Gate must match the current window")
         gate = replace(
-            previous.gate_decision,
+            source_gate,
             **identity,
-            reason="adaptive_reuse_previous_output",
-            diagnostics=(*previous.gate_decision.diagnostics, f"reused_at_period_ms={period_ms}"),
+            reason=f"{source_gate.reason}:adaptive_reuse_previous_output",
+            diagnostics=(*source_gate.diagnostics, f"reused_at_period_ms={period_ms}"),
         )
         spatial = None if previous.spatial_response is None else replace(previous.spatial_response, **doa)
         candidates = tuple(replace(item, **doa) for item in previous.candidates)

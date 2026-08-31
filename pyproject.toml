@@ -28,7 +28,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "common*", "config*", "ingest*", "windowing*", "gui*", "layer1_input*", "layer2_source_detection*"]
+include = ["app*", "common*", "config*", "ingest*", "windowing*", "gui*", "layer1_input*", "layer2_source_detection*", "source_counting*"]
 
 [tool.setuptools.package-data]
 config = ["*.yaml"]

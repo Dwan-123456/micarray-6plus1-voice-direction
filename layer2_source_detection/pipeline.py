@@ -19,6 +19,7 @@ from .probability_gate import ProbabilityGate, ProbabilityGateDecision, Probabil
 
 class Layer2ExecutionState(str, Enum):
     BLOCKED = "blocked"
+    MUSIC_SKIPPED = "music_skipped"
     PROCESSED = "processed"
 
 
@@ -84,6 +85,8 @@ class Layer2PipelineResult:
     music_state: MusicStateDiagnostic | None = None
     direction_id_tracking_enabled: bool = True
     id_tracking_ms: float | None = None
+    music_effective_order: int | None = None
+    music_skip_reason: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.direction_id_tracking_enabled) is not bool:
@@ -92,6 +95,13 @@ class Layer2PipelineResult:
             not isfinite(self.id_tracking_ms) or self.id_tracking_ms < 0.0
         ):
             raise ValueError("L2 ID tracking timing must be non-negative finite or None")
+        if self.music_effective_order is not None and (
+            type(self.music_effective_order) is not int
+            or self.music_effective_order not in {0, 1, 2, 3}
+        ):
+            raise ValueError("effective MUSIC order must be 0, 1, 2, 3, or None")
+        if self.music_skip_reason is not None and not self.music_skip_reason:
+            raise ValueError("MUSIC skip reason cannot be empty")
         identity = (self.gate_decision.session_id, self.gate_decision.stream_epoch,
                     self.gate_decision.window_id, self.gate_decision.decision_sample)
         candidates, directions, active = tuple(self.candidates), tuple(self.directions), tuple(self.active_tracks)
@@ -150,6 +160,16 @@ class Layer2PipelineResult:
             if self.spatial_response is not None or candidates or self.search_diagnostics is not None:
                 raise ValueError("blocked L2 result cannot contain MUSIC observations")
             return
+        if self.state is Layer2ExecutionState.MUSIC_SKIPPED:
+            if self.gate_decision.state is not ProbabilityGateState.OPEN:
+                raise ValueError("MUSIC-skipped L2 result requires an open probability Gate")
+            if self.music_effective_order not in {0, None} or self.music_skip_reason is None:
+                raise ValueError("MUSIC-skipped result requires order 0/None and a reason")
+            if self.spatial_response is not None or self.search_diagnostics is not None:
+                raise ValueError("MUSIC-skipped result cannot contain a MUSIC spectrum")
+            if any(item.is_observed for item in directions):
+                raise ValueError("MUSIC-skipped result can publish only coasting predictions")
+            return
         if self.gate_decision.state is not ProbabilityGateState.OPEN:
             if self.spatial_response is not None or self.search_diagnostics is not None:
                 raise ValueError("closed-Gate prediction output cannot contain MUSIC observations")
@@ -160,6 +180,8 @@ class Layer2PipelineResult:
             return
         if self.spatial_response is None or self.search_diagnostics is None:
             raise ValueError("processed L2 result requires complete MUSIC output")
+        if self.music_effective_order not in {1, 2, 3} or self.music_skip_reason is not None:
+            raise ValueError("processed open-Gate result requires an applied MUSIC order")
         response_identity = (self.spatial_response.session_id, self.spatial_response.stream_epoch,
                              self.spatial_response.window_id, self.spatial_response.decision_sample)
         if response_identity != identity:
@@ -232,43 +254,90 @@ class Layer2Pipeline:
         )
         return self._consecutive_gate_open_hops
 
-    def process(self, window: DecisionWindow, probabilities: tuple[SourceProbability20ms, ...],
-                geometry: MicGeometry, scan_config: DirectionScanConfig, *, gate_threshold: float,
-                gate_config_revision: int, scan_config_revision: int = 0,
-                direction_kalman_enabled: bool = True,
-                direction_kalman_q_scale: float = 1.0,
-                direction_kalman_r_scale: float = 1.0,
-                direction_id_tracking_enabled: bool = True) -> Layer2PipelineResult:
-        # Compatibility-only arguments retained for older Runtime callers.
-        # IMM prediction is intrinsic to ID tracking and cannot be toggled or
-        # tuned through the removed standalone Kalman controls.
-        del direction_kalman_enabled, direction_kalman_q_scale, direction_kalman_r_scale
-        id_tracking_ms: float | None = 0.0 if direction_id_tracking_enabled else None
-        id_started = perf_counter() if direction_id_tracking_enabled else None
+    def evaluate_gate(
+        self,
+        window: DecisionWindow,
+        probabilities: tuple[SourceProbability20ms, ...],
+        *,
+        gate_threshold: float,
+        gate_config_revision: int,
+    ) -> tuple[ProbabilityGateDecision, int]:
+        """Evaluate the current Gate before any source-count or MUSIC work."""
+
+        decision = self.gate.evaluate(
+            window,
+            probabilities,
+            threshold=gate_threshold,
+            config_revision=gate_config_revision,
+        )
+        return decision, self._update_gate_activity(window, decision)
+
+    def process_prepared(
+        self,
+        window: DecisionWindow,
+        decision: ProbabilityGateDecision,
+        active_frame_count: int,
+        geometry: MicGeometry,
+        scan_config: DirectionScanConfig,
+        *,
+        music_effective_order: int | None,
+        music_skip_reason: str | None = None,
+        scan_config_revision: int = 0,
+        direction_id_tracking_enabled: bool = True,
+    ) -> Layer2PipelineResult:
+        """Run MUSIC/tracking after the Gate and source-count plan are fixed."""
+
+        identity = (
+            window.session_id,
+            window.stream_epoch,
+            window.window_id,
+            window.decision_sample,
+        )
+        decision_identity = (
+            decision.session_id,
+            decision.stream_epoch,
+            decision.window_id,
+            decision.decision_sample,
+        )
+        if decision_identity != identity or active_frame_count < 0:
+            raise ValueError("prepared L2 Gate does not match the current window")
         if type(direction_id_tracking_enabled) is not bool:
             raise TypeError("L2 direction ID tracking switch must be bool")
+        if decision.allow_srp:
+            if music_effective_order not in {0, 1, 2, 3, None}:
+                raise ValueError("prepared MUSIC order must be 0..3 or None")
+            if music_effective_order in {0, None} and not music_skip_reason:
+                raise ValueError("skipped MUSIC requires a reason")
+            if music_effective_order in {1, 2, 3} and music_skip_reason is not None:
+                raise ValueError("applied MUSIC order cannot have a skip reason")
+        else:
+            music_effective_order = None
+            music_skip_reason = decision.reason
+
+        id_tracking_ms: float | None = 0.0 if direction_id_tracking_enabled else None
         if direction_id_tracking_enabled != self._direction_id_tracking_enabled:
             # This transition runs on the single L2 worker, so tracker state is
             # never reset concurrently with an update. Re-enabling starts a
             # fresh authoritative identity epoch for the same audio stream.
             self.id_tracker.reset()
             self._direction_id_tracking_enabled = direction_id_tracking_enabled
-        observe_covariance = getattr(self.scanner, "observe_covariance", None)
-        if callable(observe_covariance):
-            observe_covariance(window, scan_config)
-        if id_started is not None:
-            assert id_tracking_ms is not None
-            id_tracking_ms += (perf_counter() - id_started) * 1_000.0
-        decision = self.gate.evaluate(window, probabilities, threshold=gate_threshold,
-                                      config_revision=gate_config_revision)
-        active_frame_count = self._update_gate_activity(window, decision)
+
         required_active_frames = scan_config.context_ms // 20
         response: SpatialResponse | None = None
         diagnostics: MusicDiagnostics | None = None
         observations: tuple[CandidateDirection, ...] = ()
-        if decision.allow_srp:
+        music_state: MusicStateDiagnostic | None = None
+        if decision.allow_srp and music_effective_order in {1, 2, 3}:
+            effective_scan = replace(
+                scan_config,
+                effective_order_limit=music_effective_order,
+            )
             response, observations, diagnostics = self.scanner.scan_detailed(
-                window, geometry, scan_config, scan_config_revision)
+                window,
+                geometry,
+                effective_scan,
+                scan_config_revision,
+            )
             warm = active_frame_count >= required_active_frames
             diagnostics = replace(
                 diagnostics,
@@ -276,51 +345,131 @@ class Layer2Pipeline:
                 active_frame_count=active_frame_count,
                 birth_required_active_frames=required_active_frames,
             )
+            music_state = getattr(self.scanner, "last_state_diagnostic", None)
             # Before one complete continuously-open covariance context exists,
-            # the spectrum remains diagnostic-only and cannot update/create IDs
-            # or escape through the raw-MUSIC compatibility path.
+            # the spectrum remains diagnostic-only and cannot update/create IDs.
             if not warm:
                 observations = ()
+        else:
+            reset_scanner = getattr(self.scanner, "reset", None)
+            if callable(reset_scanner):
+                reset_scanner()
+            if decision.allow_srp:
+                # A Gate-open window with count 0/None has no active MUSIC
+                # covariance context.  The next positive order must warm from
+                # one instead of inheriting Gate-only time spent while skipped.
+                self._consecutive_gate_open_hops = 0
+
         if not direction_id_tracking_enabled:
             self.last_id_tracking_error = None
+            state = (
+                Layer2ExecutionState.MUSIC_SKIPPED
+                if decision.allow_srp and music_effective_order in {0, None}
+                else Layer2ExecutionState.PROCESSED
+                if decision.allow_srp
+                else Layer2ExecutionState.BLOCKED
+            )
             return Layer2PipelineResult(
-                Layer2ExecutionState.PROCESSED if decision.allow_srp else Layer2ExecutionState.BLOCKED,
+                state,
                 decision,
                 response,
                 observations,
                 diagnostics,
-                model_order=getattr(self.scanner, "model_order", None),
-                music_state=getattr(self.scanner, "last_state_diagnostic", None),
+                model_order=None if diagnostics is None else diagnostics.model_order,
+                music_state=music_state,
                 direction_id_tracking_enabled=False,
                 id_tracking_ms=None,
+                music_effective_order=music_effective_order,
+                music_skip_reason=music_skip_reason,
             )
+
         id_started = perf_counter()
         observed_directions, active = self.id_tracker.update(
-            window.session_id, window.stream_epoch, window.decision_sample, observations,
-            window_id=window.window_id, doa_start_sample=window.doa_start_sample,
+            window.session_id,
+            window.stream_epoch,
+            window.decision_sample,
+            observations,
+            window_id=window.window_id,
+            doa_start_sample=window.doa_start_sample,
             doa_end_sample=window.doa_end_sample,
-            allow_births=True if diagnostics is None else diagnostics.births_allowed)
+            allow_births=diagnostics is not None and diagnostics.births_allowed,
+        )
         assert id_tracking_ms is not None
         id_tracking_ms += (perf_counter() - id_started) * 1_000.0
         self.last_id_tracking_error = None
         directions = _select_l3_directions(observed_directions, active)
-        candidates = tuple(CandidateDirection(
-            item.session_id, item.stream_epoch, item.window_id, item.decision_sample,
-            item.doa_start_sample, item.doa_end_sample, item.theta_deg,
-            item.raw_score, item.normalized_score) for item in directions)
-        state = (
-            Layer2ExecutionState.PROCESSED
-            if decision.allow_srp or directions
-            else Layer2ExecutionState.BLOCKED
+        candidates = tuple(
+            CandidateDirection(
+                item.session_id,
+                item.stream_epoch,
+                item.window_id,
+                item.decision_sample,
+                item.doa_start_sample,
+                item.doa_end_sample,
+                item.theta_deg,
+                item.raw_score,
+                item.normalized_score,
+            )
+            for item in directions
         )
+        if decision.allow_srp and music_effective_order in {0, None}:
+            state = Layer2ExecutionState.MUSIC_SKIPPED
+        elif decision.allow_srp or directions:
+            state = Layer2ExecutionState.PROCESSED
+        else:
+            state = Layer2ExecutionState.BLOCKED
         return Layer2PipelineResult(
-            state, decision, response, candidates, diagnostics,
+            state,
+            decision,
+            response,
+            candidates,
+            diagnostics,
             tuple(item.track_id for item in directions),
             tuple(not item.is_observed for item in directions),
             tuple(item.track_state in {"confirmed", "coasting"} for item in directions),
             tuple(item.is_new_track for item in directions),
-            tuple(item.kalman_applied for item in directions), directions, active,
-            getattr(self.scanner, "model_order", None),
-            getattr(self.scanner, "last_state_diagnostic", None),
+            tuple(item.kalman_applied for item in directions),
+            directions,
+            active,
+            None if diagnostics is None else diagnostics.model_order,
+            music_state,
             True,
-            id_tracking_ms=id_tracking_ms)
+            id_tracking_ms=id_tracking_ms,
+            music_effective_order=music_effective_order,
+            music_skip_reason=music_skip_reason,
+        )
+
+    def process(
+        self,
+        window: DecisionWindow,
+        probabilities: tuple[SourceProbability20ms, ...],
+        geometry: MicGeometry,
+        scan_config: DirectionScanConfig,
+        *,
+        gate_threshold: float,
+        gate_config_revision: int,
+        scan_config_revision: int = 0,
+        direction_kalman_enabled: bool = True,
+        direction_kalman_q_scale: float = 1.0,
+        direction_kalman_r_scale: float = 1.0,
+        direction_id_tracking_enabled: bool = True,
+    ) -> Layer2PipelineResult:
+        # Compatibility-only arguments retained for older Runtime callers.
+        del direction_kalman_enabled, direction_kalman_q_scale, direction_kalman_r_scale
+        decision, active_frame_count = self.evaluate_gate(
+            window,
+            probabilities,
+            gate_threshold=gate_threshold,
+            gate_config_revision=gate_config_revision,
+        )
+        return self.process_prepared(
+            window,
+            decision,
+            active_frame_count,
+            geometry,
+            scan_config,
+            music_effective_order=(scan_config.effective_order_limit if decision.allow_srp else None),
+            music_skip_reason=None,
+            scan_config_revision=scan_config_revision,
+            direction_id_tracking_enabled=direction_id_tracking_enabled,
+        )

@@ -114,6 +114,31 @@ layer2:
   min_peak_distance_deg: 50.0
   max_candidates: 3
   effective_order_limit: 2
+source_counting:
+  enabled: true
+  music_order_from_source_count: false
+  backend: incremental_gcc_phat_deemphasis_v1
+  context_ms: 160
+  frequency_min_hz: 2000.0
+  frequency_max_hz: 4000.0
+  n_fft: 1024
+  win_length: 960
+  hop_length: 480
+  angle_step_deg: 1.0
+  lag_oversampling: 4
+  activity_rms_threshold_dbfs: -70.0
+  first_peak_threshold: 0.16
+  first_peak_z_threshold: 2.0
+  residual_peak_threshold: 0.07
+  residual_peak_z_threshold: 2.0
+  residual_ratio_threshold: 0.09
+  min_peak_distance_deg: 50.0
+  deemphasis_strength: 0.90
+  deemphasis_width_samples: 0.25
+  coactivity_frame_threshold: 0.08
+  coactivity_required_frames: 3
+  persistence_window_frames: 3
+  persistence_required_frames: 2
 runtime:
   capture_handoff_blocks: 500
   l2_queue_windows: 100

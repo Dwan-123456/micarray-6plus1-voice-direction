@@ -63,6 +63,37 @@ def test_reused_l2_output_is_retimed_and_marked() -> None:
     assert reused.missing_reason == "adaptive_reuse_40ms"
 
 
+def test_reused_l2_output_uses_current_window_gate_decision() -> None:
+    previous_gate = ProbabilityGateDecision(
+        "session", 0, 1, 1_920, "current_20ms_v1", ProbabilityGateState.OPEN,
+        0.9, 0.9, 0.9, 0.6, 0, True, "above_threshold",
+    )
+    previous = L2DevUiSnapshot(
+        "session", 0, 1, 1_920, None, (), previous_gate, 0.6, 0, 0.35, True, 0,
+        None, (), (), 1.0, None,
+    )
+    window = SimpleNamespace(
+        session_id="session", stream_epoch=0, window_id=2, decision_sample=2_880,
+        doa_start_sample=960, doa_end_sample=2_880,
+    )
+    current_gate = ProbabilityGateDecision(
+        "session", 0, 2, 2_880, "current_20ms_v1", ProbabilityGateState.OPEN,
+        0.7, 0.7, 0.7, 0.6, 0, True, "above_threshold",
+    )
+
+    reused = ApplicationRuntime._reuse_l2_snapshot(
+        previous,
+        window,
+        gate_decision=current_gate,
+        period_ms=40,
+        queue_wait_ms=0.0,
+    )
+
+    assert reused.gate_decision.probability_20ms == 0.7
+    assert reused.gate_decision.state is ProbabilityGateState.OPEN
+    assert "adaptive_reuse_previous_output" in reused.gate_decision.reason
+
+
 def test_inactive_pre_denoise_tail_is_not_republished_at_shutdown() -> None:
     runtime = object.__new__(ApplicationRuntime)
     runtime.pre_denoiser = SimpleNamespace(

@@ -166,6 +166,35 @@ class Layer2Config(StrictModel):
     effective_order_limit: Literal[1, 2, 3]
 
 
+class SourceCountingConfig(StrictModel):
+    enabled: bool = False
+    music_order_from_source_count: bool = False
+    backend: Literal["incremental_gcc_phat_deemphasis_v1"] = (
+        "incremental_gcc_phat_deemphasis_v1"
+    )
+    context_ms: Literal[160] = 160
+    frequency_min_hz: Literal[2000.0] = 2000.0
+    frequency_max_hz: Literal[4000.0] = 4000.0
+    n_fft: Literal[1024] = 1024
+    win_length: Literal[960] = 960
+    hop_length: Literal[480] = 480
+    angle_step_deg: Literal[1.0] = 1.0
+    lag_oversampling: Literal[4] = 4
+    activity_rms_threshold_dbfs: float = -70.0
+    first_peak_threshold: float = Field(default=0.16, ge=0, le=1)
+    first_peak_z_threshold: float = Field(default=2.0, ge=0)
+    residual_peak_threshold: float = Field(default=0.07, ge=0, le=1)
+    residual_peak_z_threshold: float = Field(default=2.0, ge=0)
+    residual_ratio_threshold: float = Field(default=0.09, ge=0, le=1)
+    min_peak_distance_deg: Literal[50.0] = 50.0
+    deemphasis_strength: float = Field(default=0.90, ge=0, le=1)
+    deemphasis_width_samples: float = Field(default=0.25, gt=0)
+    coactivity_frame_threshold: float = Field(default=0.08, ge=0, le=1)
+    coactivity_required_frames: Literal[3] = 3
+    persistence_window_frames: Literal[3] = 3
+    persistence_required_frames: Literal[2] = 2
+
+
 class RuntimeConfig(StrictModel):
     capture_handoff_blocks: int = Field(ge=1)
     l2_queue_windows: int = Field(ge=1)
@@ -203,6 +232,7 @@ class ProjectConfig(StrictModel):
     layer1_imcra: Layer1ImcraConfig
     layer1_pre_denoise: Layer1PreDenoiseConfig
     layer2: Layer2Config
+    source_counting: SourceCountingConfig = Field(default_factory=SourceCountingConfig)
     runtime: RuntimeConfig
     dev_test_ui: DevUiConfig
 
@@ -220,6 +250,10 @@ class ProjectConfig(StrictModel):
             raise ValueError("pre-denoise requires IMCRA")
         if self.layer2.context_ms != self.layer2.music.context_ms:
             raise ValueError("MUSIC context values must agree")
+        if self.source_counting.frequency_min_hz >= self.source_counting.frequency_max_hz:
+            raise ValueError("source-counting frequency range is invalid")
+        if self.source_counting.persistence_required_frames > self.source_counting.persistence_window_frames:
+            raise ValueError("source-counting persistence requirement exceeds its history")
         return self
 
 
