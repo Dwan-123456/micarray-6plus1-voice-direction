@@ -17,7 +17,7 @@ class PreDenoiseHop:
 
 
 class ImcraWienerPreDenoiser:
-    """Seven independent Wiener masks with causal 40 ms/20 ms WOLA synthesis."""
+    """Seven independent Wiener masks with causal 20 ms/10 ms WOLA synthesis."""
 
     def __init__(self, config: Layer1PreDenoiseConfig, *, sample_rate: int = 48_000) -> None:
         if sample_rate != 48_000:
@@ -33,6 +33,7 @@ class ImcraWienerPreDenoiser:
         self._minimum_gain = 10.0 ** (config.minimum_gain_db / 20.0)
         self._identity: tuple[str, int] | None = None
         self._previous_block: IngestedAudioBlock | None = None
+        self._pending_first_half: np.ndarray | None = None
         self._ola_tail = np.zeros((self.hop_samples, 7), dtype=np.float64)
         self._previous_gain = np.ones((self._frequencies.size, 7), dtype=np.float64)
         self._next_sample = 0
@@ -45,6 +46,7 @@ class ImcraWienerPreDenoiser:
     def reset(self) -> None:
         self._identity = None
         self._previous_block = None
+        self._pending_first_half = None
         self._ola_tail.fill(0.0)
         self._previous_gain.fill(1.0)
         self._next_sample = 0
@@ -75,11 +77,11 @@ class ImcraWienerPreDenoiser:
         return gain
 
     def _render_frame(
-        self, left: np.ndarray, right: np.ndarray, hop: ImcraHopSnapshot | None
+        self, left: np.ndarray, right: np.ndarray, gain: np.ndarray
     ) -> np.ndarray:
         frame = np.concatenate((left[:, :7], right[:, :7]), axis=0).astype(np.float64, copy=False)
         spectrum = np.fft.rfft(frame * self._window[:, None], n=self.config.n_fft, axis=0)
-        spectrum *= self._gain(hop)
+        spectrum *= gain
         reconstructed = np.fft.irfft(spectrum, n=self.config.n_fft, axis=0)[: self.frame_samples]
         reconstructed *= self._window[:, None]
         output = self._ola_tail + reconstructed[: self.hop_samples]
@@ -100,14 +102,20 @@ class ImcraWienerPreDenoiser:
         previous = self._previous_block
         if previous is None:
             return ()
+        if self._pending_first_half is None:
+            raise RuntimeError("L1 pre-denoiser is missing its first output half")
         zeros = np.zeros((self.hop_samples, 8), dtype=np.float32)
-        physical = self._render_frame(previous.samples, zeros, previous.imcra_hop)
+        second_half = self._render_frame(
+            previous.samples[self.hop_samples :], zeros, self._previous_gain
+        )
+        physical = np.concatenate((self._pending_first_half, second_half), axis=0)
         result = PreDenoiseHop(previous, self._replace_physical(previous, physical))
         self._previous_block = None
+        self._pending_first_half = None
         return (result,)
 
     def process(self, block: IngestedAudioBlock) -> tuple[PreDenoiseHop, ...]:
-        if block.samples.shape != (self.hop_samples, 8):
+        if block.samples.shape != (self.frame_samples, 8):
             raise ValueError("L1 pre-denoiser requires exact 20 ms [960,8] input blocks")
         identity = (block.session_id, block.stream_epoch)
         output: list[PreDenoiseHop] = []
@@ -115,6 +123,7 @@ class ImcraWienerPreDenoiser:
             output.extend(self._flush_previous())
             self._identity = identity
             self._previous_block = None
+            self._pending_first_half = None
             self._ola_tail.fill(0.0)
             self._previous_gain.fill(1.0)
             self._next_sample = block.start_sample
@@ -122,12 +131,25 @@ class ImcraWienerPreDenoiser:
             raise ValueError("L1 pre-denoiser received a discontinuity without a new stream epoch")
 
         previous = self._previous_block
+        first, second = np.split(block.samples, 2, axis=0)
+        # IMCRA publishes one estimate per 20 ms. Update temporal gain smoothing
+        # once at that cadence, then reuse the gain for both 10 ms WOLA frames.
+        gain = self._gain(block.imcra_hop)
         if previous is None:
-            zeros = np.zeros_like(block.samples)
-            self._render_frame(zeros, block.samples, block.imcra_hop)
+            zeros = np.zeros((self.hop_samples, 8), dtype=np.float32)
+            self._render_frame(zeros, first, gain)
+            self._pending_first_half = self._render_frame(first, second, gain)
         else:
-            physical = self._render_frame(previous.samples, block.samples, block.imcra_hop)
+            if self._pending_first_half is None:
+                raise RuntimeError("L1 pre-denoiser is missing its first output half")
+            previous_second_half = self._render_frame(
+                previous.samples[self.hop_samples :], first, gain
+            )
+            physical = np.concatenate(
+                (self._pending_first_half, previous_second_half), axis=0
+            )
             output.append(PreDenoiseHop(previous, self._replace_physical(previous, physical)))
+            self._pending_first_half = self._render_frame(first, second, gain)
         self._previous_block = block
         self._next_sample = block.end_sample
         return tuple(output)

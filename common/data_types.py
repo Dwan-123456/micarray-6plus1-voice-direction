@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 
 from .timing import CONTEXT_SAMPLES
 
-_IMCRA_FREQUENCIES_HZ = np.fft.rfftfreq(2048, 1.0 / 48_000).astype(np.float32)
+_IMCRA_FREQUENCIES_HZ = np.fft.rfftfreq(960, 1.0 / 48_000).astype(np.float32)
 _IMCRA_FREQUENCIES_HZ = _IMCRA_FREQUENCIES_HZ[
     _IMCRA_FREQUENCIES_HZ <= 10_000.0
 ]
@@ -119,7 +119,7 @@ class ImcraHopSnapshot:
             raise ValueError("IMCRA estimator/state is invalid")
         frequencies = _readonly_float32(self.frequencies_hz, (_IMCRA_BIN_COUNT,), "frequencies_hz")
         if not np.array_equal(frequencies, _IMCRA_FREQUENCIES_HZ):
-            raise ValueError("IMCRA frequency axis must be the 48 kHz/2048-point 0-10000 Hz bins")
+            raise ValueError("IMCRA frequency axis must be the 48 kHz/960-point 0-10000 Hz bins")
         spectral_shape = (7, _IMCRA_BIN_COUNT)
         noise_psd = _readonly_float32(self.noise_psd, spectral_shape, "noise_psd")
         smoothed_psd = _readonly_float32(self.smoothed_psd, spectral_shape, "smoothed_psd")

@@ -78,12 +78,12 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
     assert hops[1].source_sequence_ids == (1, 2)
     ready = hops[1]
     assert ready.state == "ready" and ready.array_source_probability_20ms is not None
-    assert ready.frequencies_hz.size == 427
+    assert ready.frequencies_hz.size == 201
     assert ready.frequencies_hz[0] == 0.0 and ready.frequencies_hz[-1] <= 10_000.0
-    assert ready.noise_psd.shape == ready.smoothed_psd.shape == ready.minimum_psd.shape == ready.spp.shape == (7, 427)
+    assert ready.noise_psd.shape == ready.smoothed_psd.shape == ready.minimum_psd.shape == ready.spp.shape == (7, 201)
     assert not hasattr(ready, "noise_covariance")
-    assert ready.conditional_smoothed_psd.shape == ready.conditional_minimum_psd.shape == (7, 427)
-    assert ready.speech_absence_probability.shape == ready.posterior_snr.shape == ready.prior_snr.shape == (7, 427)
+    assert ready.conditional_smoothed_psd.shape == ready.conditional_minimum_psd.shape == (7, 201)
+    assert ready.speech_absence_probability.shape == ready.posterior_snr.shape == ready.prior_snr.shape == (7, 201)
     assert ready.noise_features.shape == (7, 4)
     assert np.isfinite(ready.noise_features).all()
     assert np.all((ready.spp >= 0.0) & (ready.spp <= 1.0))
@@ -94,13 +94,14 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
 
 def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     config = load_config("config/config.yaml").layer1_imcra
-    assert config.algorithm_version == "cohen_imcra_2003_l1_v8"
+    assert config.algorithm_version == "cohen_imcra_2003_l1_v9"
+    assert config.n_fft == config.hop_samples == 960
     assert (config.frequency_min_hz, config.frequency_max_hz) == (250.0, 3_400.0)
     estimator = Layer1Imcra(config)
     gate_frequencies = estimator._all_frequencies_hz[estimator._gate_band]
     assert np.all((gate_frequencies >= 250.0) & (gate_frequencies <= 3_400.0))
-    assert gate_frequencies[0] == pytest.approx(257.8125)
-    assert gate_frequencies[-1] == pytest.approx(3_398.4375)
+    assert gate_frequencies[0] == pytest.approx(250.0)
+    assert gate_frequencies[-1] == pytest.approx(3_400.0)
     weights = speech_gate_band_weights(gate_frequencies)
     assert weights.shape == gate_frequencies.shape
     assert np.sum(weights) == pytest.approx(1.0)
