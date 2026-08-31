@@ -69,18 +69,35 @@ class AdaptiveRateController:
         return False
 
     def observe_compute(self, *, queue_wait_ms: float, stage_ms: dict[str, float]) -> None:
-        metrics = {"queue_wait": max(0.0, float(queue_wait_ms))}
-        metrics.update({name: max(0.0, float(value)) for name, value in stage_ms.items()})
-        overloaded = [
-            (name, value) for name, value in metrics.items()
-            if value > self.overload_threshold_ms
-        ]
+        queue_wait = max(0.0, float(queue_wait_ms))
+        stage_metrics = {
+            name: max(0.0, float(value)) for name, value in stage_ms.items()
+        }
+        metrics = {"queue_wait": queue_wait, **stage_metrics}
+        # Queue age is always judged against the 20 ms output clock.  Compute
+        # stages are judged against their current scheduled period: a 24 ms
+        # calculation is overloaded at 20 ms, but sustainable at 40 ms and
+        # must not cascade all the way to the 200 ms ceiling.
+        overloaded = []
+        if queue_wait > self.overload_threshold_ms:
+            overloaded.append(("queue_wait", queue_wait))
+        overloaded.extend(
+            (name, value)
+            for name, value in stage_metrics.items()
+            if value > self._period_ms
+        )
         if overloaded:
             name, value = max(overloaded, key=lambda item: item[1])
             self.force_overload(f"{name}:{value:.2f}ms")
             return
 
-        if metrics and max(metrics.values()) <= self.recovery_threshold_ms:
+        next_period_ms = max(self.base_period_ms, self._period_ms - self.base_period_ms)
+        recovery_headroom_ms = self.base_period_ms - self.recovery_threshold_ms
+        recovery_limit_ms = max(
+            self.recovery_threshold_ms,
+            next_period_ms - recovery_headroom_ms,
+        )
+        if metrics and max(metrics.values()) <= recovery_limit_ms:
             self._healthy_elapsed_ms += self._period_ms
         else:
             self._healthy_elapsed_ms = 0

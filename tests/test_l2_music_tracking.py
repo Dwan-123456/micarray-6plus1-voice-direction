@@ -88,6 +88,29 @@ def _circular_error_deg(a: float, b: float) -> float:
     return abs(((a - b + 180.0) % 360.0) - 180.0)
 
 
+def test_confirmation_window_expands_for_adaptive_observation_period() -> None:
+    tracker = GlobalDirectionTracker(
+        GlobalTrackerConfig(
+            confirmation_observations=10,
+            confirmation_window_samples=24_000,
+            tentative_ttl_samples=24_000,
+            coasting_ttl_samples=96_000,
+        )
+    )
+    observed = ()
+    for index in range(10):
+        sample = 15_360 + index * 9_600
+        observed, _ = _update(
+            tracker,
+            sample,
+            (30.0,),
+            observation_period_samples=9_600,
+        )
+
+    assert observed[0].track_state == "confirmed"
+    assert observed[0].track_id == 1
+
+
 def _ready_probabilities(
     window: DecisionWindow,
     value: float = 1.0,

@@ -529,8 +529,23 @@ class GlobalDirectionTracker:
             if ttl_expired or probability_expired:
                 del self._tracks[track_id]
 
-    def _confirm(self, track: _Track, decision_sample: int, observed: bool) -> None:
-        cutoff = decision_sample - self.config.confirmation_window_samples
+    def _effective_confirmation_window_samples(self, observation_period_samples: int) -> int:
+        if observation_period_samples <= 0:
+            raise ValueError("ID observation period must be positive")
+        required_span = (
+            max(0, self.config.confirmation_observations - 1)
+            * int(observation_period_samples)
+        )
+        return max(self.config.confirmation_window_samples, required_span)
+
+    def _confirm(
+        self,
+        track: _Track,
+        decision_sample: int,
+        observed: bool,
+        confirmation_window_samples: int,
+    ) -> None:
+        cutoff = decision_sample - confirmation_window_samples
         track.confirmation_samples[:] = [sample for sample in track.confirmation_samples if sample >= cutoff]
         if observed and (
             not track.confirmation_samples or track.confirmation_samples[-1] != decision_sample
@@ -548,6 +563,7 @@ class GlobalDirectionTracker:
         first: _Track,
         second: _Track,
         decision_sample: int,
+        confirmation_window_samples: int,
     ) -> bool:
         """Recognize one source split into alternating nearby direction tracks."""
 
@@ -555,7 +571,7 @@ class GlobalDirectionTracker:
         second_theta = self._combined(second)[0][0]
         if abs(_delta(first_theta, second_theta)) >= self.config.association_gate_deg:
             return False
-        cutoff = decision_sample - self.config.confirmation_window_samples
+        cutoff = decision_sample - confirmation_window_samples
         first_samples = {sample for sample in first.confirmation_samples if sample >= cutoff}
         second_samples = {sample for sample in second.confirmation_samples if sample >= cutoff}
         if not first_samples or not second_samples or first_samples & second_samples:
@@ -608,6 +624,7 @@ class GlobalDirectionTracker:
         observed_track_by_candidate: dict[int, int],
         observed_candidate_by_track: dict[int, int],
         new_track_ids: set[int],
+        confirmation_window_samples: int,
     ) -> tuple[tuple[int, int], ...]:
         """Merge alternating tracks only; simultaneous independent peaks remain separate."""
 
@@ -617,7 +634,12 @@ class GlobalDirectionTracker:
             tracks = tuple(self._tracks[track_id] for track_id in sorted(self._tracks))
             for index, first in enumerate(tracks):
                 for second in tracks[index + 1 :]:
-                    if self._duplicate_pair_is_mergeable(first, second, decision_sample):
+                    if self._duplicate_pair_is_mergeable(
+                        first,
+                        second,
+                        decision_sample,
+                        confirmation_window_samples,
+                    ):
                         pair = (first, second)
                         break
                 if pair is not None:
@@ -697,11 +719,15 @@ class GlobalDirectionTracker:
         doa_start_sample: int,
         doa_end_sample: int | None = None,
         allow_births: bool = True,
+        observation_period_samples: int = 960,
     ) -> tuple[tuple[TrackedDirection, ...], tuple[TrackedDirection, ...]]:
         self.prepare_stream(session_id, stream_epoch)
         if self._last_sample is not None and decision_sample <= self._last_sample:
             raise ValueError("direction tracking sample must advance monotonically")
         doa_end_sample = decision_sample if doa_end_sample is None else doa_end_sample
+        confirmation_window_samples = self._effective_confirmation_window_samples(
+            observation_period_samples
+        )
         candidates = tuple(candidates)
         self._expire_tracks(decision_sample)
         tracks = tuple(self._tracks[track_id] for track_id in sorted(self._tracks))
@@ -745,7 +771,12 @@ class GlobalDirectionTracker:
                     self._combined(track)[0][0],
                 )
                 track.last_observed = decision_sample
-            self._confirm(track, decision_sample, observed)
+            self._confirm(
+                track,
+                decision_sample,
+                observed,
+                confirmation_window_samples,
+            )
 
         new_track_ids: set[int] = set()
         for column, candidate in enumerate(candidates):
@@ -789,6 +820,7 @@ class GlobalDirectionTracker:
             observed_track_by_candidate,
             observed_candidate_by_track,
             new_track_ids,
+            confirmation_window_samples,
         )
 
         self._expire_tracks(decision_sample)

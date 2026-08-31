@@ -285,6 +285,7 @@ class Layer2Pipeline:
         music_skip_reason: str | None = None,
         scan_config_revision: int = 0,
         direction_id_tracking_enabled: bool = True,
+        id_observation_period_samples: int = 960,
     ) -> Layer2PipelineResult:
         """Run MUSIC/tracking after the Gate and source-count plan are fixed."""
 
@@ -304,6 +305,8 @@ class Layer2Pipeline:
             raise ValueError("prepared L2 Gate does not match the current window")
         if type(direction_id_tracking_enabled) is not bool:
             raise TypeError("L2 direction ID tracking switch must be bool")
+        if id_observation_period_samples <= 0:
+            raise ValueError("ID observation period must be positive")
         if decision.allow_srp:
             if music_effective_order not in {0, 1, 2, 3, None}:
                 raise ValueError("prepared MUSIC order must be 0..3 or None")
@@ -394,6 +397,7 @@ class Layer2Pipeline:
             doa_start_sample=window.doa_start_sample,
             doa_end_sample=window.doa_end_sample,
             allow_births=diagnostics is not None and diagnostics.births_allowed,
+            observation_period_samples=id_observation_period_samples,
         )
         assert id_tracking_ms is not None
         id_tracking_ms += (perf_counter() - id_started) * 1_000.0

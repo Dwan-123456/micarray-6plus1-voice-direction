@@ -865,6 +865,7 @@ class ApplicationRuntime:
                         music_skip_reason=music_skip_reason,
                         scan_config_revision=scan_revision,
                         direction_id_tracking_enabled=tracking,
+                        id_observation_period_samples=self._adaptive_l2.period_ms * 48,
                     )
                 except Exception as exc:
                     self.last_error = f"L2 processing {type(exc).__name__}: {exc}"

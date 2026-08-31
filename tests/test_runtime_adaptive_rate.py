@@ -19,6 +19,10 @@ def test_adaptive_rate_steps_down_and_keeps_base_output_clock() -> None:
     assert controller.should_compute()
 
     controller.observe_compute(queue_wait_ms=0.0, stage_ms={"music": 24.0})
+    assert controller.period_ms == 40
+    assert [controller.should_compute() for _ in range(2)] == [False, True]
+
+    controller.observe_compute(queue_wait_ms=0.0, stage_ms={"music": 41.0})
     assert controller.period_ms == 60
     assert [controller.should_compute() for _ in range(3)] == [False, False, True]
 
@@ -32,6 +36,20 @@ def test_adaptive_rate_recovers_one_step_after_stable_healthy_time() -> None:
     controller.observe_compute(queue_wait_ms=0.0, stage_ms={"l2_total": 5.0})
     assert controller.period_ms == 20
     assert controller.snapshot.last_overload_reason is None
+
+
+def test_adaptive_rate_recovers_to_smallest_period_that_fits_workload() -> None:
+    controller = AdaptiveRateController(maximum_period_ms=200, recovery_stable_ms=80)
+    controller.force_overload("spike")
+    controller.force_overload("spike")
+    assert controller.period_ms == 60
+
+    controller.observe_compute(queue_wait_ms=0.0, stage_ms={"l2_total": 25.0})
+    controller.observe_compute(queue_wait_ms=0.0, stage_ms={"l2_total": 25.0})
+    assert controller.period_ms == 40
+    for _ in range(10):
+        controller.observe_compute(queue_wait_ms=0.0, stage_ms={"l2_total": 25.0})
+    assert controller.period_ms == 40
 
 
 def test_adaptive_rate_fault_forces_one_step_down() -> None:
