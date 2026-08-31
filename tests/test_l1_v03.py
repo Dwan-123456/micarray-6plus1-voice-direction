@@ -94,26 +94,34 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
 
 def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     config = load_config("config/config.yaml").layer1_imcra
-    assert config.algorithm_version == "cohen_imcra_2003_l1_v9"
+    assert config.algorithm_version == "cohen_imcra_2003_l1_v10"
     assert config.n_fft == config.hop_samples == 960
-    assert (config.frequency_min_hz, config.frequency_max_hz) == (250.0, 3_400.0)
+    assert (config.frequency_min_hz, config.frequency_max_hz) == (250.0, 600.0)
     estimator = Layer1Imcra(config)
     gate_frequencies = estimator._all_frequencies_hz[estimator._gate_band]
-    assert np.all((gate_frequencies >= 250.0) & (gate_frequencies <= 3_400.0))
-    assert gate_frequencies[0] == pytest.approx(250.0)
-    assert gate_frequencies[-1] == pytest.approx(3_400.0)
-    weights = speech_gate_band_weights(gate_frequencies)
-    assert weights.shape == gate_frequencies.shape
-    assert np.sum(weights) == pytest.approx(1.0)
-    assert np.all(weights > 0.0)
-    expected_band_weights = (
-        (250.0, 700.0, 0.15),
-        (700.0, 1_600.0, 0.35),
-        (1_600.0, 3_400.1, 0.50),
+    np.testing.assert_array_equal(
+        gate_frequencies,
+        np.arange(250.0, 650.0, 50.0, dtype=np.float32),
     )
-    for low, high, expected in expected_band_weights:
-        selected = (gate_frequencies >= low) & (gate_frequencies < high)
-        assert np.sum(weights[selected]) == pytest.approx(expected, abs=1e-6)
+    weights = speech_gate_band_weights(gate_frequencies)
+    np.testing.assert_allclose(
+        weights,
+        (
+            0.161502,
+            0.180000,
+            0.180000,
+            0.180000,
+            0.163814,
+            0.088159,
+            0.041165,
+            0.005360,
+        ),
+        rtol=0.0,
+        atol=1e-12,
+    )
+    assert np.sum(weights) == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="250-600 Hz in 50 Hz steps"):
+        speech_gate_band_weights(gate_frequencies[:-1])
     assert (
         config.frequency_smoothing_half_width,
         config.spectrum_smoothing,

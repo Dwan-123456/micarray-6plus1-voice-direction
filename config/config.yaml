@@ -32,14 +32,14 @@ calibration:
 timing: {decision_hop_samples: 960, doa_window_samples: 1920, context_samples: 7680, timestamp_tolerance_ms: 5}
 layer1_imcra:
   enabled: true
-  algorithm_version: cohen_imcra_2003_l1_v9
+  algorithm_version: cohen_imcra_2003_l1_v10
   hop_samples: 960
   n_fft: 960
   window: hann_periodic
   output_frequency_min_hz: 0.0
   output_frequency_max_hz: 10000.0
   frequency_min_hz: 250.0
-  frequency_max_hz: 3400.0
+  frequency_max_hz: 600.0
   frequency_smoothing_half_width: 1
   spectrum_smoothing: 0.77
   noise_smoothing: 0.66

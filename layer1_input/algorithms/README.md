@@ -6,4 +6,4 @@
 
 当前实现 `Pcm16InterleavedDecoder` 按 little-endian signed int16 和交错通道解析。新算法继承 `AudioDecoder` 后，可通过 `LiveSipeedSource(config, decoder=my_decoder)` 注入。它不能执行 DOA、跟踪或波束形成。
 
-公共音频为逻辑8通道；L1的`Layer1Imcra`对前7个物理麦运行`cohen_imcra_2003_l1_v9`，每20 ms直接执行960点FFT且不补零，并发布0～10000 Hz、50 Hz间隔的逐麦噪声PSD/SPP。decoder不得针对下游算法改变sample范围、逻辑通道顺序或内容，第8路HardwareMix不进入IMCRA。
+公共音频为逻辑8通道；L1的`Layer1Imcra`对前7个物理麦运行`cohen_imcra_2003_l1_v10`，每20 ms直接执行960点FFT且不补零，并发布0～10000 Hz、50 Hz间隔的逐麦噪声PSD/SPP。decoder不得针对下游算法改变sample范围、逻辑通道顺序或内容，第8路HardwareMix不进入IMCRA。
