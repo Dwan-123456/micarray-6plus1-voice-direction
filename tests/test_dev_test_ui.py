@@ -6,7 +6,7 @@ from time import monotonic
 import pytest
 
 pytest.importorskip("PySide6")
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QHeaderView
 
 from app.runtime import ApplicationRuntime
 from common.config import load_config
@@ -104,6 +104,29 @@ def test_test_ui_performance_footer_contains_no_source_count_controls() -> None:
         _close(window)
 
 
+def test_l1_meters_use_minus_60_dbfs_floor() -> None:
+    window = _window()
+    try:
+        assert all(bar.minimum() == -60 for bar in window.l1.bars)
+        assert all(bar.value() == -60 for bar in window.l1.bars)
+        assert all(label.text() == "-60.0 dB" for label in window.l1.values)
+    finally:
+        _close(window)
+
+
+def test_track_table_uses_stable_fixed_columns_for_coasting_state() -> None:
+    window = _window()
+    try:
+        table = window.l2.table
+        header = table.horizontalHeader()
+        for column, width in enumerate(table.COLUMN_WIDTHS):
+            assert header.sectionResizeMode(column) == QHeaderView.ResizeMode.Fixed
+            assert table.columnWidth(column) == width
+        assert header.sectionResizeMode(table.columnCount() - 1) == QHeaderView.ResizeMode.Stretch
+    finally:
+        _close(window)
+
+
 def test_test_ui_source_count_and_music_order_switches_are_interlocked() -> None:
     window = _window()
     controls = window.source_controls
@@ -111,10 +134,7 @@ def test_test_ui_source_count_and_music_order_switches_are_interlocked() -> None
         assert window.runtime.source_counting_enabled
         assert controls.source_count_toggle.isChecked()
         assert controls.follow_order_toggle.isEnabled()
-        assert not controls.follow_order_toggle.isChecked()
-        assert window.runtime.current_music_effective_order == 2
-
-        controls.follow_order_toggle.setChecked(True)
+        assert controls.follow_order_toggle.isChecked()
         assert window.runtime.music_order_follows_source_count
         assert window.runtime.current_music_effective_order == 1
         assert controls.music_order_label.text() == "当前阶数：1"

@@ -223,7 +223,7 @@ def test_v14_config_without_source_counting_defaults_to_enabled_counting() -> No
     legacy = ProjectConfig.model_validate(payload)
 
     assert legacy.source_counting.enabled
-    assert not legacy.source_counting.music_order_from_source_count
+    assert legacy.source_counting.music_order_from_source_count
     assert SourceCounterConfig.from_project(legacy).enabled
 
 
@@ -444,9 +444,12 @@ def test_follow_order_maps_warming_or_count_fault_to_one() -> None:
 def test_manual_source_count_and_music_follow_controls_are_atomic() -> None:
     runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
     assert runtime.source_counting_enabled
-    assert not runtime.music_order_follows_source_count
+    assert runtime.music_order_follows_source_count
     source_revision = runtime._source_count_control_revision
 
+    assert not runtime.set_music_order_follows_source_count(False)
+    assert not runtime.music_order_follows_source_count
+    assert runtime._source_count_control_revision == source_revision
     assert runtime.set_music_order_follows_source_count(True)
     assert runtime.music_order_follows_source_count
     assert runtime.current_music_effective_order == 1

@@ -22,6 +22,7 @@ if QApplication is not None:
 
     class L1Panel(QGroupBox):
         CHANNELS = ("MIC0", "MIC1", "MIC2", "MIC3", "MIC4", "MIC5", "Center", "HardwareMix")
+        METER_MIN_DBFS = -60
 
         def __init__(self, runtime: ApplicationRuntime) -> None:
             super().__init__("L1 · Input / IMCRA")
@@ -48,9 +49,9 @@ if QApplication is not None:
                 column = QVBoxLayout()
                 bar = QProgressBar()
                 bar.setOrientation(Qt.Orientation.Vertical)
-                bar.setRange(-90, 0)
-                bar.setValue(-90)
-                value = QLabel("-120.0 dB")
+                bar.setRange(self.METER_MIN_DBFS, 0)
+                bar.setValue(self.METER_MIN_DBFS)
+                value = QLabel(f"{self.METER_MIN_DBFS:.1f} dB")
                 column.addWidget(bar, 1)
                 column.addWidget(QLabel(name), 0, Qt.AlignmentFlag.AlignHCenter)
                 column.addWidget(value, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -92,8 +93,9 @@ if QApplication is not None:
                 f"{item.pre_denoise_mean_gain_db:.1f} dB"
             )
             for index, value in enumerate(item.rms_dbfs):
-                self.bars[index].setValue(max(-90, min(0, int(round(float(value))))))
-                self.values[index].setText(f"{float(value):.1f} dB")
+                displayed = max(float(self.METER_MIN_DBFS), min(0.0, float(value)))
+                self.bars[index].setValue(int(round(displayed)))
+                self.values[index].setText(f"{displayed:.1f} dB")
 
 
     class L2ControlPanel(QGroupBox):

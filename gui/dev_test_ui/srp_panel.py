@@ -277,12 +277,17 @@ if QWidget is not None:
     class DirectionTrackTable(QTableWidget):
         ROW_COUNT = 3
         HEADERS = ("track_id", "观测角", "输出角", "score", "状态", "新建", "观测")
+        COLUMN_WIDTHS = (86, 96, 96, 86, 112, 72)
 
         def __init__(self, parent: QWidget | None = None):
             super().__init__(self.ROW_COUNT, len(self.HEADERS), parent)
             self.setHorizontalHeaderLabels(self.HEADERS)
-            self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-            self.horizontalHeader().setStretchLastSection(True)
+            header = self.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+            for column, width in enumerate(self.COLUMN_WIDTHS):
+                self.setColumnWidth(column, width)
+            header.setSectionResizeMode(len(self.HEADERS) - 1, QHeaderView.ResizeMode.Stretch)
+            header.setStretchLastSection(True)
             self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self.setAlternatingRowColors(False)

@@ -116,7 +116,7 @@ layer2:
   effective_order_limit: 2
 source_counting:
   enabled: true
-  music_order_from_source_count: false
+  music_order_from_source_count: true
   backend: incremental_gcc_phat_deemphasis_v1
   context_ms: 160
   frequency_min_hz: 2000.0

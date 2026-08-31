@@ -168,7 +168,7 @@ class Layer2Config(StrictModel):
 
 class SourceCountingConfig(StrictModel):
     enabled: bool = True
-    music_order_from_source_count: bool = False
+    music_order_from_source_count: bool = True
     backend: Literal["incremental_gcc_phat_deemphasis_v1"] = (
         "incremental_gcc_phat_deemphasis_v1"
     )
