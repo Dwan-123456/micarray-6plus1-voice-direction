@@ -351,7 +351,7 @@ if QApplication is not None:
             grid.setRowStretch(0, 1)
             grid.setColumnStretch(0, 2)
             grid.setColumnStretch(1, 3)
-            self.footer = QLabel("v1.4.2 | L1/L2 only")
+            self.footer = QLabel("v1.4.3 | L1/L2 only")
             self.footer.setMinimumWidth(0)
             self.footer.setFixedHeight(28)
             self.footer.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
