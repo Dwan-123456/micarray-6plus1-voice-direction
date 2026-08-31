@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 pytest.importorskip("PySide6")
@@ -110,6 +112,39 @@ def test_l1_meters_use_minus_60_dbfs_floor() -> None:
         assert all(bar.minimum() == -60 for bar in window.l1.bars)
         assert all(bar.value() == -60 for bar in window.l1.bars)
         assert all(label.text() == "-60.0 dB" for label in window.l1.values)
+    finally:
+        _close(window)
+
+
+def test_l1_display_uses_ten_frame_probability_and_power_average() -> None:
+    window = _window()
+    try:
+        items = tuple(
+            SimpleNamespace(
+                session_id="average",
+                stream_epoch=0,
+                end_sample=(index + 1) * 960,
+                sequence_id=index,
+                rms_dbfs=np.full(8, -20.0 if index < 5 else -40.0, dtype=np.float32),
+                imcra_hop=SimpleNamespace(
+                    state="ready",
+                    source_probability_per_mic=np.full(7, index / 9.0, dtype=np.float32),
+                    array_source_probability_20ms=index / 9.0,
+                ),
+                pre_denoise_enabled=True,
+                pre_denoise_mean_gain_db=-float(index),
+            )
+            for index in range(10)
+        )
+
+        window.l1.update_snapshots(items)
+
+        assert "P1[mic0..6] 0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50" in window.l1.imcra.text()
+        assert "P2[array median] 0.500" in window.l1.imcra.text()
+        assert "预降噪 ON -4.5 dB" in window.l1.imcra.text()
+        assert all(label.text() == "-23.0 dB" for label in window.l1.values)
+        assert window.L1_DISPLAY_INTERVAL_SECONDS == pytest.approx(0.2)
+        assert window._l1_display_history.maxlen == 10
     finally:
         _close(window)
 

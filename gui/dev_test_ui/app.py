@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import queue
 import sys
+from collections import deque
+from math import log10
 from pathlib import Path
+from time import monotonic
 
 from app.runtime import ApplicationRuntime
 from common.config import load_config
@@ -77,23 +80,51 @@ if QApplication is not None:
             except Exception as exc:
                 QMessageBox.warning(self, "灯光控制失败", str(exc))
 
-        def update_snapshot(self, item: object) -> None:
+        @staticmethod
+        def _mean(values: tuple[float, ...]) -> float:
+            return sum(values) / len(values)
+
+        @classmethod
+        def _average_dbfs(cls, values: tuple[float, ...]) -> float:
+            mean_power = cls._mean(tuple(10.0 ** (value / 10.0) for value in values))
+            return 10.0 * log10(max(mean_power, 1.0e-12))
+
+        def update_snapshots(self, items: tuple[object, ...]) -> None:
+            if not items:
+                return
+            item = items[-1]
             self.status.setText(
                 f"RUNNING | session {item.session_id[:8]} | epoch {item.stream_epoch:03d} | "
                 f"sample {item.end_sample:010d} | seq {item.sequence_id:08d}"
             )
             hop = item.imcra_hop
-            probability = None if hop is None else hop.array_source_probability_20ms
-            per_mic = "—" if hop is None else ", ".join(f"{float(value):.2f}" for value in hop.source_probability_per_mic)
+            hops = tuple(snapshot.imcra_hop for snapshot in items if snapshot.imcra_hop is not None)
+            probability_values = tuple(
+                float(snapshot.array_source_probability_20ms)
+                for snapshot in hops
+                if snapshot.array_source_probability_20ms is not None
+            )
+            probability = None if not probability_values else self._mean(probability_values)
+            if not hops:
+                per_mic = "—"
+            else:
+                per_mic = ", ".join(
+                    f"{self._mean(tuple(float(snapshot.source_probability_per_mic[index]) for snapshot in hops)):.2f}"
+                    for index in range(7)
+                )
+            gain_db = self._mean(tuple(float(snapshot.pre_denoise_mean_gain_db) for snapshot in items))
             self.imcra.setText(
                 f"IMCRA: {'WAITING' if hop is None else hop.state.upper()} | "
                 f"P1[mic0..6] {per_mic} | P2[array median] "
                 f"{'—' if probability is None else f'{probability:.3f}'} | "
                 f"预降噪 {'ON' if item.pre_denoise_enabled else 'OFF'} "
-                f"{item.pre_denoise_mean_gain_db:.1f} dB"
+                f"{gain_db:.1f} dB"
             )
-            for index, value in enumerate(item.rms_dbfs):
-                displayed = max(float(self.METER_MIN_DBFS), min(0.0, float(value)))
+            for index in range(len(self.CHANNELS)):
+                averaged_dbfs = self._average_dbfs(
+                    tuple(float(snapshot.rms_dbfs[index]) for snapshot in items)
+                )
+                displayed = max(float(self.METER_MIN_DBFS), min(0.0, averaged_dbfs))
                 self.bars[index].setValue(int(round(displayed)))
                 self.values[index].setText(f"{displayed:.1f} dB")
 
@@ -293,6 +324,9 @@ if QApplication is not None:
 
 
     class MainWindow(QMainWindow):
+        L1_DISPLAY_INTERVAL_SECONDS = 0.2
+        L1_AVERAGE_FRAMES = 10
+
         def __init__(self, runtime: ApplicationRuntime) -> None:
             super().__init__()
             self.runtime = runtime
@@ -332,6 +366,9 @@ if QApplication is not None:
             self.timer = QTimer(self)
             self.timer.timeout.connect(self.refresh)
             self.timer.start(20)
+            self._l1_display_history: deque[object] = deque(maxlen=self.L1_AVERAGE_FRAMES)
+            self._l1_display_identity: tuple[str, int] | None = None
+            self._last_l1_display_monotonic = monotonic()
             self._last_performance_second = -1
             self._last_source_count = None
             self._last_source_count_enabled = runtime.source_counting_enabled
@@ -348,7 +385,19 @@ if QApplication is not None:
 
         def refresh(self) -> None:
             if (item := self._latest(self.runtime.latest_l1)) is not None:
-                self.l1.update_snapshot(item)
+                identity = (item.session_id, item.stream_epoch)
+                if identity != self._l1_display_identity:
+                    self._l1_display_history.clear()
+                    self._l1_display_identity = identity
+                    self._last_l1_display_monotonic = monotonic()
+                self._l1_display_history.append(item)
+            now = monotonic()
+            if (
+                self._l1_display_history
+                and now - self._last_l1_display_monotonic >= self.L1_DISPLAY_INTERVAL_SECONDS
+            ):
+                self.l1.update_snapshots(tuple(self._l1_display_history))
+                self._last_l1_display_monotonic = now
             if (item := self._latest(self.runtime.latest_l2_dev_ui)) is not None:
                 self.l2.update_snapshot(item)
                 self.l2_polar.update_snapshot(item)
@@ -374,7 +423,7 @@ if QApplication is not None:
                 self.source_count_label.setText("突出声源数：—")
             else:
                 self.source_count_label.setText(f"突出声源数：{count.source_count}")
-            second = int(__import__("time").monotonic())
+            second = int(now)
             if second != self._last_performance_second:
                 self._last_performance_second = second
                 perf = self.runtime.performance_snapshot
