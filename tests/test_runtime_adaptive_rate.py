@@ -5,6 +5,7 @@ from app.adaptive_rate import AdaptiveRateController
 from app.runtime import ApplicationRuntime
 from gui.dev_test_ui.contracts import L2DevUiSnapshot
 from layer2_source_detection.probability_gate import ProbabilityGateDecision, ProbabilityGateState
+from source_counting import SourceCountSnapshot
 
 
 def test_adaptive_rate_steps_down_and_keeps_base_output_clock() -> None:
@@ -80,6 +81,7 @@ def test_reused_l2_output_uses_current_window_gate_decision() -> None:
         "session", 0, 2, 2_880, "current_20ms_v1", ProbabilityGateState.OPEN,
         0.7, 0.7, 0.7, 0.6, 0, True, "above_threshold",
     )
+    current_count = SourceCountSnapshot("session", 0, 2, 2_880, 1, 2.0)
 
     reused = ApplicationRuntime._reuse_l2_snapshot(
         previous,
@@ -87,11 +89,31 @@ def test_reused_l2_output_uses_current_window_gate_decision() -> None:
         gate_decision=current_gate,
         period_ms=40,
         queue_wait_ms=0.0,
+        source_count_snapshot=current_count,
     )
 
     assert reused.gate_decision.probability_20ms == 0.7
     assert reused.gate_decision.state is ProbabilityGateState.OPEN
     assert "adaptive_reuse_previous_output" in reused.gate_decision.reason
+    assert reused.source_count_snapshot is current_count
+
+
+def test_l2_snapshot_rejects_source_count_from_another_window() -> None:
+    gate = ProbabilityGateDecision(
+        "session", 0, 1, 1_920, "current_20ms_v1", ProbabilityGateState.CLOSED,
+        0.2, 0.3, 0.3, 0.6, 0, False, "below_threshold",
+    )
+    mismatched = SourceCountSnapshot("session", 0, 2, 2_880, 1, 2.0)
+
+    try:
+        L2DevUiSnapshot(
+            "session", 0, 1, 1_920, None, (), gate, 0.6, 0, 0.35, True, 0,
+            None, (), (), 1.0, "below_threshold", source_count_snapshot=mismatched,
+        )
+    except ValueError as exc:
+        assert "match the L2 window identity" in str(exc)
+    else:
+        raise AssertionError("mismatched source-count identity must be rejected")
 
 
 def test_inactive_pre_denoise_tail_is_not_republished_at_shutdown() -> None:

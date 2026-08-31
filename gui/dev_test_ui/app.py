@@ -350,19 +350,17 @@ if QApplication is not None:
             if (item := self._latest(self.runtime.latest_l2_dev_ui)) is not None:
                 self.l2.update_snapshot(item)
                 self.l2_polar.update_snapshot(item)
+                self._last_source_count = item.source_count_snapshot
             source_enabled = self.runtime.source_counting_enabled
             if source_enabled != self._last_source_count_enabled:
                 self._last_source_count = None
                 self._last_source_count_enabled = source_enabled
-            if (item := self._latest(self.runtime.latest_source_count)) is not None:
-                self._last_source_count = item
             self.source_controls.sync_runtime()
             count = self._last_source_count
             if (
                 count is None
                 or not source_enabled
                 or count.source_count is None
-                or self.runtime.source_count_last_error is not None
                 or (
                     self.runtime.run_started_monotonic
                     and count.published_monotonic < self.runtime.run_started_monotonic

@@ -9,6 +9,7 @@ from numpy.typing import NDArray
 from common.data_types import CandidateDirection, ImcraHopSnapshot, SpatialResponse, TrackedDirection
 from layer2_source_detection.music import MusicDiagnostics
 from layer2_source_detection.probability_gate import ProbabilityGateDecision
+from source_counting import SourceCountSnapshot
 
 
 def _eight(value: object, dtype: object) -> np.ndarray:
@@ -63,6 +64,26 @@ class L2DevUiSnapshot:
     processing_period_ms: int = 20
     reused_output: bool = False
     queue_wait_ms: float = 0.0
+    source_count_snapshot: SourceCountSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        source_count = self.source_count_snapshot
+        if source_count is None:
+            return
+        if not isinstance(source_count, SourceCountSnapshot):
+            raise TypeError("L2 source count must be a SourceCountSnapshot or None")
+        if (
+            source_count.session_id,
+            source_count.stream_epoch,
+            source_count.window_id,
+            source_count.decision_sample,
+        ) != (
+            self.session_id,
+            self.stream_epoch,
+            self.window_id,
+            self.decision_sample,
+        ):
+            raise ValueError("L2 source count must match the L2 window identity")
 
     @property
     def age_ms(self) -> float:

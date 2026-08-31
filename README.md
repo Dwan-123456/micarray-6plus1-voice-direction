@@ -19,6 +19,7 @@ Sipeed 8通道输入 -> 校准 -> L1 IMCRA（20 ms）
 - L2默认每20 ms实算一次；排队或任一处理环节超过20 ms时，自动按40、60、80、100 ms逐级降低实算频率，未实算窗口沿用最近结果并按当前20 ms时间戳持续输出；稳定恢复后逐级回到20 ms。
 - Test UI只接收真实麦克风，仅显示L1与L2；左列上下排列L1和L2控制/轨迹表，右上保留正方形360°角度图，底部为横跨窗口的性能栏；L3～L6区域已删除。
 - 突出声源数估计默认开启，在Gate关闭时也持续按每20 ms新增的两个STFT帧推进，第二候选的逐帧共存校验不额外执行FFT。Test UI右下角独立控制框可关闭估计或切换MUSIC阶数跟随；跟随关闭时Gate OPEN后的MUSIC固定2阶，开启后把计数`0/1`及预热映射为1阶、把`2`及以上映射为2阶。算法与边界见[`source_counting/README.md`](source_counting/README.md)。
+- Test UI从单个L2组合快照读取同窗声源数、Gate、MUSIC及ID；组合DTO强制校验session、epoch、window ID和decision sample完全一致，避免独立latest-only邮箱刷新时把相邻窗口拼在一起。
 
 首次创建精简环境：
 

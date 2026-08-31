@@ -11,6 +11,8 @@ from PySide6.QtWidgets import QApplication
 from app.runtime import ApplicationRuntime
 from common.config import load_config
 from gui.dev_test_ui.app import MainWindow
+from gui.dev_test_ui.contracts import L2DevUiSnapshot
+from layer2_source_detection import ProbabilityGateDecision, ProbabilityGateState
 from source_counting import SourceCountSnapshot
 
 
@@ -36,13 +38,50 @@ def _footer_widgets(window: MainWindow) -> tuple[object, ...]:
     return tuple(footer.itemAt(index).widget() for index in range(footer.count()))
 
 
+def _l2_with_count(source_count: SourceCountSnapshot) -> L2DevUiSnapshot:
+    gate = ProbabilityGateDecision(
+        source_count.session_id,
+        source_count.stream_epoch,
+        source_count.window_id,
+        source_count.decision_sample,
+        "test_gate",
+        ProbabilityGateState.CLOSED,
+        0.1,
+        0.1,
+        0.1,
+        0.8,
+        0,
+        False,
+        "below_threshold",
+    )
+    return L2DevUiSnapshot(
+        source_count.session_id,
+        source_count.stream_epoch,
+        source_count.window_id,
+        source_count.decision_sample,
+        None,
+        (),
+        gate,
+        0.8,
+        0,
+        0.35,
+        True,
+        0,
+        None,
+        (),
+        (),
+        monotonic(),
+        "below_threshold",
+        source_count_snapshot=source_count,
+    )
+
+
 @pytest.mark.parametrize("count", (0, 1, 2))
 def test_test_ui_right_overlay_displays_only_latest_source_count(count: int) -> None:
     window = _window()
     try:
-        window.runtime.latest_source_count.put_nowait(
-            SourceCountSnapshot("session", 0, 1, 7_680, count, monotonic())
-        )
+        source_count = SourceCountSnapshot("session", 0, 1, 7_680, count, monotonic())
+        window.runtime.latest_l2_dev_ui.put_nowait(_l2_with_count(source_count))
         window.refresh()
 
         assert window.source_count_label.text() == f"突出声源数：{count}"
@@ -148,38 +187,51 @@ def test_test_ui_overlay_and_switches_do_not_resize_square_polar_panel(
 def test_test_ui_hides_warming_or_stale_source_count() -> None:
     window = _window()
     try:
-        window.runtime.latest_source_count.put_nowait(
-            SourceCountSnapshot("session", 0, 1, 7_680, None, monotonic())
-        )
+        warming = SourceCountSnapshot("session", 0, 1, 7_680, None, monotonic())
+        window.runtime.latest_l2_dev_ui.put_nowait(_l2_with_count(warming))
         window.refresh()
         assert window.source_count_label.text() == "突出声源数：—"
 
-        window.runtime.latest_source_count.put_nowait(
-            SourceCountSnapshot("session", 0, 2, 8_640, 2, monotonic() - 60.0)
-        )
+        stale = SourceCountSnapshot("session", 0, 2, 8_640, 2, monotonic() - 60.0)
+        window.runtime.latest_l2_dev_ui.put_nowait(_l2_with_count(stale))
         window.refresh()
         assert window.source_count_label.text() == "突出声源数：—"
     finally:
         _close(window)
 
 
-def test_test_ui_immediately_hides_count_after_count_fault_or_restart() -> None:
+def test_test_ui_immediately_hides_atomic_count_fault_or_restart() -> None:
     window = _window()
     try:
         published = monotonic()
-        window.runtime.latest_source_count.put_nowait(
-            SourceCountSnapshot("old-session", 0, 1, 7_680, 2, published)
-        )
+        source_count = SourceCountSnapshot("old-session", 0, 1, 7_680, 2, published)
+        window.runtime.latest_l2_dev_ui.put_nowait(_l2_with_count(source_count))
         window.refresh()
         assert window.source_count_label.text() == "突出声源数：2"
 
-        window.runtime.source_count_last_error = "count-only"
+        fault = SourceCountSnapshot("old-session", 0, 2, 8_640, None, monotonic())
+        window.runtime.latest_l2_dev_ui.put_nowait(_l2_with_count(fault))
         window.refresh()
         assert window.source_count_label.text() == "突出声源数：—"
 
-        window.runtime.source_count_last_error = None
+        window.runtime.latest_l2_dev_ui.put_nowait(_l2_with_count(source_count))
         window.runtime._started_at = published + 0.001
         window.refresh()
         assert window.source_count_label.text() == "突出声源数：—"
+    finally:
+        _close(window)
+
+
+def test_test_ui_ignores_racing_independent_count_mailbox() -> None:
+    window = _window()
+    try:
+        atomic = SourceCountSnapshot("session", 0, 1, 7_680, 1, monotonic())
+        racing = SourceCountSnapshot("session", 0, 2, 8_640, 2, monotonic())
+        window.runtime.latest_l2_dev_ui.put_nowait(_l2_with_count(atomic))
+        window.runtime.latest_source_count.put_nowait(racing)
+
+        window.refresh()
+
+        assert window.source_count_label.text() == "突出声源数：1"
     finally:
         _close(window)

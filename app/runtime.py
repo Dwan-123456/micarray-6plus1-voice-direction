@@ -681,6 +681,7 @@ class ApplicationRuntime:
                 control_key: tuple[object, ...] | None = None
                 music_order: int | None = None
                 source_count_ms = 0.0
+                count_snapshot: SourceCountSnapshot | None = None
                 try:
                     decision, active_frame_count = self._layer2.evaluate_gate(
                         window,
@@ -688,7 +689,7 @@ class ApplicationRuntime:
                         gate_threshold=gate,
                         gate_config_revision=gate_revision,
                     )
-                    _count_snapshot, music_order, music_skip_reason, source_count_ms = (
+                    count_snapshot, music_order, music_skip_reason, source_count_ms = (
                         self._prepare_source_count_plan(
                             window,
                             decision,
@@ -760,6 +761,7 @@ class ApplicationRuntime:
                             gate_decision=decision,
                             period_ms=self._adaptive_l2.period_ms,
                             queue_wait_ms=queue_wait_ms,
+                            source_count_snapshot=count_snapshot,
                         )
                         self._last_l2_snapshot = snapshot
                         self._last_l2_control_key = control_key
@@ -805,6 +807,7 @@ class ApplicationRuntime:
                             gate_decision=decision,
                             period_ms=self._adaptive_l2.period_ms,
                             queue_wait_ms=queue_wait_ms,
+                            source_count_snapshot=count_snapshot,
                         )
                         if can_reuse
                         else self._fault_l2_snapshot(
@@ -817,6 +820,7 @@ class ApplicationRuntime:
                             period_ms=self._adaptive_l2.period_ms,
                             queue_wait_ms=queue_wait_ms,
                             reason=f"{type(exc).__name__}:{exc}",
+                            source_count_snapshot=count_snapshot,
                         )
                     )
                     self._last_l2_snapshot = snapshot
@@ -860,6 +864,7 @@ class ApplicationRuntime:
                         else output.music_skip_reason or output.gate_decision.reason
                     ),
                     self._adaptive_l2.period_ms, False, queue_wait_ms,
+                    count_snapshot,
                 )
                 self._last_l2_snapshot = snapshot
                 self._last_l2_control_key = control_key
@@ -879,6 +884,7 @@ class ApplicationRuntime:
         period_ms: int,
         queue_wait_ms: float,
         reason: str,
+        source_count_snapshot: SourceCountSnapshot | None = None,
     ) -> L2DevUiSnapshot:
         gate = ProbabilityGateDecision(
             window.session_id,
@@ -917,6 +923,7 @@ class ApplicationRuntime:
             period_ms,
             True,
             queue_wait_ms,
+            source_count_snapshot,
         )
 
     @staticmethod
@@ -927,6 +934,7 @@ class ApplicationRuntime:
         gate_decision: ProbabilityGateDecision | None = None,
         period_ms: int,
         queue_wait_ms: float,
+        source_count_snapshot: SourceCountSnapshot | None = None,
     ) -> L2DevUiSnapshot:
         if previous is None:
             raise RuntimeError("adaptive reuse requires one computed L2 result")
@@ -985,6 +993,7 @@ class ApplicationRuntime:
             processing_period_ms=period_ms,
             reused_output=True,
             queue_wait_ms=queue_wait_ms,
+            source_count_snapshot=source_count_snapshot,
         )
 
     def _update_track_log(self, tracks: tuple[object, ...], decision_sample: int) -> None:
