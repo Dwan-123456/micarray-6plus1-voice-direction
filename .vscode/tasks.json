@@ -54,7 +54,11 @@
       "args": ["-m", "gui.dev_test_ui.app"],
       "options": {
         "cwd": "${workspaceFolder}",
-        "env": {"PYTHONPATH": "${workspaceFolder}"}
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}",
+          "OPENBLAS_NUM_THREADS": "1",
+          "OMP_NUM_THREADS": "1"
+        }
       },
       "problemMatcher": []
     },

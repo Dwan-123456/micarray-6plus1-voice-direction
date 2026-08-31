@@ -14,4 +14,6 @@ if (-not (Test-Path -LiteralPath $pythonw)) {
 }
 
 Set-Location -LiteralPath $projectRoot
+$env:OPENBLAS_NUM_THREADS = "1"
+$env:OMP_NUM_THREADS = "1"
 & $pythonw -m gui.dev_test_ui.app
