@@ -215,6 +215,12 @@ def test_numbered_capture_handoff_is_bounded_and_reports_drop():
     assert (events[0].last_sequence_id_before_gap, events[0].first_sequence_id_after_gap) == (None, 1)
 
 
+def test_capture_recent_audio_is_bounded_to_one_second():
+    capture = AudioCapture("test", "test", 48_000, 8, 960)
+
+    assert capture._recent.maxlen == 50
+
+
 def test_numbered_capture_coalesces_one_contiguous_overflow_burst():
     capture = AudioCapture("test", "test", 48_000, 8, 2)
     receiver = capture.subscribe_numbered(maxsize=1)

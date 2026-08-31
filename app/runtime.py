@@ -100,7 +100,10 @@ class ApplicationRuntime:
         self._l2_time_ms = 0.0
         self._started_at = 0.0
         self._input_exhausted = False
-        self._audio_cache_10s: deque[object] = deque(maxlen=500)
+        audio_blocks_per_second = (
+            config.device.sample_rate // config.device.block_size_samples
+        )
+        self._audio_cache_1s: deque[object] = deque(maxlen=audio_blocks_per_second)
         self._track_history: dict[int, dict[str, object]] = {}
         self._track_log_path = self.project_root / "tmp" / "l2_track_history.txt"
         self._last_track_log_sample = -240_000
@@ -409,7 +412,7 @@ class ApplicationRuntime:
         self._l2_time_ms = 0.0
         self._source_count_time_ms = 0.0
         self._reset_state()
-        self._audio_cache_10s.clear()
+        self._audio_cache_1s.clear()
         self._track_history.clear()
         self._last_track_log_sample = -240_000
         self._adaptive_l2.reset()
@@ -485,9 +488,9 @@ class ApplicationRuntime:
         return tuple(item.denoised if enabled else item.raw for item in pairs)
 
     def _publish_block(self, block) -> None:
-        # The only retained audio is a bounded ten-second in-memory ring.
+        # The only retained audio is a bounded one-second in-memory ring.
         # It is cleared for every new capture and is never serialized.
-        self._audio_cache_10s.append(block)
+        self._audio_cache_1s.append(block)
         windows = self.assembler.add(block)
         enabled = self.l1_pre_denoise_enabled and self._pre_denoise_latency_active
         snapshot = self.meter.add(

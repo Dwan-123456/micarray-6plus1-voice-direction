@@ -38,7 +38,7 @@ class AudioCapture:
         self._next_sequence_id = 0
         self._next_event_id = 0
         self._stream_origin_monotonic = 0.0
-        self._recent: deque[bytes] = deque(maxlen=max(1, sample_rate // block_size * 5))
+        self._recent: deque[bytes] = deque(maxlen=max(1, sample_rate // block_size))
         self._frames_received = 0
         self._last_error: str | None = None
         self._dropped_subscriber_blocks = 0

@@ -204,6 +204,7 @@ def test_v14_config_without_source_counting_defaults_to_enabled_counting() -> No
 
 def test_runtime_publishes_each_window_only_to_the_single_l2_worker() -> None:
     runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
+    assert runtime._audio_cache_1s.maxlen == 50
     samples = np.zeros((7_680, 8), dtype=np.float32)
     block = IngestedAudioBlock(
         "fanout",
