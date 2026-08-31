@@ -121,6 +121,7 @@ class RollingNormMusicScanner:
         self._identity_7 = np.eye(7, dtype=np.complex128)[None, :, :]
         self._theta_degrees = np.arange(360, dtype=np.float32)
         self._last_covariance_update_ms = 0.0
+        self._last_model_order: ModelOrderEstimate | None = None
         self.last_state_diagnostic: MusicStateDiagnostic | None = None
 
     def reset(self) -> None:
@@ -129,6 +130,7 @@ class RollingNormMusicScanner:
         self._frame_covariances.clear()
         self._covariance_sum = None
         self._last_covariance_update_ms = 0.0
+        self._last_model_order = None
         self.last_state_diagnostic = None
 
     @staticmethod
@@ -422,6 +424,7 @@ class RollingNormMusicScanner:
         model_order = ModelOrderEstimate(
             manual_order, valid_count, snapshots, 1.0, 0, "ready",
         )
+        self._last_model_order = model_order
         # The Test UI order selector directly supplies the signal-subspace
         # order and the maximum number of peaks to search.
         effective_order = manual_order

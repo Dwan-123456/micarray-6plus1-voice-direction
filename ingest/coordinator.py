@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -32,12 +33,16 @@ class IngestCoordinator:
         self._previous: DecodedAudio | None = None
         self._pending_events: list[InputHealthEvent] = []
         self._seen_event_ids: set[int] = set()
+        self._seen_event_order: deque[int] = deque()
         self._pending_reset_reason: str | None = None
         self.discontinuities: list[Discontinuity] = []
 
     def publish_health_event(self, event: InputHealthEvent) -> None:
         if event.event_id not in self._seen_event_ids:
             self._seen_event_ids.add(event.event_id)
+            self._seen_event_order.append(event.event_id)
+            while len(self._seen_event_order) > 1_024:
+                self._seen_event_ids.discard(self._seen_event_order.popleft())
             self._pending_events.append(event)
 
     def _continuity_reason(self, frame: DecodedAudio) -> str | None:
@@ -51,6 +56,8 @@ class IngestCoordinator:
         self._next_sample = 0
         self._previous = None
         self.discontinuities.append(Discontinuity(self.session_id, old, self.stream_epoch, reason))
+        if len(self.discontinuities) > 256:
+            del self.discontinuities[:-256]
 
     def ingest(self, frame: DecodedAudio, health_events: tuple[InputHealthEvent, ...] = ()) -> IngestedAudioBlock:
         for event in health_events:

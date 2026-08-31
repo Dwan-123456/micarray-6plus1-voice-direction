@@ -313,7 +313,13 @@ class IncrementalGccPhatSourceCounter:
             self._stable_count = int(winner)
         return self._stable_count
 
-    def process(self, window: DecisionWindow, geometry: MicGeometry) -> SourceCountSnapshot:
+    def process(
+        self,
+        window: DecisionWindow,
+        geometry: MicGeometry,
+        *,
+        scheduled_gap_samples: int | None = None,
+    ) -> SourceCountSnapshot:
         started = perf_counter()
         self._prepare_geometry(geometry)
         stream_key = (window.session_id, window.stream_epoch)
@@ -328,7 +334,12 @@ class IncrementalGccPhatSourceCounter:
             self._rebuild(window)
         else:
             self._advance(window, continuous_hops)
-            if continuous_hops > 1:
+            deliberate_adaptive_gap = (
+                scheduled_gap_samples is not None
+                and scheduled_gap_samples > 960
+                and window.decision_sample - self._last_sample == scheduled_gap_samples
+            )
+            if continuous_hops > 1 and not deliberate_adaptive_gap:
                 self._raw_history.clear()
                 self._stable_count = None
         self._stream_key = stream_key

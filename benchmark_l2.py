@@ -17,8 +17,22 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=200)
     args = parser.parse_args()
     rng = np.random.default_rng(7)
-    samples = rng.normal(size=(15_360, 8)).astype(np.float32)
-    window = DecisionWindow("benchmark", 0, 0, 15_360, 13_440, 15_360, 0, 15_360, 48_000, samples, (0,))
+    context_samples = 7_680
+    timeline = rng.normal(
+        size=(context_samples + (args.frames + 1) * 960, 8)
+    ).astype(np.float32)
+
+    def make_window(index: int) -> DecisionWindow:
+        decision_sample = context_samples + index * 960
+        samples = timeline[decision_sample - context_samples : decision_sample]
+        return DecisionWindow(
+            "benchmark", 0, index, decision_sample,
+            decision_sample - 1_920, decision_sample,
+            decision_sample - context_samples, decision_sample,
+            48_000, samples, (index,),
+        )
+
+    window = make_window(0)
     project = load_config(Path(__file__).parent / "config" / "config.yaml", environ={})
     config = DirectionScanConfig.from_project(project)
     detector = RollingNormMusicScanner()
@@ -30,11 +44,7 @@ def main() -> None:
     detector.scan(window, geometry, config)
     start = time.perf_counter()
     for index in range(args.frames):
-        next_sample = 16_320 + index * 960
-        shifted = DecisionWindow(
-            "benchmark", 0, index + 1, next_sample, next_sample - 1_920, next_sample,
-            next_sample - 15_360, next_sample, 48_000, samples, (index + 1,),
-        )
+        shifted = make_window(index + 1)
         detector.scan(shifted, geometry, config)
     print(f"numpy-cpu frames={args.frames} mean_ms={(time.perf_counter()-start)*1000/args.frames:.3f}")
 

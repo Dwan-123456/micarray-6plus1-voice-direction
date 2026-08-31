@@ -127,6 +127,23 @@ def test_health_event_and_sequence_gap_increment_epoch_only_once():
     assert len(coordinator.discontinuities) == 1
 
 
+def test_long_run_health_diagnostics_are_bounded():
+    coordinator = IngestCoordinator(session_id="bounded-health")
+    for event_id in range(1_100):
+        coordinator.publish_health_event(
+            InputHealthEvent(
+                event_id, float(event_id), "handoff_drop", None, None, 960, "drop"
+            )
+        )
+    for index in range(300):
+        coordinator._reset(f"test_{index}")
+
+    assert len(coordinator._seen_event_ids) == 1_024
+    assert len(coordinator._seen_event_order) == 1_024
+    assert len(coordinator.discontinuities) == 256
+    assert coordinator.discontinuities[0].reason == "test_44"
+
+
 def test_sequence_or_timestamp_break_restarts_epoch_with_current_block():
     coordinator = IngestCoordinator(session_id="test")
     coordinator.ingest(frame(0, 0, 960))

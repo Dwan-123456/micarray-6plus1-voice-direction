@@ -744,7 +744,7 @@ def test_pipeline_tracking_off_publishes_only_raw_music_peaks_and_reenable_reset
     assert tracked.active_tracks[0].track_state == "tentative"
 
 
-def test_gate_activity_counts_contiguous_hops_across_adaptive_compute_stride() -> None:
+def test_gate_activity_resets_when_intermediate_windows_are_missing() -> None:
     config = load_config(CONFIG, environ={})
     pipeline = Layer2Pipeline.from_project(config)
     audio = _audio((30.0,), seed=41, samples=7_680 + 10 * 960)
@@ -765,4 +765,40 @@ def test_gate_activity_counts_contiguous_hops_across_adaptive_compute_stride() -
         )
         assert result.search_diagnostics is not None
         counts.append(result.search_diagnostics.active_frame_count)
-    assert counts == [1, 3, 5, 7, 9]
+    assert counts == [1, 1, 1, 1, 1]
+
+
+def test_music_model_order_property_is_initialized_and_updated() -> None:
+    config = load_config(CONFIG, environ={})
+    scanner = RollingNormMusicScanner()
+    assert scanner.model_order is None
+    audio = _audio((30.0,), seed=43, samples=7_680)
+    scanner.scan(
+        _window(audio, 0),
+        physical_6plus1_geometry(),
+        DirectionScanConfig.from_project(config),
+    )
+    assert scanner.model_order is not None
+    scanner.reset()
+    assert scanner.model_order is None
+
+
+@pytest.mark.parametrize("stride", (2, 3, 5, 10))
+def test_sparse_full_scan_keeps_complete_rolling_covariance(stride: int) -> None:
+    config = load_config(CONFIG, environ={})
+    scan = DirectionScanConfig.from_project(config)
+    scanner = RollingNormMusicScanner()
+    audio = _audio((30.0,), seed=47, samples=7_680 + 12 * 960)
+    last_diagnostics = None
+
+    for index in range(11):
+        window = _window(audio, index)
+        if index % stride == 0:
+            _, _, last_diagnostics = scanner.scan_detailed(
+                window, physical_6plus1_geometry(), scan,
+            )
+        else:
+            scanner.observe_covariance(window, scan)
+
+    assert last_diagnostics is not None
+    assert last_diagnostics.model_order.snapshot_count == 19

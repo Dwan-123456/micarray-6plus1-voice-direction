@@ -172,6 +172,31 @@ def test_normal_updates_transform_only_two_new_stft_frames() -> None:
     )
 
 
+def test_scheduled_adaptive_gap_preserves_count_stabilization_votes() -> None:
+    audio = _directional_noise((45.0,), samples=20_000)
+    counter = _counter()
+
+    first = counter.process(_window(audio, 0), physical_6plus1_geometry())
+    second = counter.process(
+        _window(audio, 2),
+        physical_6plus1_geometry(),
+        scheduled_gap_samples=1_920,
+    )
+
+    assert first.source_count is None
+    assert second.source_count == 1
+
+
+def test_unplanned_gap_still_resets_count_stabilization_votes() -> None:
+    audio = _directional_noise((45.0,), samples=20_000)
+    counter = _counter()
+
+    counter.process(_window(audio, 0), physical_6plus1_geometry())
+    result = counter.process(_window(audio, 2), physical_6plus1_geometry())
+
+    assert result.source_count is None
+
+
 @pytest.mark.parametrize("latest_index", range(1, 8))
 def test_incremental_state_matches_rebuild_for_latest_context(latest_index: int) -> None:
     audio = _directional_noise((25.0, 205.0), levels=(1.0, 0.55), samples=20_000)
@@ -253,8 +278,14 @@ class _PlannedCounter:
     def reset(self) -> None:
         self.resets += 1
 
-    def process(self, window: DecisionWindow, geometry: object) -> SourceCountSnapshot:
-        del geometry
+    def process(
+        self,
+        window: DecisionWindow,
+        geometry: object,
+        *,
+        scheduled_gap_samples: int | None = None,
+    ) -> SourceCountSnapshot:
+        del geometry, scheduled_gap_samples
         self.calls += 1
         value = self.values.pop(0)
         if isinstance(value, Exception):

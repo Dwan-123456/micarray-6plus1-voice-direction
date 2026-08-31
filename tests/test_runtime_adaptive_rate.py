@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 from app.adaptive_rate import AdaptiveRateController
 from app.runtime import ApplicationRuntime
+from common.data_types import CandidateDirection, TrackedDirection
+from common.config import load_config
 from gui.dev_test_ui.contracts import L2DevUiSnapshot
 from layer2_source_detection.probability_gate import ProbabilityGateDecision, ProbabilityGateState
 from source_counting import SourceCountSnapshot
@@ -96,6 +98,108 @@ def test_reused_l2_output_uses_current_window_gate_decision() -> None:
     assert reused.gate_decision.state is ProbabilityGateState.OPEN
     assert "adaptive_reuse_previous_output" in reused.gate_decision.reason
     assert reused.source_count_snapshot is current_count
+
+
+def test_reused_l2_output_expires_tracks_at_configured_ttl() -> None:
+    gate = ProbabilityGateDecision(
+        "session", 0, 1, 1_920, "current_20ms_v1", ProbabilityGateState.OPEN,
+        0.9, 0.9, 0.9, 0.6, 0, True, "above_threshold",
+    )
+    candidate = CandidateDirection(
+        "session", 0, 1, 1_920, 0, 1_920, 20.0, 1.0, 0.9,
+    )
+    track = TrackedDirection(
+        "session", 0, 1, 1_920, 0, 1_920, 1, 1, 20.0, 20.0, 1.0, 0.9,
+        "confirmed", True, False, 0, 960, 960, True,
+    )
+    previous = L2DevUiSnapshot(
+        "session", 0, 1, 1_920, None, (candidate,), gate, 0.6, 0, 0.35, True, 0,
+        None, (track,), (track,), 1.0,
+    )
+    window = SimpleNamespace(
+        session_id="session", stream_epoch=0, window_id=102,
+        decision_sample=97_000, doa_start_sample=95_080, doa_end_sample=97_000,
+    )
+
+    reused = ApplicationRuntime._reuse_l2_snapshot(
+        previous,
+        window,
+        period_ms=200,
+        queue_wait_ms=0.0,
+        tentative_ttl_samples=24_000,
+        coasting_ttl_samples=96_000,
+    )
+
+    assert reused.candidates == ()
+    assert reused.directions == ()
+    assert reused.active_tracks == ()
+
+
+def test_reuse_diagnostics_remain_bounded_across_many_skipped_windows() -> None:
+    gate = ProbabilityGateDecision(
+        "session", 0, 1, 1_920, "current_20ms_v1", ProbabilityGateState.OPEN,
+        0.9, 0.9, 0.9, 0.6, 0, True, "above_threshold",
+    )
+    snapshot = L2DevUiSnapshot(
+        "session", 0, 1, 1_920, None, (), gate, 0.6, 0, 0.35, True, 0,
+        None, (), (), 1.0,
+    )
+    for index in range(2, 102):
+        decision_sample = 960 + index * 960
+        window = SimpleNamespace(
+            session_id="session", stream_epoch=0, window_id=index,
+            decision_sample=decision_sample,
+            doa_start_sample=decision_sample - 1_920,
+            doa_end_sample=decision_sample,
+        )
+        snapshot = ApplicationRuntime._reuse_l2_snapshot(
+            snapshot, window, period_ms=200, queue_wait_ms=0.0,
+        )
+
+    assert snapshot.gate_decision.reason.count("adaptive_reuse_previous_output") == 1
+    assert len(snapshot.gate_decision.diagnostics) == 1
+
+
+def test_reuse_marks_unobserved_confirmed_track_as_coasting() -> None:
+    gate = ProbabilityGateDecision(
+        "session", 0, 1, 1_920, "current_20ms_v1", ProbabilityGateState.OPEN,
+        0.9, 0.9, 0.9, 0.6, 0, True, "above_threshold",
+    )
+    candidate = CandidateDirection(
+        "session", 0, 1, 1_920, 0, 1_920, 20.0, 1.0, 0.9,
+    )
+    track = TrackedDirection(
+        "session", 0, 1, 1_920, 0, 1_920, 1, 1, 20.0, 20.0, 1.0, 0.9,
+        "confirmed", True, False, 0, 1_920, 0, True,
+    )
+    previous = L2DevUiSnapshot(
+        "session", 0, 1, 1_920, None, (candidate,), gate, 0.6, 0, 0.35, True, 0,
+        None, (track,), (track,), 1.0,
+    )
+    window = SimpleNamespace(
+        session_id="session", stream_epoch=0, window_id=2,
+        decision_sample=2_880, doa_start_sample=960, doa_end_sample=2_880,
+    )
+
+    reused = ApplicationRuntime._reuse_l2_snapshot(
+        previous, window, period_ms=40, queue_wait_ms=0.0,
+    )
+
+    assert reused.directions[0].track_state == "coasting"
+    assert reused.active_tracks[0].track_state == "coasting"
+
+
+def test_id_off_on_before_next_window_keeps_pending_reset_revision() -> None:
+    config = load_config(__import__("pathlib").Path("config/config.yaml"), environ={})
+    runtime = ApplicationRuntime(config, project_root=".")
+    initial_revision = runtime._id_reset_revision
+
+    runtime.set_direction_id_tracking_enabled(False)
+    runtime.set_direction_id_tracking_enabled(True)
+
+    assert runtime.direction_id_tracking_enabled
+    assert runtime._id_reset_revision == initial_revision + 1
+    assert runtime._id_reset_applied_revision != runtime._id_reset_revision
 
 
 def test_l2_snapshot_rejects_source_count_from_another_window() -> None:

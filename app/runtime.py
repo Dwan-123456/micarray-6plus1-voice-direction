@@ -36,6 +36,7 @@ from source_counting import (
 from windowing import WindowAssembler
 
 from .adaptive_rate import AdaptiveRateController
+from .track_log import TrackHistoryLogger
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,15 +99,15 @@ class ApplicationRuntime:
         self.source_count_last_error: str | None = None
         self._source_count_time_ms = 0.0
         self._l2_time_ms = 0.0
+        self._last_pre_denoise_ms = 0.0
         self._started_at = 0.0
         self._input_exhausted = False
         audio_blocks_per_second = (
             config.device.sample_rate // config.device.block_size_samples
         )
         self._audio_cache_1s: deque[object] = deque(maxlen=audio_blocks_per_second)
-        self._track_history: dict[int, dict[str, object]] = {}
         self._track_log_path = self.project_root / "tmp" / "l2_track_history.txt"
-        self._last_track_log_sample = -240_000
+        self._track_logger = TrackHistoryLogger(self._track_log_path)
         self._performance_enabled = True
         self._performance_lock = threading.Lock()
         self._performance_events: deque[tuple[float, str, float]] = deque(maxlen=512)
@@ -121,6 +122,8 @@ class ApplicationRuntime:
         self._last_l2_snapshot: L2DevUiSnapshot | None = None
         self._last_l2_control_key: tuple[object, ...] | None = None
         self._maximum_sparse_music_ms = 0.0
+        self._id_reset_revision = 0
+        self._id_reset_applied_revision = 0
 
     @classmethod
     def from_config_path(cls, path: str | Path) -> "ApplicationRuntime":
@@ -291,14 +294,18 @@ class ApplicationRuntime:
 
     @property
     def direction_id_tracking_enabled(self) -> bool:
-        return self._id_tracking_enabled
+        with self._control_lock:
+            return self._id_tracking_enabled
 
     def set_direction_id_tracking_enabled(self, value: bool) -> bool:
         if type(value) is not bool:
             raise ValueError("ID tracking setting must be bool")
         with self._control_lock:
-            self._id_tracking_enabled = value
-            self._scan_revision += 1
+            if value != self._id_tracking_enabled:
+                self._id_tracking_enabled = value
+                self._scan_revision += 1
+                if not value:
+                    self._id_reset_revision += 1
         return value
 
     @property
@@ -338,6 +345,7 @@ class ApplicationRuntime:
             },
             "last_error": self.last_error,
             "source_count_last_error": self.source_count_last_error,
+            "track_log_last_error": self._track_logger.last_error,
             "source_count_enabled": self.source_counting_enabled,
             "music_order_follows_source_count": self.music_order_follows_source_count,
             "current_music_effective_order": self.current_music_effective_order,
@@ -364,7 +372,8 @@ class ApplicationRuntime:
             events = tuple(self._performance_events)
             enabled = self._performance_enabled
         grouped = {name: [] for name in (
-            "imcra", "probability", "source_count", "source_count_fault", "music", "id",
+            "pre_denoise", "imcra", "probability", "source_count",
+            "source_count_fault", "music", "id",
             "queue_wait", "output", "compute", "reuse", "fault",
         )}
         for _timestamp, name, value in events:
@@ -372,12 +381,15 @@ class ApplicationRuntime:
         averages = {name: (sum(values) / len(values) if values else 0.0) for name, values in grouped.items()}
         return {
             "enabled": enabled, "window_seconds": 1.0,
+            "pre_denoise_ms": averages["pre_denoise"],
             "imcra_ms": averages["imcra"], "probability_ms": averages["probability"],
             "source_count_ms": averages["source_count"],
             "music_ms": averages["music"], "id_tracking_ms": averages["id"],
             "total_ms": sum(
                 averages[name]
-                for name in ("imcra", "probability", "source_count", "music", "id")
+                for name in (
+                    "pre_denoise", "imcra", "probability", "source_count", "music", "id"
+                )
             ),
             "queue_wait_ms": averages["queue_wait"],
             "source_count_frames_per_second": len(grouped["source_count"]),
@@ -413,8 +425,6 @@ class ApplicationRuntime:
         self._source_count_time_ms = 0.0
         self._reset_state()
         self._audio_cache_1s.clear()
-        self._track_history.clear()
-        self._last_track_log_sample = -240_000
         self._adaptive_l2.reset()
         self._last_l2_snapshot = None
         self._last_l2_control_key = None
@@ -426,6 +436,7 @@ class ApplicationRuntime:
         while not self.latest_source_count.empty():
             self.latest_source_count.get_nowait()
         self.pipeline.start()
+        self._track_logger.start()
         if self.config.device.serial_enabled:
             try:
                 self.set_light(False)
@@ -459,6 +470,7 @@ class ApplicationRuntime:
                 still_alive.append(name)
             else:
                 setattr(self, attribute, None)
+        self._track_logger.stop(1.0)
         if still_alive and self.last_error is None:
             self.last_error = f"shutdown timeout: {', '.join(still_alive)} still running"
 
@@ -532,7 +544,13 @@ class ApplicationRuntime:
                     self._record_performance("probability", self.imcra.last_probability_ms)
                 if len(hops) == 1 and (hops[0].start_sample, hops[0].end_sample) == (block.start_sample, block.end_sample):
                     block = replace(block, imcra_hop=hops[0])
-                for selected in self._select_blocks(block):
+                pre_denoise_started = perf_counter()
+                selected_blocks = self._select_blocks(block)
+                self._last_pre_denoise_ms = (
+                    perf_counter() - pre_denoise_started
+                ) * 1_000.0
+                self._record_performance("pre_denoise", self._last_pre_denoise_ms)
+                for selected in selected_blocks:
                     self._publish_block(selected)
         except Exception as exc:
             self.last_error = str(exc)
@@ -615,7 +633,15 @@ class ApplicationRuntime:
 
         started = perf_counter()
         try:
-            snapshot = self._source_counter.process(window, self._geometry)
+            snapshot = self._source_counter.process(
+                window,
+                self._geometry,
+                scheduled_gap_samples=(
+                    self._adaptive_l2.period_ms * 48
+                    if self._adaptive_enabled and self._adaptive_l2.period_ms > 20
+                    else None
+                ),
+            )
             expected = (
                 window.session_id,
                 window.stream_epoch,
@@ -653,6 +679,22 @@ class ApplicationRuntime:
         order = 2 if snapshot.source_count is not None and snapshot.source_count >= 2 else 1
         return snapshot, order, None, elapsed_ms
 
+    def _reuse_source_count_snapshot(
+        self,
+        previous: SourceCountSnapshot | None,
+        window: object,
+    ) -> SourceCountSnapshot:
+        snapshot = SourceCountSnapshot(
+            window.session_id,
+            window.stream_epoch,
+            window.window_id,
+            window.decision_sample,
+            None if previous is None else previous.source_count,
+            monotonic(),
+        )
+        self._publish_latest(self.latest_source_count, snapshot)
+        return snapshot
+
     def _run_l2(self) -> None:
         try:
             while not self._stop.is_set() or not self._input_done.is_set() or not self._l2_windows.empty():
@@ -675,6 +717,7 @@ class ApplicationRuntime:
                     source_enabled = self._source_count_enabled
                     follow_order = self._music_order_follows_source_count
                     source_revision = self._source_count_control_revision
+                    id_reset_revision = self._id_reset_revision
                 self._record_performance("queue_wait", queue_wait_ms)
                 started = perf_counter()
                 decision: ProbabilityGateDecision | None = None
@@ -683,37 +726,26 @@ class ApplicationRuntime:
                 source_count_ms = 0.0
                 count_snapshot: SourceCountSnapshot | None = None
                 try:
+                    if id_reset_revision != self._id_reset_applied_revision:
+                        self._layer2.reset_direction_ids()
+                        self._id_reset_applied_revision = id_reset_revision
+                        self._last_l2_snapshot = None
+                        self._last_l2_control_key = None
                     decision, active_frame_count = self._layer2.evaluate_gate(
                         window,
                         self._imcra_probabilities(window),
                         gate_threshold=gate,
                         gate_config_revision=gate_revision,
                     )
-                    count_snapshot, music_order, music_skip_reason, source_count_ms = (
-                        self._prepare_source_count_plan(
-                            window,
-                            decision,
-                            enabled=source_enabled,
-                            follow_order=follow_order,
-                            control_revision=source_revision,
-                        )
-                    )
-                    with self._control_lock:
-                        self._current_music_effective_order = (
-                            music_order
-                            if follow_order
-                            else 2
-                        )
                     control_key = (
                         scan_revision,
                         gate_revision,
                         tracking,
+                        id_reset_revision,
                         source_revision,
                         source_enabled,
                         follow_order,
                         decision.state,
-                        music_order,
-                        music_skip_reason,
                     )
                     force = (
                         self._last_l2_snapshot is None
@@ -729,27 +761,68 @@ class ApplicationRuntime:
                         if not self._adaptive_enabled
                         else self._adaptive_l2.should_compute(force=force)
                     )
+                    if should_compute:
+                        count_snapshot, music_order, music_skip_reason, source_count_ms = (
+                            self._prepare_source_count_plan(
+                                window,
+                                decision,
+                                enabled=source_enabled,
+                                follow_order=follow_order,
+                                control_revision=source_revision,
+                            )
+                        )
+                    else:
+                        previous_count = (
+                            None
+                            if self._last_l2_snapshot is None
+                            else self._last_l2_snapshot.source_count_snapshot
+                        )
+                        count_snapshot = self._reuse_source_count_snapshot(previous_count, window)
+                        music_order = (
+                            None
+                            if not decision.allow_srp
+                            else 2
+                            if not follow_order
+                            else 2
+                            if count_snapshot.source_count is not None
+                            and count_snapshot.source_count >= 2
+                            else 1
+                        )
+                        music_skip_reason = None if decision.allow_srp else decision.reason
+                    with self._control_lock:
+                        self._current_music_effective_order = music_order if follow_order else 2
                     can_reuse = (
-                        decision.allow_srp
-                        and music_order in {1, 2, 3}
-                        and not should_compute
+                        not should_compute
                         and self._last_l2_snapshot is not None
-                        and self._last_l2_snapshot.spatial_response is not None
-                        and self._last_l2_snapshot.spatial_response.model_order.estimated_sources
-                        == music_order
+                        and (
+                            not decision.allow_srp
+                            or (
+                                music_order in {1, 2, 3}
+                                and (
+                                    self._last_l2_snapshot.spatial_response is None
+                                    or self._last_l2_snapshot.spatial_response.model_order.estimated_sources
+                                    == music_order
+                                )
+                            )
+                        )
                     )
                     if can_reuse:
                         sparse_started = perf_counter()
-                        observe_covariance = getattr(
-                            self._layer2.scanner,
-                            "observe_covariance",
-                            None,
-                        )
-                        if callable(observe_covariance):
-                            observe_covariance(
-                                window,
-                                replace(scan, effective_order_limit=music_order),
+                        if decision.allow_srp and music_order in {1, 2, 3}:
+                            observe_covariance = getattr(
+                                self._layer2.scanner,
+                                "observe_covariance",
+                                None,
                             )
+                            if callable(observe_covariance):
+                                observe_covariance(
+                                    window,
+                                    replace(scan, effective_order_limit=music_order),
+                                )
+                        else:
+                            reset_scanner = getattr(self._layer2.scanner, "reset", None)
+                            if callable(reset_scanner):
+                                reset_scanner()
                         sparse_music_ms = (perf_counter() - sparse_started) * 1_000.0
                         self._maximum_sparse_music_ms = max(
                             self._maximum_sparse_music_ms,
@@ -762,6 +835,12 @@ class ApplicationRuntime:
                             period_ms=self._adaptive_l2.period_ms,
                             queue_wait_ms=queue_wait_ms,
                             source_count_snapshot=count_snapshot,
+                            tentative_ttl_samples=(
+                                self._layer2.id_tracker.config.tentative_ttl_samples
+                            ),
+                            coasting_ttl_samples=(
+                                self._layer2.id_tracker.config.coasting_ttl_samples
+                            ),
                         )
                         self._last_l2_snapshot = snapshot
                         self._last_l2_control_key = control_key
@@ -769,7 +848,12 @@ class ApplicationRuntime:
                         self._record_performance("music", sparse_music_ms)
                         self._record_performance("reuse", 0.0)
                         self._record_performance("output", 0.0)
-                        self._update_track_log(snapshot.active_tracks, window.decision_sample)
+                        self._update_track_log(
+                            snapshot.active_tracks,
+                            window.session_id,
+                            window.stream_epoch,
+                            window.decision_sample,
+                        )
                         continue
                     output = self._layer2.process_prepared(
                         window,
@@ -788,12 +872,18 @@ class ApplicationRuntime:
                         self._adaptive_l2.force_overload(f"l2_fault:{type(exc).__name__}")
                     can_reuse = (
                         decision is not None
-                        and decision.allow_srp
-                        and music_order in {1, 2, 3}
                         and self._last_l2_snapshot is not None
-                        and self._last_l2_snapshot.spatial_response is not None
-                        and self._last_l2_snapshot.spatial_response.model_order.estimated_sources
-                        == music_order
+                        and (
+                            not decision.allow_srp
+                            or (
+                                music_order in {1, 2, 3}
+                                and (
+                                    self._last_l2_snapshot.spatial_response is None
+                                    or self._last_l2_snapshot.spatial_response.model_order.estimated_sources
+                                    == music_order
+                                )
+                            )
+                        )
                         and (
                             self._last_l2_snapshot.session_id,
                             self._last_l2_snapshot.stream_epoch,
@@ -808,6 +898,12 @@ class ApplicationRuntime:
                             period_ms=self._adaptive_l2.period_ms,
                             queue_wait_ms=queue_wait_ms,
                             source_count_snapshot=count_snapshot,
+                            tentative_ttl_samples=(
+                                self._layer2.id_tracker.config.tentative_ttl_samples
+                            ),
+                            coasting_ttl_samples=(
+                                self._layer2.id_tracker.config.coasting_ttl_samples
+                            ),
                         )
                         if can_reuse
                         else self._fault_l2_snapshot(
@@ -844,6 +940,7 @@ class ApplicationRuntime:
                         queue_wait_ms=queue_wait_ms,
                         stage_ms={
                             "imcra": self.imcra.last_core_ms,
+                            "pre_denoise": self._last_pre_denoise_ms,
                             "probability": self.imcra.last_probability_ms,
                             "source_count": source_count_ms,
                             "music": max(music_ms, self._maximum_sparse_music_ms),
@@ -852,7 +949,12 @@ class ApplicationRuntime:
                         },
                     )
                 self._maximum_sparse_music_ms = 0.0
-                self._update_track_log(output.active_tracks, window.decision_sample)
+                self._update_track_log(
+                    output.active_tracks,
+                    window.session_id,
+                    window.stream_epoch,
+                    window.decision_sample,
+                )
                 snapshot = L2DevUiSnapshot(
                     window.session_id, window.stream_epoch, window.window_id, window.decision_sample,
                     output.spatial_response, output.candidates, output.gate_decision,
@@ -935,6 +1037,8 @@ class ApplicationRuntime:
         period_ms: int,
         queue_wait_ms: float,
         source_count_snapshot: SourceCountSnapshot | None = None,
+        tentative_ttl_samples: int = 24_000,
+        coasting_ttl_samples: int = 96_000,
     ) -> L2DevUiSnapshot:
         if previous is None:
             raise RuntimeError("adaptive reuse requires one computed L2 result")
@@ -959,27 +1063,60 @@ class ApplicationRuntime:
         expected_identity = tuple(identity.values())
         if gate_decision is not None and gate_identity != expected_identity:
             raise ValueError("adaptive reuse Gate must match the current window")
+        gate_reason = source_gate.reason.split(":adaptive_reuse_previous_output", 1)[0]
+        gate_diagnostics = tuple(
+            item
+            for item in source_gate.diagnostics
+            if not item.startswith("reused_at_period_ms=")
+        )
         gate = replace(
             source_gate,
             **identity,
-            reason=f"{source_gate.reason}:adaptive_reuse_previous_output",
-            diagnostics=(*source_gate.diagnostics, f"reused_at_period_ms={period_ms}"),
+            reason=f"{gate_reason}:adaptive_reuse_previous_output",
+            diagnostics=(*gate_diagnostics, f"reused_at_period_ms={period_ms}"),
         )
-        spatial = None if previous.spatial_response is None else replace(previous.spatial_response, **doa)
-        candidates = tuple(replace(item, **doa) for item in previous.candidates)
-
         def prediction(item):
             return replace(
                 item,
                 **doa,
                 measured_theta_deg=None,
+                track_state=(
+                    "coasting" if item.track_state == "confirmed" else item.track_state
+                ),
                 is_observed=False,
                 is_new_track=False,
                 missed_samples=max(0, window.decision_sample - item.last_observed_sample),
             )
 
-        directions = tuple(prediction(item) for item in previous.directions)
-        active_tracks = tuple(prediction(item) for item in previous.active_tracks)
+        def alive(item) -> bool:
+            ttl = (
+                tentative_ttl_samples
+                if item.track_state == "tentative"
+                else coasting_ttl_samples
+            )
+            return window.decision_sample - item.last_observed_sample < ttl
+
+        if previous.direction_id_tracking_enabled:
+            direction_pairs = tuple(
+                (replace(candidate, **doa), prediction(direction))
+                for candidate, direction in zip(previous.candidates, previous.directions)
+                if alive(direction)
+            )
+            candidates = tuple(pair[0] for pair in direction_pairs)
+            directions = tuple(pair[1] for pair in direction_pairs)
+        else:
+            candidates = tuple(replace(candidate, **doa) for candidate in previous.candidates)
+            directions = ()
+        if not gate.allow_srp:
+            candidates = ()
+        active_tracks = tuple(
+            prediction(item) for item in previous.active_tracks if alive(item)
+        )
+        spatial = (
+            None
+            if previous.spatial_response is None or not gate.allow_srp
+            else replace(previous.spatial_response, **doa)
+        )
         return replace(
             previous,
             **identity,
@@ -996,31 +1133,18 @@ class ApplicationRuntime:
             source_count_snapshot=source_count_snapshot,
         )
 
-    def _update_track_log(self, tracks: tuple[object, ...], decision_sample: int) -> None:
-        """Persist a compact, five-second-sampled text history; never audio."""
+    def _update_track_log(
+        self,
+        tracks: tuple[object, ...],
+        session_id: str,
+        stream_epoch: int,
+        decision_sample: int,
+    ) -> None:
+        """Queue a bounded diagnostic update without blocking realtime L2."""
 
-        for track in tracks:
-            entry = self._track_history.setdefault(track.track_id, {
-                "first": track.first_seen_sample,
-                "last": track.last_observed_sample,
-                "state": track.track_state,
-                "trajectory": [],
-            })
-            entry["last"] = max(int(entry["last"]), track.last_observed_sample)
-            entry["state"] = track.track_state
-            trajectory = entry["trajectory"]
-            if not trajectory or decision_sample - trajectory[-1][0] >= 240_000:
-                trajectory.append((decision_sample, round(float(track.theta_deg), 1)))
-        if decision_sample - self._last_track_log_sample < 48_000:
-            return
-        self._last_track_log_sample = decision_sample
-        self._track_log_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = ["track_id\tstate\tfirst_sample\tlast_observed_sample\tduration_s\ttrajectory(sample:deg)"]
-        for track_id, entry in sorted(self._track_history.items()):
-            duration = (int(entry["last"]) - int(entry["first"])) / 48_000.0
-            trajectory = ",".join(f"{sample}:{angle:.1f}" for sample, angle in entry["trajectory"])
-            lines.append(
-                f"{track_id}\t{entry['state']}\t{entry['first']}\t{entry['last']}\t"
-                f"{duration:.3f}\t{trajectory}"
-            )
-        self._track_log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._track_logger.submit(
+            tracks,
+            decision_sample,
+            session_id=session_id,
+            stream_epoch=stream_epoch,
+        )

@@ -378,7 +378,8 @@ if QApplication is not None:
                 perf = self.runtime.performance_snapshot
                 status = self.runtime.processing_status
                 self.footer.setText(
-                    f"上一秒平均 | IMCRA {perf['imcra_ms']:.2f} ms | P {perf['probability_ms']:.3f} ms | "
+                    f"上一秒平均 | 预降噪 {perf['pre_denoise_ms']:.2f} ms | "
+                    f"IMCRA {perf['imcra_ms']:.2f} ms | P {perf['probability_ms']:.3f} ms | "
                     f"COUNT {perf['source_count_ms']:.2f} ms/"
                     f"{perf['source_count_frames_per_second']} fps | "
                     f"MUSIC {perf['music_ms']:.2f} ms | ID {perf['id_tracking_ms']:.2f} ms | "
