@@ -94,34 +94,36 @@ def test_imcra_emits_exact_20ms_hops_for_arbitrary_input_chunking():
 
 def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     config = load_config("config/config.yaml").layer1_imcra
-    assert config.algorithm_version == "cohen_imcra_2003_l1_v10"
+    assert config.algorithm_version == "cohen_imcra_2003_l1_v11"
     assert config.n_fft == config.hop_samples == 960
-    assert (config.frequency_min_hz, config.frequency_max_hz) == (250.0, 600.0)
+    assert (config.frequency_min_hz, config.frequency_max_hz) == (250.0, 3_400.0)
     estimator = Layer1Imcra(config)
     gate_frequencies = estimator._all_frequencies_hz[estimator._gate_band]
-    np.testing.assert_array_equal(
-        gate_frequencies,
-        np.arange(250.0, 650.0, 50.0, dtype=np.float32),
-    )
+    assert np.all((gate_frequencies >= 250.0) & (gate_frequencies <= 3_400.0))
+    assert gate_frequencies[0] == pytest.approx(250.0)
+    assert gate_frequencies[-1] == pytest.approx(3_400.0)
     weights = speech_gate_band_weights(gate_frequencies)
+    assert weights.shape == gate_frequencies.shape
+    assert np.sum(weights) == pytest.approx(1.0)
+    assert np.all(weights >= 0.0)
+    low_profile = gate_frequencies <= 600.0
     np.testing.assert_allclose(
-        weights,
-        (
-            0.161502,
-            0.180000,
-            0.180000,
-            0.180000,
-            0.163814,
-            0.088159,
-            0.041165,
-            0.005360,
+        weights[low_profile],
+        0.30
+        * np.asarray(
+            (0.161502, 0.180000, 0.180000, 0.180000, 0.163814, 0.088159, 0.041165, 0.005360)
         ),
         rtol=0.0,
         atol=1e-12,
     )
-    assert np.sum(weights) == pytest.approx(1.0)
-    with pytest.raises(ValueError, match="250-600 Hz in 50 Hz steps"):
-        speech_gate_band_weights(gate_frequencies[:-1])
+    assert weights[gate_frequencies == 650.0].item() == pytest.approx(0.30 / 19.0)
+    expected_band_weights = (
+        ((gate_frequencies >= 250.0) & (gate_frequencies <= 600.0), 0.30),
+        ((gate_frequencies > 600.0) & (gate_frequencies < 1_600.0), 0.30),
+        ((gate_frequencies >= 1_600.0) & (gate_frequencies <= 3_400.0), 0.40),
+    )
+    for selected, expected in expected_band_weights:
+        assert np.sum(weights[selected]) == pytest.approx(expected, abs=1e-6)
     assert (
         config.frequency_smoothing_half_width,
         config.spectrum_smoothing,
@@ -144,6 +146,35 @@ def test_adapted_cohen_parameters_and_two_pass_state_are_exposed():
     assert np.array_equal(first.minimum_psd, first.conditional_minimum_psd)
     assert np.all(first.speech_absence_probability == 1.0)
     assert np.all(first.spp == 0.0)
+
+
+def test_gate_profile_requires_broadband_speech_evidence() -> None:
+    project = load_config("config/config.yaml")
+    estimator = Layer1Imcra(project.layer1_imcra)
+    gate_frequencies = estimator._all_frequencies_hz[estimator._gate_band]
+    weights = speech_gate_band_weights(gate_frequencies)
+    threshold = project.layer2.probability_gate.threshold
+
+    low = gate_frequencies <= 600.0
+    middle = (gate_frequencies > 600.0) & (gate_frequencies < 1_600.0)
+    high = gate_frequencies >= 1_600.0
+    for active_bands, expected in (
+        (low | middle, 0.60),
+        (low | high, 0.70),
+        (middle | high, 0.70),
+    ):
+        assert float(np.sum(weights * active_bands)) == pytest.approx(expected)
+        assert float(np.sum(weights * active_bands)) < threshold
+
+    fan_harmonics = np.remainder(gate_frequencies, 250.0) == 0.0
+    assert float(np.sum(weights * fan_harmonics)) < 0.25
+    broadened_harmonics = fan_harmonics.copy()
+    broadened_harmonics[1:] |= fan_harmonics[:-1]
+    broadened_harmonics[:-1] |= fan_harmonics[1:]
+    assert float(np.sum(weights * broadened_harmonics)) < threshold
+    broadband_speech = np.full_like(weights, 0.85)
+    assert float(np.sum(weights * broadband_speech)) == pytest.approx(0.85)
+    assert float(np.sum(weights * broadband_speech)) >= threshold
 
 
 def test_imcra_frequency_smoother_matches_edge_padded_reference() -> None:

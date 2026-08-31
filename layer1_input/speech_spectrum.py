@@ -65,45 +65,59 @@ def _equal_area_reference(levels_db: np.ndarray) -> np.ndarray:
 _MALE_EQUAL_AREA = _equal_area_reference(_MALE_LEVEL_DB)
 _FEMALE_EQUAL_AREA = _equal_area_reference(_FEMALE_LEVEL_DB)
 
-_GATE_FREQUENCIES_HZ = np.asarray(
+_GATE_BANDS = (
+    (250.0, 600.0, 0.30),
+    (600.0, 1_600.0, 0.30),
+    (1_600.0, 3_400.0, 0.40),
+)
+# This profile redistributes only the first band's 30% mass. The outer band
+# masses remain fixed so low-frequency evidence cannot dominate the gate.
+_LOW_GATE_FREQUENCIES_HZ = np.asarray(
     (250.0, 300.0, 350.0, 400.0, 450.0, 500.0, 550.0, 600.0),
     dtype=np.float64,
 )
-# Arithmetic mean of the capped office and clinic profiles from the 2026-08-31
-# speech/noise spectral study. Keep each IMCRA-resolution bin explicit.
-_GATE_WEIGHTS = np.asarray(
-    (
-        0.161502,
-        0.180000,
-        0.180000,
-        0.180000,
-        0.163814,
-        0.088159,
-        0.041165,
-        0.005360,
-    ),
+_LOW_GATE_PROFILE_WEIGHTS = np.asarray(
+    (0.161502, 0.180000, 0.180000, 0.180000, 0.163814, 0.088159, 0.041165, 0.005360),
     dtype=np.float64,
 )
 
 
 def speech_gate_band_weights(frequencies_hz: np.ndarray) -> np.ndarray:
-    """Return research-derived 50 Hz-bin P-gate weights for office and clinic speech."""
+    """Return broadband gate weights with a profiled low-frequency band."""
 
     frequencies = np.asarray(frequencies_hz, dtype=np.float64)
     if frequencies.ndim != 1 or frequencies.size == 0:
         raise ValueError("Gate frequencies must be a non-empty vector")
     if not np.isfinite(frequencies).all():
         raise ValueError("Gate frequencies must be finite")
-    if frequencies.shape != _GATE_FREQUENCIES_HZ.shape or not np.allclose(
-        frequencies,
-        _GATE_FREQUENCIES_HZ,
-        rtol=0.0,
-        atol=1e-6,
-    ):
-        raise ValueError("Gate frequency axis must be 250-600 Hz in 50 Hz steps")
-    if not np.isclose(np.sum(_GATE_WEIGHTS), 1.0, rtol=0.0, atol=1e-12):
-        raise RuntimeError("Gate frequency weights do not sum to one")
-    return _GATE_WEIGHTS.copy()
+
+    weights = np.zeros_like(frequencies)
+    for index, (low_hz, high_hz, band_weight) in enumerate(_GATE_BANDS):
+        if index == 0 or index + 1 == len(_GATE_BANDS):
+            selected = (frequencies >= low_hz) & (frequencies <= high_hz)
+        else:
+            selected = (frequencies > low_hz) & (frequencies < high_hz)
+        count = int(np.count_nonzero(selected))
+        if count == 0:
+            raise ValueError(f"Gate frequency axis does not cover {low_hz:g}-{high_hz:g} Hz")
+        if index == 0:
+            for frequency_hz, profile_weight in zip(
+                _LOW_GATE_FREQUENCIES_HZ,
+                _LOW_GATE_PROFILE_WEIGHTS,
+                strict=True,
+            ):
+                matched = np.isclose(frequencies, frequency_hz, rtol=0.0, atol=1e-6)
+                if np.count_nonzero(matched) != 1:
+                    raise ValueError(
+                        f"Gate frequency axis must contain one {frequency_hz:g} Hz bin"
+                    )
+                weights[matched] = band_weight * profile_weight
+        else:
+            weights[selected] = band_weight / count
+
+    if not np.isclose(np.sum(weights), 1.0):
+        raise RuntimeError("Gate band weights do not sum to one")
+    return weights
 
 
 def equal_sex_ltass_weights(frequencies_hz: np.ndarray) -> np.ndarray:
