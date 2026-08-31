@@ -191,15 +191,15 @@ def test_incremental_state_matches_rebuild_for_latest_context(latest_index: int)
     )
 
 
-def test_v14_config_without_source_counting_defaults_to_disabled_counting() -> None:
+def test_v14_config_without_source_counting_defaults_to_enabled_counting() -> None:
     payload = load_config(CONFIG).model_dump()
     payload.pop("source_counting")
 
     legacy = ProjectConfig.model_validate(payload)
 
-    assert not legacy.source_counting.enabled
+    assert legacy.source_counting.enabled
     assert not legacy.source_counting.music_order_from_source_count
-    assert not SourceCounterConfig.from_project(legacy).enabled
+    assert SourceCounterConfig.from_project(legacy).enabled
 
 
 def test_runtime_publishes_each_window_only_to_the_single_l2_worker() -> None:
@@ -271,8 +271,8 @@ class _PlannedCounter:
 def test_gate_and_controls_resolve_same_window_count_before_music() -> None:
     runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
     audio = _directional_noise((30.0,), samples=20_000)
-    windows = tuple(_window(audio, index) for index in range(4))
-    counter = _PlannedCounter([None, 0, 1, 2])
+    windows = tuple(_window(audio, index) for index in range(5))
+    counter = _PlannedCounter([0, None, 0, 1, 2])
     runtime._source_counter = counter
 
     closed, order, reason, elapsed = runtime._prepare_source_count_plan(
@@ -282,16 +282,18 @@ def test_gate_and_controls_resolve_same_window_count_before_music() -> None:
         follow_order=True,
         control_revision=0,
     )
-    assert (closed.source_count, order, reason, elapsed) == (None, None, "closed", 0.0)
-    assert counter.calls == 0
+    assert closed.source_count == 0
+    assert (order, reason) == (None, "closed")
+    assert elapsed >= 0.0
+    assert counter.calls == 1
 
     expected = (
-        (None, None, "source_count_warming"),
-        (0, 0, "source_count_zero"),
+        (None, 1, None),
+        (0, 1, None),
         (1, 1, None),
         (2, 2, None),
     )
-    for window, values in zip(windows, expected, strict=True):
+    for window, values in zip(windows[1:], expected, strict=True):
         snapshot, order, reason, _elapsed = runtime._prepare_source_count_plan(
             window,
             _gate(window, opened=True),
@@ -300,7 +302,56 @@ def test_gate_and_controls_resolve_same_window_count_before_music() -> None:
             control_revision=0,
         )
         assert (snapshot.source_count, order, reason) == values
-    assert counter.calls == 4
+    assert counter.calls == 5
+
+
+def test_gate_closed_keeps_source_count_state_advancing() -> None:
+    runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
+    audio = _directional_noise((30.0,), samples=20_000)
+    first, second = _window(audio, 0), _window(audio, 1)
+    counter = _PlannedCounter([None, 1])
+    runtime._source_counter = counter
+
+    first_result = runtime._prepare_source_count_plan(
+        first,
+        _gate(first, opened=False),
+        enabled=True,
+        follow_order=True,
+        control_revision=0,
+    )
+    second_result = runtime._prepare_source_count_plan(
+        second,
+        _gate(second, opened=False),
+        enabled=True,
+        follow_order=True,
+        control_revision=0,
+    )
+
+    assert first_result[0].source_count is None
+    assert second_result[0].source_count == 1
+    assert first_result[1:3] == second_result[1:3] == (None, "closed")
+    assert counter.calls == 2
+    assert counter.resets == 1
+
+
+def test_disabled_source_count_stops_processing_and_uses_fixed_order_two() -> None:
+    runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
+    audio = _directional_noise((30.0,), samples=20_000)
+    window = _window(audio, 0)
+    counter = _PlannedCounter([1])
+    runtime._source_counter = counter
+
+    snapshot, order, reason, elapsed = runtime._prepare_source_count_plan(
+        window,
+        _gate(window, opened=True),
+        enabled=False,
+        follow_order=False,
+        control_revision=1,
+    )
+
+    assert snapshot.source_count is None
+    assert (order, reason, elapsed) == (2, None, 0.0)
+    assert counter.calls == 0
 
 
 def test_fixed_order_two_survives_count_warming_or_fault_without_main_error() -> None:
@@ -333,6 +384,31 @@ def test_fixed_order_two_survives_count_warming_or_fault_without_main_error() ->
     assert runtime.performance_snapshot["source_count_faults_per_second"] == 1
 
 
+def test_follow_order_maps_warming_or_count_fault_to_one() -> None:
+    runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
+    audio = _directional_noise((45.0,), samples=20_000)
+    first, second = _window(audio, 0), _window(audio, 1)
+    runtime._source_counter = _PlannedCounter([None, RuntimeError("count-only")])
+
+    warming = runtime._prepare_source_count_plan(
+        first,
+        _gate(first, opened=True),
+        enabled=True,
+        follow_order=True,
+        control_revision=0,
+    )
+    fault = runtime._prepare_source_count_plan(
+        second,
+        _gate(second, opened=True),
+        enabled=True,
+        follow_order=True,
+        control_revision=0,
+    )
+
+    assert warming[1:3] == (1, None)
+    assert fault[1:3] == (1, None)
+
+
 def test_manual_source_count_and_music_follow_controls_are_atomic() -> None:
     runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
     assert runtime.source_counting_enabled
@@ -340,7 +416,7 @@ def test_manual_source_count_and_music_follow_controls_are_atomic() -> None:
 
     assert runtime.set_music_order_follows_source_count(True)
     assert runtime.music_order_follows_source_count
-    assert runtime.current_music_effective_order is None
+    assert runtime.current_music_effective_order == 1
     assert not runtime.set_source_counting_enabled(False)
     assert not runtime.source_counting_enabled
     assert not runtime.music_order_follows_source_count

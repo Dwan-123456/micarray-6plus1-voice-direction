@@ -21,6 +21,13 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.4.2`，完整旧架构以不可变标签`v1.3.6`为准，当前精简架构以根`README.md`、`config/config.yaml`和代码为准。
 
+## 2026-08-31 — 声源数估计默认持续运行并收敛MUSIC阶数映射
+
+- **默认与持续运行**：`SourceCountingConfig.enabled`默认值改为`true`，本仓库配置继续显式开启；缺少整个`source_counting`段的`project_config_v1.4`配置现在也默认开启。估计开关开启后，唯一L2 worker对每个20 ms `DecisionWindow`持续执行增量GCC-PHAT，与P Gate OPEN/CLOSED无关；Gate关闭不再发布空计数或清空累计状态，正常窗口仍只新增/淘汰各2个STFT帧。手动关闭估计时才停止计算并清空状态，同时关闭阶数跟随、恢复固定2阶。
+- **MUSIC阶数映射**：仅在P Gate OPEN且“使用声源数估计结果”开启时应用同窗映射：计数`0`、`1`或预热`None`统一使用MUSIC 1阶，计数`2`及以上统一使用2阶；计数故障安全回退1阶且保持与主L2故障隔离。跟随关闭时Gate OPEN后的MUSIC固定2阶，Gate关闭时继续计数但不执行MUSIC。UI在刚开启跟随且尚无新窗时立即显示当前阶数1。
+- **验证**：新增缺省配置开启、Gate CLOSED仍连续调用且不重置、手动关闭零调用/固定2阶、预热与计数故障映射1阶以及UI即时阶数回归；全量pytest为`133 passed`，全仓Ruff和`git diff --check`通过。仅完成自动验证，尚未连接真实麦克风复核持续计数负载、P Gate分布、声源数准确率或MUSIC阶数切换效果。
+- **未改变与资产**：GCC-PHAT空间图、主峰de-emphasis、0/1/2判定阈值和2-of-3稳定算法，L1 960点IMCRA/预降噪，P1/P2公式与Gate门限，MUSIC谱、IMM-JPDA、轨迹TXT、Test UI布局、L3～L6删除状态、离线L4、L5、录音/数据管理、模型和既有参考资产均无数学或布局变化。无Git LFS对象新增或修改，不创建或移动发布标签，已发布`v1.4.1`保持不变。
+
 ## 2026-08-31 — 合并960点IMCRA与Gate后声源数/MUSIC阶数开发分支
 
 - **分支与范围**：将`origin/codex/imcra-960-fft`的提交`1f83d59`合入`codex/develop-v1.4.2`，保留当前分支提交`a0dc5b9`的增量GCC-PHAT声源数估计、MUSIC阶数跟随、Test UI控制与性能监控。两个分支共同基于`7fe64e6`；代码职责互补，自动合并配置中的L1 FFT字段与`source_counting`段，仅手工并列保留两条CHANGELOG记录。

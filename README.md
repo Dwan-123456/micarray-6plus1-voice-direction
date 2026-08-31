@@ -7,8 +7,8 @@ Sipeed 8通道输入 -> 校准 -> L1 IMCRA（20 ms）
   -> P1逐麦概率 -> P2七麦中位数 -> 可选预降噪
   -> 160 ms窗口（每20 ms更新）
      -> L2 P2 Gate
-        -> 增量GCC-PHAT突出声源数0/1/2（可开关，仅Gate OPEN时运行）
-        -> 2～4 kHz加权NormMUSIC（固定2阶或跟随估计）
+        -> 持续增量GCC-PHAT突出声源数0/1/2（默认开启，可手动关闭）
+        -> 2～4 kHz加权NormMUSIC（Gate OPEN时固定2阶或跟随估计）
         -> IMM-JPDA方向ID -> 时间、track_id、角度、状态
 ```
 
@@ -17,7 +17,7 @@ Sipeed 8通道输入 -> 校准 -> L1 IMCRA（20 ms）
 - 性能监控只保留最近1秒，显示IMCRA、P、声源数估计、MUSIC、ID、总耗时、排队时间、输出/实算帧率及计数故障率。
 - L2默认每20 ms实算一次；排队或任一处理环节超过20 ms时，自动按40、60、80、100 ms逐级降低实算频率，未实算窗口沿用最近结果并按当前20 ms时间戳持续输出；稳定恢复后逐级回到20 ms。
 - Test UI只接收真实麦克风，仅显示L1与L2；左列上下排列L1和L2控制/轨迹表，右上保留正方形360°角度图，底部为横跨窗口的性能栏；L3～L6区域已删除。
-- 突出声源数估计与Gate、MUSIC在同一L2 worker内按同窗顺序运行；正常每20 ms只处理新增的两个STFT帧，第二候选还需逐帧共存证据且不额外执行FFT。Test UI右下角独立控制框可开关估计及MUSIC阶数跟随；跟随关闭时固定2阶，开启后使用`0/1/2`结果，其中0、预热或计数故障显式跳过本窗MUSIC。算法与边界见[`source_counting/README.md`](source_counting/README.md)。
+- 突出声源数估计默认开启，在Gate关闭时也持续按每20 ms新增的两个STFT帧推进，第二候选的逐帧共存校验不额外执行FFT。Test UI右下角独立控制框可关闭估计或切换MUSIC阶数跟随；跟随关闭时Gate OPEN后的MUSIC固定2阶，开启后把计数`0/1`及预热映射为1阶、把`2`及以上映射为2阶。算法与边界见[`source_counting/README.md`](source_counting/README.md)。
 
 首次创建精简环境：
 

@@ -152,7 +152,9 @@ class ApplicationRuntime:
         self._pre_denoise_enabled = self.config.layer1_pre_denoise.enabled
         self._pre_denoise_latency_active = self._pre_denoise_enabled
         self._source_count_applied_revision = -1
-        self._current_music_effective_order = 2
+        self._current_music_effective_order = (
+            1 if self._music_order_follows_source_count else 2
+        )
 
     @staticmethod
     def _publish_latest(mailbox: queue.Queue[object], value: object) -> None:
@@ -271,7 +273,7 @@ class ApplicationRuntime:
                 raise ValueError("enable source counting before following its MUSIC order")
             if enabled != self._music_order_follows_source_count:
                 self._music_order_follows_source_count = enabled
-                self._current_music_effective_order = None if enabled else 2
+                self._current_music_effective_order = 1 if enabled else 2
                 self._source_count_control_revision += 1
                 self._source_count_control_changed_at = monotonic()
         return enabled
@@ -599,17 +601,16 @@ class ApplicationRuntime:
         follow_order: bool,
         control_revision: int,
     ) -> tuple[SourceCountSnapshot, int | None, str | None, float]:
-        """Resolve the same-window count/order after Gate and before MUSIC."""
+        """Continuously count, then resolve the same-window order after Gate."""
 
         if self._source_count_applied_revision != control_revision:
             self._source_counter.reset()
             self._source_count_applied_revision = control_revision
-        if not decision.allow_srp:
-            snapshot = self._unavailable_source_count(window)
-            return snapshot, None, decision.reason, 0.0
         if not enabled:
             snapshot = self._unavailable_source_count(window)
-            return snapshot, 2, None, 0.0
+            if decision.allow_srp:
+                return snapshot, 2, None, 0.0
+            return snapshot, None, decision.reason, 0.0
 
         started = perf_counter()
         try:
@@ -627,19 +628,16 @@ class ApplicationRuntime:
                 snapshot.decision_sample,
             )
             if actual != expected:
-                raise RuntimeError("source-count result does not match the current Gate window")
+                raise RuntimeError("source-count result does not match the current L2 window")
         except Exception as exc:
             elapsed_ms = (perf_counter() - started) * 1_000.0
             message = f"processing {type(exc).__name__}: {exc}"
             snapshot = self._unavailable_source_count(window, error=message)
             self.source_count_faults += 1
             self._record_performance("source_count_fault", elapsed_ms)
-            return (
-                snapshot,
-                None if follow_order else 2,
-                "source_count_fault" if follow_order else None,
-                elapsed_ms,
-            )
+            if not decision.allow_srp:
+                return snapshot, None, decision.reason, elapsed_ms
+            return snapshot, 1 if follow_order else 2, None, elapsed_ms
 
         elapsed_ms = (perf_counter() - started) * 1_000.0
         self.source_count_processed += 1
@@ -647,13 +645,12 @@ class ApplicationRuntime:
         self._record_performance("source_count", elapsed_ms)
         self._publish_latest(self.latest_source_count, snapshot)
         self.source_count_last_error = None
+        if not decision.allow_srp:
+            return snapshot, None, decision.reason, elapsed_ms
         if not follow_order:
             return snapshot, 2, None, elapsed_ms
-        if snapshot.source_count is None:
-            return snapshot, None, "source_count_warming", elapsed_ms
-        if snapshot.source_count == 0:
-            return snapshot, 0, "source_count_zero", elapsed_ms
-        return snapshot, snapshot.source_count, None, elapsed_ms
+        order = 2 if snapshot.source_count is not None and snapshot.source_count >= 2 else 1
+        return snapshot, order, None, elapsed_ms
 
     def _run_l2(self) -> None:
         try:

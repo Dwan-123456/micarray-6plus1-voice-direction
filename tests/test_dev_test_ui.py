@@ -77,8 +77,8 @@ def test_test_ui_source_count_and_music_order_switches_are_interlocked() -> None
 
         controls.follow_order_toggle.setChecked(True)
         assert window.runtime.music_order_follows_source_count
-        assert window.runtime.current_music_effective_order is None
-        assert controls.music_order_label.text() == "当前阶数：—"
+        assert window.runtime.current_music_effective_order == 1
+        assert controls.music_order_label.text() == "当前阶数：1"
 
         controls.source_count_toggle.setChecked(False)
         window.refresh()
