@@ -413,10 +413,12 @@ def test_manual_source_count_and_music_follow_controls_are_atomic() -> None:
     runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
     assert runtime.source_counting_enabled
     assert not runtime.music_order_follows_source_count
+    source_revision = runtime._source_count_control_revision
 
     assert runtime.set_music_order_follows_source_count(True)
     assert runtime.music_order_follows_source_count
     assert runtime.current_music_effective_order == 1
+    assert runtime._source_count_control_revision == source_revision
     assert not runtime.set_source_counting_enabled(False)
     assert not runtime.source_counting_enabled
     assert not runtime.music_order_follows_source_count
@@ -425,6 +427,36 @@ def test_manual_source_count_and_music_follow_controls_are_atomic() -> None:
         runtime.set_music_order_follows_source_count(True)
     with pytest.raises(ValueError, match="fixed MUSIC order is 2"):
         runtime.set_music_effective_order_limit(1)
+
+
+def test_music_follow_toggle_does_not_reset_continuous_source_count_state() -> None:
+    runtime = ApplicationRuntime(load_config(CONFIG), project_root=CONFIG.parent.parent)
+    audio = _directional_noise((30.0,), samples=20_000)
+    first, second = _window(audio, 0), _window(audio, 1)
+    counter = _PlannedCounter([None, 1])
+    runtime._source_counter = counter
+
+    first_result = runtime._prepare_source_count_plan(
+        first,
+        _gate(first, opened=True),
+        enabled=True,
+        follow_order=False,
+        control_revision=runtime._source_count_control_revision,
+    )
+    runtime.set_music_order_follows_source_count(True)
+    second_result = runtime._prepare_source_count_plan(
+        second,
+        _gate(second, opened=True),
+        enabled=True,
+        follow_order=True,
+        control_revision=runtime._source_count_control_revision,
+    )
+
+    assert first_result[1] == 2
+    assert second_result[0].source_count == 1
+    assert second_result[1] == 1
+    assert counter.calls == 2
+    assert counter.resets == 1
 
 
 def test_source_count_snapshot_rejects_non_contract_counts() -> None:

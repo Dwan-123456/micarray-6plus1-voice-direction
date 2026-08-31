@@ -274,8 +274,6 @@ class ApplicationRuntime:
             if enabled != self._music_order_follows_source_count:
                 self._music_order_follows_source_count = enabled
                 self._current_music_effective_order = 1 if enabled else 2
-                self._source_count_control_revision += 1
-                self._source_count_control_changed_at = monotonic()
         return enabled
 
     @property
