@@ -32,9 +32,9 @@ calibration:
 timing: {decision_hop_samples: 960, doa_window_samples: 1920, context_samples: 7680, timestamp_tolerance_ms: 5}
 layer1_imcra:
   enabled: true
-  algorithm_version: cohen_imcra_2003_l1_v8
+  algorithm_version: cohen_imcra_2003_l1_v9
   hop_samples: 960
-  n_fft: 2048
+  n_fft: 960
   window: hann_periodic
   output_frequency_min_hz: 0.0
   output_frequency_max_hz: 10000.0
@@ -55,10 +55,10 @@ layer1_imcra:
   eps: 1.0e-12
 layer1_pre_denoise:
   enabled: false
-  algorithm_version: imcra_wiener_wola_v3
-  frame_samples: 1920
-  hop_samples: 960
-  n_fft: 2048
+  algorithm_version: imcra_wiener_wola_v4
+  frame_samples: 960
+  hop_samples: 480
+  n_fft: 960
   frequency_max_hz: 10000.0
   window: sqrt_hann_50pct
   minimum_gain_db: -18.0
