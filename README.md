@@ -1,6 +1,10 @@
-# 6+1麦克风阵列 v1.4
+# 6+1麦克风阵列 v1.4.3
 
-v1.4 是实时方向定位精简版，只保留真实麦克风输入的 L1 与 L2。完整 L1～L6、录音管理、模型和示例音频保存在不可变标签 `v1.3.6`。
+v1.4.3 是实时方向定位精简版，只保留真实麦克风输入的 L1 与 L2。完整 L1～L6、录音管理、模型和示例音频保存在不可变标签 `v1.3.6`。
+
+## 项目文档
+
+[进入 v1.4.3 完整项目文档](docs/project_document/README.md)
 
 ```text
 Sipeed 8通道输入 -> 校准 -> L1 IMCRA（20 ms）
@@ -35,6 +39,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 
 VS Code固定使用`.venv-v1.4`，不安装PyTorch、CUDA、ONNX、CountNet或L4～L6依赖。`data/`、`tmp/`、录音、日志、缓存和虚拟环境不提交。旧系统从`v1.3.6`恢复。
 
-v1.4.1的完整架构、各层输入输出、关键参数、Test UI使用方法和1小时真实麦克风长测结果见 [docs/V1.4.1_ARCHITECTURE_USAGE_AND_ONE_HOUR_TEST.md](docs/V1.4.1_ARCHITECTURE_USAGE_AND_ONE_HOUR_TEST.md)。
+v1.4.1的完整架构、各层输入输出、关键参数、Test UI使用方法和1小时真实麦克风长测结果见 [历史文档](docs/v1.4.3_existing_docs/V1.4.1_ARCHITECTURE_USAGE_AND_ONE_HOUR_TEST.md)。
 
-旧架构与迁移说明见 [docs/V1.3.6_TO_V1.4_OVERVIEW_AND_USAGE.md](docs/V1.3.6_TO_V1.4_OVERVIEW_AND_USAGE.md)。
+旧架构与迁移说明见 [历史迁移文档](docs/v1.4.3_existing_docs/V1.3.6_TO_V1.4_OVERVIEW_AND_USAGE.md)。

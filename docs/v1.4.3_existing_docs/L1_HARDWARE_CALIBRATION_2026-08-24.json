@@ -34,7 +34,7 @@
   "timing_measurement": {
     "current_capture_result": "inconclusive_due_to_1m_office_reflections",
     "current_direct_correlation_median": [0.7047, 0.7547, 0.7263, 0.7269, 0.7598, 0.6819, 1.0],
-    "inherited_report": "docs/L1_HARDWARE_CALIBRATION_2026-08-21.json",
+    "inherited_report": "docs/v1.4.3_existing_docs/L1_HARDWARE_CALIBRATION_2026-08-21.json",
     "inherited_report_sha256": "230186dcb663e84d436671e0fee7ce6d78b3f28ac5d4aae2694ee4465852bd11",
     "reason": "The array and channel mapping are unchanged. The prior centered-overhead capture had 28-30 stable trials per channel and higher correlation, so its verified polarity and integer delays remain authoritative."
   },
