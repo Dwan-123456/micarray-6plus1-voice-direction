@@ -177,7 +177,7 @@ y_B = beamform(X, target=B, interferer=A)
 
 MossFormer2用于处理双人重叠，也可对单人片段产生降噪效果；它的输出是匿名分离分量，不自带方向或人物身份。
 
-### 7.3 为什么不能直接把Center或HardwareMix送入MossFormer2
+### 7.3 不能直接把Center或HardwareMix送入MossFormer2
 
 v1.3.4阶段观察到，直接把Center Mic或HardwareMix单通道送入一拆二模型不能得到可靠双人分离。单通道混合缺少明确的方向增强，模型更容易输出错误拆分或不稳定分量。
 
