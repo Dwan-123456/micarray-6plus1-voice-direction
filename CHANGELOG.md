@@ -27,7 +27,7 @@
 - **一键安装**：根CMD在调用winget前同时识别当前用户目录和`Program Files\Python312\python.exe`，与PowerShell环境脚本的Python 3.12查找范围统一。
 - **Test UI启动器**：修复PowerShell启动`pythonw.exe`后`$LASTEXITCODE`为空却被当成非0的假失败。启动器现在读取独立GUI进程对象的真实退出码，只监测前1.5秒启动窗口；正常运行时立即释放启动器，不显示空退出码弹窗或长期保留黑色终端。
 - **依赖安全更新**：`pytest`由9.0.2升级到修复版本9.0.3；构建工具`setuptools`由80.10.2升级到83.0.0，并同步更新`pyproject.toml`构建隔离范围和开发依赖下限。
-- **验证**：一键安装器实际完成依赖升级并通过环境实导入；编号采集/窗口测试为`18 passed`，Ruff通过，全量pytest为`165 passed`，`pip check`无冲突；离屏Test UI独立进程成功启动且启动器返回0；本地wheel为54项且旧L3～L6、Production UI、数据管理及`.pyc`混入为0。
+- **验证**：一键安装器实际完成依赖升级并通过环境实导入；编号采集/窗口测试为`18 passed`，Ruff通过，全量pytest为`165 passed`，`pip check`无冲突；离屏Test UI独立进程成功启动且启动器返回0；本地wheel为54项且旧L3～L6、Production UI、数据管理及`.pyc`混入为0。推送提交`4e5df084d61cf57d684b57ccd848ad91136a3b76`后又从GitHub全新克隆并拉取9个LFS路径，一键安装、Ruff、`165 passed`、依赖版本、启动器进程探测、LFS fsck和54项干净wheel全部通过。
 - **影响范围**：L1音频算法、L2 Gate/声源数/MUSIC/ID、Test UI显示、Runtime调度、模型和Git LFS资产均无变化，不创建或修改发布标签。
 
 ## 2026-09-01 — 确认GitHub仓库保持公开
