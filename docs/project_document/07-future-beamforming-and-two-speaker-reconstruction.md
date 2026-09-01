@@ -203,7 +203,14 @@ v1.3.4阶段观察到，直接把Center Mic或HardwareMix单通道送入一拆�
 
 ### 7.6 声纹维护和人物拼接
 
-方向ID稳定后，可使用经目标域验证的开源speaker embedding模型维护匿名人物身份，并把跨方向、跨短轨迹的同一人物片段拼接到统一时间线。具体模型、阈值和授权需单独选择；方向`track_id`仍不能直接充当speaker ID。
+长期会议录音中，同一个人可能在较长时间内多次讲话、改变方向或重新获得新的方向ID。可通过会话级声纹库识别这些相隔较远的同人片段，并按照绝对录音时间把它们合并到同一人物时间线。方向`track_id`只表示空间轨迹，仍不能直接充当speaker ID。
+
+推荐沿用`v1.3.6`已经使用的组合：
+
+- [CAMPPlus](https://modelscope.cn/models/iic/speech_campplus_sv_zh_en_16k-common_advanced)负责从16 kHz有效语音片段提取192维归一化speaker embedding；
+- [SpectralCluster](https://github.com/wq2012/SpectralCluster)的`MultiStageClusterer`负责维护会话级声纹证据、增量聚类和人物标签，把跨方向、跨短轨迹、跨较长时间间隔的同一人物语音归入同一声纹库条目。
+
+`v1.3.6`固定使用`spectralcluster==0.2.22`。该开源库实现了Google说话人日志研究中的谱聚类和多阶段流式聚类算法，仓库由`wq2012`维护并采用Apache-2.0许可证，不属于Google官方产品。历史实现按完整2 s声纹证据增量更新，数据较少时使用AHC，证据增加后进入谱聚类、预聚类和动态压缩，并允许后续证据修正历史标签，适合长期会议中持续维护同一会话的匿名人物声纹库。
 
 声纹更新应只接受足够长、非重叠、质量高的片段，避免一次误拆污染人物原型。
 
