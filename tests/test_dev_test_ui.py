@@ -116,6 +116,17 @@ def test_l1_meters_use_minus_60_dbfs_floor() -> None:
         _close(window)
 
 
+def test_stop_button_uses_the_configured_graceful_shutdown_timeout(monkeypatch) -> None:
+    window = _window()
+    calls: list[tuple[object, ...]] = []
+    try:
+        monkeypatch.setattr(window.runtime, "stop", lambda *args: calls.append(args))
+        window.l1.stop_button.click()
+        assert calls == [()]
+    finally:
+        _close(window)
+
+
 def test_l1_display_uses_ten_frame_probability_and_power_average() -> None:
     window = _window()
     try:

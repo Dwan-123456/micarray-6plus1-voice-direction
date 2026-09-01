@@ -58,10 +58,25 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 }
 
 & $venvPython -m pip install --upgrade "pip==26.2.1" "setuptools==80.10.2" "wheel==0.48.0"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to install the pinned packaging tools (exit code $LASTEXITCODE)."
+}
 & $venvPython -m pip install -r (Join-Path $projectRoot "requirements-vscode.txt")
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to install the project dependencies (exit code $LASTEXITCODE)."
+}
 & $venvPython -m pip install --no-deps --editable $projectRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to install the project package (exit code $LASTEXITCODE)."
+}
 & $venvPython -m pip check
+if ($LASTEXITCODE -ne 0) {
+    throw "The installed environment has dependency conflicts (exit code $LASTEXITCODE)."
+}
 & $venvPython (Join-Path $projectRoot "scripts\check_runtime_env.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "The project runtime verification failed (exit code $LASTEXITCODE)."
+}
 
 Write-Host ""
 Write-Host "VS Code project environment is ready: $venvPython" -ForegroundColor Green

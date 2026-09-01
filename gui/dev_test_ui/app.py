@@ -63,7 +63,7 @@ if QApplication is not None:
                 self.values.append(value)
             outer.addLayout(meters, 1)
             self.start_button.clicked.connect(self._start)
-            self.stop_button.clicked.connect(runtime.stop)
+            self.stop_button.clicked.connect(self._stop)
             self.light_on.clicked.connect(lambda: self._light(True))
             self.light_off.clicked.connect(lambda: self._light(False))
             self.denoise.toggled.connect(runtime.set_l1_pre_denoise_enabled)
@@ -73,6 +73,9 @@ if QApplication is not None:
                 self.runtime.start()
             except Exception as exc:
                 QMessageBox.critical(self, "采集启动失败", str(exc))
+
+        def _stop(self) -> None:
+            self.runtime.stop()
 
         def _light(self, enabled: bool) -> None:
             try:
