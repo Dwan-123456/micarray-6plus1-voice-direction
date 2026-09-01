@@ -21,6 +21,12 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.4.3`，完整旧架构以不可变标签`v1.3.6`为准，当前精简架构以根`README.md`、`config/config.yaml`和代码为准。
 
+## 2026-09-01 — v1.4.3 GitHub跟踪内容去冗余
+
+- **移除冗余文件**：删除一份与`docs/v1.4.3_existing_docs/references/rho_map_6plus1_100hz_100_6000hz_1deg.png`字节完全相同的空间可分离度图副本；删除无人引用的v1.3.6 DOCX/PDF输出成品，历史Markdown说明和不可变`v1.3.6`标签继续保留；删除当前运行链、包导出和测试均未引用且依赖已不存在配置字段的`layer2_source_detection/candidates.py`。
+- **开发入口整理**：VS Code只保留v1.4.3专用环境创建、全量测试和Development Test UI入口，统一使用`.venv-v1.4`；移除已不存在的GPU/CUDA、L1 HTTP服务、Production UI和旧`.venv`入口，并清除不会被当前配置加载器读取的`MIC_SERIAL_REQUIRED`环境项。
+- **影响边界**：L1、L2现行算法、突出声源数、Development Test UI、录音与数据管理边界、运行时契约、配置、测试、模型、校准报告和研究资料均无变化。删除图像副本不会删除其共享Git LFS对象；无新Git LFS对象，不创建、移动或改写发布标签。
+
 ## 2026-09-01 — v1.4.3 现行说明与代码阶段统一
 
 - **现行说明**：逐行核对当前代码、配置与160项自动化测试后，将Runtime、Ingest、Windowing、L1、L2、突出声源数、Development Test UI和环境说明统一标记为v1.4.3。重写已失效的Ingest v0.2/v0.3迁移说明，移除不存在架构文件和RecordingStore的现行引用。

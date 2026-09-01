@@ -2,15 +2,6 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "环境：GPU完整自检",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}\\scripts\\check_runtime_env.py",
-      "args": ["--require-cuda"],
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
       "name": "运行：Development Test UI",
       "type": "debugpy",
       "request": "launch",
@@ -20,31 +11,6 @@
         "PYTHONPATH": "${workspaceFolder}",
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1"
-      },
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
-      "name": "运行：Audio Data Manager",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "gui.production_ui.app",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}"
-      },
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
-      "name": "运行：L1设备服务",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "uvicorn",
-      "args": ["layer1_input.api:app", "--host", "127.0.0.1", "--port", "8765"],
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}"
       },
       "console": "integratedTerminal",
       "justMyCode": true
