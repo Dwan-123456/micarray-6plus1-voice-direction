@@ -2,9 +2,20 @@
 
 v1.4.3 是实时方向定位精简版，只保留真实麦克风输入的 L1 与 L2。完整 L1～L6、录音管理、模型和示例音频保存在不可变标签 `v1.3.6`。
 
-## 项目文档
+## 文档导航
 
-[进入 v1.4.3 完整项目文档目录](docs/project_document/)
+本文提供v1.4.3的总体架构。各部分的算法原理、输入输出、配置参数、代码位置和使用边界通过以下链接进入详细文档。
+
+| 部分 | 详细文档 | 内容 |
+| --- | --- | --- |
+| 基本假设与适用范围 | [01 基本假设、模型与适用范围](docs/project_document/01-assumptions-models-and-scope.md) | 远场模型、声源条件、适用场景和使用限制 |
+| 阵列与通道 | [02 阵列几何与通道映射](docs/project_document/02-array-geometry-and-channel-mapping.md) | 6+1几何、8通道映射、校准及更换阵列时的修改位置 |
+| L1 IMCRA与P Gate | [03 IMCRA、预降噪与P Gate](docs/project_document/03-imcra-pre-denoise-and-probability-gate.md) | 底噪估计、SPP、P1/P2、频段加权、预降噪和0声源过滤 |
+| L2方向检测 | [04 声源数估计与NormMUSIC DOA](docs/project_document/04-source-counting-and-normmusic-doa.md) | GCC-PHAT声源数、MUSIC阶数、空间谱、取峰和输出 |
+| 方向ID | [05 ID合并、追踪与预测](docs/project_document/05-direction-id-tracking.md) | tentative/confirmed/coasting、JPDA关联、IMM平滑与预测 |
+| 局限与不足 | [06 当前局限与待补充内容](docs/project_document/06-limitations-and-open-issues.md) | 预留给后续补充 |
+| 后续方向 | [07 波束形成与双人音频恢复](docs/project_document/07-future-beamforming-and-two-speaker-reconstruction.md) | 双人同时讲话时的波束形成和原始音频恢复方向 |
+| 参考资料 | [参考资料索引](docs/project_document/references/README.md) | 论文原文、硬件资料和研究报告入口 |
 
 ```text
 Sipeed 8通道输入 -> 校准 -> L1 IMCRA（20 ms）
