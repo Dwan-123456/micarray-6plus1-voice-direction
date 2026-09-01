@@ -10,6 +10,30 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $venvPath = Join-Path $projectRoot ".venv-v1.4"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
+function Get-ProjectPython312 {
+    $launcher = Get-Command py -ErrorAction SilentlyContinue
+    if ($null -ne $launcher) {
+        & $launcher.Source -3.12 -c "import sys; assert sys.version_info[:2] == (3, 12)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return @($launcher.Source, "-3.12")
+        }
+    }
+
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:ProgramFiles "Python312\python.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            & $candidate -c "import sys; assert sys.version_info[:2] == (3, 12)" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                return @($candidate)
+            }
+        }
+    }
+    throw "Python 3.12 was not found. Run the environment installer from the project root."
+}
+
 if ($Recreate -and (Test-Path -LiteralPath $venvPath)) {
     $resolvedVenv = (Resolve-Path -LiteralPath $venvPath).Path
     if ($resolvedVenv -ne (Join-Path $projectRoot ".venv-v1.4")) {
@@ -24,7 +48,13 @@ if ($Recreate -and (Test-Path -LiteralPath $venvPath)) {
 }
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
-    & py -3.12 -m venv $venvPath
+    $basePython = @(Get-ProjectPython312)
+    $executable = $basePython[0]
+    $arguments = @($basePython | Select-Object -Skip 1)
+    & $executable @arguments -m venv $venvPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "创建.venv-v1.4失败"
+    }
 }
 
 & $venvPython -m pip install --upgrade "pip==26.2.1" "setuptools==80.10.2" "wheel==0.48.0"

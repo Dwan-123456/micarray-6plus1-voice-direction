@@ -21,6 +21,12 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.4.3`，完整旧架构以不可变标签`v1.3.6`为准，当前精简架构以根`README.md`、`config/config.yaml`和代码为准。
 
+## 2026-09-01 — 增加Windows双击安装与启动入口
+
+- **一键环境**：根目录新增`一键安装环境.cmd`。双击后检测Python 3.12；缺少时优先使用winget按当前用户安装，再调用`setup_vscode_env.ps1`创建`.venv-v1.4`、安装锁定依赖、editable安装项目、运行`pip check`和运行环境自检。PowerShell环境脚本同时支持`py -3.12`和当前用户/Program Files中的直接Python 3.12路径。
+- **一键启动**：根目录新增`启动Test UI.cmd`。环境存在时以隐藏PowerShell窗口启动Development Test UI；环境缺失时显示消息框。保留`--check`自动验证模式，用于无硬件条件下检查UI导入和48 kHz配置加载。README将“克隆后双击安装、双击启动、开始/停止采集”置于快速开始首位，命令行步骤保留为开发者备用。
+- **验证与边界**：当前工作树已实际执行安装器，依赖安装、editable构建、`pip check`和环境检查通过；启动器`--check`通过。`.cmd`强制CRLF以兼容Windows默认解析，内部提示使用ASCII避免无BOM UTF-8代码页问题。真实麦克风开始采集仍需连接MA-USB8实机。L1/L2算法、配置schema、模型、Git LFS资产和发布标签均无变化。
+
 ## 2026-09-01 — 全项目文档检查与下载使用流程修复
 
 - **现行事实校正**：`ingest/README.md`和基本假设章明确sequence/timestamp/健康事件/校准变化通过epoch恢复，非48 kHz输入由Coordinator直接拒绝并报告错误；未来L3输入改为`IngestedAudioBlock.samples[:, :7]`或`DecisionWindow.physical_samples`，与当前DTO属性一致。

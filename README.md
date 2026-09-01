@@ -95,7 +95,19 @@ Sipeed MA-USB8实时输入：48 kHz、8通道、每20 ms一块
 
 ## 快速开始
 
-### 1. 下载项目
+### 最简单的使用方法
+
+下载项目并解压后：
+
+1. 双击根目录的 **`一键安装环境.cmd`**，等待提示安装完成；
+2. 连接Sipeed MA-USB8和麦克风阵列；
+3. 双击根目录的 **`启动Test UI.cmd`**；
+4. 在界面中点击“启动采集”，等待约1 s IMCRA预热；
+5. 使用完成后点击“停止采集”。
+
+首次使用建议保持全部默认参数。灯光可手动开关；预降噪默认关闭。界面底部显示上一秒耗时、帧率、L2周期、排队、故障和drop。
+
+### 开发者：从GitHub克隆
 
 在PowerShell中运行：
 
@@ -107,7 +119,7 @@ git lfs pull
 
 仓库默认分支就是当前v1.4.3。`git lfs pull`用于下载文档中的论文和图片。
 
-### 2. 自动创建运行环境
+### 开发者：手动创建运行环境
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.ps1
@@ -115,15 +127,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.p
 
 脚本会自动创建项目专用Python 3.12环境、安装依赖并执行环境检查。
 
-### 3. 启动Test UI
+### 开发者：手动启动Test UI
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui.ps1
 ```
 
-连接Sipeed MA-USB8和麦克风阵列后，在界面中点击“启动采集”；等待约1 s IMCRA预热，再观察P2、Gate、声源数、MUSIC角度和方向ID。使用完成后点击“停止采集”。
-
-建议首次使用时保持全部默认参数。灯光可在L1区域手动开关；声源数、MUSIC阶数跟随、ID追踪和预降噪也可手动调整，其中预降噪默认关闭。Test UI底部性能栏显示上一秒耗时、输出/实算帧率、L2周期、排队、故障和drop。
+启动后可观察P2、Gate、声源数、MUSIC角度和方向ID。声源数、MUSIC阶数跟随、ID追踪和预降噪可在Test UI中调整。
 
 > v1.4.3实机1小时测试结果：系统能够保持实时和稳定，未观察到内存泄漏，进程内存占用约200 MB。
 
