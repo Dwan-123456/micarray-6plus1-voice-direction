@@ -14,7 +14,7 @@ v1.4.3 是实时方向定位精简版，只保留真实麦克风输入的L1与L2
 | L2方向检测 | [04 声源数估计与NormMUSIC DOA](docs/project_document/04-source-counting-and-normmusic-doa.md) | GCC-PHAT声源数、MUSIC阶数、空间谱、取峰和输出 |
 | 方向ID | [05 ID合并、追踪与预测](docs/project_document/05-direction-id-tracking.md) | tentative/confirmed/coasting、JPDA关联、IMM平滑与预测 |
 | 局限与不足 | [06 当前局限与待验证问题](docs/project_document/06-limitations-and-open-issues.md) | 物理、算法、硬件、实时性和验收边界 |
-| 后续方向 | [07 波束形成与双人音频恢复](docs/project_document/07-future-beamforming-and-two-speaker-reconstruction.md) | 双人同时讲话时的波束形成和原始音频恢复方向 |
+| 历史完整音频链 | [07 v1.3.6波束形成与双人音频恢复](docs/project_document/07-future-beamforming-and-two-speaker-reconstruction.md) | v1.3.6已实现的L3–L6、精简原因及选择性恢复边界 |
 | 运行与验证 | [08 Runtime、Test UI与验证](docs/project_document/08-runtime-ui-and-verification.md) | 线程、队列、动态回退、界面操作、性能和测试 |
 | 参考资料 | [参考资料索引](docs/project_document/references/README.md) | 论文原文、硬件资料和研究报告入口 |
 
