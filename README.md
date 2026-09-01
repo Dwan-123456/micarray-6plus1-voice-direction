@@ -21,23 +21,37 @@ v1.4.3 是实时方向定位精简版，只保留真实麦克风输入的L1与L2
 ## 总体架构
 
 ```text
-Sipeed MA-USB8：48 kHz / 8ch / PCM16 / 960 samples
-  -> AudioCapture：有界回调交接、sequence和健康事件
-  -> LiveSipeedSource：PCM16解码、设备通道重排
-  -> ChannelCalibrator：7物理麦增益/极性/整数延迟
-  -> IngestCoordinator：session、epoch和唯一sample时间轴
-  -> L1 IMCRA（20 ms）
-       -> 逐频噪声PSD/SPP
-       -> P1逐麦宽带概率 -> P2七麦中位数
-       -> 可选IMCRA-Wiener预降噪（默认关闭）
-  -> WindowAssembler：160 ms DecisionWindow，每20 ms发布
-  -> 单一L2 worker
-       -> 当前20 ms P2 Gate
-       -> 持续增量GCC-PHAT突出声源数0/1/2
-       -> 2–4 kHz Rolling NormMUSIC（1/2阶）
-       -> Circular IMM-JPDA方向ID
-  -> 同窗原子L2快照
-  -> Development Test UI / 1秒性能统计 / 稀疏轨迹日志
+Sipeed MA-USB8实时输入：48 kHz、8通道、每20 ms一块
+  ↓
+① 采集并整理音频
+  - 接收设备数据，发现丢块或异常
+  - 把8个设备通道排成项目规定顺序
+  - 校准7个物理麦克风的音量、极性和整数延迟
+  - 为连续音频建立统一的session、epoch和sample时间轴
+    （AudioCapture → LiveSipeedSource → ChannelCalibrator → IngestCoordinator）
+  ↓
+② L1：估计环境噪声和“当前是否有明显声音”
+  - IMCRA每20 ms更新各麦克风、各频率的噪声和声音概率
+  - P1表示每个物理麦的宽带声音概率
+  - P2取7个P1的中位数，降低单个异常麦克风的影响
+  - 可选预降噪默认关闭
+  ↓
+③ 组装用于方向判断的音频窗口
+  - 每个窗口包含最近160 ms音频
+  - 每20 ms生成一个新窗口
+    （WindowAssembler / DecisionWindow）
+  ↓
+④ L2：判断声源数量、方向并维持方向ID
+  - P2 Gate先过滤0声源或声音证据不足的窗口
+  - GCC-PHAT持续估计当前有0、1或2个突出方向声源
+  - NormMUSIC在2–4 kHz判断1或2个声源的角度
+  - IMM-JPDA把相邻窗口的方向合并成连续ID，并在短时无观测时预测
+  ↓
+⑤ 发布和显示结果
+  - 同一个窗口的Gate、声源数、角度和ID组成一份完整快照
+  - Development Test UI显示电平、概率、方向图和ID状态
+  - 底部性能栏显示上一秒耗时、帧率、排队、故障和drop
+  - 稀疏轨迹日志只记录ID和少量方向点，不保存音频
 ```
 
 ## 关键运行契约
@@ -55,6 +69,20 @@ Sipeed MA-USB8：48 kHz / 8ch / PCM16 / 960 samples
 | MUSIC | 2–4 kHz，初始15帧，连续后19帧/200 ms |
 | 方向ID | tentative/confirmed/coasting，最长2 s滑行 |
 | 持久化 | 不写WAV；逻辑音频只保留最近1 s |
+
+## 各阶段输入、输出与功能
+
+| 阶段 | 主要输入 | 主要输出 | 功能 |
+| --- | --- | --- | --- |
+| 采集与解码 | MA-USB8 8通道PCM16 | 逻辑`float32 [N,8]` | 有界交接、编号、通道重排 |
+| 校准与时间轴 | 逻辑8通道、校准参数 | `IngestedAudioBlock` | 校准7麦，建立session/epoch/sample边界 |
+| L1 IMCRA | 7路物理麦20 ms音频 | PSD、SPP、P1、P2 | 估计底噪和宽带声源证据 |
+| Windowing | 连续8通道block | `DecisionWindow [7680,8]` | 形成160 ms上下文，每20 ms发布 |
+| P Gate | 当前20 ms P2 | OPEN/CLOSED等状态 | 过滤0声源和宽带证据不足窗口 |
+| 声源数 | 160 ms、21对PHAT互谱 | 0/1/2 | 持续估计突出方向数量，决定MUSIC阶数 |
+| NormMUSIC | 7麦滚动协方差、1/2阶 | 360°空间谱、方向候选 | 2–4 kHz方位角扫描和取峰 |
+| IMM-JPDA | 候选方向、历史轨迹 | `track_id`、滤波角、状态 | ID关联、平滑、预测、coasting和过期 |
+| Runtime/UI | 同窗L1/L2快照、性能事件 | Test UI与诊断 | 动态回退、原子发布和实时显示 |
 
 - 音频只在内存中保留最近1秒，不写WAV、不进入录音管理系统。
 - 实时入口在加载NumPy/SciPy前固定OpenBLAS/OMP为单线程，避免小矩阵工作负载建立大型线程池和产生调度抖动；该设置只作用于本项目进程，不修改Windows全局环境。
@@ -82,6 +110,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui
 VS Code固定使用`.venv-v1.4`，不安装PyTorch、CUDA、ONNX、CountNet或L4～L6依赖。`data/`、`tmp/`、录音、日志、缓存和虚拟环境不提交。旧系统从`v1.3.6`恢复。
 
 当前版本只接受真实麦克风输入。启动后点击“启动采集”，等待约1 s IMCRA预热，再观察P2、Gate、声源数、MUSIC角度和方向ID。完成后点击“停止采集”。
+
+建议首次使用时保持全部默认参数。灯光可在L1区域手动开关；声源数、MUSIC阶数跟随、ID追踪和预降噪也可手动调整，其中预降噪默认关闭。Test UI底部性能栏显示上一秒耗时、输出/实算帧率、L2周期、排队、故障和drop。
+
+> v1.4.3实机1小时测试结果：系统能够保持实时和稳定，未观察到内存泄漏，进程内存占用约200 MB。
 
 ## 版本与历史资料
 
