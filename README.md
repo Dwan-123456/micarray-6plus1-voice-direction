@@ -4,7 +4,7 @@ v1.4.3 是实时方向定位精简版，只保留真实麦克风输入的 L1 与
 
 ## 项目文档
 
-[进入 v1.4.3 完整项目文档](docs/project_document/README.md)
+[进入 v1.4.3 完整项目文档目录](docs/project_document/)
 
 ```text
 Sipeed 8通道输入 -> 校准 -> L1 IMCRA（20 ms）

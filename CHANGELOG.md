@@ -21,6 +21,11 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.4.3`，完整旧架构以不可变标签`v1.3.6`为准，当前精简架构以根`README.md`、`config/config.yaml`和代码为准。
 
+## 2026-09-01 — v1.4.3 完整项目文档目录保持为空
+
+- **目录状态**：移除`docs/project_document/README.md`占位正文，仅保留空的`.gitkeep`以便Git跟踪目录；根README的预留入口改为直接进入`docs/project_document/`。详细技术文档后续由用户确认架构和目录后写入。
+- **影响边界**：L1、L2、离线L4、L5、Development Test UI、录音与数据管理、运行时契约、配置、测试、模型、算法、历史资料和Git LFS对象均无变化；不创建、移动或改写发布标签。
+
 ## 2026-09-01 — v1.4.3 GitHub跟踪内容去冗余
 
 - **移除冗余文件**：删除一份与`docs/v1.4.3_existing_docs/references/rho_map_6plus1_100hz_100_6000hz_1deg.png`字节完全相同的空间可分离度图副本；删除无人引用的v1.3.6 DOCX/PDF输出成品，历史Markdown说明和不可变`v1.3.6`标签继续保留；删除当前运行链、包导出和测试均未引用且依赖已不存在配置字段的`layer2_source_detection/candidates.py`。
