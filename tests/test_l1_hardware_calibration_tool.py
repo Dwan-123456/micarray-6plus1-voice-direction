@@ -2,11 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from common.config import load_config
 from scripts.calibrate_l1_array import SAMPLE_RATE, _lag_correlation, build_stimulus, generate
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TRACKED_CALIBRATION_REPORT = (
+    PROJECT_ROOT / "docs" / "v1.4.3_existing_docs" / "L1_HARDWARE_CALIBRATION_2026-08-24.json"
+)
+
+
+def test_verified_hardware_calibration_hash_matches_the_tracked_report():
+    config = load_config(PROJECT_ROOT / "config" / "config.yaml", environ={})
+    actual = hashlib.sha256(TRACKED_CALIBRATION_REPORT.read_bytes()).hexdigest()
+
+    assert config.hardware.hardware_calibration_status == "verified"
+    assert config.hardware.hardware_calibration_report_hash == actual
 
 
 def test_calibration_stimulus_is_deterministic_loud_and_unclipped(tmp_path):

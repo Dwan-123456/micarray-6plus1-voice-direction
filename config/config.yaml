@@ -5,7 +5,7 @@ hardware:
   speed_of_sound_mps: 343.0
   geometry_version: r6plus1_led_face_mic0_posx_ccw_54321_v2
   hardware_calibration_status: verified
-  hardware_calibration_report_hash: 3b8a186010790916557c753fac31eca554f6746be2e67d7f5f97bb143894b3a2
+  hardware_calibration_report_hash: acc4eddc29f76f997305f2c5394e68ca30082bfab5ac22b39169eb63268a6bbf
 device:
   sample_rate: 48000
   device_channels: 8

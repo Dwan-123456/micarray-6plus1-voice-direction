@@ -142,7 +142,7 @@ MUSIC配置允许最多3个候选，但v1.4.3运行时只使用1阶或2阶MUSIC�
 
 `session_id`标识一次Runtime采集生命周期，`stream_epoch`标识该session内一段连续sample时间轴。断流、丢块、时间戳异常、设备健康事件或校准身份变化会建立新epoch。输入采样率若不是固定48 kHz，Coordinator会直接拒绝并报告处理错误，不建立新epoch继续处理。
 
-`track_id`只在一个session内标识方向轨迹。epoch变化会清空活动轨迹，但同一session中的ID计数保持单调；显式关闭ID追踪会安排一次完整ID重置。任何情况下都不能把`track_id`解释为说话人的生物身份。
+`track_id`标识一段连续追踪状态中的方向轨迹。普通epoch变化会清空活动轨迹并保留同一session的递增计数；显式关闭再开启ID追踪会完整重置tracker和编号，因此同一`session_id`内可再次出现相同数字ID。解释ID时必须同时考虑显式重置边界，任何情况下都不能把`track_id`解释为说话人的生物身份。
 
 ## 12. 版本范围
 

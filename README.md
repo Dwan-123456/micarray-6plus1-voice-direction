@@ -91,7 +91,7 @@ Sipeed MA-USB8实时输入：48 kHz、8通道、每20 ms一块
 - L2默认每20 ms实算一次；过载时按20 ms步长逐级降低完整实算频率，最高200 ms。未实算窗口沿用最近结果并按当前20 ms时间戳持续输出；稳定恢复后逐级回到可容纳当前负载的最小周期。
 - Test UI只接收真实麦克风，仅显示L1与L2；左列上下排列L1和L2控制/轨迹表，右上保留正方形360°角度图，底部为横跨窗口的性能栏；L3～L6区域已删除。
 - 突出声源数估计默认开启，在Gate关闭时也持续按每20 ms新增的两个STFT帧推进，第二候选的逐帧共存校验不额外执行FFT。Test UI右下角独立控制框可关闭估计或切换MUSIC阶数跟随；跟随关闭时Gate OPEN后的MUSIC固定2阶，开启后把计数`0/1`及预热映射为1阶、把`2`及以上映射为2阶。算法与边界见[`source_counting/README.md`](source_counting/README.md)。
-- Test UI从单个L2组合快照读取同窗声源数、Gate、MUSIC及ID；组合DTO强制校验session、epoch、window ID和decision sample完全一致，避免独立latest-only邮箱刷新时把相邻窗口拼在一起。
+- Test UI从Runtime单一L2 worker发布的一个组合快照读取声源数、Gate、MUSIC及ID，避免从多个latest-only邮箱自行拼接相邻窗口。`L2DevUiSnapshot`强制校验声源数快照的session、epoch、window ID和decision sample；Gate、MUSIC与方向对象的同窗关系由上游`Layer2PipelineResult`校验和Runtime顺序组装保证。
 
 ## 快速开始
 
