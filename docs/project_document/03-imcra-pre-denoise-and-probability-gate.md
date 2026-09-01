@@ -85,7 +85,7 @@ IMCRA使用连续软概率更新：
 - 语音概率低时更快跟随环境变化；
 - 使用第二遍条件平滑，避免强语音污染最小值追踪。
 
-当前实现对应Israel Cohen 2003 IMCRA论文的工程化版本`cohen_imcra_2003_l1_v11`。
+当前实现对应Technion – Israel Institute of Technology的Israel Cohen于2003年发表的IMCRA论文，并形成项目工程化版本`cohen_imcra_2003_l1_v11`。
 
 ## 5. 第一遍平滑和最小值追踪
 

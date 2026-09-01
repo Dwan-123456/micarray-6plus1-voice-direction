@@ -7,7 +7,7 @@
 ### Cohen 2003 IMCRA原始论文
 
 - 论文：[Noise Spectrum Estimation in Adverse Environments: Improved Minima Controlled Recursive Averaging](01_Cohen_2003_IMCRA.pdf)
-- 作者：Israel Cohen。
+- 作者：Israel Cohen，Technion – Israel Institute of Technology。
 - 出版：IEEE Transactions on Speech and Audio Processing，Vol. 11，No. 5，2003。
 - DOI：`10.1109/TSA.2003.811544`。
 - 用途：支持两次平滑与最小值追踪、语音存在概率、时变递归平均和偏置补偿的原理说明。
