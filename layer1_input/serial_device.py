@@ -24,8 +24,9 @@ class SerialDevice:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        # Serialize open/write/close as one lifecycle.  The RLock lets write()
-        # lazily call start() without racing /serial/start or /serial/stop.
+        # Public lifecycle transitions may wait for the reader, so they use a
+        # separate lock that the reader never needs while exiting.
+        self._transition_lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
         self._subscribers: set[queue.Queue[bytes]] = set()
         self._recent: deque[bytes] = deque(maxlen=100)
@@ -50,15 +51,22 @@ class SerialDevice:
             )
 
     def start(self) -> dict[str, Any]:
-        with self._lifecycle_lock:
-            if self.running:
-                return self.status()
-            stale_port, stale_stop = self._serial, self._stop
-            stale_stop.set()
-            self._serial = None
-            self._thread = None
-            if stale_port is not None and stale_port.is_open:
-                stale_port.close()
+        with self._transition_lock:
+            with self._lifecycle_lock:
+                if self.running:
+                    return self.status()
+                stale_port, stale_thread, stale_stop = self._serial, self._thread, self._stop
+                stale_stop.set()
+                self._serial = None
+                self._thread = None
+            if not self._wait_then_close(stale_port, stale_thread, timeout=1.0):
+                message = "previous CDC reader did not stop within 1.0 s"
+                with self._lifecycle_lock:
+                    self._serial = stale_port
+                    self._thread = stale_thread
+                    self._stop = stale_stop
+                    self._last_error = message
+                raise RuntimeError(message)
             # A new CDC lifecycle must never expose a snapshot retained from an
             # earlier connection, including when opening the new port fails.
             with self._lock:
@@ -95,19 +103,31 @@ class SerialDevice:
             return self.status()
 
     def stop(self) -> dict[str, Any]:
-        with self._lifecycle_lock:
-            stop_event, thread, port = self._stop, self._thread, self._serial
-            stop_event.set()
-            self._thread = None
-            self._serial = None
+        with self._transition_lock:
+            with self._lifecycle_lock:
+                stop_event, thread, port = self._stop, self._thread, self._serial
+                stop_event.set()
+                self._thread = None
+                self._serial = None
+            if not self._wait_then_close(port, thread, timeout=1.0):
+                with self._lifecycle_lock:
+                    self._serial = port
+                    self._thread = thread
+                    self._stop = stop_event
+                    self._last_error = "CDC reader did not stop within 1.0 s"
+            return self.status()
+
+    @staticmethod
+    def _wait_then_close(port: Any | None, thread: threading.Thread | None, *, timeout: float) -> bool:
+        """Wait for the reader that owns ``port`` before closing a leftover handle."""
+
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
-            thread.join(timeout=1.0)
-        # The reader owns the port until it exits.  Closing it before joining
-        # races pyserial's Windows OVERLAPPED cleanup and can double-close the
-        # same event handle.  A reader that never started is closed here.
-        if (thread is None or not thread.is_alive()) and port is not None and port.is_open:
+            thread.join(timeout=max(0.0, timeout))
+        if thread is not None and thread.is_alive():
+            return False
+        if port is not None and port.is_open:
             port.close()
-        return self.status()
+        return True
 
     def _read_loop(self, port: Any, stop_event: threading.Event) -> None:
         try:
@@ -171,11 +191,12 @@ class SerialDevice:
             self._hotmap_frames += 1
 
     def write(self, data: bytes) -> int:
-        with self._lifecycle_lock:
+        with self._transition_lock:
             if not self.running:
                 self.start()
-            assert self._serial is not None
-            count = int(self._serial.write(data))
+            with self._lifecycle_lock:
+                assert self._serial is not None
+                count = int(self._serial.write(data))
             with self._lock:
                 self._bytes_sent += count
             return count

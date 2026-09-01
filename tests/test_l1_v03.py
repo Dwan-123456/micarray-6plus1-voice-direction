@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+import threading
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -52,6 +56,114 @@ def test_unused_cdc_hotmap_queue_retains_only_the_latest_frame():
     assert np.all(frames[0].matrix == 2)
     assert device.latest_hotmap_frame() is frames[0]
     assert device.status()["hotmap_frames"] == 3
+
+
+def test_serial_restart_waits_for_the_stale_reader_before_closing_its_port(monkeypatch):
+    events: list[str] = []
+    stale_stop = threading.Event()
+
+    class Port:
+        def __init__(self, name: str):
+            self.name = name
+            self.is_open = True
+
+        def close(self):
+            if self.name == "stale":
+                assert "stale_join" in events
+            events.append(f"{self.name}_close")
+            self.is_open = False
+
+    class StaleReader:
+        def __init__(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout):
+            assert timeout == 1.0
+            assert stale_stop.is_set()
+            events.append("stale_join")
+            self.alive = False
+
+    class NewReader:
+        def __init__(self, *, target, args, daemon):
+            assert callable(target) and daemon
+            self.stop_event = args[1]
+            self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+        def start(self):
+            events.append("new_start")
+            self.alive = True
+
+        def join(self, timeout):
+            assert self.stop_event.is_set()
+            events.append("new_join")
+            self.alive = False
+
+    stale_port = Port("stale")
+    new_port = Port("new")
+    device = SerialDevice("COM-test", 2_000_000)
+    device._serial = stale_port
+    device._thread = StaleReader()
+    device._stop = stale_stop
+    device._last_error = "simulated reader failure"
+
+    def open_new_port(*_args, **_kwargs):
+        events.append("new_open")
+        return new_port
+
+    monkeypatch.setitem(sys.modules, "serial", SimpleNamespace(Serial=open_new_port))
+    monkeypatch.setattr("layer1_input.serial_device.threading.Thread", NewReader)
+
+    status = device.start()
+
+    assert status["running"] is True
+    assert events[:4] == ["stale_join", "stale_close", "new_open", "new_start"]
+    device.stop()
+    assert events[-2:] == ["new_join", "new_close"]
+
+
+def test_serial_restart_does_not_open_a_second_port_when_the_reader_is_stuck(monkeypatch):
+    stop_event = threading.Event()
+
+    class Port:
+        is_open = True
+
+        def close(self):
+            raise AssertionError("a live reader still owns this port")
+
+    class StuckReader:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout):
+            assert timeout == 1.0
+            assert stop_event.is_set()
+
+    port = Port()
+    reader = StuckReader()
+    device = SerialDevice("COM-test", 2_000_000)
+    device._serial = port
+    device._thread = reader
+    device._stop = stop_event
+    device._last_error = "simulated reader failure"
+    monkeypatch.setitem(
+        sys.modules,
+        "serial",
+        SimpleNamespace(Serial=lambda *_args, **_kwargs: pytest.fail("must not open a second port")),
+    )
+
+    with pytest.raises(RuntimeError, match="previous CDC reader did not stop"):
+        device.start()
+
+    assert device._serial is port
+    assert device._thread is reader
+    assert device._stop is stop_event
+    assert device.status()["running"] is False
 
 
 def test_calibration_changes_only_the_seven_physical_microphones():
