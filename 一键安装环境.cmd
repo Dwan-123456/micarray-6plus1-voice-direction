@@ -13,6 +13,7 @@ echo.
 py -3.12 -c "import sys; assert sys.version_info[:2] == (3, 12)" >nul 2>&1
 if errorlevel 1 (
     if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" goto setup_environment
+    if exist "%ProgramFiles%\Python312\python.exe" goto setup_environment
     echo Python 3.12 was not found. Installing it for the current user with winget...
     where winget >nul 2>&1
     if errorlevel 1 (

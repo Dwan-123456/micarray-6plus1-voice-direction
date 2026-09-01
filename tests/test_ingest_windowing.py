@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 from dataclasses import replace
 
 import numpy as np
@@ -230,6 +231,38 @@ def test_numbered_capture_handoff_is_bounded_and_reports_drop():
     assert visible.sequence_id == 1
     assert len(events) == 1 and events[0].kind == "handoff_drop"
     assert (events[0].last_sequence_id_before_gap, events[0].first_sequence_id_after_gap) == (None, 1)
+
+
+def test_numbered_capture_retries_when_consumer_makes_room_after_full():
+    class ConsumerRaceQueue:
+        def __init__(self):
+            self.maxsize = 1
+            self.put_attempts = 0
+            self.values = []
+
+        def put_nowait(self, value):
+            self.put_attempts += 1
+            if self.put_attempts == 1:
+                raise queue.Full
+            self.values.append(value)
+
+        @staticmethod
+        def get_nowait():
+            raise queue.Empty
+
+        def qsize(self):
+            return len(self.values)
+
+    capture = AudioCapture("test", "test", 48_000, 8, 2)
+    receiver = ConsumerRaceQueue()
+    capture._numbered_subscribers.add(receiver)
+
+    capture._callback(np.zeros((2, 8), dtype=np.int16), 2, None, None)
+
+    assert receiver.put_attempts == 2
+    assert [item.sequence_id for item in receiver.values] == [0]
+    assert capture.status()["handoff_drop_count"] == 0
+    assert capture.take_health_events() == ()
 
 
 def test_capture_recent_audio_is_bounded_to_one_second():

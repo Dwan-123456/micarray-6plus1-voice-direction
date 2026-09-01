@@ -57,7 +57,7 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     }
 }
 
-& $venvPython -m pip install --upgrade "pip==26.2.1" "setuptools==80.10.2" "wheel==0.48.0"
+& $venvPython -m pip install --upgrade "pip==26.2.1" "setuptools==83.0.0" "wheel==0.48.0"
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install the pinned packaging tools (exit code $LASTEXITCODE)."
 }

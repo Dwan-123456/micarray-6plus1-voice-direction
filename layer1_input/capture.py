@@ -205,18 +205,21 @@ class AudioCapture:
                         self._dropped_subscriber_blocks += 1
         numbered = NumberedCaptureBlock(payload, sequence_id, timestamp, frames)
         for subscriber in numbered_subscribers:
-            try:
-                subscriber.put_nowait(numbered)
-            except queue.Full:
+            while True:
                 try:
-                    dropped = subscriber.get_nowait()
                     subscriber.put_nowait(numbered)
-                except queue.Empty:
-                    continue
-                with self._lock:
-                    self._dropped_subscriber_blocks += 1
-                    self._handoff_drop_count += 1
-                    self._append_handoff_drop_locked(dropped)
+                    break
+                except queue.Full:
+                    try:
+                        dropped = subscriber.get_nowait()
+                    except queue.Empty:
+                        # The consumer made room after ``Full``. Retry the
+                        # current numbered block without inventing a drop.
+                        continue
+                    with self._lock:
+                        self._dropped_subscriber_blocks += 1
+                        self._handoff_drop_count += 1
+                        self._append_handoff_drop_locked(dropped)
             depth = subscriber.qsize()
             if depth > self._handoff_queue_high_water:
                 with self._lock:

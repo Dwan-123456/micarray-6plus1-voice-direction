@@ -21,6 +21,15 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.4.3`，完整旧架构以不可变标签`v1.3.6`为准，当前精简架构以根`README.md`、`config/config.yaml`和代码为准。
 
+## 2026-09-01 — 修复发布前队列竞争、Python检测与依赖告警
+
+- **编号采集队列**：编号主链在队列判满后若消费者同时取走旧块，改为重试投递当前块，不再静默额外丢弃新块，也不虚增或漏记`handoff_drop_count`与健康事件；新增确定性竞争回归测试。
+- **一键安装**：根CMD在调用winget前同时识别当前用户目录和`Program Files\Python312\python.exe`，与PowerShell环境脚本的Python 3.12查找范围统一。
+- **Test UI启动器**：修复PowerShell启动`pythonw.exe`后`$LASTEXITCODE`为空却被当成非0的假失败。启动器现在读取独立GUI进程对象的真实退出码，只监测前1.5秒启动窗口；正常运行时立即释放启动器，不显示空退出码弹窗或长期保留黑色终端。
+- **依赖安全更新**：`pytest`由9.0.2升级到修复版本9.0.3；构建工具`setuptools`由80.10.2升级到83.0.0，并同步更新`pyproject.toml`构建隔离范围和开发依赖下限。
+- **验证**：一键安装器实际完成依赖升级并通过环境实导入；编号采集/窗口测试为`18 passed`，Ruff通过，全量pytest为`165 passed`，`pip check`无冲突；离屏Test UI独立进程成功启动且启动器返回0；本地wheel为54项且旧L3～L6、Production UI、数据管理及`.pyc`混入为0。
+- **影响范围**：L1音频算法、L2 Gate/声源数/MUSIC/ID、Test UI显示、Runtime调度、模型和Git LFS资产均无变化，不创建或修改发布标签。
+
 ## 2026-09-01 — 确认GitHub仓库保持公开
 
 - **仓库治理**：按用户确认，将`AGENTS.md`中的权威源由“private source of truth”改为“public source of truth”，与GitHub当前`public`可见性统一；仓库URL和默认`codex/develop-v1.4.3`分支不变。
