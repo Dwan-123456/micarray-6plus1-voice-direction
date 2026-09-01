@@ -69,7 +69,7 @@ Sipeed MA-USB8实时输入：48 kHz、8通道、每20 ms一块
 | P Gate | 当前20 ms P2，默认门限0.80 |
 | 声源数 | 160 ms增量GCC-PHAT，输出0/1/2 |
 | MUSIC | 2–4 kHz，初始15帧，连续后19帧/200 ms |
-| 方向ID | tentative/confirmed/coasting，最长2 s滑行 |
+| 方向ID | tentative/confirmed/coasting，最长预测2 s |
 | 持久化 | 不写WAV；逻辑音频只保留最近1 s |
 
 ## 各阶段输入、输出与功能
