@@ -24,7 +24,7 @@
 ## 2026-09-01 — v1.4.3 提交前文档目录整理
 
 - **GitHub入口与README**：根`README.md`标题及版本说明明确为`v1.4.3`，新增完整项目文档入口，点击后进入`docs/project_document/README.md`。
-- **文档目录**：原`docs`全部内容整体迁入`docs/v1.4.3_existing_docs/`，保留原有子目录结构；新增`docs/project_document/`，专门用于后续编写和维护v1.4.3完整项目文档。同步修正根README历史文档链接及校准报告内部路径。
+- **文档目录**：原`docs`全部内容整体迁入`docs/v1.4.3_existing_docs/`，保留原有子目录结构；新增`docs/project_document/`，专门用于后续编写和维护v1.4.3完整项目文档。同步修正根README历史文档链接、校准报告内部路径及`.gitattributes`中的Git LFS与LF规则路径。
 - **影响边界**：仅调整文档、路径和GitHub项目展示准备。L1、L2、离线L4、L5、Development Test UI、录音与数据管理、运行时契约、配置、测试、模型和算法均无变化；L3～L6继续保持当前v1.4精简范围。无Git LFS对象新增或修改，不创建、移动或改写发布标签。
 
 ## 2026-09-01 — 项目级Codex 1M上下文配置
