@@ -34,7 +34,7 @@ v1.4.3的最后输出是方向、`track_id`、MUSIC响应和轨迹状态。当�
 
 | 输入 | 来源 |
 | --- | --- |
-| 连续7路校准音频 | `IngestedAudioBlock/DecisionWindow.physical_samples` |
+| 连续7路校准音频 | `IngestedAudioBlock.samples[:, :7]`或`DecisionWindow.physical_samples` |
 | session/epoch/sample时间轴 | `IngestCoordinator` |
 | 目标`track_id`和角度 | L2 `TrackedDirection` |
 | 竞争方向 | 其他活动`TrackedDirection` |

@@ -2,7 +2,7 @@
 
 ## 产品介绍
 
-<img src="./../../assets/spmod/spmod_micarray/spmod_micarray.png" width=55%>
+<img src="https://raw.githubusercontent.com/sipeed/sipeed_wiki/232411a35675f410233a4a808aaa3308c5b4427f/docs/hardware/assets/spmod/spmod_micarray/spmod_micarray.png" width=55%>
 
 麦克风阵列模块是 Sipeed 基于 MSM261S4030H0 数字麦克风芯片设计的，模块声音识别灵敏度、信噪比高，由沿板的六个麦克风和一个中心的麦克风组成，阵列板上的 12 颗 LED 可以用来可视化识别声源方位，基于 `GCC-PHAT` 算法实现声源定位、语音识别、波束成形等需求场合。
 
@@ -70,7 +70,7 @@
 | 9 | LED_CK | I/O | LED 的串行数据时钟 |
 | 10 | LED_DA | I/O | LED 的串行数据输出 |
 
-<img src="./../../assets/spmod/spmod_micarray/MicArray.png" width=55%>
+<img src="https://raw.githubusercontent.com/sipeed/sipeed_wiki/232411a35675f410233a4a808aaa3308c5b4427f/docs/hardware/assets/spmod/spmod_micarray/MicArray.png" width=55%>
 
 ### 接线参考
 
@@ -121,7 +121,7 @@ mic.deinit()
 
 #### SK9822 驱动代码
 
-仅供参考用，来源：[github](https://github.com/sipeed/MaixPy-v1blob/master/components/kendryte_sdk/src/sipeed_sk9822.c) ;需要分析代码的话建议复制代码到电脑本地编辑器中查看。
+仅供参考用，来源：[github](https://github.com/sipeed/MaixPy-v1/blob/master/components/kendryte_sdk/src/sipeed_sk9822.c)；需要分析代码的话建议复制代码到电脑本地编辑器中查看。
 
 <details>
   <summary>sipeed_sk9822.c</summary>
@@ -402,7 +402,7 @@ void sipeed_init_mic_array_led(void)
 
 #### Micarray 代码
 
-仅供参考用，来源：[github](https://github.com/sipeed/MaixPy-v1blob/master/components/micropython/port/src/Maix/Maix_mic_array.c)；需要分析代码的话建议复制代码到电脑本地编辑器中查看。
+仅供参考用，来源：[github](https://github.com/sipeed/MaixPy-v1/blob/master/components/micropython/port/src/Maix/Maix_mic_array.c)；需要分析代码的话建议复制代码到电脑本地编辑器中查看。
 
 ## 更多拓展用法
 
@@ -426,6 +426,6 @@ void sipeed_init_mic_array_led(void)
 
 ### 出现报错信息
 
-![报错信息](./../../assets/spmod/spmod_micarray/spmod_micarray_err.png)
+![报错信息](https://raw.githubusercontent.com/sipeed/sipeed_wiki/232411a35675f410233a4a808aaa3308c5b4427f/docs/hardware/assets/spmod/spmod_micarray/spmod_micarray_err.png)
 
 更换其他IO管脚即可

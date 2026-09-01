@@ -1,5 +1,7 @@
 # Git version-management workflow
 
+> **历史归档快照**：本文记录旧完整架构时期的Git流程，包含`.venv`、CNN、数据管理和L3–L6命令，不适用于当前v1.4.3精简分支。当前操作以根`AGENTS.md`、`README.md`、`ENVIRONMENT.md`和`.venv-v1.4`为准。
+
 ## Repository boundary
 
 The repository contains source code, configuration, documentation, tests,

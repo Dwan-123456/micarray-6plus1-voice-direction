@@ -2,7 +2,7 @@
 
 ## 产品概览
 
-![](../../assets/modules/micarray_usbboard_bl616/product-front.png)
+![](https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/product-front.png)
 
 MA-USB8 是一块为麦克风阵列提供 USB 音频与串口数据接口的驱动板，可通过 UAC2.0 传输 8 通道采集音频和 2 通道播放音频，并通过 CDC ACM 或物理 UART 输出声源定位热力图。标准板使用直径 80 mm 的六麦阵列（D80）固件。
 
@@ -33,7 +33,7 @@ USB 高速采集端点的间隔为 0.5 ms，标称每包 384 字节（24 帧）�
 - 物理 0° 的基准位置；
 - 档位相对物理阵列的顺时针或逆时针方向。
 
-完成验证前，不应把命令编号直接解释为某个丝印麦克风或绝对物理角度。物理编号和板上位置可参见[麦克风阵列模块](./micarray.md)的点位图。CH6 是波束合成输出，不代表第 7 个物理麦克风。
+完成验证前，不应把命令编号直接解释为某个丝印麦克风或绝对物理角度。物理编号和板上位置可参见[麦克风阵列模块](https://github.com/sipeed/sipeed_wiki/blob/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/zh/modules/micarray.md)的点位图。CH6 是波束合成输出，不代表第 7 个物理麦克风。
 
 > 本文是 MA-USB8 的使用指南，覆盖从接线、验证设备、音频录制、波束成形到如何读取/解析声场热力图与常见故障排查。
 
@@ -66,15 +66,15 @@ pactl list short sources
 
 系统应识别 UAC2.0 音频接口和 `/dev/ttyACM0` 一类的 CDC ACM 设备。实际编号可能不是 0，请以命令输出为准。
 
-![](../../assets/modules/micarray_usbboard_bl616/dmesg.png)
-![](../../assets/modules/micarray_usbboard_bl616/lsusb.png)
+![](https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/dmesg.png)
+![](https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/lsusb.png)
 
 ### 验证设备（Windows）
 在设备管理器中可看到音频接口 MicArray（UAC2.0）和虚拟串口 USB 串行设备（CDC ACM）。如需录制 8 通道音频，请在录音软件中选择 MicArray，并将格式设置为 8 通道、PCM 16-bit、48 kHz。
 
 如果录音软件只能选择 1 或 2 通道，请参见[Windows 只能选择 1 或 2 通道](#Windows-只能选择-1-或-2-通道)。
 
-![](../../assets/modules/micarray_usbboard_bl616/devmgmt.png)
+![](https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/devmgmt.png)
 
 ### 录音：录制 8 通道音频（UAC2.0）
 下面给出 Linux CLI 与 Audacity 的常见步骤。
@@ -101,12 +101,12 @@ aplay ch6.wav
 2. 在录音通道处选择 8 通道。
 3. 开始录制，你会看到多通道波形，停止后可以选择某一路音轨听/导出。
 
-![](../../assets/modules/micarray_usbboard_bl616/audacity-linux-sine1k.png)
+![](https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/audacity-linux-sine1k.png)
 
 **Windows 下请选择 WASAPI；如果仍然只有 1 或 2 通道，请参见[Windows 只能选择 1 或 2 通道](#Windows-只能选择-1-或-2-通道)。**
 <div style="display: flex; justify-content: space-between;">
-  <img src="../../assets/modules/micarray_usbboard_bl616/audacity-windows-wasapi-step-1.png" style="width: 48%;">
-  <img src="../../assets/modules/micarray_usbboard_bl616/audacity-windows-wasapi-step-2.png" style="width: 48%;">
+  <img src="https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/audacity-windows-wasapi-step-1.png" style="width: 48%;">
+  <img src="https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/audacity-windows-wasapi-step-2.png" style="width: 48%;">
 </div>
 
 ### 播放：输出 2 通道音频
@@ -136,7 +136,7 @@ minicom -D /dev/ttyACM0 -H
 
 默认档位为 0。档位的绝对物理角度尚未完成夹具验证，参见[阵列参数与波束方向](#阵列参数与波束方向)。
 
-![](../../assets/modules/micarray_usbboard_bl616/sine500hz@ch0_and_sine1000hz@ch3_with_beamforming@ch0.png)
+![](https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/sine500hz%40ch0_and_sine1000hz%40ch3_with_beamforming%40ch0.png)
 
 ## 读取并解析声场热力图（CDC ACM / UART）
 
@@ -166,17 +166,17 @@ picocom -b 2000000 /dev/ttyUSB0
 如果串口没有数据或输出乱码，请分别参见[CDC ACM 不输出热力图](#CDC-ACM-不输出热力图)和[UART 输出乱码或无法显示](#UART-输出乱码或无法显示)。
 
 <figure>
-  <img src="../../assets/modules/micarray_usbboard_bl616/minicom_acm&picocom_uart-combine.png" style="width: 100%;">
+  <img src="https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/minicom_acm%26picocom_uart-combine.png" style="width: 100%;">
   <figcaption>左：CDC ACM 原始二进制帧的十六进制预览。右：UART 开启 16×16 打印后，从普通文本热力图切换到伪彩热力图的过程。</figcaption>
 </figure>
 
 <div style="display: flex; gap: 2%; flex-wrap: wrap;">
   <figure style="flex: 1 1 260px; margin: 0;">
-    <img src="../../assets/modules/micarray_usbboard_bl616/picocom_uart-hex.png" style="width: 100%;">
+    <img src="https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/picocom_uart-hex.png" style="width: 100%;">
     <figcaption>UART 16×16 文本热力图：输入 <code>F</code> 开启。</figcaption>
   </figure>
   <figure style="flex: 1 1 260px; margin: 0;">
-    <img src="../../assets/modules/micarray_usbboard_bl616/picocom_uart-hex-cmap.png" style="width: 100%;">
+    <img src="https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/picocom_uart-hex-cmap.png" style="width: 100%;">
     <figcaption>UART 伪彩热力图：开启 16×16 打印后输入 <code>C</code>。</figcaption>
   </figure>
 </div>
@@ -236,7 +236,7 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="359f", ATTRS{idProduct}=="3400", MODE="0666"
 ### MA-USB8 D80（2026-08-13）
 
 - 适用阵列：标准 D80 板，半径 40 mm、直径 80 mm
-- 文件：[MA-USB8-D80-260813.bin](../../assets/modules/micarray_usbboard_bl616/firmware/MA-USB8-D80-260813.bin)
+- 文件：[MA-USB8-D80-260813.bin](https://raw.githubusercontent.com/sipeed/sipeed_wiki/0f5fca9043bd467d1eee216f82bc811b5529225a/docs/hardware/assets/modules/micarray_usbboard_bl616/firmware/MA-USB8-D80-260813.bin)
 - 文件大小：4079640 字节
 - SHA-256：`bf9f644783023a0bbe0fffb17c1da325c8756fb5b36c0fb9211f81e5e2f3ce01`
 
@@ -247,7 +247,7 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="359f", ATTRS{idProduct}=="3400", MODE="0666"
 升级步骤：
 
 1. 下载固件并核对文件大小或 SHA-256。
-2. 按照[固件刷写教程](../logic_analyzer/combo8/update_firmware.html#Burn-firmware)连接设备、进入烧录模式并写入固件。
+2. 按照[固件刷写教程](https://wiki.sipeed.com/hardware/zh/logic_analyzer/combo8/update_firmware.html#Burn-firmware)连接设备、进入烧录模式并写入固件。
 3. 烧录完成后重新插拔设备。
 4. 在 Linux 下使用 `lsusb -v` 和 `arecord -l`，或在 Windows 声音设置中确认 MicArray 已提供 8 通道、PCM 16-bit、48 kHz 格式。
 5. 如果 Windows 录音软件仍然只能选择 1 或 2 通道，请参见[Windows 只能选择 1 或 2 通道](#Windows-只能选择-1-或-2-通道)。

@@ -95,21 +95,33 @@ Sipeed MA-USB8实时输入：48 kHz、8通道、每20 ms一块
 
 ## 快速开始
 
-首次创建精简环境：
+### 1. 下载项目
+
+在PowerShell中运行：
+
+```powershell
+git clone https://github.com/Dwan-123456/micarray-6plus1-voice-direction.git
+cd .\micarray-6plus1-voice-direction
+git lfs pull
+```
+
+仓库默认分支就是当前v1.4.3。`git lfs pull`用于下载文档中的论文和图片。
+
+### 2. 自动创建运行环境
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_vscode_env.ps1
 ```
 
-启动：
+脚本会自动创建项目专用Python 3.12环境、安装依赖并执行环境检查。
+
+### 3. 启动Test UI
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_dev_test_ui.ps1
 ```
 
-VS Code固定使用`.venv-v1.4`，不安装PyTorch、CUDA、ONNX、CountNet或L4～L6依赖。`data/`、`tmp/`、录音、日志、缓存和虚拟环境不提交。旧系统从`v1.3.6`恢复。
-
-当前版本只接受真实麦克风输入。启动后点击“启动采集”，等待约1 s IMCRA预热，再观察P2、Gate、声源数、MUSIC角度和方向ID。完成后点击“停止采集”。
+连接Sipeed MA-USB8和麦克风阵列后，在界面中点击“启动采集”；等待约1 s IMCRA预热，再观察P2、Gate、声源数、MUSIC角度和方向ID。使用完成后点击“停止采集”。
 
 建议首次使用时保持全部默认参数。灯光可在L1区域手动开关；声源数、MUSIC阶数跟随、ID追踪和预降噪也可手动调整，其中预降噪默认关闭。Test UI底部性能栏显示上一秒耗时、输出/实算帧率、L2周期、排队、故障和drop。
 

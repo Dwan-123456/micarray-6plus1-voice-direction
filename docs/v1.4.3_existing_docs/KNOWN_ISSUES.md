@@ -1,5 +1,7 @@
 # 已知问题与验收边界
 
+> **历史归档快照**：本文记录旧完整架构时期的已知问题，其中Audio Data Manager、L1 HTTP服务、Production UI和L3–L6不属于当前v1.4.3精简运行范围。当前边界见根`README.md`和`docs/project_document/06-limitations-and-open-issues.md`。
+
 当前静态审查未发现已确认的软件阻断项。以下内容仍需真实设备或目标环境验收，不能由静态检查代替：
 
 - Sipeed MA-USB8 的真实 8 通道顺序、CDC 控制、指示灯和热力图输入。

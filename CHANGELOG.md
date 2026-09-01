@@ -21,6 +21,13 @@
 4. 功能尚未完成、未经实机验证或仅完成自动测试时必须明确标注，不能写成已经正式验收。
 5. 本文件记录“发生了什么”；当前开发版本为`1.4.3`，完整旧架构以不可变标签`v1.3.6`为准，当前精简架构以根`README.md`、`config/config.yaml`和代码为准。
 
+## 2026-09-01 — 全项目文档检查与下载使用流程修复
+
+- **现行事实校正**：`ingest/README.md`和基本假设章明确sequence/timestamp/健康事件/校准变化通过epoch恢复，非48 kHz输入由Coordinator直接拒绝并报告错误；未来L3输入改为`IngestedAudioBlock.samples[:, :7]`或`DecisionWindow.physical_samples`，与当前DTO属性一致。
+- **历史归档修复**：给旧Git流程、旧已知问题和研究资料索引增加历史快照警告；移除不存在的`ARCHITECTURE_V1.1_TARGET.md`权威引用，更新声源数跟随1/2阶、200 ms滚动MUSIC和当前无L3/L4的边界。修复v1.3.6配置链接及Sipeed快照中图片、固件、教程和两条GitHub源码URL，30个Markdown的相对断链由18个降为0；Sipeed修复目标均已返回HTTP 200。
+- **下载与简单使用**：根README快速开始改为`git clone`、`git lfs pull`、自动环境脚本、启动Test UI和开始/停止采集五步流程，删除旧依赖/本地忽略项/v1.3.6恢复说明段。当前工作树Ruff通过，全量pytest为`160 passed`，`git diff --check`通过；推送后另从GitHub全新克隆并执行环境创建与测试。
+- **影响边界**：不新增GCC-PHAT、MUSIC、JPDA或IMM论文；L1、L2、UI、Runtime、配置、测试、模型、Git LFS资产和发布标签均无变化。
+
 ## 2026-09-01 — 明确README中的P1为加权结果
 
 - **术语校正**：总体架构将P1明确写为“各频率SPP按当前频段权重汇总后的逐麦宽带声音概率”，P2明确为7个加权后P1的中位数；算法、权重和代码均无变化。
