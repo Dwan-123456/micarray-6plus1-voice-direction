@@ -1,4 +1,4 @@
-# v1.4.3精简环境
+# v1.4.4精简环境
 
 使用Python 3.12和项目专用`.venv-v1.4`。运行依赖仅为NumPy、SciPy、PyYAML、sounddevice、pyserial、Pydantic和PySide6；测试额外使用pytest、pytest-cov、ruff。
 

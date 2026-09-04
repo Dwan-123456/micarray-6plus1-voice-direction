@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "环境：创建或更新 v1.4.3 专用环境",
+      "label": "环境：创建或更新 v1.4.4 专用环境",
       "type": "shell",
       "command": "powershell",
       "args": [
