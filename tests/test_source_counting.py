@@ -460,8 +460,12 @@ def test_manual_source_count_and_music_follow_controls_are_atomic() -> None:
     assert runtime.current_music_effective_order == 2
     with pytest.raises(ValueError, match="enable source counting"):
         runtime.set_music_order_follows_source_count(True)
-    with pytest.raises(ValueError, match="fixed MUSIC order is 2"):
-        runtime.set_music_effective_order_limit(1)
+    assert runtime.set_music_effective_order_limit(1) == 1
+    assert runtime.music_effective_order_limit == 1
+    assert runtime.current_music_effective_order == 1
+    assert runtime._scan_config.effective_order_limit == 1
+    with pytest.raises(ValueError, match="must be 1, 2, or 3"):
+        runtime.set_music_effective_order_limit(0)
 
 
 def test_music_follow_toggle_does_not_reset_continuous_source_count_state() -> None:

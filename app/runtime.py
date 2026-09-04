@@ -88,7 +88,9 @@ class ApplicationRuntime:
         self._source_count_control_revision = 0
         self._source_count_control_changed_at = 0.0
         self._source_count_applied_revision = -1
-        self._current_music_effective_order: int | None = 2
+        self._current_music_effective_order: int | None = (
+            config.layer2.effective_order_limit
+        )
         self._reset_state()
         self.light_state = "unknown"
         self.last_error: str | None = None
@@ -147,10 +149,7 @@ class ApplicationRuntime:
             self.config.hardware.geometry_version,
             self.config.hardware.ring_radius_m,
         )
-        self._scan_config = replace(
-            DirectionScanConfig.from_project(self.config),
-            effective_order_limit=2,
-        )
+        self._scan_config = DirectionScanConfig.from_project(self.config)
         self._scan_revision = 0
         self._gate_threshold = self.config.layer2.probability_gate.threshold
         self._gate_revision = 0
@@ -159,7 +158,9 @@ class ApplicationRuntime:
         self._pre_denoise_latency_active = self._pre_denoise_enabled
         self._source_count_applied_revision = -1
         self._current_music_effective_order = (
-            1 if self._music_order_follows_source_count else 2
+            1
+            if self._music_order_follows_source_count
+            else self._scan_config.effective_order_limit
         )
 
     @staticmethod
@@ -241,12 +242,24 @@ class ApplicationRuntime:
     @property
     def music_effective_order_limit(self) -> int:
         with self._control_lock:
-            return 2 if self._current_music_effective_order is None else self._current_music_effective_order
+            return (
+                self._scan_config.effective_order_limit
+                if self._current_music_effective_order is None
+                else self._current_music_effective_order
+            )
 
     def set_music_effective_order_limit(self, value: int) -> int:
-        if value != 2:
-            raise ValueError("fixed MUSIC order is 2; use the source-count follow switch")
-        return 2
+        if type(value) is not int or value not in {1, 2, 3}:
+            raise ValueError("fixed MUSIC order must be 1, 2, or 3")
+        with self._control_lock:
+            if value != self._scan_config.effective_order_limit:
+                self._scan_config = replace(
+                    self._scan_config, effective_order_limit=value
+                )
+                self._scan_revision += 1
+            if not self._music_order_follows_source_count:
+                self._current_music_effective_order = value
+        return value
 
     @property
     def source_counting_enabled(self) -> bool:
@@ -261,7 +274,9 @@ class ApplicationRuntime:
                 self._source_count_enabled = enabled
                 if not enabled:
                     self._music_order_follows_source_count = False
-                    self._current_music_effective_order = 2
+                    self._current_music_effective_order = (
+                        self._scan_config.effective_order_limit
+                    )
                 self._source_count_control_revision += 1
                 self._source_count_control_changed_at = monotonic()
         return enabled
@@ -279,7 +294,9 @@ class ApplicationRuntime:
                 raise ValueError("enable source counting before following its MUSIC order")
             if enabled != self._music_order_follows_source_count:
                 self._music_order_follows_source_count = enabled
-                self._current_music_effective_order = 1 if enabled else 2
+                self._current_music_effective_order = (
+                    1 if enabled else self._scan_config.effective_order_limit
+                )
         return enabled
 
     @property
@@ -628,7 +645,7 @@ class ApplicationRuntime:
         if not enabled:
             snapshot = self._unavailable_source_count(window)
             if decision.allow_srp:
-                return snapshot, 2, None, 0.0
+                return snapshot, self._scan_config.effective_order_limit, None, 0.0
             return snapshot, None, decision.reason, 0.0
 
         started = perf_counter()
@@ -664,7 +681,12 @@ class ApplicationRuntime:
             self._record_performance("source_count_fault", elapsed_ms)
             if not decision.allow_srp:
                 return snapshot, None, decision.reason, elapsed_ms
-            return snapshot, 1 if follow_order else 2, None, elapsed_ms
+            return (
+                snapshot,
+                1 if follow_order else self._scan_config.effective_order_limit,
+                None,
+                elapsed_ms,
+            )
 
         elapsed_ms = (perf_counter() - started) * 1_000.0
         self.source_count_processed += 1
@@ -675,7 +697,7 @@ class ApplicationRuntime:
         if not decision.allow_srp:
             return snapshot, None, decision.reason, elapsed_ms
         if not follow_order:
-            return snapshot, 2, None, elapsed_ms
+            return snapshot, self._scan_config.effective_order_limit, None, elapsed_ms
         order = 2 if snapshot.source_count is not None and snapshot.source_count >= 2 else 1
         return snapshot, order, None, elapsed_ms
 
@@ -781,7 +803,7 @@ class ApplicationRuntime:
                         music_order = (
                             None
                             if not decision.allow_srp
-                            else 2
+                            else scan.effective_order_limit
                             if not follow_order
                             else 2
                             if count_snapshot.source_count is not None
@@ -790,7 +812,9 @@ class ApplicationRuntime:
                         )
                         music_skip_reason = None if decision.allow_srp else decision.reason
                     with self._control_lock:
-                        self._current_music_effective_order = music_order if follow_order else 2
+                        self._current_music_effective_order = (
+                            music_order if follow_order else scan.effective_order_limit
+                        )
                     can_reuse = (
                         not should_compute
                         and self._last_l2_snapshot is not None
