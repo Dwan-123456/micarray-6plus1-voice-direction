@@ -6,7 +6,7 @@ set "NO_PAUSE="
 if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
 
 echo ============================================================
-echo  6+1 Microphone Array v1.4.4 - Environment Installer
+echo  6+1 Microphone Array v1.5.1 - Environment Installer
 echo ============================================================
 echo.
 
